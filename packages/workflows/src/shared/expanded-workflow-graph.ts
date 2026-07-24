@@ -1,4 +1,8 @@
 import type { RunSnapshot, StageSnapshot, StoreSnapshot, ToolNodeSnapshot } from "./store-types.js";
+import {
+  authoritativeWorkflowChildRunId,
+  reciprocalWorkflowRootRunId,
+} from "./workflow-run-ownership.js";
 
 export interface ExpandedWorkflowStageTarget {
   readonly runId: string;
@@ -77,11 +81,6 @@ function isTerminalNonCompletedBoundary(stage: StageSnapshot): boolean {
   return stage.status === "failed" || stage.status === "skipped";
 }
 
-function childRunIdFor(stage: StageSnapshot): string | undefined {
-  if (isTerminalNonCompletedBoundary(stage)) return undefined;
-  if (stage.status === "completed") return stage.workflowChild?.runId ?? stage.workflowChildRun?.runId;
-  return stage.workflowChildRun?.runId;
-}
 
 function childAliasFor(stage: StageSnapshot): string | undefined {
   if (isTerminalNonCompletedBoundary(stage)) return undefined;
@@ -100,6 +99,13 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
   const root = runById.get(rootRunId);
   if (!root) return { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
   const targets = new Map<string, ExpandedWorkflowStageTarget>();
+  const rootOwnerByRunId = new Map<string, string | undefined>();
+  const rootOwnerFor = (runId: string): string | undefined => {
+    if (rootOwnerByRunId.has(runId)) return rootOwnerByRunId.get(runId);
+    const owner = reciprocalWorkflowRootRunId(runById, runId);
+    rootOwnerByRunId.set(runId, owner);
+    return owner;
+  };
   const visiting = new Set<string>();
 
   const expandRun = (run: RunSnapshot, depth: number, incomingParentIds: readonly string[]): ExpandedRunResult => {
@@ -110,18 +116,68 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
     const stages: ExpandedWorkflowStage[] = [];
     const tools: ExpandedWorkflowTool[] = [];
     const nodes: ExpandedWorkflowNode[] = [];
-    const replacementTerminals = new Map<string, readonly string[]>();
+    const stageById = new Map(run.stages.map((stage) => [stage.id, stage]));
+    const boundaryExpansions = new Map<string, ExpandedRunResult | null>();
+
+    const validChildRunFor = (stage: StageSnapshot): RunSnapshot | undefined => {
+      const childRunId = authoritativeWorkflowChildRunId(stage);
+      if (childRunId === undefined) return undefined;
+      const childRun = runById.get(childRunId);
+      const runRoot = rootOwnerFor(run.id);
+      if (
+        childRun === undefined ||
+        localItems(childRun).length === 0 ||
+        childRun.parentRunId !== run.id ||
+        childRun.parentStageId !== stage.id ||
+        runRoot === undefined ||
+        rootOwnerFor(childRun.id) !== runRoot
+      ) {
+        return undefined;
+      }
+      return childRun;
+    };
+
+    const resolvedParentIdsFor = (item: LocalItem): string[] => {
+      const parentIds = itemParents(item);
+      if (parentIds.length === 0) return [...incomingParentIds];
+      return parentIds.flatMap((parentId) => {
+        const parentStage = stageById.get(parentId);
+        const parentExpansion = parentStage === undefined
+          ? undefined
+          : boundaryExpansionFor(parentStage);
+        return parentExpansion?.terminalIds.length
+          ? [...parentExpansion.terminalIds]
+          : [virtualNodeId(run.id, parentId, isRootRun)];
+      });
+    };
+
+    const boundaryExpansionFor = (stage: StageSnapshot): ExpandedRunResult | undefined => {
+      const cached = boundaryExpansions.get(stage.id);
+      if (cached !== undefined) return cached ?? undefined;
+      const childRun = validChildRunFor(stage);
+      if (childRun === undefined) return undefined;
+      boundaryExpansions.set(stage.id, null);
+      const stageItem: LocalItem = { kind: "stage", stage, sourceIndex: 0 };
+      const childExpanded = expandRun(childRun, depth + 1, resolvedParentIdsFor(stageItem));
+      if (childExpanded.stages.length === 0 || childExpanded.terminalIds.length === 0) return undefined;
+      boundaryExpansions.set(stage.id, childExpanded);
+      return childExpanded;
+    };
 
     for (const item of items) {
       const sourceId = itemId(item);
       const id = virtualNodeId(run.id, sourceId, isRootRun);
-      const parents = itemParents(item);
-      const resolvedParentIds = parents.length === 0
-        ? [...incomingParentIds]
-        : parents.flatMap((parentId) => replacementTerminals.get(parentId) ?? [virtualNodeId(run.id, parentId, isRootRun)]);
+      const resolvedParentIds = resolvedParentIdsFor(item);
 
       if (item.kind === "tool") {
-        const tool: ExpandedWorkflowTool = { ...item.tool, id, parentIds: Object.freeze(resolvedParentIds), runId: run.id, runName: run.name, depth };
+        const tool: ExpandedWorkflowTool = {
+          ...item.tool,
+          id,
+          parentIds: Object.freeze(resolvedParentIds),
+          runId: run.id,
+          runName: run.name,
+          depth,
+        };
         const projectionTarget: ExpandedWorkflowStageTarget = {
           runId: run.id,
           stageId: item.tool.id,
@@ -150,27 +206,38 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
         continue;
       }
 
-      const childRunId = childRunIdFor(item.stage);
-      const childRun = childRunId === undefined ? undefined : runById.get(childRunId);
-      if (childRun !== undefined && localItems(childRun).length > 0) {
-        const childExpanded = expandRun(childRun, depth + 1, resolvedParentIds);
+      const childExpanded = boundaryExpansionFor(item.stage);
+      if (childExpanded !== undefined) {
         stages.push(...childExpanded.stages);
         tools.push(...childExpanded.tools);
         nodes.push(...childExpanded.nodes);
-        replacementTerminals.set(item.stage.id, childExpanded.terminalIds.length > 0 ? childExpanded.terminalIds : resolvedParentIds);
         continue;
       }
 
-      const target: ExpandedWorkflowStageTarget = { runId: run.id, stageId: item.stage.id, runName: run.name, depth };
+      const target: ExpandedWorkflowStageTarget = {
+        runId: run.id,
+        stageId: item.stage.id,
+        runName: run.name,
+        depth,
+      };
       targets.set(id, target);
-      const stage: ExpandedWorkflowStage = { ...item.stage, id, parentIds: Object.freeze(resolvedParentIds), workflowGraphTarget: target };
+      const stage: ExpandedWorkflowStage = {
+        ...item.stage,
+        id,
+        parentIds: Object.freeze(resolvedParentIds),
+        workflowGraphTarget: target,
+      };
       stages.push(stage);
       nodes.push({ kind: "stage", stage });
     }
 
-    const terminalIds = localTerminalIds(items).flatMap((sourceId) =>
-      replacementTerminals.get(sourceId) ?? [virtualNodeId(run.id, sourceId, isRootRun)]
-    );
+    const terminalIds = localTerminalIds(items).flatMap((sourceId) => {
+      const stage = stageById.get(sourceId);
+      const replacement = stage === undefined ? undefined : boundaryExpansionFor(stage);
+      return replacement?.terminalIds.length
+        ? [...replacement.terminalIds]
+        : [virtualNodeId(run.id, sourceId, isRootRun)];
+    });
     visiting.delete(run.id);
     return { stages, tools, nodes, terminalIds };
   };
