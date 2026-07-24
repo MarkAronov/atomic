@@ -23,6 +23,9 @@ test("test workflow preserves its two-platform matrix and deterministic contract
   const workflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
   assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404/);
   assert.match(workflow, /blacksmith-4vcpu-windows-2025/);
+  assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404\s+binary_platform: linux-x64\s+timeout_minutes: 10/);
+  assert.match(workflow, /blacksmith-4vcpu-windows-2025\s+binary_platform: windows-x64\s+timeout_minutes: 15/);
+  assert.match(workflow, /timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}/);
   assert.match(workflow, /name: Deterministic CI and release contracts[\s\S]*run: bun run test:ci-contracts/);
   assert.match(workflow, /Smoke test Linux release archive/);
   assert.match(workflow, /Smoke test Windows release archive/);
