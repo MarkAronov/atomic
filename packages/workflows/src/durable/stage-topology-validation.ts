@@ -33,6 +33,7 @@ export function directChildTopologyError(
   replayScope: string,
   expectedRun: DurableStageRunTopology,
   requireCurrentIdentity = true,
+  allowedNodeIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
   const prefix = `${replayScope}:`;
   const claiming = stages.filter((stage) => stage.topology?.run?.runId === expectedRun.runId);
@@ -60,10 +61,12 @@ export function directChildTopologyError(
     merged.push(topology);
   }
 
-  const ids = new Set<string>();
+  const ids = new Set<string>(allowedNodeIds);
+  const stageIds = new Set<string>();
   const orders = new Set<number>();
   for (const topology of merged) {
-    if (ids.has(topology.stageId)) return "direct child stage ids are not unique";
+    if (stageIds.has(topology.stageId) || ids.has(topology.stageId)) return "direct child stage ids are not unique";
+    stageIds.add(topology.stageId);
     ids.add(topology.stageId);
     if (topology.sourceOrder !== undefined) {
       if (orders.has(topology.sourceOrder)) return "direct child source orders are not unique";

@@ -10,7 +10,7 @@ import {
   encodeCheckpoint,
 } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import { encodeMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
-import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 
 function stage(workflowId: string): DurableStageCheckpoint {
   return {
@@ -74,6 +74,24 @@ describe("current DBOS stage topology", () => {
       ...envelope,
       topology: { ...topology, boundary: { ...boundary, version: 2 } },
     }), undefined);
+  });
+  test("round-trips additive tool topology and accepts current legacy tools without it", () => {
+    const checkpoint: DurableToolCheckpoint = {
+      kind: "tool", workflowId: "wf-tool-topology", checkpointId: "tool:hash", name: "publish",
+      argsHash: "hash", output: { ok: true }, completedAt: 3_000,
+      topology: {
+        version: 1, nodeId: "tool:hash", ordinal: 1, order: 2, parentIds: ["plan"], startedAt: 2_000, endedAt: 3_000,
+        run: { runId: "wf-tool-topology", runName: "topology-test" },
+      },
+    };
+    const decoded = decodeToCheckpoint(checkpoint.workflowId, checkpoint.checkpointId, encodeCheckpoint(checkpoint));
+    assert.ok(decoded?.kind === "tool");
+    assert.deepEqual(decoded.topology, checkpoint.topology);
+
+    const legacy = { ...checkpoint, topology: undefined };
+    const decodedLegacy = decodeToCheckpoint(legacy.workflowId, legacy.checkpointId, encodeCheckpoint(legacy));
+    assert.ok(decodedLegacy?.kind === "tool");
+    assert.equal(decodedLegacy.topology, undefined);
   });
 
   test("rejects a marked current stage envelope with missing topology", () => {

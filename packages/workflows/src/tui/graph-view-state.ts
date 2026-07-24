@@ -11,6 +11,7 @@ import {
   expandWorkflowGraph,
   type ExpandedWorkflowGraph,
   type ExpandedWorkflowStage,
+  type ExpandedWorkflowStageTarget,
 } from "../shared/expanded-workflow-graph.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { LayoutNode } from "./layout.js";
@@ -60,6 +61,7 @@ export abstract class GraphViewState {
   protected onStageAttach?: (runId: string, stageId: string) => void;
   protected onDetach?: () => void;
   protected initialFocusedStageId?: string;
+  protected initialFocusedRunId?: string;
   protected getViewportRows?: () => number | undefined;
   protected requestRender?: () => void;
   protected piKeybindings?: unknown;
@@ -74,7 +76,7 @@ export abstract class GraphViewState {
   protected toastManager = createToastManager();
   protected detailsExpanded = true;
   protected cachedLayout: LayoutNode[] = [];
-  protected expandedGraph: ExpandedWorkflowGraph = { stages: [], targets: new Map() };
+  protected expandedGraph: ExpandedWorkflowGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
   protected currentSnapshot: StoreSnapshot | null = null;
   protected graphScrollOffset = 0;
   protected graphScrollColOffset = 0;
@@ -99,6 +101,7 @@ export abstract class GraphViewState {
     this.onStageAttach = opts.onStageAttach;
     this.onDetach = opts.onDetach;
     this.initialFocusedStageId = opts.initialFocusedStageId;
+    this.initialFocusedRunId = opts.initialFocusedRunId;
     this.getViewportRows = opts.getViewportRows;
     this.requestRender = opts.requestRender;
     this.piKeybindings = opts.piKeybindings;
@@ -134,7 +137,7 @@ export abstract class GraphViewState {
     const run = this._getCurrentRun();
     if (!run) {
       this.cachedLayout = [];
-      this.expandedGraph = { stages: [], targets: new Map() };
+      this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
       this.focusedIndex = 0;
       this.graphScrollOffset = 0;
       this.graphScrollColOffset = 0;
@@ -158,16 +161,19 @@ export abstract class GraphViewState {
     // uses this when swapping back from chat mode so the focus lands on
     // the same node the user just attached to.
     if (this.initialFocusedStageId !== undefined) {
-      const idx = this.cachedLayout.findIndex(
-        (n) =>
-          n.stage.id === this.initialFocusedStageId ||
-          expandedStageTarget(this.expandedGraph, n.stage.id)?.stageId === this.initialFocusedStageId,
-      );
+      const idx = this.cachedLayout.findIndex((node) => {
+        const target = expandedStageTarget(this.expandedGraph, node.stage.id);
+        if (this.initialFocusedRunId === undefined) {
+          return node.stage.id === this.initialFocusedStageId || target?.stageId === this.initialFocusedStageId;
+        }
+        return target !== undefined && target.stageId === this.initialFocusedStageId && target.runId === this.initialFocusedRunId;
+      });
       if (idx >= 0 && idx !== this.focusedIndex) {
         this.focusedIndex = idx;
         focusNeedsReveal = true;
       }
       this.initialFocusedStageId = undefined;
+      this.initialFocusedRunId = undefined;
     } else if (previousFocusedStageId !== undefined) {
       const idx = this.cachedLayout.findIndex(
         (n) => n.stage.id === previousFocusedStageId,
@@ -241,8 +247,8 @@ export abstract class GraphViewState {
   protected _graphStages(run: RunSnapshot): ExpandedWorkflowStage[] {
     this.expandedGraph = this.currentSnapshot
       ? expandWorkflowGraph(this.currentSnapshot, run.id)
-      : { stages: [], targets: new Map() };
-    const stages = [...this.expandedGraph.stages];
+      : { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
+    const stages = [...this.expandedGraph.renderStages];
     const hasStagePrompt = stages.some((stage) =>
       stage.pendingPrompt !== undefined ||
       (stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom")
@@ -273,6 +279,18 @@ export abstract class GraphViewState {
     if (!this.promptState || this.promptState.prompt.id !== prompt.id) {
       this.promptState = createPromptCardState(prompt);
     }
+  }
+
+  /** Stage-only control target shared by hints and activation. */
+  protected _stageChatTarget(
+    stage: StageSnapshot | undefined,
+  ): ExpandedWorkflowStageTarget | undefined {
+    if (!stage || stage.nodeKind === "tool") return undefined;
+    return expandedStageTarget(this.expandedGraph, stage.id);
+  }
+
+  protected _focusedStageChatTarget(): ExpandedWorkflowStageTarget | undefined {
+    return this._stageChatTarget(this.cachedLayout[this.focusedIndex]?.stage);
   }
 
   protected _getCurrentRun(): RunSnapshot | null {

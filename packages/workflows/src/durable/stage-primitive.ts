@@ -11,7 +11,7 @@ import { elapsedStageMs } from "../shared/timing.js";
 import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
 import { type DurableStageCheckpoint, type DurableStageRunTopology } from "./types.js";
 import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-topology.js";
-import { isWorkflowChildResult } from "./workflow-child-result.js";
+import { parseLegacyWorkflowChildResult, parseWorkflowChildResult } from "./workflow-child-result.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
 
 export interface DurableStageDeps {
@@ -411,11 +411,18 @@ export function recordCachedStageIntoStore(
   const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
   const result = checkpoint?.result ?? (typeof output === "string" ? output : JSON.stringify(output));
   const endedAt = checkpoint?.endedAt ?? checkpoint?.completedAt ?? now;
-  const workflowChild = isWorkflowChildResult(output) ? workflowChildSnapshotFromResult(output) : undefined;
+  const hasCurrentIdentity = checkpoint?.topology?.sourceOrder !== undefined
+    || checkpoint?.topology?.status !== undefined || checkpoint?.topology?.occurrenceKey !== undefined
+    || checkpoint?.topology?.boundary !== undefined;
+  const childResult = parseWorkflowChildResult(output)
+    ?? (hasCurrentIdentity ? undefined : parseLegacyWorkflowChildResult(output));
+  const workflowChild = childResult === undefined ? undefined : workflowChildSnapshotFromResult(childResult);
+  const executionOrder = checkpoint?.topology?.order ?? checkpoint?.topology?.sourceOrder;
   const snapshot: StageSnapshot = {
     id: stageId, name, status: "completed", parentIds: parentIds !== undefined ? Object.freeze([...parentIds]) : [],
     startedAt: checkpoint?.startedAt ?? endedAt, endedAt, durationMs: checkpoint?.durationMs ?? 0, result,
     replayKey, replayed: true, skippedReason: "durable checkpoint replay", toolEvents: [], attachable: false,
+    ...(executionOrder !== undefined ? { executionOrder } : {}),
     ...(checkpoint?.topology !== undefined ? { replayedFromStageId: checkpoint.topology.stageId } : {}),
     ...(workflowChild !== undefined ? { workflowChild } : {}),
     ...(checkpoint?.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
@@ -444,6 +451,7 @@ export function recordCachedStageWithTracker(
   checkpoint: DurableCompletedStageCheckpoint,
   completedStageReplayKeys: Map<string, string>,
   stageFailFastScope?: ParallelFailFastScope,
+  sourceToReplayedNodeIds?: Map<string, string>,
 ): void {
   const sourceStageId = checkpoint.topology?.run?.runId === runId
     ? checkpoint.topology.stageId
@@ -453,7 +461,9 @@ export function recordCachedStageWithTracker(
   const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
   const run = store.runs().find((candidate) => candidate.id === runId);
   const restored = sourceParents?.map((sourceId) =>
-    run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id
+    sourceToReplayedNodeIds?.get(sourceId)
+      ?? run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id
+
   );
   if (restored !== undefined && restored.every((id): id is string => id !== undefined)) {
     parentIds = restored;
@@ -462,6 +472,7 @@ export function recordCachedStageWithTracker(
     parentIds = [...(stageFailFastScope.parentIds ?? [])];
     tracker.replaceParents(stageId, parentIds);
   }
+  if (checkpoint.topology?.run?.runId === runId) sourceToReplayedNodeIds?.set(checkpoint.topology.stageId, stageId);
   recordCachedStageIntoStore(store, runId, name, replayKey, checkpoint.output, completedStageReplayKeys, parentIds, checkpoint);
   tracker.onSettle(stageId);
 }

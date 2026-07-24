@@ -14,6 +14,7 @@ import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -80,6 +81,8 @@ export type RpcCommand =
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
 	| { id?: string; type: "abort_retry" }
 	| { id?: string; type: "clear_queue" }
+	| { id?: string; type: "pause_queued_messages" }
+	| { id?: string; type: "resume_queued_messages" }
 
 	// Bash
 	| { id?: string; type: "bash"; command: string; excludeFromContext?: boolean }
@@ -143,6 +146,8 @@ export interface RpcSlashCommand {
 
 export interface RpcSessionState {
 	model?: Model<Api>;
+	modelFallbackMessage?: string;
+	modelFallbackReason?: ModelFallbackReason;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;
@@ -154,6 +159,7 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+	queuedMessagesPaused: boolean;
 	resourceOverlaps?: ResourceOverlap[];
 }
 
@@ -271,6 +277,8 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }
 	| { id?: string; type: "response"; command: "abort_retry"; success: true }
 	| { id?: string; type: "response"; command: "clear_queue"; success: true; data: { steering: string[]; followUp: string[] } }
+	| { id?: string; type: "response"; command: "pause_queued_messages"; success: true }
+	| { id?: string; type: "response"; command: "resume_queued_messages"; success: true; data: { released: boolean } }
 
 	// Bash
 	| { id?: string; type: "response"; command: "bash"; success: true; data: BashResult }

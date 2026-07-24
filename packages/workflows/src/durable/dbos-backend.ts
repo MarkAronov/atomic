@@ -1,5 +1,4 @@
 /** DBOS-backed durable backend adapter. */
-
 import type { DurableCheckpoint, DurableWorkflowHandle, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkflowSerializableObject as DurableInputs } from "./types.js";
@@ -196,6 +195,18 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     });
   }
 
+  async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
+    if (!this.isWorkflowLoadable(checkpoint.workflowId)) return true;
+    // Encode before the best-effort storage boundary: malformed topology or
+    // serialization must remain authoritative errors rather than be ignored.
+    const encoded = encodeCheckpoint(checkpoint);
+    return await this.enqueueBestEffortWrite(async () => {
+      if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
+      await this.sdk.recordStepOutput(checkpoint.workflowId, checkpoint.checkpointId, encoded);
+      this.mem.recordCheckpoint(checkpoint);
+    });
+  }
+
   private async persistCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
     await this.persistCheckpointRecord(checkpoint);
     await this.writeMetadata(checkpoint.workflowId);
@@ -206,6 +217,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined { return this.mem.getToolOutput(workflowId, argsHash); }
+  getToolCheckpoint(workflowId: string, argsHash: string) { return this.mem.getToolCheckpoint(workflowId, argsHash); }
   getUiResponse(workflowId: string, promptHash: string): WorkflowSerializableValue | undefined { return this.mem.getUiResponse(workflowId, promptHash); }
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined { return this.mem.getStageOutput(workflowId, replayKey); }
   getStageSession(workflowId: string, replayKey: string) { return this.mem.getStageSession(workflowId, replayKey); }
@@ -438,6 +450,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     return next;
   }
 
+  private async enqueueBestEffortWrite(fn: () => Promise<void>): Promise<boolean> {
+    const next = this.writeQueue.then(fn, fn);
+    this.writeQueue = next.catch(() => undefined);
+    return await next.then(() => true, () => false);
+  }
+
   private async writeMetadata(workflowId: string): Promise<void> {
     const value = this.mem.toMetadata(workflowId);
     if (value === undefined) return;
@@ -479,5 +497,4 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     });
   }
 }
-
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.

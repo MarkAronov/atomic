@@ -10,6 +10,7 @@ import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
+import { RemoteQueuePause } from "./remote-queue-pause.js";
 import { sleep } from "../../utils/sleep.ts";
 
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
@@ -21,6 +22,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
 	private engineCallbackActive = false;
+	private readonly queuePause: RemoteQueuePause;
 	private readonly diagnosticListeners = new Set<(diagnostic: ActivityWatchdogDiagnostic) => void>();
 	private pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	private lastDiagnostic: ActivityWatchdogDiagnostic | undefined;
@@ -44,10 +46,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			createRuntime,
 			[...localRuntime.diagnostics],
 			localRuntime.modelFallbackMessage,
+			localRuntime.modelFallbackReason,
 		);
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);
+		this.queuePause = new RemoteQueuePause(client);
 		this.client.onEvent((event) => this.observeEvent(event));
 	}
 
@@ -58,11 +62,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async initializeFromEngine(): Promise<void> {
 		const state = await this.client.getState();
-		const session = super.session;
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
+		if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
+			await super.switchSession(state.sessionFile);
+		}
+		const session = super.session;
 		this.remoteModelCatalog.apply(catalog);
 		this.remoteModelCatalog.patch(session);
-		if (state.model) session.agent.state.model = state.model;
+		(session.agent.state as { model?: Model<Api> }).model = state.model;
 		session.agent.state.thinkingLevel = state.thinkingLevel;
 		session.agent.steeringMode = state.steeringMode;
 		session.agent.followUpMode = state.followUpMode;
@@ -72,7 +79,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
 		this.compacting = state.isCompacting;
-		if (state.sessionFile && session.sessionFile !== state.sessionFile) await super.switchSession(state.sessionFile);
+		this.queuePause.synchronize(state.queuedMessagesPaused === true);
+		this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 		this.refreshSessionView();
 		this.engineCallbackActive = false;
 		// Non-blocking refresh so isolated autocomplete lists engine-only extension
@@ -226,6 +234,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
 			autoRetryEnabled: { configurable: true, get: () => this.autoRetryEnabled },
+			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
 				configurable: true,
 				value: (listener: (event: AgentSessionEvent) => void) => this.client.onEvent(listener),
@@ -297,11 +306,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					return queued;
 				},
 			},
+			pauseQueuedMessages: { configurable: true, value: () => this.queuePause.pause() },
+			resumeQueuedMessages: { configurable: true, value: () => this.queuePause.resume() },
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>) => {
 					const selected = await this.client.setModel(model.provider, model.id);
 					session.agent.state.model = session.modelRegistry.find(selected.provider, selected.id) ?? model;
+					this.resolveModelFallback();
 				},
 			},
 			setThinkingLevel: {
@@ -314,11 +326,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			cycleModel: {
 				configurable: true,
 				value: async (direction?: "forward" | "backward") => {
+					const previousModel = session.model;
 					const result = await this.client.cycleModel(direction);
 					if (!result) return undefined;
 					const model = session.modelRegistry.find(result.model.provider, result.model.id) ?? result.model;
 					session.agent.state.model = model;
 					session.agent.state.thinkingLevel = result.thinkingLevel;
+					this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);
 					return { ...result, model };
 				},
 			},
@@ -374,6 +388,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	private async abortAndRecover(): Promise<void> {
 		if (this.restartPromise) return this.restartPromise;
+		await this.queuePause.settleBeforeAbort();
 		const cooperativeAbort = this.client.abort().then(() => true, () => false);
 		if (await Promise.race([cooperativeAbort, sleep(250).then(() => false)])) {
 			this.engineCallbackActive = false;
