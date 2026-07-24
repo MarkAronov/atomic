@@ -5,6 +5,8 @@ import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-for
 import {
 	admitProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessage,
+	queueProtectedStreamingCustomMessages,
+	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 
 /** Commit one delivery whose source generation already granted admission. */
@@ -24,10 +26,11 @@ export async function commitAdmittedCustomMessage<T>(
 	} else if (self._queuedMessagesPaused) {
 		if (options?.triggerTurn === true) {
 			const delivery = options.deliverAs === "followUp" ? "followUp" : "steer";
-			const heldMessage = useProtectedReconciliation
-				? await admitProtectedStreamingCustomMessage(self, appMessage, delivery)
-				: appMessage;
-			self._queueAgentMessage(heldMessage, delivery);
+			if (useProtectedReconciliation) {
+				await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
+			} else {
+				self._queueAgentMessage(appMessage, delivery);
+			}
 		} else {
 			self._appendCustomMessage(appMessage);
 		}
@@ -89,23 +92,37 @@ export async function commitAdmittedCustomMessages<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
+	const useProtectedReconciliation = options?.persistWhenStreaming === true &&
+		options.triggerTurn === true &&
+		options.excludeFromContext !== true;
+	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(...appMessages);
 	} else if (self._queuedMessagesPaused) {
 		if (options?.triggerTurn === true) {
-			const delivery = options.deliverAs === "followUp" ? "followUp" : "steer";
-			for (const item of appMessages) self._queueAgentMessage(item, delivery);
+			if (useProtectedReconciliation) {
+				await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
+			} else {
+				for (const item of appMessages) self._queueAgentMessage(item, delivery);
+			}
 		} else {
 			for (const item of appMessages) self._appendCustomMessage(item);
 		}
 	} else if (self.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
 		for (const item of appMessages) self._appendCustomMessage(item);
+	} else if (self.isStreaming && useProtectedReconciliation) {
+		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
+	} else if (self.isStreaming && options?.persistWhenStreaming === true) {
+		for (const item of appMessages) self._appendCustomMessage(item);
 	} else if (self.isStreaming) {
-		const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
 		for (const item of appMessages) self._queueAgentMessage(item, delivery);
 	} else if (options?.triggerTurn) {
-		const turn = self._runAgentPrompt(appMessages);
-		void turn.catch(() => {});
+		if (useProtectedReconciliation) {
+			await triggerProtectedStreamingCustomMessages(self, appMessages, delivery);
+		} else {
+			const turn = self._runAgentPrompt(appMessages);
+			void turn.catch(() => {});
+		}
 	} else {
 		for (const item of appMessages) self._appendCustomMessage(item);
 	}

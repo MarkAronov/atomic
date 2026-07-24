@@ -30,17 +30,22 @@ function runtimeFor(harness: Harness): AgentSessionRuntime {
 	);
 }
 
-async function queueProtectedHold(harness: Harness): Promise<void> {
+async function queueProtectedBatchHold(harness: Harness): Promise<void> {
 	harness.session.pauseQueuedMessages();
-	await harness.session.sendCustomMessage(
+	await harness.session.sendCustomMessages([
 		{
 			customType: "paused-shutdown-protected-card",
-			content: [{ type: "text", text: "persist without a provider turn" }],
+			content: [{ type: "text", text: "persist first without a provider turn" }],
 			display: true,
 			details: { retained: true },
 		},
-		{ triggerTurn: true, persistWhenStreaming: true },
-	);
+		{
+			customType: "paused-shutdown-protected-card",
+			content: [{ type: "text", text: "persist second without a provider turn" }],
+			display: true,
+			details: { retained: true },
+		},
+	], { triggerTurn: true, persistWhenStreaming: true });
 }
 
 function hiddenEntries(harness: Harness) {
@@ -60,23 +65,23 @@ describe("paused protected reconciliation shutdown", () => {
 	test("AgentSessionRuntime.dispose persists a held protected reconciliation without starting a turn", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		await queueProtectedHold(harness);
+		await queueProtectedBatchHold(harness);
 		const responsesBeforeDispose = harness.getPendingResponseCount();
 
 		await expect(runtimeFor(harness).dispose()).resolves.toBeUndefined();
 
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeDispose);
-		expect(hiddenEntries(harness)).toHaveLength(1);
-		expect(hiddenEntries(harness)[0]).toMatchObject({
-			display: false,
-			content: [{ type: "text", text: "persist without a provider turn" }],
-		});
+		expect(hiddenEntries(harness)).toHaveLength(2);
+		expect(hiddenEntries(harness).map((entry) => entry.type === "custom_message" ? entry.content : undefined)).toEqual([
+			[{ type: "text", text: "persist first without a provider turn" }],
+			[{ type: "text", text: "persist second without a provider turn" }],
+		]);
 	});
 
 	test("InteractiveMode shutdown completes with a paused protected hold", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		await queueProtectedHold(harness);
+		await queueProtectedBatchHold(harness);
 		const events: string[] = [];
 		const exit = new Error("test process exit");
 		vi.spyOn(process, "exit").mockImplementation((() => { throw exit; }) as typeof process.exit);
@@ -93,7 +98,7 @@ describe("paused protected reconciliation shutdown", () => {
 
 		expect(context.isShuttingDown).toBe(true);
 		expect(events).toEqual(["theme", "drain", "stop"]);
-		expect(hiddenEntries(harness)).toHaveLength(1);
+		expect(hiddenEntries(harness)).toHaveLength(2);
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 });

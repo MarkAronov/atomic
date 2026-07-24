@@ -443,31 +443,43 @@ describe("paused queue stage-session transfer", () => {
 		expect(targetInternal._activeInterruptQueueHold?.followUp).toContain(targetInternal._protectedStreamingCustomMessages[0]?.message);
 	});
 
-	test("paused disposal persists transferred protected ownership in source-first order", async () => {
+	test("idle batch transfer queues every protected reconciliation on the paused target", async () => {
 		const source = await createHarness();
 		const target = await createHarness({ sessionManager: source.sessionManager });
 		harnesses.push(source, target);
-		source.session.pauseQueuedMessages();
 		target.session.pauseQueuedMessages();
-		await source.session.sendCustomMessage(
-			{ customType: "source-protected-card", content: "source protected payload", display: true },
-			{ triggerTurn: true, deliverAs: "followUp", persistWhenStreaming: true },
-		);
+		const sourceInternal = source.session as TransferSession;
+		const targetInternal = target.session as TransferSession;
+		let transferred = false;
+		const unsubscribe = source.session.subscribe((event) => {
+			if (!transferred && event.type === "message_start" && event.message.role === "custom") {
+				transferred = true;
+				sourceInternal.transferWorkflowStageDeliveriesTo(target.session);
+			}
+		});
+		await source.session.sendCustomMessages([
+			{ customType: "source-protected-card", content: "source protected payload 1", display: true },
+			{ customType: "source-protected-card", content: "source protected payload 2", display: true },
+		], { triggerTurn: true, deliverAs: "followUp", persistWhenStreaming: true });
 		await target.session.sendCustomMessage(
 			{ customType: "target-protected-card", content: "target protected payload", display: true },
 			{ triggerTurn: true, deliverAs: "followUp", persistWhenStreaming: true },
 		);
-
-		(source.session as TransferSession).transferWorkflowStageDeliveriesTo(target.session);
+		unsubscribe();
+		expect(transferred).toBe(true);
+		expect(sourceInternal._protectedStreamingCustomMessages).toHaveLength(0);
+		expect(targetInternal._protectedStreamingCustomMessages).toHaveLength(3);
 		target.session.dispose();
 
 		const persistedOrder = target.sessionManager.getEntries()
 			.filter((entry) => entry.type === "custom_message")
 			.map((entry) => `${entry.customType}:${getMessageText(entry)}`);
 		expect(persistedOrder).toEqual([
-			"source-protected-card:source protected payload",
+			"source-protected-card:source protected payload 1",
+			"source-protected-card:source protected payload 2",
 			"target-protected-card:target protected payload",
-			`${PROTECTED_RECONCILIATION_CUSTOM_TYPE}:source protected payload`,
+			`${PROTECTED_RECONCILIATION_CUSTOM_TYPE}:source protected payload 1`,
+			`${PROTECTED_RECONCILIATION_CUSTOM_TYPE}:source protected payload 2`,
 			`${PROTECTED_RECONCILIATION_CUSTOM_TYPE}:target protected payload`,
 		]);
 	});

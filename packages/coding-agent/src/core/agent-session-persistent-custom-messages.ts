@@ -48,46 +48,101 @@ function emitDurableDisplayCard(session: AgentSession, card: CustomMessage): voi
 	} catch {}
 }
 
-/**
- * Persist the user-visible card, then create the hidden model-facing turn that
- * must wait for agent-core's protocol-safe steering/follow-up boundary.
- */
-export async function admitProtectedStreamingCustomMessage(
-	session: AgentSession,
-	message: CustomMessage,
-	delivery: ProtectedDelivery,
-): Promise<CustomMessage> {
-	// While the initiating workflow tool is still executing, its assistant call
-	// may be ahead of SessionManager's async event writer. Wait only in that
-	// protocol-sensitive phase; at ordinary turn boundaries the hidden steer must
-	// be queued synchronously so agent-core's next native poll observes it.
-	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
-	session = resolveWorkflowStageDeliveryTarget(session);
-	const card = appendDurableDisplayCard(session, message);
-	const reconciliation = {
-		role: "custom" as const,
+function createProtectedReconciliation(message: CustomMessage): CustomMessage {
+	return {
+		role: "custom",
 		customType: PROTECTED_RECONCILIATION_CUSTOM_TYPE,
 		content: message.content,
 		display: false,
 		details: undefined,
 		timestamp: message.timestamp,
-	} satisfies CustomMessage;
-	// Register protection before notifying public card listeners. A reentrant
-	// teardown must see this queued reconciliation and fail closed rather than
-	// disconnecting the only session that can consume it.
-	protectedMessages(session).push({ message: reconciliation, delivery, phase: "queued" });
-	emitDurableDisplayCard(session, card);
-	return reconciliation;
+	};
 }
 
-/** Queue a protected model-facing reconciliation after its card is durable. */
+interface ProtectedAdmission {
+	owner: AgentSession;
+	cards: CustomMessage[];
+	reconciliations: CustomMessage[];
+}
+
+async function prepareProtectedAdmission(
+	session: AgentSession,
+	messages: CustomMessage[],
+	delivery: ProtectedDelivery,
+): Promise<ProtectedAdmission> {
+	// While the initiating workflow tool is still executing, its assistant call
+	// may be ahead of SessionManager's async event writer. Wait only in that
+	// protocol-sensitive phase; at ordinary turn boundaries the hidden steer must
+	// be queued synchronously so agent-core's next native poll observes it.
+	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
+	const owner = resolveWorkflowStageDeliveryTarget(session);
+	const cards = messages.map((message) => appendDurableDisplayCard(owner, message));
+	const reconciliations = messages.map(createProtectedReconciliation);
+	protectedMessages(owner).push(...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })));
+	return { owner, cards, reconciliations };
+}
+
+function emitProtectedAdmission(admission: ProtectedAdmission): AgentSession {
+	let owner = admission.owner;
+	for (const card of admission.cards) {
+		owner = resolveWorkflowStageDeliveryTarget(owner);
+		emitDurableDisplayCard(owner, card);
+	}
+	return resolveWorkflowStageDeliveryTarget(owner);
+}
+
+/** Persist one visible card and register its hidden model-facing turn. */
+export async function admitProtectedStreamingCustomMessage(
+	session: AgentSession,
+	message: CustomMessage,
+	delivery: ProtectedDelivery,
+): Promise<CustomMessage> {
+	const admission = await prepareProtectedAdmission(session, [message], delivery);
+	emitProtectedAdmission(admission);
+	return admission.reconciliations[0]!;
+}
+
+/** Queue one hidden turn before public listeners can transfer its ownership. */
 export async function queueProtectedStreamingCustomMessage(
 	session: AgentSession,
 	message: CustomMessage,
 	delivery: ProtectedDelivery,
 ): Promise<void> {
-	const reconciliation = await admitProtectedStreamingCustomMessage(session, message, delivery);
-	session._queueAgentMessage(reconciliation, delivery);
+	const admission = await prepareProtectedAdmission(session, [message], delivery);
+	admission.owner._queueAgentMessage(admission.reconciliations[0]!, delivery);
+	emitProtectedAdmission(admission);
+}
+
+/** Queue a whole hidden batch before public listeners can transfer ownership. */
+export async function queueProtectedStreamingCustomMessages(
+	session: AgentSession,
+	messages: CustomMessage[],
+	delivery: ProtectedDelivery,
+): Promise<void> {
+	const admission = await prepareProtectedAdmission(session, messages, delivery);
+	for (const reconciliation of admission.reconciliations) {
+		admission.owner._queueAgentMessage(reconciliation, delivery);
+	}
+	emitProtectedAdmission(admission);
+}
+
+/** Start or queue an idle protected batch before exposing its display cards. */
+export async function triggerProtectedStreamingCustomMessages(
+	session: AgentSession,
+	messages: CustomMessage[],
+	delivery: ProtectedDelivery,
+): Promise<void> {
+	const admission = await prepareProtectedAdmission(session, messages, delivery);
+	for (const reconciliation of admission.reconciliations) {
+		admission.owner._queueAgentMessage(reconciliation, delivery);
+	}
+	const owner = emitProtectedAdmission(admission);
+	if (owner.isStreaming || owner._queuedMessagesPaused) return;
+	for (const reconciliation of admission.reconciliations) {
+		removeQueuedProtectedReference(owner, reconciliation);
+	}
+	const turn = owner._runAgentPrompt(admission.reconciliations);
+	void turn.catch(() => {});
 }
 
 /** Record that agent-core drained and consumed the hidden reconciliation. */

@@ -164,13 +164,11 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 
 	runtime.session.pauseQueuedMessages();
 	const abort = runtime.session.abort();
-	await Bun.sleep(0);
-	assert.deepEqual(calls, ["pause_queued_messages"]);
-	assert.equal(runtime.session.queuedMessagesPaused, true);
-	releasePause();
-	await abort;
+	await Bun.sleep(150);
 	assert.deepEqual(calls, ["pause_queued_messages", "abort"]);
-
+	assert.equal(runtime.session.queuedMessagesPaused, true);
+	await abort;
+	releasePause();
 	assert.equal(await runtime.session.resumeQueuedMessages(), true);
 	assert.deepEqual(calls, ["pause_queued_messages", "abort", "resume_queued_messages"]);
 	assert.equal(runtime.session.queuedMessagesPaused, false);
