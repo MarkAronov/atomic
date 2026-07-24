@@ -100,8 +100,9 @@ describe("executor.run", () => {
         assert.match(wfResult.error ?? "", /invalid inputs/);
         assert.deepEqual(seenPrompts, []);
         assert.equal(st.runs().length, 1);
-        assert.equal(wfResult.stages[0]?.name, "workflow:input-child");
-        assert.equal(wfResult.stages[0]?.status, "failed");
+        // Input validation precedes durable invocation fingerprinting, so no
+        // boundary or child artifact exists for an invalid call.
+        assert.deepEqual(wfResult.stages, []);
     });
     test("ctx.chain follows direct workflow previous defaults", async () => {
         const seenPrompts: string[] = [];

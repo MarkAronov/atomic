@@ -93,7 +93,9 @@ executorTest("fully cached repeated child replay reconciles each durable boundar
   const root = replayStore.runs().find((run) => run.id === rootId)!;
   const boundaries = root.stages.filter((stage) => stage.name.endsWith("-boundary"));
   assert.deepEqual(boundaries.map((stage) => stage.name), ["first-boundary", "second-boundary"]);
-  assert.equal(boundaries.every((stage) => stage.id.startsWith("durable-")), true);
+  const catalogBoundaries = catalogRuns.find((run) => run.id === rootId)!.stages
+    .filter((stage) => stage.name.endsWith("-boundary"));
+  assert.deepEqual(boundaries.map((stage) => stage.id), catalogBoundaries.map((stage) => stage.id));
   const childIds = boundaries.map((stage) => stage.workflowChild?.runId);
   assert.equal(childIds.every((id): id is string => typeof id === "string"), true);
   assert.notEqual(childIds[0], childIds[1]);

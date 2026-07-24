@@ -14,10 +14,45 @@ import type { DurableUiCheckpoint, UiPromptKind } from "./types.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, reserveDurablePrompt, type PromptReservationToken } from "./prompt-reservations.js";
 
+export type DurableUiReplayRequest =
+  | {
+      readonly kind: "input";
+      readonly promptText: string;
+      readonly response: string;
+      readonly callerStack: string | undefined;
+    }
+  | {
+      readonly kind: "confirm";
+      readonly message: string;
+      readonly response: boolean;
+      readonly callerStack: string | undefined;
+    }
+  | {
+      readonly kind: "select";
+      readonly message: string;
+      readonly options: readonly string[];
+      readonly response: string;
+      readonly callerStack: string | undefined;
+    }
+  | {
+      readonly kind: "editor";
+      readonly initial: string | undefined;
+      readonly response: string;
+      readonly callerStack: string | undefined;
+    }
+  | {
+      readonly kind: "custom";
+      readonly factory: WorkflowCustomUiFactory<WorkflowSerializableValue>;
+      readonly options: WorkflowCustomUiOptions | undefined;
+      readonly response: WorkflowSerializableValue | undefined;
+      readonly callerStack: string | undefined;
+    };
+
 export interface DurableUiDeps {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
   readonly nextCheckpointId: () => string;
+  readonly onReplay?: (request: DurableUiReplayRequest) => Promise<void>;
 }
 
 export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps): WorkflowUIContext {
@@ -104,6 +139,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const identity = nextIdentity("input", promptText, callerStack);
       const hit = cached(identity);
       if (typeof hit === "string") {
+        await deps.onReplay?.({ kind: "input", promptText, response: hit, callerStack });
         await releaseCached(identity);
         return hit;
       }
@@ -120,6 +156,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const identity = nextIdentity("confirm", message, callerStack);
       const hit = cached(identity);
       if (typeof hit === "boolean") {
+        await deps.onReplay?.({ kind: "confirm", message, response: hit, callerStack });
         await releaseCached(identity);
         return hit;
       }
@@ -136,6 +173,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const identity = nextIdentity("select", message, callerStack, [...options]);
       const hit = cached(identity);
       if (typeof hit === "string") {
+        await deps.onReplay?.({ kind: "select", message, options, response: hit, callerStack });
         await releaseCached(identity);
         return hit as T;
       }
@@ -152,6 +190,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const identity = nextIdentity("editor", initial ?? "", callerStack, initial ?? null);
       const hit = cached(identity);
       if (typeof hit === "string") {
+        await deps.onReplay?.({ kind: "editor", initial, response: hit, callerStack });
         await releaseCached(identity);
         return hit;
       }
@@ -169,6 +208,13 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const identity = nextIdentity("custom", replayIdentity, callerStack, { replayIdentity });
       const hit = cachedCustom(identity);
       if (hit.found) {
+        await deps.onReplay?.({
+          kind: "custom",
+          factory: factory as WorkflowCustomUiFactory<WorkflowSerializableValue>,
+          options,
+          response: hit.response,
+          callerStack,
+        });
         await releaseCached(identity);
         return hit.response as T;
       }

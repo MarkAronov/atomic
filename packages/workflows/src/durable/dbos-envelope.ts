@@ -13,15 +13,18 @@
 
 import type { WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
 import {
+  DURABLE_BOUNDARY_TOPOLOGY_VERSION,
   DURABLE_STAGE_TOPOLOGY_VERSION,
   DURABLE_TOOL_TOPOLOGY_VERSION,
   type DurableCheckpoint,
   type DurableCheckpointKind,
   type DurableStageCheckpoint,
+  type DurableStageLifecycleStatus,
   type DurableStageTopology,
   type DurableToolCheckpoint,
   type DurableToolTopology,
   type DurableUiCheckpoint,
+  type DurableWorkflowBoundaryTopology,
   type UiPromptKind,
 } from "./types.js";
 import { isCurrentDurableFormat, DURABLE_FORMAT_VERSION } from "./format-version.js";
@@ -119,8 +122,15 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
       version: s.topology.version,
       stageId: s.topology.stageId,
       parentIds: [...s.topology.parentIds],
+      ...(s.topology.sourceOrder !== undefined ? { sourceOrder: s.topology.sourceOrder } : {}),
+      ...(s.topology.occurrenceKey !== undefined ? { occurrenceKey: s.topology.occurrenceKey } : {}),
+      ...(s.topology.status !== undefined ? { status: s.topology.status } : {}),
       ...(s.topology.order !== undefined ? { order: s.topology.order } : {}),
       ...(s.topology.run !== undefined ? { run: { ...s.topology.run } } : {}),
+      ...(s.topology.boundary !== undefined ? { boundary: {
+        ...s.topology.boundary,
+        child: { ...s.topology.boundary.child },
+      } } : {}),
     } } : {}),
     ...(s.sessionId !== undefined ? { sessionId: s.sessionId } : {}),
     ...(s.sessionFile !== undefined ? { sessionFile: s.sessionFile } : {}),
@@ -270,16 +280,76 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, WorkflowSerializableValue>;
   if (record["version"] !== DURABLE_STAGE_TOPOLOGY_VERSION
-    || typeof record["stageId"] !== "string" || !isStringArray(record["parentIds"])) return undefined;
+    || typeof record["stageId"] !== "string" || !isStringArray(record["parentIds"])
+    || !isOptionalSourceOrder(record["sourceOrder"])
+    || (record["occurrenceKey"] !== undefined && typeof record["occurrenceKey"] !== "string")
+    || (record["status"] !== undefined && !isStageLifecycleStatus(record["status"]))) return undefined;
   const run = stageRunTopology(record["run"]);
   if (record["run"] !== undefined && run === undefined) return undefined;
+  const boundary = boundaryTopology(record["boundary"]);
+  if (record["boundary"] !== undefined && boundary === undefined) return undefined;
   return {
     version: DURABLE_STAGE_TOPOLOGY_VERSION,
     stageId: record["stageId"],
     parentIds: record["parentIds"],
+    ...(typeof record["sourceOrder"] === "number" ? { sourceOrder: record["sourceOrder"] } : {}),
+    ...(typeof record["occurrenceKey"] === "string" ? { occurrenceKey: record["occurrenceKey"] } : {}),
+    ...(isStageLifecycleStatus(record["status"]) ? { status: record["status"] } : {}),
     ...(typeof record["order"] === "number" && Number.isInteger(record["order"]) ? { order: record["order"] } : {}),
     ...(run !== undefined ? { run } : {}),
+    ...(boundary !== undefined ? { boundary } : {}),
   };
+}
+
+function boundaryTopology(value: WorkflowSerializableValue | undefined): DurableWorkflowBoundaryTopology | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const boundary = value as Record<string, WorkflowSerializableValue>;
+  const childValue = boundary["child"];
+  const event = boundary["event"];
+  const status = boundary["status"];
+  const invocationFingerprint = boundary["invocationFingerprint"];
+  if (boundary["version"] !== DURABLE_BOUNDARY_TOPOLOGY_VERSION
+    || (event !== "start" && event !== "terminal")
+    || (event === "start" ? status !== "running"
+      : status !== "completed" && status !== "failed" && status !== "skipped")
+    || typeof boundary["replayScope"] !== "string"
+    || typeof boundary["alias"] !== "string"
+    || typeof boundary["workflow"] !== "string"
+    || (invocationFingerprint !== undefined && typeof invocationFingerprint !== "string")
+    || typeof childValue !== "object" || childValue === null || Array.isArray(childValue)) return undefined;
+  const child = childValue as Record<string, WorkflowSerializableValue>;
+  if (!["runId", "runName", "parentRunId", "parentStageId", "rootRunId"]
+    .every((key) => typeof child[key] === "string")) return undefined;
+  const identity = {
+    version: DURABLE_BOUNDARY_TOPOLOGY_VERSION,
+    replayScope: boundary["replayScope"] as string,
+    alias: boundary["alias"] as string,
+    workflow: boundary["workflow"] as string,
+    ...(typeof invocationFingerprint === "string" ? { invocationFingerprint } : {}),
+    child: {
+      runId: child["runId"] as string,
+      runName: child["runName"] as string,
+      parentRunId: child["parentRunId"] as string,
+      parentStageId: child["parentStageId"] as string,
+      rootRunId: child["rootRunId"] as string,
+    },
+  };
+  if (event === "start") return { ...identity, event, status: "running" };
+  return {
+    ...identity,
+    event,
+    status: status as Extract<DurableStageLifecycleStatus, "completed" | "failed" | "skipped">,
+  };
+}
+
+function isOptionalSourceOrder(value: WorkflowSerializableValue | undefined): boolean {
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && value >= 0);
+}
+
+function isStageLifecycleStatus(value: WorkflowSerializableValue | undefined): value is DurableStageLifecycleStatus {
+  return value === "pending" || value === "running" || value === "awaiting_input"
+    || value === "paused" || value === "blocked" || value === "completed"
+    || value === "failed" || value === "skipped";
 }
 
 function stageRunTopology(value: WorkflowSerializableValue | undefined): NonNullable<DurableStageTopology["run"]> | undefined {

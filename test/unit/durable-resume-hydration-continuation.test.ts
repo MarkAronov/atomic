@@ -165,12 +165,13 @@ exTest("fresh-store cached child replay restores nested parallel hierarchy", asy
   assert.equal(persistedRoot.find((stage) => stage.name === "after")?.parents.length, 1);
 
   const store = createStore();
-  assert.equal((await run(parent, {}, {
+  const replayed = await run(parent, {}, {
     runId,
     store,
     durableBackend: backend,
     adapters: { prompt: { prompt: async () => { throw new Error("cached work should not rerun"); } } },
-  })).status, "completed");
+  });
+  assert.equal(replayed.status, "completed", replayed.error);
   const resumedRoot = store.runs().find((candidate) => candidate.id === runId)!;
   const resumedBoundary = resumedRoot.stages.find((stage) => stage.name === "workflow:parallel-child")!;
   const persistedBoundary = persistedRoot.find((stage) => stage.name === "workflow:parallel-child")!;
@@ -221,7 +222,8 @@ exTest("mixed cached and live child resume remains inspectable after completion"
   } } };
   assert.equal((await run(parent, {}, { runId, store: createStore(), durableBackend: backend, adapters })).status, "failed");
   failSecond = false;
-  assert.equal((await run(parent, {}, { runId, store: createStore(), durableBackend: backend, adapters })).status, "completed");
+  const resumed = await run(parent, {}, { runId, store: createStore(), durableBackend: backend, adapters });
+  assert.equal(resumed.status, "completed", resumed.error);
 
   const entry = listCompletedFromBackend(backend).find((candidate) => candidate.workflowId === runId)!;
   const snapshots = completedWorkflowRunSnapshots(backend, entry);
@@ -242,6 +244,33 @@ exTest("mixed cached and live repeated child calls keep boundary replay keys in 
     output: { workflow: "mixed-child", runId: "cached-child", status: "completed", exited: false, outputs: { value: "cached" } },
     completedAt: 10,
     result: "completed",
+    topology: {
+      version: 1,
+      stageId: "cached-boundary",
+      parentIds: [],
+      run: { runId: "wf-mixed-child", runName: "mixed-parent" },
+    },
+  });
+  backend.recordCheckpoint({
+    kind: "stage",
+    workflowId: "wf-mixed-child",
+    checkpointId: "workflow:workflow:mixed-child:1:stage:legacy-child",
+    name: "legacy-child-stage",
+    replayKey: "workflow:workflow:mixed-child:1:stage:legacy-child:1",
+    output: "cached",
+    completedAt: 9,
+    topology: {
+      version: 1,
+      stageId: "legacy-child-stage",
+      parentIds: [],
+      run: {
+        runId: "cached-child",
+        runName: "mixed-child",
+        parentRunId: "wf-mixed-child",
+        parentStageId: "cached-boundary",
+        rootRunId: "wf-mixed-child",
+      },
+    },
   });
   let childRuns = 0;
   const child = workflow({
@@ -274,6 +303,9 @@ exTest("mixed cached and live repeated child calls keep boundary replay keys in 
   assert.deepEqual(result.result, { first: "cached", second: "live-1" });
   assert.equal(childRuns, 1);
   const boundaries = store.runs()[0]?.stages.filter((item) => item.name === "workflow:mixed-child") ?? [];
-  assert.deepEqual(boundaries.map((item) => item.replayKey), ["workflow:workflow:mixed-child:1", "workflow:workflow:mixed-child:2"]);
-  assert.equal(backend.getStageOutput("wf-mixed-child", "workflow:workflow:mixed-child:2") !== undefined, true);
+  assert.equal(boundaries[0]?.replayKey, "workflow:workflow:mixed-child:1");
+  const liveReplayKey = boundaries[1]?.replayKey;
+  assert.ok(liveReplayKey);
+  assert.match(liveReplayKey, /^workflow:workflow:mixed-child:h[0-9a-f]{32}:2$/);
+  assert.equal(backend.getStageOutput("wf-mixed-child", liveReplayKey) !== undefined, true);
 });

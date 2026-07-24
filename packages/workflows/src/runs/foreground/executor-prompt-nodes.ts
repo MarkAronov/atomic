@@ -11,6 +11,9 @@ import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 import { getPromptAnswerState, sameStringSet } from "./executor-continuation.js";
 import { applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
+import { withPromptCallerStack } from "../../shared/prompt-callsite-context.js";
+import type { DurableUiReplayRequest } from "../../durable/ui-primitive.js";
+import type { DurableStageTopology } from "../../durable/types.js";
 import {
   customPromptDescriptor,
   fallbackForPromptDescriptor,
@@ -21,6 +24,10 @@ import {
   promptReplayKey,
   type PromptDescriptor,
 } from "./executor-hil.js";
+
+export interface PromptNodeUiAdapter extends WorkflowUIContext {
+  replayDurable(request: DurableUiReplayRequest): Promise<void>;
+}
 
 export function buildPromptNodeUiAdapter(input: {
   readonly runId: string;
@@ -35,8 +42,14 @@ export function buildPromptNodeUiAdapter(input: {
   readonly workflowExitSkippedReason: (reason?: string) => string;
   readonly preserveWorkflowExitSkippedReason: (stage: StageSnapshot, fallback: string) => void;
   readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
-}): WorkflowUIContext {
-  const ask = async <T>(descriptor: PromptDescriptor<T>): Promise<unknown> => {
+  readonly durableTopologyForReplayKey?: (replayKey: string) => DurableStageTopology | undefined;
+  /** Durably publish an unanswered prompt node before exposing its live wait. */
+  readonly onPendingStage?: (runId: string, snapshot: StageSnapshot) => Promise<void>;
+}): PromptNodeUiAdapter {
+  const ask = async <T>(
+    descriptor: PromptDescriptor<T>,
+    durableReplay?: DurableUiReplayRequest,
+  ): Promise<unknown> => {
     input.throwIfWorkflowExitSelected();
     const isCustom = isCustomPromptDescriptor(descriptor);
     if (input.signal.aborted) {
@@ -46,9 +59,10 @@ export function buildPromptNodeUiAdapter(input: {
     if (isCustom && descriptor.options?.signal?.aborted) throw hilAbortError(descriptor.options.signal);
 
     const prompt = makePrompt(descriptor);
-    const stageId = crypto.randomUUID();
-    const provisionalParentIds = input.tracker.onSpawn(stageId, descriptor.kind);
     const replayKey = promptReplayKey(descriptor);
+    const durableTopology = input.durableTopologyForReplayKey?.(replayKey);
+    const stageId = durableTopology?.stageId ?? crypto.randomUUID();
+    const provisionalParentIds = input.tracker.onSpawn(stageId, descriptor.kind);
     const replayDecision = input.replayIndex.decide({
       displayName: descriptor.kind,
       replayKey,
@@ -56,16 +70,21 @@ export function buildPromptNodeUiAdapter(input: {
       stageId,
       kind: "prompt",
     });
-    const parentIds = replayDecision.parentIds;
+    const parentIds = durableTopology?.parentIds ?? replayDecision.parentIds;
     if (!sameStringSet(parentIds, provisionalParentIds)) input.tracker.replaceParents(stageId, parentIds);
     const replaySource = replayDecision.source;
-    const replayAnswer = replayDecision.kind === "replay"
+    const continuationAnswer = replayDecision.kind === "replay"
       ? input.activeStore.getStagePromptAnswer(input.opts.continuation!.source.id, replayDecision.source.id)
       : undefined;
+    const replayAnswer = durableReplay === undefined
+      ? continuationAnswer
+      : { value: durableReplay.response };
     const shouldReplay = replayAnswer !== undefined;
-    if (shouldReplay) input.replayIndex.markPromptAnswerReplayed(stageId);
+    if (shouldReplay && durableReplay === undefined) input.replayIndex.markPromptAnswerReplayed(stageId);
     const replaySourceId = replaySource?.id;
-    const promptAnswerStatus = getPromptAnswerState(shouldReplay, replaySourceId, replayDecision.answerReplay);
+    const promptAnswerStatus = durableReplay === undefined
+      ? getPromptAnswerState(shouldReplay, replaySourceId, replayDecision.answerReplay)
+      : "available";
     const stageSnapshot: StageSnapshot = {
       id: stageId,
       name: descriptor.kind,
@@ -89,44 +108,48 @@ export function buildPromptNodeUiAdapter(input: {
       } : {}),
     };
     let finalized = false;
+    let finalization: Promise<void> | undefined;
     let unregisterWorkflowExitCleanup = (): void => {};
     let unregisterStageControl = (): void => {};
     let pauseGate: PromiseWithResolvers<void> | undefined;
     const waitForExplicitResume = async (): Promise<void> => {
       if (pauseGate !== undefined) await pauseGate.promise;
     };
-    const finalizePromptStage = (status: "completed" | "failed" | "skipped"): void => {
-      if (finalized) return;
-      finalized = true;
-      unregisterWorkflowExitCleanup();
-      unregisterStageControl();
-      const currentPauseGate = pauseGate;
-      pauseGate = undefined;
-      currentPauseGate?.resolve();
-      stageSnapshot.status = status;
-      stageSnapshot.endedAt = Date.now();
-      stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
-      input.activeStore.recordStageAttachable(input.runId, stageId, false);
-      input.activeStore.recordStageEnd(input.runId, stageSnapshot);
-      input.opts.onStageEnd?.(input.runId, stageSnapshot);
-      if (input.opts.persistence) {
-        appendStageEnd(input.opts.persistence, {
-          runId: input.runId,
-          stageId,
-          status: stageSnapshot.status,
-          durationMs: stageSnapshot.durationMs,
-          ...(stageSnapshot.error !== undefined ? { error: stageSnapshot.error } : {}),
-          ...(stageSnapshot.failureKind !== undefined ? { failureKind: stageSnapshot.failureKind } : {}),
-          ...(stageSnapshot.failureCode !== undefined ? { failureCode: stageSnapshot.failureCode } : {}),
-          ...(stageSnapshot.failureRecoverability !== undefined ? { failureRecoverability: stageSnapshot.failureRecoverability } : {}),
-          ...(stageSnapshot.failureDisposition !== undefined ? { failureDisposition: stageSnapshot.failureDisposition } : {}),
-          ...(stageSnapshot.failureMessage !== undefined ? { failureMessage: stageSnapshot.failureMessage } : {}),
-          ...(stageSnapshot.retryAfterMs !== undefined ? { retryAfterMs: stageSnapshot.retryAfterMs } : {}),
-          ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
-          ...stageReplayFields(stageSnapshot),
-        });
-      }
-      input.tracker.onSettle(stageId);
+    const finalizePromptStage = async (status: "completed" | "failed" | "skipped"): Promise<void> => {
+      if (finalization !== undefined) return finalization;
+      finalization = (async (): Promise<void> => {
+        finalized = true;
+        unregisterWorkflowExitCleanup();
+        unregisterStageControl();
+        const currentPauseGate = pauseGate;
+        pauseGate = undefined;
+        currentPauseGate?.resolve();
+        stageSnapshot.status = status;
+        stageSnapshot.endedAt = Date.now();
+        stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
+        input.activeStore.recordStageAttachable(input.runId, stageId, false);
+        input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+        await input.opts.onStageEnd?.(input.runId, stageSnapshot);
+        if (input.opts.persistence) {
+          appendStageEnd(input.opts.persistence, {
+            runId: input.runId,
+            stageId,
+            status: stageSnapshot.status,
+            durationMs: stageSnapshot.durationMs,
+            ...(stageSnapshot.error !== undefined ? { error: stageSnapshot.error } : {}),
+            ...(stageSnapshot.failureKind !== undefined ? { failureKind: stageSnapshot.failureKind } : {}),
+            ...(stageSnapshot.failureCode !== undefined ? { failureCode: stageSnapshot.failureCode } : {}),
+            ...(stageSnapshot.failureRecoverability !== undefined ? { failureRecoverability: stageSnapshot.failureRecoverability } : {}),
+            ...(stageSnapshot.failureDisposition !== undefined ? { failureDisposition: stageSnapshot.failureDisposition } : {}),
+            ...(stageSnapshot.failureMessage !== undefined ? { failureMessage: stageSnapshot.failureMessage } : {}),
+            ...(stageSnapshot.retryAfterMs !== undefined ? { retryAfterMs: stageSnapshot.retryAfterMs } : {}),
+            ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
+            ...stageReplayFields(stageSnapshot),
+          });
+        }
+        input.tracker.onSettle(stageId);
+      })();
+      return finalization;
     };
 
     input.activeStore.recordStageStart(input.runId, stageSnapshot);
@@ -158,8 +181,11 @@ export function buildPromptNodeUiAdapter(input: {
       subscribe: () => () => {},
     });
     unregisterWorkflowExitCleanup = input.registerWorkflowExitCleanup(stageId, {
-      skipForWorkflowExit(reason?: string): void {
-        if (finalized) return;
+      async skipForWorkflowExit(reason?: string): Promise<void> {
+        if (finalized) {
+          await finalization;
+          return;
+        }
         stageSnapshot.skippedReason = input.workflowExitSkippedReason(reason);
         if (!shouldReplay) {
           stageUiBroker.cancelStagePrompt(
@@ -168,7 +194,7 @@ export function buildPromptNodeUiAdapter(input: {
             new Error(`atomic-workflows: prompt ${stageId} skipped by workflow exit`),
           );
         }
-        finalizePromptStage("skipped");
+        await finalizePromptStage("skipped");
       },
     });
     if (input.opts.persistence) {
@@ -184,15 +210,23 @@ export function buildPromptNodeUiAdapter(input: {
     if (shouldReplay) {
       await Promise.resolve();
       input.throwIfWorkflowExitSelected();
-      finalizePromptStage("completed");
+      await finalizePromptStage("completed");
       return replayAnswer.value;
+    }
+
+    try {
+      await input.onPendingStage?.(input.runId, stageSnapshot);
+    } catch (err) {
+      applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(err));
+      await finalizePromptStage("failed");
+      throw err;
     }
 
     if (isCustom) {
       if (descriptor.options?.overlay === true) {
         const error = new Error("atomic-workflows: ctx.ui.custom overlay mode is unavailable in the workflow graph viewer");
         applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(error));
-        finalizePromptStage("failed");
+        await finalizePromptStage("failed");
         throw error;
       }
 
@@ -203,7 +237,7 @@ export function buildPromptNodeUiAdapter(input: {
         if (!accepted) {
           const error = new Error("atomic-workflows: ctx.ui.custom prompt node is unavailable");
           stageSnapshot.skippedReason = "prompt-unavailable";
-          finalizePromptStage("skipped");
+          await finalizePromptStage("skipped");
           throw error;
         }
         const response = await stageUiBroker.requestCustomUi(
@@ -215,19 +249,19 @@ export function buildPromptNodeUiAdapter(input: {
         );
         await waitForExplicitResume();
         input.activeStore.recordStagePromptAnswer(input.runId, stageId, prompt, response, { answerSource: "workflow_ui" });
-        finalizePromptStage("completed");
+        await finalizePromptStage("completed");
         return response;
       } catch (err) {
         input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
         stageUiBroker.cancelStagePrompt(input.runId, stageId, err);
         if (mergedSignal.signal.aborted) {
           input.preserveWorkflowExitSkippedReason(stageSnapshot, input.signal.aborted ? "run-aborted" : "prompt-aborted");
-          finalizePromptStage("skipped");
+          await finalizePromptStage("skipped");
           throw hilAbortError(mergedSignal.signal);
         }
         if (!finalized) {
           applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(err));
-          finalizePromptStage("failed");
+          await finalizePromptStage("failed");
         }
         throw err;
       } finally {
@@ -238,7 +272,7 @@ export function buildPromptNodeUiAdapter(input: {
     const accepted = input.activeStore.recordStagePendingPrompt(input.runId, stageId, prompt);
     if (!accepted) {
       stageSnapshot.skippedReason = "prompt-unavailable";
-      finalizePromptStage("skipped");
+      await finalizePromptStage("skipped");
       return fallbackForPromptDescriptor(descriptor);
     }
 
@@ -272,21 +306,36 @@ export function buildPromptNodeUiAdapter(input: {
         );
       });
       await waitForExplicitResume();
-      finalizePromptStage("completed");
+      await finalizePromptStage("completed");
       return response;
     } catch (err) {
       if (input.signal.aborted) {
         input.preserveWorkflowExitSkippedReason(stageSnapshot, "run-aborted");
-        finalizePromptStage("skipped");
+        await finalizePromptStage("skipped");
       } else {
         applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(err));
-        finalizePromptStage("failed");
+        await finalizePromptStage("failed");
       }
       throw err;
     }
   };
 
   return {
+    async replayDurable(request: DurableUiReplayRequest): Promise<void> {
+      await withPromptCallerStack(request.callerStack, async () => {
+        if (request.kind === "input") {
+          await ask({ kind: "input", message: request.promptText }, request);
+        } else if (request.kind === "confirm") {
+          await ask({ kind: "confirm", message: request.message }, request);
+        } else if (request.kind === "select") {
+          await ask({ kind: "select", message: request.message, choices: request.options }, request);
+        } else if (request.kind === "editor") {
+          await ask({ kind: "editor", message: "Edit and save to continue.", initial: request.initial }, request);
+        } else {
+          await ask(customPromptDescriptor(request.factory, request.options), request);
+        }
+      });
+    },
     async input(promptText: string): Promise<string> {
       const response = await ask({ kind: "input", message: promptText });
       return typeof response === "string" ? response : String(response ?? "");

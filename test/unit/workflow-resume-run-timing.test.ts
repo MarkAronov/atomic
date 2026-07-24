@@ -165,6 +165,7 @@ describe("stage timing durability boundaries", () => {
       version: 1,
       stageId: "work-source",
       parentIds: ["plan-source"],
+      status: "paused",
       run: { runId: RUN_ID, runName: "timing" },
     });
   });

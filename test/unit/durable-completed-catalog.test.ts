@@ -48,7 +48,7 @@ describe("completed durable catalog", () => {
     assert.deepEqual(listCompletedFromBackend(backend).map((entry) => entry.workflowId), ["completed"]);
   });
 
-  test("filters stale completed rows and reconstructs authoritative stage detail", () => {
+  test("keeps completed graphs inspectable while stripping stale retained chat", () => {
     const backend = new InMemoryDurableBackend();
     const transcript = join(tempDir, "stage.jsonl");
     writeSessionTranscript(transcript, "valid-session");
@@ -75,15 +75,20 @@ describe("completed durable catalog", () => {
       completedAt: 20,
     });
 
-    assert.deepEqual(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId), ["valid-completed"]);
-    const snapshot = completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!);
+    assert.deepEqual(new Set(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId)), new Set([
+      "valid-completed", "stale-completed",
+    ]));
+    const entries = listCompletedFromBackend(backend);
+    const snapshot = completedWorkflowSnapshot(backend, entries.find((entry) => entry.workflowId === "valid-completed")!);
     assert.equal(snapshot?.status, "completed");
     assert.equal(snapshot?.stages[0]?.result, "finished");
     assert.equal(snapshot?.stages[0]?.model, "provider/model");
-    assert.equal(resolveCompletedWorkflow("stale", backend).kind, "stale");
+    const stale = completedWorkflowSnapshot(backend, entries.find((entry) => entry.workflowId === "stale-completed")!);
+    assert.equal(stale?.stages[0]?.sessionFile, undefined);
+    assert.equal(resolveCompletedWorkflow("stale", backend).kind, "found");
   });
 
-  test("keeps invalid stage transcripts stale while opening tool-only runs read-only", () => {
+  test("keeps completed graphs open without retained chat and opens tool-only runs read-only", () => {
     const backend = new InMemoryDurableBackend();
     const cases = [
       { id: "no-session", sessionFile: undefined },
@@ -116,15 +121,16 @@ describe("completed durable catalog", () => {
     registerCompleted(backend, "tool-only");
     backend.recordCheckpoint({ kind: "tool", workflowId: "tool-only", checkpointId: "tool:1", name: "read", argsHash: "hash", output: "ok", completedAt: 20 });
 
-    assert.deepEqual(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId), ["tool-only"]);
-    for (const item of cases) assert.equal(resolveCompletedWorkflow(item.id, backend).kind, "stale");
+    const ids = listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId);
+    assert.deepEqual(new Set(ids), new Set([...cases.map((item) => item.id), "tool-only"]));
+    for (const item of cases) assert.equal(resolveCompletedWorkflow(item.id, backend).kind, "found");
     const toolOnly = resolveCompletedWorkflow("tool-only", backend);
     assert.equal(toolOnly.kind, "found");
     if (toolOnly.kind === "found") {
       assert.equal(toolOnly.snapshot.stages.length, 0);
-      assert.deepEqual(toolOnly.snapshot.toolNodes?.map((node) => ({ name: node.name, status: node.status, attachable: node.attachable })), [
-        { name: "read", status: "cached", attachable: false },
-      ]);
+      assert.deepEqual(toolOnly.snapshot.toolNodes?.map((node) => ({
+        name: node.name, status: node.status, attachable: node.attachable,
+      })), [{ name: "read", status: "cached", attachable: false }]);
     }
   });
 
@@ -136,10 +142,12 @@ describe("completed durable catalog", () => {
     backend.recordCheckpoint({
       kind: "stage", workflowId: "merged-stage", checkpointId: "stage:1", name: "final",
       replayKey: "stage:final:1", sessionFile: join(tempDir, "obsolete-missing.jsonl"), completedAt: 20,
+      topology: { version: 1, stageId: "final-source", parentIds: [], sourceOrder: 0, status: "completed" },
     });
     backend.recordCheckpoint({
       kind: "stage", workflowId: "merged-stage", checkpointId: "stage:2", name: "final",
       replayKey: "stage:final:1", sessionFile: validTranscript, output: "done", completedAt: 30,
+      topology: { version: 1, stageId: "final-source", parentIds: [], sourceOrder: 0, status: "completed" },
     });
 
     assert.deepEqual(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId), ["merged-stage"]);
@@ -166,7 +174,7 @@ describe("completed durable catalog", () => {
     assert.equal(snapshot?.stages[1]?.sessionFile, undefined);
   });
 
-  test("rejects partially malformed and context-empty transcripts", () => {
+  test("strips partially malformed and context-empty transcripts without hiding the graph", () => {
     const backend = new InMemoryDurableBackend();
     const malformed = join(tempDir, "partially-malformed.jsonl");
     writeFileSync(malformed, [
@@ -199,7 +207,11 @@ describe("completed durable catalog", () => {
       });
     }
 
-    assert.deepEqual(listOpenableCompletedWorkflows(backend), []);
+    const entries = listOpenableCompletedWorkflows(backend);
+    assert.deepEqual(new Set(entries.map((entry) => entry.workflowId)), new Set([
+      "partially-malformed", ...emptyContent.map((item) => item.id),
+    ]));
+    for (const entry of entries) assert.equal(completedWorkflowSnapshot(backend, entry)?.stages[0]?.sessionFile, undefined);
   });
 
   test("accepts a retained transcript with a meaningful structured content block", () => {
@@ -269,62 +281,177 @@ describe("completed durable catalog", () => {
     assert.deepEqual(new Set(after.parentIds), new Set([left.id, right.id]));
   });
 
-  test("reconstructs multi-level boundary edges when durable completion order is reverse-topological", () => {
+  test("hides duplicate boundary-start records instead of inventing a child link", () => {
     const backend = new InMemoryDurableBackend();
-    const rootId = "durable-root";
-    const childId = "durable-child";
-    const grandId = "durable-grand";
-    backend.registerWorkflow({
-      workflowId: rootId, name: "durable-root", inputs: {}, createdAt: 1, status: "completed",
-    });
-    const rootRun = { runId: rootId, runName: "durable-root" } as const;
-    const childRun = {
-      runId: childId, runName: "durable-child",
-      parentRunId: rootId, parentStageId: "root-boundary", rootRunId: rootId,
+    registerCompleted(backend, "duplicate-boundary");
+    const rootRun = { runId: "duplicate-boundary", runName: "completed-flow" } as const;
+    const child = {
+      runId: "duplicate-child",
+      runName: "child",
+      parentRunId: "duplicate-boundary",
+      parentStageId: "boundary",
+      rootRunId: "duplicate-boundary",
     } as const;
-    const grandRun = {
-      runId: grandId, runName: "durable-grand",
-      parentRunId: childId, parentStageId: "child-boundary", rootRunId: rootId,
-    } as const;
-    const childOutput = {
-      workflow: "durable-child", runId: childId, status: "completed", exited: false, outputs: {},
-    } as const;
-    const grandOutput = {
-      workflow: "durable-grand", runId: grandId, status: "completed", exited: false, outputs: {},
-    } as const;
-    const checkpoints = [
-      { checkpointId: "root-after", name: "after", replayKey: "root-after", output: "after", completedAt: 10, topology: { version: 1 as const, stageId: "root-after", parentIds: ["root-boundary"], run: rootRun } },
-      { checkpointId: "root-boundary", name: "workflow:child", replayKey: "root-boundary", output: childOutput, completedAt: 20, topology: { version: 1 as const, stageId: "root-boundary", parentIds: ["root-before"], run: rootRun } },
-      { checkpointId: "root-before", name: "before", replayKey: "root-before", output: "before", completedAt: 30, topology: { version: 1 as const, stageId: "root-before", parentIds: [], run: rootRun } },
-      { checkpointId: "child-end", name: "child-end", replayKey: "child-end", output: "end", completedAt: 10, topology: { version: 1 as const, stageId: "child-end", parentIds: ["child-boundary"], run: childRun } },
-      { checkpointId: "child-boundary", name: "workflow:grand", replayKey: "child-boundary", output: grandOutput, completedAt: 20, topology: { version: 1 as const, stageId: "child-boundary", parentIds: ["child-start"], run: childRun } },
-      { checkpointId: "child-start", name: "child-start", replayKey: "child-start", output: "start", completedAt: 30, topology: { version: 1 as const, stageId: "child-start", parentIds: [], run: childRun } },
-      { checkpointId: "grand-left", name: "grand-left", replayKey: "grand-left", output: "left", completedAt: 10, topology: { version: 1 as const, stageId: "grand-left", parentIds: [], run: grandRun } },
-      { checkpointId: "grand-right", name: "grand-right", replayKey: "grand-right", output: "right", completedAt: 20, topology: { version: 1 as const, stageId: "grand-right", parentIds: [], run: grandRun } },
-    ];
-    for (const checkpoint of checkpoints) {
-      backend.recordCheckpoint({ kind: "stage", workflowId: rootId, ...checkpoint });
+    const boundary = {
+      version: 1 as const,
+      replayScope: "workflow:child:1",
+      alias: "child",
+      workflow: "child",
+      child,
+    };
+    for (const checkpointId of ["boundary-start:a", "boundary-start:b"]) {
+      backend.recordCheckpoint({
+        kind: "stage",
+        workflowId: "duplicate-boundary",
+        checkpointId,
+        name: "workflow:child",
+        replayKey: "workflow:child:1",
+        completedAt: 20,
+        topology: {
+          version: 1, stageId: "boundary", parentIds: [], sourceOrder: 0,
+          status: "running", run: rootRun,
+          boundary: { ...boundary, event: "start", status: "running" },
+        },
+      });
     }
 
-    const entry = listCompletedFromBackend(backend)[0]!;
-    const runs = completedWorkflowRunSnapshots(backend, entry);
-    assert.equal(runs.length, 3);
-    const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, rootId);
-    assert.deepEqual(graph.stages.map((item) => item.id), [
-      "completed-stage-1",
-      `${childId}:completed-stage-1`,
-      `${grandId}:completed-stage-1`,
-      `${grandId}:completed-stage-2`,
-      `${childId}:completed-stage-3`,
-      "completed-stage-3",
-    ]);
-    const byName = (name: string) => graph.stages.find((item) => item.name === name)!;
-    assert.deepEqual(byName("after").parentIds, [`${childId}:completed-stage-1`]);
-    assert.deepEqual(byName("child-end").parentIds, [
-      `${grandId}:completed-stage-1`, `${grandId}:completed-stage-2`,
-    ]);
-    assert.deepEqual(byName("grand-left").parentIds, [`${childId}:completed-stage-3`]);
-    assert.deepEqual(byName("grand-right").parentIds, [`${childId}:completed-stage-3`]);
-    assert.deepEqual(byName("child-start").parentIds, ["completed-stage-3"]);
+    assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
+    assert.equal(resolveCompletedWorkflow("duplicate-boundary", backend).kind, "stale");
+    assert.equal(completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!), undefined);
+  });
+
+  test("hides cyclic and duplicated stage topology", () => {
+    const backend = new InMemoryDurableBackend();
+    registerCompleted(backend, "cyclic");
+    for (const [stageId, parentIds] of [["a", ["b"]], ["b", ["a"]]] as const) {
+      backend.recordCheckpoint({
+        kind: "stage",
+        workflowId: "cyclic",
+        checkpointId: `stage:${stageId}`,
+        name: stageId,
+        replayKey: `stage:${stageId}:1`,
+        output: stageId,
+        completedAt: 20,
+        topology: {
+          version: 1, stageId, parentIds: [...parentIds],
+          run: { runId: "cyclic", runName: "completed-flow" },
+        },
+      });
+    }
+    registerCompleted(backend, "duplicate-stage-id");
+    for (const replayKey of ["stage:one:1", "stage:two:1"]) {
+      backend.recordCheckpoint({
+        kind: "stage",
+        workflowId: "duplicate-stage-id",
+        checkpointId: replayKey,
+        name: "shared",
+        replayKey,
+        output: "ok",
+        completedAt: 20,
+        topology: {
+          version: 1, stageId: "shared-source-id", parentIds: [],
+          run: { runId: "duplicate-stage-id", runName: "completed-flow" },
+        },
+      });
+    }
+
+    assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
+    assert.equal(resolveCompletedWorkflow("cyclic", backend).kind, "stale");
+    assert.equal(resolveCompletedWorkflow("duplicate-stage-id", backend).kind, "stale");
+  });
+
+  test("hides a boundary terminal that disagrees with its start identity", () => {
+    const backend = new InMemoryDurableBackend();
+    registerCompleted(backend, "mismatched-terminal");
+    const rootRun = { runId: "mismatched-terminal", runName: "completed-flow" } as const;
+    const child = {
+      runId: "child-from-start",
+      runName: "child",
+      parentRunId: "mismatched-terminal",
+      parentStageId: "boundary",
+      rootRunId: "mismatched-terminal",
+    } as const;
+    backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: "mismatched-terminal",
+      checkpointId: "boundary-start:workflow:child:1",
+      name: "workflow:child",
+      replayKey: "workflow:child:1",
+      completedAt: 20,
+      topology: {
+        version: 1, stageId: "boundary", parentIds: [], sourceOrder: 0,
+        status: "running", run: rootRun,
+        boundary: {
+          version: 1, event: "start", replayScope: "workflow:child:1",
+          alias: "child", workflow: "child", status: "running", child,
+        },
+      },
+    });
+    backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: "mismatched-terminal",
+      checkpointId: "boundary-terminal:workflow:child:1:completed",
+      name: "workflow:child",
+      replayKey: "workflow:child:1",
+      completedAt: 21,
+      endedAt: 21,
+      output: { workflow: "child", runId: "unrelated-child", status: "completed", exited: false, outputs: {} },
+      topology: {
+        version: 1, stageId: "boundary", parentIds: [], sourceOrder: 0,
+        status: "completed", run: rootRun,
+        boundary: {
+          version: 1, event: "terminal", replayScope: "workflow:child:1",
+          alias: "child", workflow: "child", status: "completed",
+          child: { ...child, runId: "unrelated-child" },
+        },
+      },
+    });
+
+    assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
+    assert.equal(resolveCompletedWorkflow("mismatched-terminal", backend).kind, "stale");
+  });
+  test("marks a completed root stale when a current boundary start has no terminal", () => {
+    const backend = new InMemoryDurableBackend();
+    const runId = "unterminated-completed-root";
+    const childRunId = "unterminated-child";
+    const replayKey = "workflow:child:1";
+    registerCompleted(backend, runId);
+    const rootRun = { runId, runName: "completed-flow" } as const;
+    const child = {
+      runId: childRunId,
+      runName: "child",
+      parentRunId: runId,
+      parentStageId: "boundary",
+      rootRunId: runId,
+    } as const;
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: runId, checkpointId: "stage:root", name: "root-stage",
+      replayKey: "stage:root:1", output: "done", completedAt: 20,
+      topology: { version: 1, stageId: "root-stage", parentIds: [], sourceOrder: 0, status: "completed", run: rootRun },
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: runId, checkpointId: `boundary-start:${replayKey}`,
+      name: "workflow:child", replayKey, completedAt: 21,
+      topology: {
+        version: 1, stageId: "boundary", parentIds: ["root-stage"], sourceOrder: 1,
+        status: "running", run: rootRun,
+        boundary: {
+          version: 1, event: "start", replayScope: replayKey, alias: "child", workflow: "child",
+          status: "running", child,
+        },
+      },
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: runId, checkpointId: `${replayKey}:stage:child:1`,
+      name: "child-stage", replayKey: `${replayKey}:stage:child:1`, output: "child-done", completedAt: 22,
+      topology: {
+        version: 1, stageId: "child-stage", parentIds: [], sourceOrder: 0, status: "completed",
+        run: { runId: childRunId, runName: "child", parentRunId: runId, parentStageId: "boundary", rootRunId: runId },
+      },
+    });
+
+    assert.deepEqual(completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!), []);
+    assert.deepEqual(listOpenableCompletedWorkflows(backend), []);
+    assert.equal(resolveCompletedWorkflow(runId, backend).kind, "stale");
   });
 });

@@ -89,6 +89,8 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
    * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
    */
   durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
+  /** Internal physical backend used to reconstruct full nested topology through stacked scopes. */
+  durableRootBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
   /**
    * Durable scope for a child workflow run. When set, the child's internal
    * `ctx.tool`/`ctx.ui`/`ctx.stage` checkpoints are routed under the root

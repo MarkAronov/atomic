@@ -159,6 +159,25 @@ describe("durable stage session resume", () => {
     assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
   });
 
+  test("hydrates the durable source identity of an active stage session", async () => {
+    const replayKey = "stage:analyze:1";
+    const source = makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" });
+    await recordStageSessionCheckpoint(deps(), source);
+    let identity: { id?: string; parentIds?: readonly string[] } | undefined;
+    const stage = createDurableStagePrimitive({
+      workflowId: WORKFLOW_ID,
+      backend,
+      nextReplayKey: () => replayKey,
+      stage: (_name, options) => {
+        identity = { id: options?.durableStageId, parentIds: options?.durableParentIds };
+        return fakeStageContext("resumed");
+      },
+    });
+
+    await stage("analyze").prompt("continue");
+    assert.deepEqual(identity, { id: source.id, parentIds: source.parentIds });
+  });
+
   test("hydrates accumulated duration into a new-process live stage", async () => {
     const replayKey = "stage:analyze:1";
     await recordStageSessionCheckpoint(deps(1700), makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" }));

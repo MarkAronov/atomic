@@ -1,10 +1,10 @@
 /** DBOS-backed durable backend adapter. */
-
 import type { DurableCheckpoint, DurableWorkflowHandle, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkflowSerializableObject as DurableInputs } from "./types.js";
 import { InMemoryDurableBackend, type DurableInactiveDeleteResult, type DurableWorkflowBackend, type DurableWorkflowCatalogEntries, type WorkflowRegistrationInput } from "./backend.js";
 import { encodeCheckpoint, classifyCheckpointPayload } from "./dbos-envelope.js";
+import { DurableNestedTopologyError } from "./boundary-topology.js";
 import { transitionDbosWorkflowStatus } from "./dbos-status-transition.js";
 import { claimMetadataStepName, classifyLatestMetadata, encodeMetadata, isMetadataStep, metadataStepName, parseCurrentMetadataRecord } from "./dbos-metadata.js";
 import { inactivePromptReservationToken, type PromptReservationToken } from "./prompt-reservation-state.js";
@@ -163,6 +163,9 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   registerWorkflow(handle: WorkflowRegistrationInput): void {
+    if (this.invalid.has(handle.workflowId)) {
+      throw new DurableNestedTopologyError(`workflow ${handle.workflowId} contains malformed current DBOS records`);
+    }
     this.invalid.delete(handle.workflowId);
     this.current.add(handle.workflowId);
     this.locallyRegistered.add(handle.workflowId);
@@ -494,5 +497,4 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     });
   }
 }
-
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.

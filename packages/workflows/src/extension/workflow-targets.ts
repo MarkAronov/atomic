@@ -1,7 +1,12 @@
 import { getEnvValue, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import type { RunStatus } from "../shared/store-types.js";
 import { store } from "../shared/store.js";
-import { expandWorkflowGraph, expandedStageLabel, stageMatchesExpandedIdentifier } from "../shared/expanded-workflow-graph.js";
+import {
+  expandWorkflowGraph,
+  expandedStageLabel,
+  stageMatchesExpandedIdentifier,
+  type ExpandedWorkflowStage,
+} from "../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext } from "./public-types.js";
@@ -123,50 +128,33 @@ export function resolveStageTarget(runId: string, stageTarget?: string): ToolSta
   const target = stageTarget?.trim();
   if (!target) return { ok: true, runId };
   const graph = expandWorkflowGraph(store.snapshot(), runId);
-  const exactVirtualId = graph.stages.find((stage) => stage.id === target);
-  if (exactVirtualId !== undefined) {
-    return {
-      ok: true,
-      runId: exactVirtualId.workflowGraphTarget.runId,
-      stageId: exactVirtualId.workflowGraphTarget.stageId,
-    };
-  }
-  const exactLocalIds = graph.stages.filter(
-    (stage) => stage.workflowGraphTarget.stageId === target,
-  );
-  if (exactLocalIds.length === 1) {
-    const stage = exactLocalIds[0]!;
-    return {
-      ok: true,
-      runId: stage.workflowGraphTarget.runId,
-      stageId: stage.workflowGraphTarget.stageId,
-    };
-  }
-  if (exactLocalIds.length > 1) {
-    return { ok: false, message: `Ambiguous stage identifier "${target}" matches: ${exactLocalIds.map(expandedStageLabel).join(", ")}` };
-  }
+  const exactVirtualIds = graph.stages.filter((stage) => stage.id === target);
+  if (exactVirtualIds.length === 1) return resolvedStageTarget(exactVirtualIds[0]!);
+  if (exactVirtualIds.length > 1) return ambiguousStageTarget(target, exactVirtualIds);
+  const exactLocalIds = graph.stages.filter((stage) => stage.workflowGraphTarget.stageId === target);
+  if (exactLocalIds.length === 1) return resolvedStageTarget(exactLocalIds[0]!);
+  if (exactLocalIds.length > 1) return ambiguousStageTarget(target, exactLocalIds);
   const exactNames = graph.stages.filter((stage) => stage.name === target);
-  if (exactNames.length === 1) {
-    const stage = exactNames[0]!;
-    return {
-      ok: true,
-      runId: stage.workflowGraphTarget.runId,
-      stageId: stage.workflowGraphTarget.stageId,
-    };
-  }
-  if (exactNames.length > 1) {
-    return { ok: false, message: `Ambiguous stage identifier "${target}" matches: ${exactNames.map(expandedStageLabel).join(", ")}` };
-  }
+  if (exactNames.length === 1) return resolvedStageTarget(exactNames[0]!);
+  if (exactNames.length > 1) return ambiguousStageTarget(target, exactNames);
   const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
   if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
-  if (matches.length > 1) {
-    return { ok: false, message: `Ambiguous stage identifier "${target}" matches: ${matches.map(expandedStageLabel).join(", ")}` };
-  }
-  const stage = matches[0]!;
+  if (matches.length > 1) return ambiguousStageTarget(target, matches);
+  return resolvedStageTarget(matches[0]!);
+}
+
+function resolvedStageTarget(stage: ExpandedWorkflowStage): ToolStageTarget {
   return {
     ok: true,
     runId: stage.workflowGraphTarget.runId,
     stageId: stage.workflowGraphTarget.stageId,
+  };
+}
+
+function ambiguousStageTarget(target: string, stages: readonly ExpandedWorkflowStage[]): ToolStageTarget {
+  return {
+    ok: false,
+    message: `Ambiguous stage identifier "${target}" matches: ${stages.map(expandedStageLabel).join(", ")}`,
   };
 }
 

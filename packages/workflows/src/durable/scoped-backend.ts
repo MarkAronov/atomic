@@ -19,7 +19,7 @@
  * cross-ref: issue #1498 — child side effects under the root durable workflow.
  */
 
-import type { DurableCheckpoint, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
+import type { DurableCheckpoint, DurableStageCheckpoint, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableInactiveDeleteResult, DurableWorkflowBackend, DurableWorkflowCatalogEntries, WorkflowRegistrationInput } from "./backend.js";
 import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, reserveDurablePrompt, type PromptReservationToken } from "./prompt-reservations.js";
@@ -98,15 +98,11 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
   }
 
-  listCheckpoints(_workflowId: string): readonly DurableCheckpoint[] {
-    const all = this.inner.listCheckpoints(this.scope.rootWorkflowId);
-    const prefix = `${this.effectivePromptScope().scope}:`;
-    // Checkpoints are stored with their scope prefix already embedded in their
-    // ids (see remap()). Filter by the stored id directly — NOT by re-prefixing
-    // — so sibling scopes (e.g. "workflow:child:1") are excluded when the
-    // current scope is "workflow:child:2". Re-prefixing would prepend the
-    // current scope prefix to every id, causing sibling ids to falsely match.
-    return all.filter((cp) => storedScopeId(cp).startsWith(prefix));
+  listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
+    const prefix = `${this.scope.scopePrefix}:`;
+    return this.inner.listCheckpoints(this.scope.rootWorkflowId)
+      .filter((checkpoint) => checkpointHasPrefix(checkpoint, prefix))
+      .map((checkpoint) => localCheckpoint(checkpoint, workflowId, prefix));
   }
 
   getWorkflow(_workflowId: string): undefined {
@@ -230,15 +226,58 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
       workflowId,
       checkpointId: this.scopeKey(checkpoint.checkpointId),
       replayKey: this.scopeKey(checkpoint.replayKey),
+      ...remappedBoundaryScope(checkpoint, this.scopeKey(checkpoint.topology?.boundary?.replayScope ?? "")),
     };
   }
 }
 
-/**
- * Return the checkpoint's stored scope-qualified id, which includes any scope
- * prefix embedded by {@link ScopedDurableBackend.remap}. This is the raw stored
- * value used for prefix filtering in {@link ScopedDurableBackend.listCheckpoints}.
- */
-function storedScopeId(cp: DurableCheckpoint): string {
-  return cp.kind === "stage" ? cp.replayKey : cp.checkpointId;
+/** Return true only when every stored identity belongs to this immediate scope. */
+function checkpointHasPrefix(checkpoint: DurableCheckpoint, prefix: string): boolean {
+  if (!checkpoint.checkpointId.startsWith(prefix)) return false;
+  if (checkpoint.kind === "tool") return checkpoint.argsHash.startsWith(prefix);
+  if (checkpoint.kind === "ui") return checkpoint.promptHash.startsWith(prefix);
+  return checkpoint.replayKey.startsWith(prefix);
+}
+
+/** Strip exactly one wrapper prefix to expose a composable child-local view. */
+function localCheckpoint(
+  checkpoint: DurableCheckpoint,
+  workflowId: string,
+  prefix: string,
+): DurableCheckpoint {
+  const checkpointId = checkpoint.checkpointId.slice(prefix.length);
+  if (checkpoint.kind === "tool") {
+    return { ...checkpoint, workflowId, checkpointId, argsHash: checkpoint.argsHash.slice(prefix.length) };
+  }
+  if (checkpoint.kind === "ui") {
+    return { ...checkpoint, workflowId, checkpointId, promptHash: checkpoint.promptHash.slice(prefix.length) };
+  }
+  const replayKey = checkpoint.replayKey.slice(prefix.length);
+  const replayScope = stripOnePrefix(checkpoint.topology?.boundary?.replayScope, prefix);
+  return {
+    ...checkpoint,
+    workflowId,
+    checkpointId,
+    replayKey,
+    ...remappedBoundaryScope(checkpoint, replayScope),
+  };
+}
+
+function remappedBoundaryScope(
+  checkpoint: DurableStageCheckpoint,
+  replayScope: string | undefined,
+): Pick<DurableStageCheckpoint, "topology"> | Record<string, never> {
+  const topology = checkpoint.topology;
+  if (topology?.boundary === undefined || replayScope === undefined) return {};
+  return {
+    topology: {
+      ...topology,
+      boundary: { ...topology.boundary, replayScope },
+    },
+  };
+}
+
+function stripOnePrefix(value: string | undefined, prefix: string): string | undefined {
+  if (value === undefined || !value.startsWith(prefix)) return value;
+  return value.slice(prefix.length);
 }

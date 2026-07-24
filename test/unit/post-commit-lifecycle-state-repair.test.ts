@@ -59,15 +59,8 @@ function seedNested(
     workflowChildRun: { alias: "child", workflow: "child", runId: childId },
   });
   targetStore.recordRunStart({
-    id: childId,
-    name: "child",
-    inputs: {},
-    status: "running",
-    stages: [],
-    startedAt: 2,
-    parentRunId: rootId,
-    parentStageId: "child-boundary",
-    rootRunId: rootId,
+    id: childId, name: "child", inputs: {}, status: "running", stages: [], startedAt: 2,
+    parentRunId: rootId, parentStageId: "child-boundary", rootRunId: rootId,
   });
   for (const stageId of stageIds) {
     targetStore.recordStageStart(childId, { id: stageId, name: stageId, status: "running", parentIds: [], toolEvents: [] });

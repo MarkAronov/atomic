@@ -353,11 +353,9 @@ describe("ctx.exit", () => {
 
     assert.equal(inputGetterCalls, 1);
     assert.equal(result.status, "skipped");
-    assert.equal(result.stages.length, 1);
-    assert.deepEqual(
-      result.stages.map((stage) => [stage.name, stage.status, stage.skippedReason]),
-      [["workflow:exit-boundary-child", "skipped", "workflow-exit: input gate"]],
-    );
+    // The input value is resolved before a boundary identity can be derived;
+    // selecting exit there therefore leaves no unowned boundary artifact.
+    assert.deepEqual(result.stages, []);
     assert.equal(store.runs().some((runSnapshot) => runSnapshot.name === "exit-boundary-child"), false);
   });
 

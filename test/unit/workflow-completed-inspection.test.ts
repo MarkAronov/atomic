@@ -40,6 +40,9 @@ function retainedSession(name: string, internal = false): string {
   ].join("\n") + "\n");
   return path;
 }
+function completedTopology(stageId: string, sourceOrder = 0) {
+  return { version: 1 as const, stageId, parentIds: [] as readonly string[], sourceOrder, status: "completed" as const };
+}
 
 function clickForSingleNode(stage: RunSnapshot["stages"][number], width = 96, rows = 32): string {
   const [node] = computeLayout([stage], { orientation: "vertical" });
@@ -99,6 +102,7 @@ describe("completed workflow inspection", () => {
       output: "done",
       sessionFile,
       completedAt: 2,
+      topology: completedTopology("final-source"),
     });
 
     let sessionCreates = 0;
@@ -124,7 +128,7 @@ describe("completed workflow inspection", () => {
     assert.equal(store.runs()[0]?.status, "completed");
     assert.equal(store.runs()[0]?.stages[0]?.attachable, false);
     assert.equal(backend.getWorkflow("completed-inspection")?.status, "completed");
-    const handle = registry.get("completed-inspection", "completed-stage-1");
+    const handle = registry.get("completed-inspection", "final-source");
     assert.ok(handle);
     assert.deepEqual(registry.run("completed-inspection").stages(), []);
 
@@ -143,9 +147,9 @@ describe("completed workflow inspection", () => {
     for (const char of "final") view.handleInput(char);
     view.handleInput("\r");
     assert.deepEqual(attached, [
-      "completed-inspection/completed-stage-1",
-      "completed-inspection/completed-stage-1",
-      "completed-inspection/completed-stage-1",
+      "completed-inspection/final-source",
+      "completed-inspection/final-source",
+      "completed-inspection/final-source",
     ]);
     view.dispose();
     await handle.prompt("What should I do next?");
@@ -163,7 +167,11 @@ describe("completed workflow inspection", () => {
     const store = createStore();
     const sessionFile = retainedSession("same-id");
     backend.registerWorkflow({ workflowId: "same-id", name: "completed-flow", inputs: {}, createdAt: 1, status: "completed" });
-    backend.recordCheckpoint({ kind: "stage", workflowId: "same-id", checkpointId: "stage:1", name: "final", replayKey: "stage:final:1", sessionFile, completedAt: 2 });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "same-id", checkpointId: "stage:1", name: "final",
+      replayKey: "stage:final:1", sessionFile, completedAt: 2,
+      topology: completedTopology("final-source"),
+    });
     store.recordRunStart({ id: "same-id", name: "active", inputs: {}, status: "running", stages: [], startedAt: 1 });
 
     const opened = openCompletedDurableWorkflow("same-id", { durableBackend: backend, store });
@@ -180,6 +188,7 @@ describe("completed workflow inspection", () => {
     backend.recordCheckpoint({
       kind: "stage", workflowId: "authoritative", checkpointId: "stage:1", name: "durable-stage",
       replayKey: "stage:durable:1", output: "durable result", sessionFile, completedAt: 2,
+      topology: completedTopology("durable-source"),
     });
     store.recordRunStart({
       id: "authoritative", name: "stale-local-name", inputs: {}, status: "completed",
@@ -207,6 +216,7 @@ describe("completed workflow inspection", () => {
     backend.recordCheckpoint({
       kind: "stage", workflowId: "refresh-chat", checkpointId: "stage:1", name: "final",
       replayKey: "stage:final:1", sessionFile: firstSessionFile, completedAt: 2,
+      topology: completedTopology("final-source"),
     });
     const deps = {
       durableBackend: backend,
@@ -217,16 +227,17 @@ describe("completed workflow inspection", () => {
     };
 
     assert.equal(openCompletedDurableWorkflow("refresh-chat", deps).ok, true);
-    const firstHandle = registry.get("refresh-chat", "completed-stage-1");
+    const firstHandle = registry.get("refresh-chat", "final-source");
     assert.equal(firstHandle?.sessionFile, firstSessionFile);
     backend.recordCheckpoint({
       kind: "stage", workflowId: "refresh-chat", checkpointId: "stage:2", name: "final",
       replayKey: "stage:final:1", sessionFile: secondSessionFile, completedAt: 3,
+      topology: completedTopology("final-source"),
     });
 
     assert.equal(openCompletedDurableWorkflow("refresh-chat", deps).ok, true);
     assert.equal(firstHandle?.isDisposed, true);
-    assert.equal(registry.get("refresh-chat", "completed-stage-1")?.sessionFile, secondSessionFile);
+    assert.equal(registry.get("refresh-chat", "final-source")?.sessionFile, secondSessionFile);
     assert.deepEqual(lifecycle.sent, []);
     lifecycle.unsubscribe();
   });
@@ -243,10 +254,12 @@ describe("completed workflow inspection", () => {
     backend.recordCheckpoint({
       kind: "stage", workflowId: "invalidate-chat", checkpointId: "stage:1", name: "first",
       replayKey: "stage:first:1", sessionFile: invalidatedSessionFile, completedAt: 2,
+      topology: completedTopology("first-source", 0),
     });
     backend.recordCheckpoint({
       kind: "stage", workflowId: "invalidate-chat", checkpointId: "stage:2", name: "second",
       replayKey: "stage:second:1", sessionFile: retainedSessionFile, completedAt: 3,
+      topology: completedTopology("second-source", 1),
     });
     const deps = {
       durableBackend: backend,
@@ -256,14 +269,14 @@ describe("completed workflow inspection", () => {
     };
 
     assert.equal(openCompletedDurableWorkflow("invalidate-chat", deps).ok, true);
-    const invalidatedHandle = registry.get("invalidate-chat", "completed-stage-1");
+    const invalidatedHandle = registry.get("invalidate-chat", "first-source");
     assert.ok(invalidatedHandle);
     rmSync(invalidatedSessionFile);
 
     assert.equal(openCompletedDurableWorkflow("invalidate-chat", deps).ok, true);
     assert.equal(invalidatedHandle.isDisposed, true);
-    assert.equal(registry.get("invalidate-chat", "completed-stage-1"), undefined);
-    assert.equal(registry.get("invalidate-chat", "completed-stage-2")?.sessionFile, retainedSessionFile);
+    assert.equal(registry.get("invalidate-chat", "first-source"), undefined);
+    assert.equal(registry.get("invalidate-chat", "second-source")?.sessionFile, retainedSessionFile);
   });
 
   test("opens a retained internal stage transcript without exposing it in ordinary history", async () => {
@@ -277,6 +290,7 @@ describe("completed workflow inspection", () => {
     backend.recordCheckpoint({
       kind: "stage", workflowId: "internal-completed", checkpointId: "stage:1", name: "final",
       replayKey: "stage:final:1", sessionFile: internalSessionFile, completedAt: 2,
+      topology: completedTopology("final-source"),
     });
 
     assert.equal(openCompletedDurableWorkflow("internal-completed", { durableBackend: backend, store }).ok, true);

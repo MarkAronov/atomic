@@ -80,6 +80,14 @@ exTest("ctx.workflow replay prefers child-shaped checkpoint and hydrates lifecyc
     durationMs: 20,
     result: "child boundary completed",
     sessionId: "session-child",
+    topology: {
+      version: 1,
+      stageId: "boundary",
+      parentIds: [],
+      sourceOrder: 0,
+      status: "completed",
+      run: { runId: workflowId, runName: "selector-parent" },
+    },
   });
   backend.recordCheckpoint({
     kind: "stage",
@@ -89,6 +97,37 @@ exTest("ctx.workflow replay prefers child-shaped checkpoint and hydrates lifecyc
     replayKey,
     output: { workflow: "selector-child", runId: "child-run", status: "completed", exited: false, outputs: { value: "child replay value" } },
     completedAt: 130,
+    topology: {
+      version: 1,
+      stageId: "boundary",
+      parentIds: [],
+      sourceOrder: 0,
+      status: "completed",
+      run: { runId: workflowId, runName: "selector-parent" },
+    },
+  });
+  backend.recordCheckpoint({
+    kind: "stage",
+    workflowId,
+    checkpointId: `${replayKey}:stage:child:1`,
+    name: "child-stage",
+    replayKey: `${replayKey}:stage:child:1`,
+    output: "child replay value",
+    completedAt: 125,
+    topology: {
+      version: 1,
+      stageId: "child-stage",
+      parentIds: [],
+      sourceOrder: 0,
+      status: "completed",
+      run: {
+        runId: "child-run",
+        runName: "selector-child",
+        parentRunId: workflowId,
+        parentStageId: "boundary",
+        rootRunId: workflowId,
+      },
+    },
   });
   const child = workflow({
     name: "selector-child",
@@ -118,7 +157,7 @@ exTest("ctx.workflow replay prefers child-shaped checkpoint and hydrates lifecyc
   });
 
   const stage = store.runs()[0]?.stages[0];
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "completed", result.error);
   assert.equal(result.result?.["result"], "child replay value");
   assert.equal(stage?.name, "workflow:selector-child");
   assert.equal(stage?.replayed, true);

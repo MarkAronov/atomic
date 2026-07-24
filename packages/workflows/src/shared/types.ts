@@ -193,6 +193,10 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   durableReplayKey?: string;
   /** Internal durable timing baseline accumulated before a process-boundary resume. */
   durableAccumulatedDurationMs?: number;
+  /** Internal durable source identity reused when an active stage session is reopened. */
+  durableStageId?: string;
+  /** Internal durable source parents reused with `durableStageId`. */
+  durableParentIds?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

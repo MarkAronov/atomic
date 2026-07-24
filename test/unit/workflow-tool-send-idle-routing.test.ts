@@ -189,4 +189,43 @@ describe("workflow send — idle-aware live-stage routing", () => {
     assert.equal(result.delivery, "steer");
     assert.equal(result.message, "Steered live stage.");
   });
+
+  test("expanded root target sends to the hydrated child owner", async () => {
+    const rootId = "hydrated-routing-root";
+    const childId = "hydrated-routing-child";
+    const calls: string[] = [];
+    runIds.add(rootId);
+    runIds.add(childId);
+    store.recordRunStart({
+      id: rootId, name: "root", inputs: {}, status: "running", startedAt: 1,
+      stages: [{
+        id: "child-boundary", name: "workflow:child", status: "running", parentIds: [],
+        toolEvents: [], attachable: false,
+        workflowChildRun: { alias: "child", workflow: "child", runId: childId },
+      }],
+    });
+    store.recordRunStart({
+      id: childId, name: "child", inputs: {}, status: "running", startedAt: 1,
+      parentRunId: rootId, parentStageId: "child-boundary", rootRunId: rootId,
+      stages: [{ id: "stage-a", name: "chat", status: "running", parentIds: [], toolEvents: [], attachable: true }],
+    });
+    stageControlRegistry.register({
+      runId: childId, stageId: "stage-a", stageName: "chat", status: "running",
+      sessionId: "session-a", sessionFile: undefined, isStreaming: false, messages: [],
+      async ensureAttached() {},
+      async prompt(text) { calls.push(`prompt:${text}`); },
+      async steer() {}, async followUp() {}, async pause() {}, async resume() {},
+      subscribe() { return () => {}; },
+    });
+
+    const result = await workflowSendAction({
+      runId: rootId,
+      stageId: `${childId}:stage-a`,
+      text: "child message",
+      delivery: "prompt",
+    });
+    assert.deepEqual(calls, ["prompt:child message"]);
+    assert.equal(result.runId, childId);
+    assert.equal(result.stageId, "stage-a");
+  });
 });

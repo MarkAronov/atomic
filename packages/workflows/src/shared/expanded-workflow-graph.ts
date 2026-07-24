@@ -107,6 +107,7 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
     return owner;
   };
   const visiting = new Set<string>();
+  const expandedChildren = new Set<string>();
 
   const expandRun = (run: RunSnapshot, depth: number, incomingParentIds: readonly string[]): ExpandedRunResult => {
     if (visiting.has(run.id)) return { stages: [], tools: [], nodes: [], terminalIds: [] };
@@ -126,6 +127,7 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
       const runRoot = rootOwnerFor(run.id);
       if (
         childRun === undefined ||
+        expandedChildren.has(childRun.id) ||
         localItems(childRun).length === 0 ||
         childRun.parentRunId !== run.id ||
         childRun.parentStageId !== stage.id ||
@@ -157,6 +159,7 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
       const childRun = validChildRunFor(stage);
       if (childRun === undefined) return undefined;
       boundaryExpansions.set(stage.id, null);
+      expandedChildren.add(childRun.id);
       const stageItem: LocalItem = { kind: "stage", stage, sourceIndex: 0 };
       const childExpanded = expandRun(childRun, depth + 1, resolvedParentIdsFor(stageItem));
       if (childExpanded.stages.length === 0 || childExpanded.terminalIds.length === 0) return undefined;
