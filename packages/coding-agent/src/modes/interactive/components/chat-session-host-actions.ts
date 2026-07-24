@@ -12,6 +12,7 @@ import {
   notifyChatSessionStatus,
   notifyChatSessionWarning,
   requiredChatSessionCommand,
+  startChatSessionWorkingLifecycle,
   stopChatSessionWorkingLifecycle,
   syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
@@ -145,6 +146,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
     incrementOptimisticUserSignature(state, optimisticSignature);
   }
   state.requestRender?.();
+  let submittedPromptLifecycleGeneration: number | undefined;
   try {
     if (isPaused) {
       state.sdkBusy = true;
@@ -177,21 +179,44 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
     if (isStreaming) {
       await queueChatSessionSteer(state, text);
     } else {
+      state.statusMessage = "";
       state.sdkBusy = true;
+      startChatSessionWorkingLifecycle(state);
+      submittedPromptLifecycleGeneration = state.workingLifecycleGeneration;
       syncChatSessionAnimationTick(state);
+      state.requestRender?.();
       await state.commands.ensureAttached?.();
       await requiredChatSessionCommand(state, "prompt")(text);
-      state.sdkBusy = false;
+      settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
       syncChatSessionAnimationTick(state);
+      state.requestRender?.();
     }
   } catch (err) {
     if (optimisticSignature !== undefined) {
       decrementOptimisticUserSignature(state, optimisticSignature);
     }
-    state.sdkBusy = false;
+    settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
     state.statusMessage = errorMessage(err);
     syncChatSessionAnimationTick(state);
     state.requestRender?.();
+  }
+}
+
+function settleSubmittedPromptLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(
+  state: ChatSessionHostState<TExtraEntry>,
+  submittedGeneration: number | undefined,
+): void {
+  if (submittedGeneration === undefined) {
+    state.sdkBusy = false;
+    return;
+  }
+  const lifecycleWasReplaced = state.workingLifecycleGeneration !== submittedGeneration;
+  if (lifecycleWasReplaced && state.workingLifecycleActive) return;
+  state.sdkBusy = false;
+  if (!lifecycleWasReplaced && !isChatSessionStreaming(state)) {
+    stopChatSessionWorkingLifecycle(state);
   }
 }
 

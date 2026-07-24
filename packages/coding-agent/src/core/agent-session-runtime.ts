@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { modelsAreEqual, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
@@ -18,6 +18,7 @@ import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
 import type { AuthStatus } from "./auth-storage.ts";
+import type { ModelFallbackReason } from "./model-resolver-types.ts";
 
 /**
  * Result returned by runtime creation.
@@ -92,6 +93,7 @@ export class AgentSessionRuntime {
 	declare private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	declare private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	declare private _modelFallbackMessage?: string;
+	declare private _modelFallbackReason?: ModelFallbackReason;
 
 	constructor(
 		_session: AgentSession,
@@ -99,12 +101,14 @@ export class AgentSessionRuntime {
 		createRuntime: CreateAgentSessionRuntimeFactory,
 		_diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		_modelFallbackMessage?: string,
+		_modelFallbackReason?: ModelFallbackReason,
 	) {
 		this._session = _session;
 		this._services = _services;
 		this.createRuntime = createRuntime;
 		this._diagnostics = _diagnostics;
 		this._modelFallbackMessage = _modelFallbackMessage;
+		this._modelFallbackReason = _modelFallbackReason;
 	}
 
 	get services(): AgentSessionServices {
@@ -125,6 +129,26 @@ export class AgentSessionRuntime {
 
 	get modelFallbackMessage(): string | undefined {
 		return this._modelFallbackMessage;
+	}
+
+	get modelFallbackReason(): ModelFallbackReason | undefined {
+		return this._modelFallbackReason;
+	}
+
+	replaceModelFallback(message?: string, reason?: ModelFallbackReason): void {
+		this._modelFallbackMessage = message;
+		this._modelFallbackReason = reason;
+	}
+
+	resolveModelFallback(): void {
+		this.replaceModelFallback();
+	}
+
+	resolveModelFallbackAfterExplicitModelSelection(
+		previousModel: Model<Api> | undefined,
+		selectedModel: Model<Api> | null | undefined,
+	): void {
+		if (selectedModel && !modelsAreEqual(previousModel, selectedModel)) this.resolveModelFallback();
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
@@ -212,6 +236,7 @@ export class AgentSessionRuntime {
 		this._services = result.services;
 		this._diagnostics = result.diagnostics;
 		this._modelFallbackMessage = result.modelFallbackMessage;
+		this._modelFallbackReason = result.modelFallbackReason;
 	}
 
 	private async finishSessionReplacement(withSession?: (ctx: ReplacedSessionContext) => Promise<void>): Promise<void> {
@@ -455,6 +480,7 @@ export async function createAgentSessionRuntime(
 		createRuntime,
 		result.diagnostics,
 		result.modelFallbackMessage,
+		result.modelFallbackReason,
 	);
 }
 
