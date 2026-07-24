@@ -10,6 +10,7 @@ import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
+import { RemoteQueuePause } from "./remote-queue-pause.js";
 import { sleep } from "../../utils/sleep.ts";
 
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
@@ -21,6 +22,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
 	private engineCallbackActive = false;
+	private readonly queuePause: RemoteQueuePause;
 	private readonly diagnosticListeners = new Set<(diagnostic: ActivityWatchdogDiagnostic) => void>();
 	private pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	private lastDiagnostic: ActivityWatchdogDiagnostic | undefined;
@@ -49,6 +51,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);
+		this.queuePause = new RemoteQueuePause(client);
 		this.client.onEvent((event) => this.observeEvent(event));
 	}
 
@@ -76,6 +79,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
 		this.compacting = state.isCompacting;
+		this.queuePause.synchronize(state.queuedMessagesPaused === true);
 		this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 		this.refreshSessionView();
 		this.engineCallbackActive = false;
@@ -230,6 +234,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
 			autoRetryEnabled: { configurable: true, get: () => this.autoRetryEnabled },
+			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
 				configurable: true,
 				value: (listener: (event: AgentSessionEvent) => void) => this.client.onEvent(listener),
@@ -301,6 +306,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					return queued;
 				},
 			},
+			pauseQueuedMessages: { configurable: true, value: () => this.queuePause.pause() },
+			resumeQueuedMessages: { configurable: true, value: () => this.queuePause.resume() },
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>) => {
@@ -381,6 +388,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	private async abortAndRecover(): Promise<void> {
 		if (this.restartPromise) return this.restartPromise;
+		await this.queuePause.settleBeforeAbort();
 		const cooperativeAbort = this.client.abort().then(() => true, () => false);
 		if (await Promise.race([cooperativeAbort, sleep(250).then(() => false)])) {
 			this.engineCallbackActive = false;

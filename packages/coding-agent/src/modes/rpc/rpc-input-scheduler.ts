@@ -7,6 +7,7 @@ const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
 	"abort_compaction",
 	"abort_retry",
 	"abort_bash",
+	"pause_queued_messages",
 ]);
 
 export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {

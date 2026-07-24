@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../src/core/agent-session-persistent-custom-messages.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 describe("AgentSession custom-message batch admission", () => {
@@ -11,7 +12,7 @@ describe("AgentSession custom-message batch admission", () => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
-	it("keeps a streaming batch contiguous and ordered", async () => {
+	it("keeps a protected streaming batch contiguous, ordered, and durable", async () => {
 		let releaseTool: (() => void) | undefined;
 		const toolRelease = new Promise<void>((resolve) => { releaseTool = resolve; });
 		const waitTool: AgentTool = {
@@ -45,14 +46,26 @@ describe("AgentSession custom-message batch admission", () => {
 			{ customType: "batch-a1", content: "A1", display: true },
 			{ customType: "batch-a2", content: "A2", display: true },
 			{ customType: "batch-terminal", content: "terminal", display: true },
-		], { triggerTurn: true });
+		], { triggerTurn: true, persistWhenStreaming: true });
 		await harness.session.sendCustomMessage({ customType: "unrelated-b", content: "B", display: true });
 		releaseTool?.();
 		await promptPromise;
 
 		const customTypes = harness.session.messages
-			.filter((message) => message.role === "custom")
+			.filter((message) => message.role === "custom" && message.display !== false)
 			.map((message) => message.customType);
 		expect(customTypes).toEqual(["batch-a1", "batch-a2", "batch-terminal", "unrelated-b"]);
+		const durableTypes = harness.sessionManager.getEntries()
+			.filter((entry) => entry.type === "custom_message")
+			.map((entry) => entry.customType);
+		expect(durableTypes).toEqual([
+			"batch-a1",
+			"batch-a2",
+			"batch-terminal",
+			PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+			PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+			PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+			"unrelated-b",
+		]);
 	});
 });

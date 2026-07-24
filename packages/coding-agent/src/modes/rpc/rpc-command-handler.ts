@@ -11,6 +11,7 @@ import {
 	type RpcOutput,
 } from "./rpc-responses.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
+import { rejectUnsupportedProviderPrompt } from "./rpc-model-fallback-prompt.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
@@ -54,12 +55,7 @@ export function createRpcCommandHandler({
 		const session = getSession();
 		switch (command.type) {
 			case "prompt": {
-				if (runtimeHost.modelFallbackReason === "configured-provider-unsupported") {
-					const message = runtimeHost.modelFallbackMessage;
-					if (!message) throw new Error("Unsupported configured provider is missing its diagnostic message");
-					output(createRpcErrorResponse(id, "prompt", message));
-					return undefined;
-				}
+				if (rejectUnsupportedProviderPrompt(runtimeHost, output, id)) return undefined;
 				let preflightSucceeded = false;
 				void session
 					.prompt(command.message, {
@@ -120,6 +116,7 @@ export function createRpcCommandHandler({
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					queuedMessagesPaused: session.queuedMessagesPaused,
 					resourceOverlaps: session.resourceLoader.getExtensions().overlaps ?? [],
 				};
 				return createRpcSuccessResponse(id, "get_state", state);
@@ -285,7 +282,11 @@ export function createRpcCommandHandler({
 			case "clear_queue": {
 				return createRpcSuccessResponse(id, "clear_queue", session.clearQueue());
 			}
-
+			case "pause_queued_messages":
+				session.pauseQueuedMessages();
+				return createRpcSuccessResponse(id, "pause_queued_messages");
+			case "resume_queued_messages":
+				return createRpcSuccessResponse(id, "resume_queued_messages", { released: await session.resumeQueuedMessages() });
 			case "bash": {
 				const result = await session.executeBash(command.command, undefined, {
 					excludeFromContext: command.excludeFromContext,
@@ -490,7 +491,6 @@ export function createRpcCommandHandler({
 
 				return createRpcSuccessResponse(id, "get_commands", { commands });
 			}
-
 			default: {
 				const unknownCommand = command as { type: string };
 				return createRpcErrorResponse(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
