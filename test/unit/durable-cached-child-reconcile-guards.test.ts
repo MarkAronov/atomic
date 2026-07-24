@@ -406,6 +406,7 @@ test("cached recorder derives the durable catalog root through rootless parent a
     backend,
     rootBackend: backend,
     completedStageReplayKeys: new Map(),
+    sourceToReplayedNodeIds: new Map(),
   });
   recorder.record("middle-boundary", "middle-boundary", cachedBoundary);
 
@@ -425,6 +426,7 @@ test("cached recorder derives the durable catalog root through rootless parent a
     backend,
     rootBackend: backend,
     completedStageReplayKeys: new Map(),
+    sourceToReplayedNodeIds: new Map(),
   }).record("middle-boundary", "middle-boundary", cachedBoundary);
   assert.equal(incompleteStore.runs().some((item) => item.id === CHILD_ID), false);
 });
