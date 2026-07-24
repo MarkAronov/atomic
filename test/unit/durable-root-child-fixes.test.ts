@@ -104,8 +104,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
     assert.equal(scoped.toMetadata(CHILD), undefined);
   });
 
-  test("listCheckpoints excludes sibling scopes (no double-prefix leakage)", () => {
-    // Two siblings write tool checkpoints under the same root with different scopes.
+  test("listCheckpoints exposes only child-local checkpoint identities", () => {
     const scope1 = "workflow:child:1";
     const scope2 = "workflow:child:2";
     const first = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: scope1 });
@@ -113,16 +112,71 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
     first.recordCheckpoint(toolCheckpoint(CHILD, "alpha", "first"));
     second.recordCheckpoint(toolCheckpoint(CHILD, "beta", "second"));
 
-    // listCheckpoints for scope1 must NOT include scope2's checkpoints.
     const scope1Checkpoints = first.listCheckpoints(CHILD);
-    assert.equal(scope1Checkpoints.length, 1);
-    // The stored checkpointId must start with scope1 prefix, not scope2.
-    assert.ok(scope1Checkpoints[0]!.checkpointId.startsWith(`${scope1}:`), `expected ${scope1Checkpoints[0]!.checkpointId} to start with ${scope1}:`);
+    assert.deepEqual(scope1Checkpoints.map((checkpoint) => ({
+      workflowId: checkpoint.workflowId,
+      checkpointId: checkpoint.checkpointId,
+      key: checkpoint.kind === "tool" ? checkpoint.argsHash : "",
+    })), [{ workflowId: CHILD, checkpointId: "tool:alpha", key: "alpha" }]);
 
-    // listCheckpoints for scope2 must NOT include scope1's checkpoints.
     const scope2Checkpoints = second.listCheckpoints(CHILD);
-    assert.equal(scope2Checkpoints.length, 1);
-    assert.ok(scope2Checkpoints[0]!.checkpointId.startsWith(`${scope2}:`), `expected ${scope2Checkpoints[0]!.checkpointId} to start with ${scope2}:`);
+    assert.deepEqual(scope2Checkpoints.map((checkpoint) => ({
+      workflowId: checkpoint.workflowId,
+      checkpointId: checkpoint.checkpointId,
+      key: checkpoint.kind === "tool" ? checkpoint.argsHash : "",
+    })), [{ workflowId: CHILD, checkpointId: "tool:beta", key: "beta" }]);
+  });
+
+  test("nested scoped checkpoint views strip one prefix per level", () => {
+    const childScope = new ScopedDurableBackend(root, {
+      rootWorkflowId: ROOT,
+      scopePrefix: "workflow:child:1",
+    });
+    const grandchildScope = new ScopedDurableBackend(childScope, {
+      rootWorkflowId: ROOT,
+      scopePrefix: "workflow:grandchild:1",
+    });
+    grandchildScope.recordCheckpoint({
+      kind: "stage",
+      workflowId: "grandchild-run",
+      checkpointId: "boundary-start:workflow:leaf:1",
+      name: "workflow:leaf",
+      replayKey: "workflow:leaf:1",
+      completedAt: 1,
+      topology: {
+        version: 1,
+        stageId: "leaf-boundary",
+        parentIds: [],
+        sourceOrder: 0,
+        status: "running",
+        run: {
+          runId: "grandchild-run", runName: "grandchild", parentRunId: CHILD,
+          parentStageId: "grandchild-boundary", rootRunId: ROOT,
+        },
+        boundary: {
+          version: 1, event: "start", replayScope: "workflow:leaf:1", alias: "leaf",
+          workflow: "leaf", status: "running",
+          child: {
+            runId: "leaf-run", runName: "leaf", parentRunId: "grandchild-run",
+            parentStageId: "leaf-boundary", rootRunId: ROOT,
+          },
+        },
+      },
+    });
+
+    const grandchild = grandchildScope.listCheckpoints("grandchild-run")[0];
+    assert.equal(grandchild?.workflowId, "grandchild-run");
+    assert.equal(grandchild?.checkpointId, "boundary-start:workflow:leaf:1");
+    assert.equal(grandchild?.kind === "stage" ? grandchild.replayKey : undefined, "workflow:leaf:1");
+    assert.equal(grandchild?.kind === "stage" ? grandchild.topology?.boundary?.replayScope : undefined, "workflow:leaf:1");
+    const child = childScope.listCheckpoints(CHILD)[0];
+    assert.equal(child?.checkpointId, "workflow:grandchild:1:boundary-start:workflow:leaf:1");
+    assert.equal(child?.kind === "stage" ? child.replayKey : undefined, "workflow:grandchild:1:workflow:leaf:1");
+    assert.equal(child?.kind === "stage" ? child.topology?.boundary?.replayScope : undefined, "workflow:grandchild:1:workflow:leaf:1");
+    const stored = root.listCheckpoints(ROOT)[0];
+    assert.equal(stored?.checkpointId, "workflow:child:1:workflow:grandchild:1:boundary-start:workflow:leaf:1");
+    assert.equal(stored?.kind === "stage" ? stored.replayKey : undefined, "workflow:child:1:workflow:grandchild:1:workflow:leaf:1");
+    assert.equal(stored?.kind === "stage" ? stored.topology?.boundary?.replayScope : undefined, "workflow:child:1:workflow:grandchild:1:workflow:leaf:1");
   });
 
   test("getWorkflow returns undefined (not never) for scoped child", () => {
@@ -249,14 +303,18 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
     assert.equal(childToolCalls, 1); // still 1 — no re-execution
   });
 
-  test("interrupted child re-dispatch replays child tool side effect under root scope", async () => {
+  test("active child scope without boundary ownership fails closed without rerunning its tool", async () => {
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "wf-interrupted-root", name: "parent-with-tool-child", inputs: {}, createdAt: 1, status: "running", rootWorkflowId: "wf-interrupted-root" });
-
-    // Seed ONLY the child tool side effect under the root scope (boundary and
-    // child stage checkpoints absent), simulating an interruption before the
-    // child completed its boundary. The scope key matches what the child's
-    // ctx.tool uses.
+    backend.registerWorkflow({
+      workflowId: "wf-interrupted-root",
+      name: "parent-with-tool-child",
+      inputs: {},
+      createdAt: 1,
+      status: "running",
+      rootWorkflowId: "wf-interrupted-root",
+    });
+    // A pre-fix active child may have scoped side effects but no reciprocal
+    // boundary identity. It must not attach to a new child or run a repair.
     const childToolArgsHash = durableHash({ name: "child-tool", args: { n: 1 }, ordinal: 1 });
     const scopePrefix = "workflow:workflow:child-with-tool:1";
     backend.recordCheckpoint({
@@ -278,7 +336,7 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
       run: async (ctx) => {
         await ctx.stage("c").complete("c-done");
         const value = await ctx.tool("child-tool", { n: 1 }, async () => {
-          childToolCalls++;
+          childToolCalls += 1;
           return "SHOULD-NOT-RUN";
         });
         return { value };
@@ -302,9 +360,9 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
       durableBackend: backend,
       adapters: { complete: { complete: async (text) => text } },
     });
-    assert.equal(result.status, "completed");
-    assert.equal(result.result?.["result"], "recovered-side-effect");
-    assert.equal(childToolCalls, 0); // child tool did NOT re-execute
+    assert.equal(result.status, "failed");
+    assert.match(result.error ?? "", /durable nested topology is non-resumable/);
+    assert.equal(childToolCalls, 0);
   });
 });
 

@@ -50,6 +50,8 @@ export function stripWorkflowOnlyOptions(
     resumeFromSessionFile,
     durableReplayKey: _durableReplayKey,
     durableAccumulatedDurationMs: _durableAccumulatedDurationMs,
+    durableStageId: _durableStageId,
+    durableParentIds: _durableParentIds,
     sessionDir,
     gitWorktreeDir: _gitWorktreeDir,
     baseBranch: _baseBranch,

@@ -1,6 +1,6 @@
 import type { RunSnapshot, StageSnapshot, WorkflowChildReplaySnapshot, WorkflowChildRunRef } from "../../shared/store-types.js";
 import type { Store } from "../../shared/store.js";
-import type { WorkflowChildResult } from "../../shared/types.js";
+import type { WorkflowChildResult, WorkflowSerializableValue } from "../../shared/types.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { elapsedStageMs } from "../../shared/timing.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
@@ -12,6 +12,9 @@ import { cloneWorkflowChildReplaySnapshot, cloneWorkflowChildValue } from "./exe
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { WorkflowExitCleanup } from "./executor-types.js";
 import { makeParentWorkflowExitAbortReason } from "./executor-abort.js";
+import type { DurableBoundaryRuntimeIdentity } from "../../durable/boundary-topology.js";
+import { DurableNestedTopologyError } from "../../durable/boundary-topology.js";
+import { parseWorkflowChildResult } from "../../durable/workflow-child-result.js";
 
 interface LinkedChildWorkflowExitState {
   readonly ref: WorkflowChildRunRef;
@@ -21,6 +24,8 @@ interface LinkedChildWorkflowExitState {
 
 export interface WorkflowBoundaryStage {
   readonly id: string;
+  readonly parentIds: readonly string[];
+  readonly sourceOrder: number;
   readonly replayedChild?: WorkflowChildResult;
   finalizeReplay(): void;
   linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): void;
@@ -31,24 +36,19 @@ export interface WorkflowBoundaryStage {
 }
 
 function workflowChildResultFromReplay(snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult {
-  const outputs = cloneWorkflowChildValue(snapshot.outputs);
-  if (snapshot.exited === true || snapshot.status !== "completed") {
-    return {
-      workflow: snapshot.workflow,
-      runId: snapshot.runId,
-      status: snapshot.status,
-      exited: true,
-      outputs,
-      ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
-    };
-  }
-  return {
+  const candidate = {
     workflow: snapshot.workflow,
     runId: snapshot.runId,
-    status: "completed",
-    exited: false,
-    outputs,
-  };
+    status: snapshot.status,
+    exited: snapshot.exited,
+    outputs: cloneWorkflowChildValue(snapshot.outputs),
+    ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
+  } as WorkflowSerializableValue;
+  const parsed = parseWorkflowChildResult(candidate);
+  if (parsed === undefined) {
+    throw new DurableNestedTopologyError("continuation child result has an invalid exited/status/output discriminant");
+  }
+  return parsed;
 }
 
 function requestLinkedChildWorkflowExit(linkedChild: LinkedChildWorkflowExitState, reason?: string): void {
@@ -77,9 +77,10 @@ export function createWorkflowBoundaryFactory(input: {
   readonly registerWorkflowExitCleanup: (stageId: string, cleanup: WorkflowExitCleanup) => () => void;
   readonly workflowExitSkippedReason: (reason?: string) => string;
   readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
-}): (name: string, replayKey: string) => WorkflowBoundaryStage {
-  return (name: string, replayKey: string): WorkflowBoundaryStage => {
-    const stageId = crypto.randomUUID();
+}): (name: string, replayKey: string, identity?: DurableBoundaryRuntimeIdentity) => WorkflowBoundaryStage {
+  return (name: string, replayKey: string, identity?: DurableBoundaryRuntimeIdentity): WorkflowBoundaryStage => {
+    const stageId = identity?.boundaryId ?? crypto.randomUUID();
+    const sourceOrder = identity?.sourceOrder ?? input.runSnapshot.stages.length;
     const provisionalParentIds = input.tracker.onSpawn(stageId, name);
     const replayDecision = input.replayIndex.decide({
       displayName: name,
@@ -88,7 +89,7 @@ export function createWorkflowBoundaryFactory(input: {
       stageId,
       kind: "workflow",
     });
-    const parentIds = replayDecision.parentIds;
+    const parentIds = identity?.parentIds ?? replayDecision.parentIds;
     if (!sameStringSet(parentIds, provisionalParentIds)) input.tracker.replaceParents(stageId, parentIds);
     const replaySource = replayDecision.source;
     const replayChildSnapshot = replayDecision.kind === "replay" ? replayDecision.source.workflowChild : undefined;
@@ -203,6 +204,8 @@ export function createWorkflowBoundaryFactory(input: {
 
     return {
       id: stageId,
+      parentIds: Object.freeze([...parentIds]),
+      sourceOrder,
       ...(replayedChild !== undefined ? { replayedChild } : {}),
       finalizeReplay,
       linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): void {

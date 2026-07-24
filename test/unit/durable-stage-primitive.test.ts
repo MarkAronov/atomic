@@ -1,11 +1,4 @@
-/**
- * Tests for the durable ctx.stage/ctx.task checkpoint recorder.
- *
- * Verifies completed stage outputs are recorded durably at the stage-end
- * lifecycle boundary and are idempotent.
- *
- * cross-ref: issue #1498 — durable stage/task checkpoints.
- */
+/** Durable ctx.stage/ctx.task checkpoint recorder tests. */
 import { describe, test, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -67,9 +60,13 @@ describe("recordStageCheckpoint", () => {
     assert.equal(backend.getStageOutput(WORKFLOW_ID, "explicit:analyze:1"), undefined);
   });
 
-  test("skips non-completed stages", async () => {
-    const stage = makeStage({ status: "running" });
-    assert.equal(await recordStageCheckpoint(deps(), stage), false);
+  test("records failed/skipped topology metadata without successful outputs", async () => {
+    for (const status of ["failed", "skipped"] as const) {
+      const replayKey = `stage:${status}:1`;
+      assert.equal(await recordStageCheckpoint(deps(), makeStage({ status, replayKey, result: undefined })), true);
+      const cp = backend.listCheckpoints(WORKFLOW_ID).find((item) => item.kind === "stage" && item.replayKey === replayKey);
+      assert.deepEqual(cp?.kind === "stage" ? [cp.topology?.status, cp.output] : undefined, [status, undefined]);
+    }
   });
 
   test("preserves first replay output when later lifecycle metadata is recorded", async () => {

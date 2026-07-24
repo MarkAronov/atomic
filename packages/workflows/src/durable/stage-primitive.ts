@@ -9,7 +9,9 @@ import { durableHash } from "./backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
-import { DURABLE_STAGE_TOPOLOGY_VERSION, type DurableStageCheckpoint, type DurableStageRunTopology } from "./types.js";
+import { type DurableStageCheckpoint, type DurableStageRunTopology } from "./types.js";
+import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-topology.js";
+import { isWorkflowChildResult } from "./workflow-child-result.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
 
 export interface DurableStageDeps {
@@ -19,15 +21,21 @@ export interface DurableStageDeps {
   readonly nextReplayKey: (stageName: string) => string;
   readonly replayKeyForCompletedStage?: (stage: StageSnapshot) => string | undefined;
   readonly runTopology?: DurableStageRunTopology;
+  readonly sourceOrderForStage?: (stage: StageSnapshot) => number | undefined;
   readonly now?: () => number;
 }
 
-export async function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
-  if (stage.status !== "completed") return false;
+export async function recordStageCheckpoint(
+  deps: DurableStageDeps,
+  stage: StageSnapshot,
+  options?: { readonly metadataOnly?: boolean },
+): Promise<boolean> {
+  if (stage.status !== "completed" && stage.status !== "failed" && stage.status !== "skipped") return false;
   const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
-  const metadata = durableStageCheckpointMetadata(stage, deps.runTopology);
+  const metadata = durableStageCheckpointMetadata(stage, deps.runTopology, deps.sourceOrderForStage?.(stage));
   const hasExistingOutput = deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined;
-  const checkpoint: DurableStageCheckpoint = hasExistingOutput
+  const metadataOnly = options?.metadataOnly === true || stage.status !== "completed" || hasExistingOutput;
+  const checkpoint: DurableStageCheckpoint = metadataOnly
     ? {
         kind: "stage",
         workflowId: deps.workflowId,
@@ -51,12 +59,7 @@ export async function recordStageCheckpoint(deps: DurableStageDeps, stage: Stage
   return true;
 }
 
-/**
- * Debounce granularity for stage-session duration updates. `durationMs`
- * differs on virtually every prompt/steer event, so comparing it exactly
- * forced a full durable read-merge-rewrite per event; identity fields
- * (session id/file/start) still force an immediate write when they change.
- */
+// Duration-only session updates are bucketed; identity changes still persist immediately.
 const STAGE_SESSION_DURATION_BUCKET_MS = 30_000;
 
 function stageSessionDurationBucket(durationMs: number | undefined): number {
@@ -84,7 +87,7 @@ export async function recordStageSessionCheckpoint(
     checkpointId: stageSessionCheckpointId(replayKey, stage, durationMs),
     name: stage.name,
     replayKey,
-    ...durableStageCheckpointMetadata(stage, deps.runTopology),
+    ...durableStageCheckpointMetadata(stage, deps.runTopology, deps.sourceOrderForStage?.(stage)),
     ...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
     sessionFile: stage.sessionFile,
     ...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
@@ -99,11 +102,7 @@ const MID_SESSION_RESUME_PROMPT = RESUME_CONTINUATION_PROMPT;
 
 function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: boolean): T {
   if (!enabled) return stage;
-  // Do NOT spread `stage` (e.g. `{ ...stage, prompt }`). The live StageContext
-  // exposes lazy getters for `sessionId`/`sessionFile`/`messages`/`isStreaming`
-  // that throw until the underlying SDK session has been created, and a spread
-  // would eagerly read them before the first `prompt()` lands. Override
-  // `prompt` in place instead — `prompt` is a normal configurable own property.
+  // Override in place: spreading would eagerly read lazy session getters before prompt().
   const originalPrompt = stage.prompt.bind(stage);
   Object.defineProperty(stage, "prompt", {
     value: (_text: string, options?: Parameters<StageContext["prompt"]>[1]) =>
@@ -114,8 +113,6 @@ function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: b
   });
   return stage;
 }
-
-
 export function createDurableStagePrimitive(input: {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
@@ -132,9 +129,14 @@ export function createDurableStagePrimitive(input: {
     }
     const session = input.backend.getStageSession(input.workflowId, replayKey);
     const isMidSessionResume = session?.sessionFile !== undefined;
+    const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
     const liveOptions: StageOptions | undefined = {
       ...(options ?? {}),
       durableReplayKey: replayKey,
+      ...(topology !== undefined ? {
+        durableStageId: topology.stageId,
+        durableParentIds: [...topology.parentIds],
+      } : {}),
       ...(isMidSessionResume ? {
         resumeFromSessionFile: session.sessionFile,
         durableAccumulatedDurationMs: session.durationMs ?? 0,
@@ -152,6 +154,7 @@ export function createDurableStagePrimitive(input: {
   };
 }
 
+
 export function createDurableTaskPrimitive(input: {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
@@ -167,15 +170,21 @@ export function createDurableTaskPrimitive(input: {
       return cached.output;
     }
     const session = input.backend.getStageSession(input.workflowId, replayKey);
+    const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
     const taskOptions: WorkflowTaskOptions = {
       ...options,
       durableReplayKey: replayKey,
+      ...(topology !== undefined ? {
+        durableStageId: topology.stageId,
+        durableParentIds: [...topology.parentIds],
+      } : {}),
       ...(session?.sessionFile !== undefined ? {
         resumeFromSessionFile: session.sessionFile,
         durableAccumulatedDurationMs: session.durationMs ?? 0,
       } : {}),
     };
     const result = await input.task(name, taskOptions, stageFailFastScope);
+    const completedTopology = activeStageTopology(input.backend, input.workflowId, replayKey);
     await recordCheckpointDurably(input.backend, {
       kind: "stage",
       workflowId: input.workflowId,
@@ -185,6 +194,7 @@ export function createDurableTaskPrimitive(input: {
       output: result,
       completedAt: Date.now(),
       ...taskCheckpointMetadata(result),
+      ...(completedTopology !== undefined ? { topology: completedTopology } : {}),
     });
     return result;
   };
@@ -262,29 +272,6 @@ function stageOutput(stage: StageSnapshot): WorkflowSerializableValue {
   return { status: stage.status, stageId: stage.id };
 }
 
-export function durableStageCheckpointMetadata(
-  stage: StageSnapshot,
-  run?: DurableStageRunTopology,
-): Partial<DurableStageCheckpoint> {
-  return {
-    topology: {
-      version: DURABLE_STAGE_TOPOLOGY_VERSION,
-      stageId: stage.id,
-      parentIds: [...stage.parentIds],
-      ...(run !== undefined ? { run: { ...run } } : {}),
-    },
-    ...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
-    ...(stage.endedAt !== undefined ? { endedAt: stage.endedAt } : {}),
-    ...(stage.durationMs !== undefined ? { durationMs: stage.durationMs } : {}),
-    ...(stage.result !== undefined ? { result: stage.result } : {}),
-    ...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
-    ...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
-    ...(stage.model !== undefined ? { model: stage.model } : {}),
-    ...(stage.fastMode !== undefined ? { fastMode: stage.fastMode } : {}),
-    ...(stage.attemptedModels !== undefined ? { attemptedModels: [...stage.attemptedModels] } : {}),
-    ...(stage.modelAttempts !== undefined ? { modelAttempts: [...stage.modelAttempts] } : {}),
-  };
-}
 
 function taskCheckpointMetadata(result: WorkflowTaskResult): Partial<DurableStageCheckpoint> {
   return {
@@ -322,7 +309,9 @@ function mergeCheckpointHydrationMetadata(
   replayValueCheckpoint: DurableCompletedStageCheckpoint,
   checkpoints: readonly DurableStageCheckpoint[],
 ): DurableCompletedStageCheckpoint {
-  if (checkpoints.length === 0) return replayValueCheckpoint;
+  if (checkpoints.length === 0 || replayValueCheckpoint.topology?.boundary?.event === "terminal") {
+    return replayValueCheckpoint;
+  }
   return {
     ...replayValueCheckpoint,
     ...preferredHydrationTopology(replayValueCheckpoint, checkpoints),
@@ -338,10 +327,15 @@ function mergeCheckpointHydrationMetadata(
     ...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
   };
 }
+
 function preferredHydrationTopology(
   replayValueCheckpoint: DurableCompletedStageCheckpoint,
   checkpoints: readonly DurableStageCheckpoint[],
 ): Pick<DurableStageCheckpoint, "topology"> | Record<string, never> {
+  for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
+    const topology = checkpoints[index]?.topology;
+    if (topology?.boundary !== undefined) return { topology };
+  }
   for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
     const topology = checkpoints[index]?.topology;
     if (topology?.run !== undefined) return { topology };
@@ -392,6 +386,7 @@ export function cachedStageId(runId: string, replayKey: string): string {
 function stageMetadataCheckpointId(replayKey: string, stage: StageSnapshot): string {
   return `${stableCheckpointId("stage-meta", replayKey)}:${durableHash({
     stageId: stage.id,
+    status: stage.status,
     endedAt: stage.endedAt ?? 0,
     durationMs: stage.durationMs ?? 0,
     result: stage.result ?? "",
@@ -410,7 +405,10 @@ export function recordCachedStageIntoStore(
   checkpoint?: DurableCompletedStageCheckpoint,
 ): void {
   const now = Date.now();
-  const stageId = cachedStageId(runId, replayKey);
+  const sourceStageId = checkpoint?.topology?.run?.runId === runId
+    ? checkpoint.topology.stageId
+    : undefined;
+  const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
   const result = checkpoint?.result ?? (typeof output === "string" ? output : JSON.stringify(output));
   const endedAt = checkpoint?.endedAt ?? checkpoint?.completedAt ?? now;
   const workflowChild = isWorkflowChildResult(output) ? workflowChildSnapshotFromResult(output) : undefined;
@@ -447,14 +445,15 @@ export function recordCachedStageWithTracker(
   completedStageReplayKeys: Map<string, string>,
   stageFailFastScope?: ParallelFailFastScope,
 ): void {
-  const stageId = cachedStageId(runId, replayKey);
-  let parentIds = tracker.onSpawn(stageId, name);
-  const sourceParents = checkpoint.topology?.run?.runId === runId
-    ? checkpoint.topology.parentIds
+  const sourceStageId = checkpoint.topology?.run?.runId === runId
+    ? checkpoint.topology.stageId
     : undefined;
+  const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
+  let parentIds = tracker.onSpawn(stageId, name);
+  const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
   const run = store.runs().find((candidate) => candidate.id === runId);
   const restored = sourceParents?.map((sourceId) =>
-    run?.stages.find((stage) => stage.replayedFromStageId === sourceId)?.id
+    run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id
   );
   if (restored !== undefined && restored.every((id): id is string => id !== undefined)) {
     parentIds = restored;
@@ -471,16 +470,6 @@ function isWorkflowTaskResult(value: WorkflowSerializableValue): value is Workfl
   return typeof (value as Record<string, WorkflowSerializableValue>)["text"] === "string";
 }
 
-function isWorkflowChildResult(value: WorkflowSerializableValue): value is WorkflowChildResult<WorkflowOutputValues> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const objectValue = value as Record<string, WorkflowSerializableValue | undefined>;
-  return typeof objectValue["workflow"] === "string"
-    && typeof objectValue["runId"] === "string"
-    && typeof objectValue["status"] === "string"
-    && typeof objectValue["outputs"] === "object"
-    && objectValue["outputs"] !== null
-    && !Array.isArray(objectValue["outputs"]);
-}
 
 function workflowChildSnapshotFromResult(result: WorkflowChildResult<WorkflowOutputValues>): StageSnapshot["workflowChild"] {
   return {

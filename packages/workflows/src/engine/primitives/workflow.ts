@@ -17,18 +17,14 @@ import {
   workflowChildReplaySnapshot,
   workflowDefinitionRequirementMessage,
 } from "../../runs/foreground/executor-child-helpers.js";
-import type { DurableScope } from "../../durable/scoped-backend.js";
+import type { DurableChildInvocation } from "../../durable/boundary-topology.js";
 
 export function createChildWorkflowRunner(input: {
   readonly runtime: EngineRuntime;
   readonly resolveWorkflowCwd: () => string;
   readonly nextWorkflowBoundaryReplayKey: (name: string) => string;
-  /**
-   * Consume the durable scope published by the durable child primitive for the
-   * current invocation, if any. Routes child internal side-effect checkpoints
-   * under the root workflow.
-   */
-  readonly consumeDurableScope?: () => DurableScope | undefined;
+  /** Consume the identity prepared by the durable outer primitive. */
+  readonly consumeDurableInvocation?: () => DurableChildInvocation | undefined;
   readonly runWorkflow: <
     TInputs extends WorkflowInputValues,
     TRunInputs extends WorkflowInputValues = TInputs,
@@ -60,7 +56,16 @@ export function createChildWorkflowRunner(input: {
     const childName = child.normalizedName;
     const boundaryName = options.stageName ?? `workflow:${childName}`;
     const boundaryReplayKey = input.nextWorkflowBoundaryReplayKey(boundaryName);
-    const boundary = runtime.spawnStage(boundaryName, { kind: "workflow-boundary", replayKey: boundaryReplayKey }).boundary;
+    const durableInvocation = input.consumeDurableInvocation?.();
+    const boundary = runtime.spawnStage(boundaryName, {
+      kind: "workflow-boundary",
+      replayKey: boundaryReplayKey,
+      ...(durableInvocation !== undefined ? { identity: durableInvocation.identity } : {}),
+    }).boundary;
+    if (boundary.replayedChild !== undefined) {
+      durableInvocation?.adoptReplayedChildRunId(boundary.replayedChild.runId);
+    }
+    await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
     let childRunId: string | undefined;
     let detachParentAbort: (() => void) | undefined;
     try {
@@ -68,13 +73,14 @@ export function createChildWorkflowRunner(input: {
         await Promise.resolve();
         runtime.exit.throwIfWorkflowExitSelected();
         boundary.finalizeReplay();
+        await durableInvocation?.recordTerminal("completed", boundary.replayedChild);
         return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
       }
 
       const childInputs = resolveAndValidateInputs(child.inputs, options.inputs ?? {}, `child workflow "${childName}" (${child.name})`);
       runtime.exit.throwIfWorkflowExitSelected();
 
-      childRunId = crypto.randomUUID();
+      childRunId = durableInvocation?.identity.childRunId ?? crypto.randomUUID();
       const childController = new AbortController();
       const childRef: WorkflowChildRunRef = { alias: childName, workflow: child.normalizedName, runId: childRunId };
       boundary.linkChildRun(childRef, childController);
@@ -107,7 +113,7 @@ export function createChildWorkflowRunner(input: {
         },
         signal: childController.signal,
         deferWorkflowStart: false,
-        ...(input.consumeDurableScope !== undefined ? { durableScope: input.consumeDurableScope() } : {}),
+        ...(durableInvocation !== undefined ? { durableScope: durableInvocation.scope } : {}),
       });
       boundary.observeChildRun(childRunPromise);
       const childRun = await childRunPromise;
@@ -150,14 +156,17 @@ export function createChildWorkflowRunner(input: {
         `Workflow "${child.name}" ${childRun.status} (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
         workflowChild,
       );
+      await durableInvocation?.recordTerminal("completed", childResult);
       return childResult;
     } catch (err) {
       const exit = findWorkflowExitSignal(err, runtime.exit.exitScope) ?? findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
       if (exit !== undefined) {
         await boundary.skipForWorkflowExit(exit.reason);
+        await durableInvocation?.recordTerminal("skipped");
         throw exit;
       }
       boundary.fail(err);
+      await durableInvocation?.recordTerminal("failed");
       throw err;
     } finally {
       detachParentAbort?.();

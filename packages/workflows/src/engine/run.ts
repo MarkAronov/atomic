@@ -1,5 +1,5 @@
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues, WorkflowRunContext } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
@@ -39,14 +39,15 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import { getDurableBackend } from "../durable/factory.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
-import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
+import { createDurableStagePrimitive, createDurableTaskPrimitive, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
 import { inheritedRunElapsedMs, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
-import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
+import { ScopedDurableBackend } from "../durable/scoped-backend.js";
+import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { createDurableCachedStageRecorder, createDurableStageDeps } from "./run-durable-topology.js";
+import { createDurableCachedStageRecorder, createDurableStageDeps, createDurableStageEndRecorder, createDurableStageTopologyResolver, durableRunTopology, recordDurableActiveStage } from "./run-durable-topology.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
@@ -99,16 +100,14 @@ export async function run<
     else callerSignal.addEventListener("abort", () => { ownController.abort(callerSignal.reason); }, { once: true });
   }
   const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
-  // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
-  // Declared early so the stage-end recorder can attach to stageOptions and so
-  // resume can seed inherited elapsed time. Child runs with a durable scope
-  // route their internal side-effect checkpoints under the root workflow so
-  // interrupted children do not re-execute completed side effects on parent
-  // resume. cross-ref: issue #1498 — DBOS-backed cross-session resumability.
-  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  // Durable child operations stay on stacked scoped views, while cached graph
+  // reconstruction keeps the physical root backend through arbitrary depth.
+  // cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+  const backendView: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
   const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
-    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
-    : rootBackend;
+    ? new ScopedDurableBackend(backendView, opts.durableScope)
+    : backendView;
   const inheritedElapsedMs = opts.parentRun === undefined
     ? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
     : undefined;
@@ -207,13 +206,10 @@ export async function run<
     nextCheckpointId: checkpointIdGenerator, nextReplayKey: stageReplayKeyGenerator,
     completedReplayKeys: completedStageReplayKeys,
   });
-  const userOnStageEnd = opts.onStageEnd;
-  const durableOnStageEnd = async (stageRunId: string, snapshot: StageSnapshot): Promise<void> => {
-    if (stageRunId === runId && snapshot.status === "completed") {
-      await recordStageCheckpoint(durableStageDeps, snapshot);
-    }
-    await userOnStageEnd?.(stageRunId, snapshot);
-  };
+  const durableOnStageEnd = createDurableStageEndRecorder({ rootRunId: runId, deps: durableStageDeps, user: opts.onStageEnd });
+  const durableOnPromptNodeEnd = createDurableStageEndRecorder({
+    rootRunId: runId, deps: durableStageDeps, user: opts.onStageEnd, metadataOnly: true,
+  });
   const durableOnStageSession = createDurableStageSessionRecorder({
     runId, deps: durableStageDeps, onStageSession: opts.onStageSession,
     ...(opts.parentRun === undefined ? { runSnapshot } : {}),
@@ -255,6 +251,7 @@ export async function run<
     onStageEnd: opts.onStageEnd,
     onStageSession: opts.onStageSession,
     durableBackend,
+    durableRootBackend: rootBackend,
   };
   const runtime = new EngineRuntime({
     runId,
@@ -280,36 +277,34 @@ export async function run<
   });
   const workflowBoundaryReplayCounts = new Map<string, number>();
   const nextWorkflowBoundaryReplayKey = (name: string): string => {
-    const durableScopePrefix = pendingChildDurableScope?.scopePrefix;
+    const durableScopePrefix = pendingChildDurableInvocation?.scope.scopePrefix;
     if (durableScopePrefix !== undefined && durableScopePrefix.startsWith(`workflow:${name}:`)) return durableScopePrefix;
     const next = (workflowBoundaryReplayCounts.get(name) ?? 0) + 1;
     workflowBoundaryReplayCounts.set(name, next);
     return `workflow:${name}:${next}`;
   };
-  // Durable child workflow replay keys use a SEPARATE counter so that cache
-  // hits (which do not invoke the inner workflow runner) do not desync the
-  // ordinal sequence. Without this, repeated ctx.workflow(child) calls would
-  // shift replay keys on resume and re-execute completed children.
-  // cross-ref: issue #1498.
+  // Durable scopes are keyed by definition+validated-input fingerprint. Only
+  // truly identical invocations share an ordinal sequence, so reversed
+  // parallel dispatch cannot exchange distinct cached child results.
   const durableChildReplayCounts = new Map<string, number>();
-  const nextDurableChildReplayKey = (name: string): string => {
-    const next = (durableChildReplayCounts.get(name) ?? 0) + 1;
-    durableChildReplayCounts.set(name, next);
-    return `workflow:${name}:${next}`;
+  const nextDurableChildReplayKey = (name: string, invocationFingerprint: string): string => {
+    const identity = `${name}:${invocationFingerprint}`;
+    const next = (durableChildReplayCounts.get(identity) ?? 0) + 1;
+    durableChildReplayCounts.set(identity, next);
+    return `workflow:${name}:${invocationFingerprint}:${next}`;
   };
   const taskRunners = createWorkflowTaskRunners({ runtime });
-  // Durable scope holder: the durable child primitive publishes the scope for
-  // the next child invocation; the child runner consumes it when launching the
-  // run. This routes child internal side-effect checkpoints under the root.
-  let pendingChildDurableScope: DurableScope | undefined;
+  // The outer primitive publishes one validated boundary/child identity; the
+  // inner runner consumes it before dispatching child workflow code.
+  let pendingChildDurableInvocation: DurableChildInvocation | undefined;
   const workflow = createChildWorkflowRunner({
     runtime,
     resolveWorkflowCwd,
     nextWorkflowBoundaryReplayKey,
-    consumeDurableScope: () => {
-      const scope = pendingChildDurableScope;
-      pendingChildDurableScope = undefined;
-      return scope;
+    consumeDurableInvocation: () => {
+      const invocation = pendingChildDurableInvocation;
+      pendingChildDurableInvocation = undefined;
+      return invocation;
     },
     runWorkflow: run,
   });
@@ -329,9 +324,30 @@ export async function run<
     },
     signal: ownController.signal,
   });
-
-  // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
-  const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
+  // Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
+  const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
+  let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
+  const getPromptNodeUi = (): ReturnType<typeof buildPromptNodeUiAdapter> => {
+    promptNodeUi ??= buildPromptNodeUiAdapter({
+      runId, activeStore, tracker, replayIndex, classifyExecutorFailure,
+      opts: { ...opts, onStageEnd: durableOnPromptNodeEnd }, stageControlRegistry: stageRegistry,
+      signal: ownController.signal,
+      throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
+      registerWorkflowExitCleanup: exit.registerWorkflowExitCleanup,
+      workflowExitSkippedReason: exit.workflowExitSkippedReason,
+      preserveWorkflowExitSkippedReason: exit.preserveWorkflowExitSkippedReason,
+      durableTopologyForReplayKey: resolvePromptNodeTopology,
+      onPendingStage: async (pendingRunId, snapshot) => pendingRunId === runId
+        ? void await recordDurableActiveStage(durableStageDeps, snapshot) : undefined,
+    });
+    return promptNodeUi;
+  };
+  const durableUiDeps = {
+    workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator,
+    ...(opts.usePromptNodesForUi === true ? { onReplay: async (
+      request: Parameters<ReturnType<typeof buildPromptNodeUiAdapter>["replayDurable"]>[0],
+    ) => getPromptNodeUi().replayDurable(request) } : {}),
+  };
   const cachedStage = createDurableCachedStageRecorder({
     store: activeStore, tracker, run: runSnapshot, backend: durableBackend,
     rootBackend, completedStageReplayKeys,
@@ -343,9 +359,10 @@ export async function run<
   });
   const durableWorkflow = createDurableChildWorkflowPrimitive({
     workflowId: runId, rootWorkflowId: opts.parentRun?.rootRunId ?? runId, backend: durableBackend,
-    nextReplayKey: nextDurableChildReplayKey, setChildDurableScope: (scope) => { pendingChildDurableScope = scope; },
+    nextReplayKey: nextDurableChildReplayKey,
+    setChildDurableInvocation: (invocation) => { pendingChildDurableInvocation = invocation; },
     recordCachedStage: cachedStage.record,
-    checkpointMetadata: cachedStage.metadata,
+    runTopology: durableRunTopology(runSnapshot),
     workflow,
   });
   const ctx: WorkflowRunContext<TInputs> = {
@@ -356,20 +373,7 @@ export async function run<
       opts,
       throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
       durableUi: durableUiDeps,
-      baseFromPromptNodes: () => buildPromptNodeUiAdapter({
-        runId,
-        activeStore,
-        opts,
-        stageControlRegistry: stageRegistry,
-        tracker,
-        replayIndex,
-        signal: ownController.signal,
-        throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
-        registerWorkflowExitCleanup: exit.registerWorkflowExitCleanup,
-        workflowExitSkippedReason: exit.workflowExitSkippedReason,
-        preserveWorkflowExitSkippedReason: exit.preserveWorkflowExitSkippedReason,
-        classifyExecutorFailure,
-      }),
+      baseFromPromptNodes: getPromptNodeUi,
     }),
     stage: createDurableStagePrimitive({
       workflowId: runId,

@@ -45,6 +45,17 @@ function childAliasFor(stage: StageSnapshot): string | undefined {
   return stage.workflowChildRun?.alias;
 }
 
+function isReciprocalChildRun(
+  parent: RunSnapshot,
+  boundary: StageSnapshot,
+  child: RunSnapshot,
+  rootRunId: string,
+): boolean {
+  return child.parentRunId === parent.id
+    && child.parentStageId === boundary.id
+    && child.rootRunId === rootRunId;
+}
+
 function localTerminalStageIds(stages: readonly StageSnapshot[]): readonly string[] {
   const parentIds = new Set<string>();
   for (const stage of stages) {
@@ -87,6 +98,7 @@ export function expandWorkflowGraph(
   // cannot double-expand a shared child into duplicate virtual stage ids. If
   // that invariant is ever relaxed, dedupe expanded stages by virtual id here.
   const visiting = new Set<string>();
+  const expandedChildren = new Set<string>();
 
   const expandRun = (
     run: RunSnapshot,
@@ -109,13 +121,19 @@ export function expandWorkflowGraph(
           );
 
       const childRunId = childRunIdFor(stage);
-      const childRun = childRunId === undefined ? undefined : runById.get(childRunId);
+      const candidateChild = childRunId === undefined ? undefined : runById.get(childRunId);
+      const childRun = candidateChild !== undefined
+        && !expandedChildren.has(candidateChild.id)
+        && isReciprocalChildRun(run, stage, candidateChild, rootRunId)
+        ? candidateChild
+        : undefined;
 
       // Flatten the imported workflow in place: when the boundary wraps a child
       // run that has its own stages, splice those stages in instead of emitting
       // the boundary node. Child roots inherit the boundary's incoming parents,
       // and downstream stages rewire to the child's terminals below.
       if (childRun !== undefined && childRun.stages.length > 0) {
+        expandedChildren.add(childRun.id);
         const childExpanded = expandRun(childRun, depth + 1, resolvedParentIds);
         expandedStages.push(...childExpanded.stages);
         replacementTerminals.set(

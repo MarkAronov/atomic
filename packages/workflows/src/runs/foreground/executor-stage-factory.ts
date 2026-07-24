@@ -49,9 +49,10 @@ export function createWorkflowStageFactory(input: {
   return (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope): StageContextWithMeta => {
     input.exit.throwIfWorkflowExitSelected();
     options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults), input.workflowInvocationCwd, input.gitWorktreeSetupCache);
-    const stageId = crypto.randomUUID();
+    const stageId = options?.durableStageId ?? crypto.randomUUID();
     const provisionalParentIds = input.tracker.onSpawn(stageId, name);
-    const scopedParentIds = input.opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined;
+    const scopedParentIds = options?.durableParentIds
+      ?? (input.opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined);
     const initialParentIds = scopedParentIds === undefined ? provisionalParentIds : [...scopedParentIds];
     if (scopedParentIds !== undefined && !sameStringSet(scopedParentIds, provisionalParentIds)) {
       input.tracker.replaceParents(stageId, scopedParentIds);
@@ -65,7 +66,7 @@ export function createWorkflowStageFactory(input: {
       stageId,
       kind: "stage",
     });
-    const parentIds = replayDecision.parentIds;
+    const parentIds = options?.durableParentIds ?? replayDecision.parentIds;
     if (!sameStringSet(parentIds, provisionalParentIds)) input.tracker.replaceParents(stageId, parentIds);
     const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
     const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;

@@ -34,6 +34,48 @@ describe("current DBOS stage topology", () => {
     assert.deepEqual(decoded.topology, checkpoint.topology);
   });
 
+  test("round-trips durable boundary identity and rejects an unsupported boundary version", () => {
+    const checkpoint: DurableStageCheckpoint = {
+      ...stage("wf-boundary-topology"),
+      checkpointId: "boundary-start:child",
+      replayKey: "workflow:child:1",
+      topology: {
+        version: 1,
+        stageId: "boundary",
+        parentIds: ["plan"],
+        sourceOrder: 1,
+        status: "running",
+        run: { runId: "wf-boundary-topology", runName: "root" },
+        boundary: {
+          version: 1,
+          event: "start",
+          replayScope: "workflow:child:1",
+          alias: "child",
+          workflow: "child",
+          invocationFingerprint: "h00000000000000000000000000000000",
+          status: "running",
+          child: {
+            runId: "child-run",
+            runName: "child",
+            parentRunId: "wf-boundary-topology",
+            parentStageId: "boundary",
+            rootRunId: "wf-boundary-topology",
+          },
+        },
+      },
+    };
+    const envelope = encodeCheckpoint(checkpoint);
+    const decoded = decodeToCheckpoint(checkpoint.workflowId, checkpoint.checkpointId, envelope);
+    assert.ok(decoded?.kind === "stage");
+    assert.deepEqual(decoded.topology, checkpoint.topology);
+    const topology = envelope.topology as Record<string, import("../../packages/workflows/src/shared/types.js").WorkflowSerializableValue>;
+    const boundary = topology["boundary"] as Record<string, import("../../packages/workflows/src/shared/types.js").WorkflowSerializableValue>;
+    assert.equal(decodeToCheckpoint(checkpoint.workflowId, checkpoint.checkpointId, {
+      ...envelope,
+      topology: { ...topology, boundary: { ...boundary, version: 2 } },
+    }), undefined);
+  });
+
   test("rejects a marked current stage envelope with missing topology", () => {
     const checkpoint = stage("wf-missing-topology");
     const envelope = { ...encodeCheckpoint(checkpoint), topology: undefined };

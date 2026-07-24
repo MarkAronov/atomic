@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed durable nested `ctx.workflow(...)` resume and completed hydration across fresh processes. Atomic now persists an awaited, input-bound boundary-start identity before child dispatch, reuses stable boundary/child ids across reversed parallel ordering, keeps identical calls distinct by ordinal, scopes child checkpoint reads symmetrically at every nesting depth, and preserves source stage ids/order/parents/status and exact owner targets. Active and completed topology, boundary lifecycle transitions, and child results are validated atomically before cache/control/child dispatch; stale, aliased, cyclic, poisoned, or nonreciprocal records fail closed without repair execution. Completed child work and `ctx.tool(...)` effects remain exactly once, completed graphs remain root-catalog-only/read-only, retained child chat stays detached from execution, and ambiguous local stage ids or names no longer route to the first match.
 - Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
 
 ## [0.9.11-alpha.5] - 2026-07-23

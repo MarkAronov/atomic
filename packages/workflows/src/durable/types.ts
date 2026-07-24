@@ -110,6 +110,45 @@ export interface DurableUiCheckpoint {
 
 export const DURABLE_STAGE_TOPOLOGY_VERSION = 1 as const;
 
+export const DURABLE_BOUNDARY_TOPOLOGY_VERSION = 1 as const;
+
+export type DurableStageLifecycleStatus =
+  | "pending"
+  | "running"
+  | "awaiting_input"
+  | "paused"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export interface DurableBoundaryChildTopology {
+  readonly runId: string;
+  readonly runName: string;
+  readonly parentRunId: string;
+  readonly parentStageId: string;
+  readonly rootRunId: string;
+}
+
+interface DurableWorkflowBoundaryIdentity {
+  readonly version: typeof DURABLE_BOUNDARY_TOPOLOGY_VERSION;
+  readonly replayScope: string;
+  readonly alias: string;
+  readonly workflow: string;
+  /** Definition + exact validated inputs; absent only on compatible completed legacy records. */
+  readonly invocationFingerprint?: string;
+  readonly child: DurableBoundaryChildTopology;
+}
+
+/** Additive identity record written before a nested workflow can execute. */
+export type DurableWorkflowBoundaryTopology = DurableWorkflowBoundaryIdentity & (
+  | { readonly event: "start"; readonly status: "running" }
+  | {
+      readonly event: "terminal";
+      readonly status: Extract<DurableStageLifecycleStatus, "completed" | "failed" | "skipped">;
+    }
+);
+
 /** Durable ownership metadata needed to rebuild nested workflow runs. */
 export interface DurableStageRunTopology {
   readonly runId: string;
@@ -124,8 +163,16 @@ export interface DurableStageTopology {
   readonly version: typeof DURABLE_STAGE_TOPOLOGY_VERSION;
   readonly stageId: string;
   readonly parentIds: readonly string[];
+  /** Zero-based source/spawn order within the owning run. */
+  readonly sourceOrder?: number;
+  /** Distinguishes one durable prompt-node occurrence from its logical continuation replay key. */
+  readonly occurrenceKey?: string;
+  /** Actual stage lifecycle state represented by this checkpoint. */
+  readonly status?: DurableStageLifecycleStatus;
   /** Owning run and boundary linkage for nested workflow graph reconstruction. */
   readonly run?: DurableStageRunTopology;
+  /** Present only for durable nested-workflow boundary records. */
+  readonly boundary?: DurableWorkflowBoundaryTopology;
 }
 
 /** A `ctx.stage(...)` / `ctx.task(...)` durable checkpoint or resumable session marker. */

@@ -335,7 +335,7 @@ describe("executor.run", () => {
             },
         );
 
-        assert.equal(continued.status, "completed");
+        assert.equal(continued.status, "completed", continued.error);
         assert.deepEqual(continuationCalls, ["after:child-ok"]);
         const boundary = continued.stages.find(
             (stage) => stage.name === "workflow:resume-import-child",
@@ -422,7 +422,7 @@ describe("executor.run", () => {
             },
         );
 
-        assert.equal(continued.status, "completed");
+        assert.equal(continued.status, "completed", continued.error);
         const boundary = continued.stages.find(
             (stage) => stage.name === "workflow:resume-import-clone-child",
         )!;

@@ -14,6 +14,7 @@ import { createWorkflowBoundaryFactory, type WorkflowBoundaryStage } from "../ru
 import type { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import type { GitWorktreeSetupCache } from "../runs/foreground/executor-direct-helpers.js";
+import type { DurableBoundaryRuntimeIdentity } from "../durable/boundary-topology.js";
 
 export interface EngineRuntimeInput {
   readonly runId: string;
@@ -48,6 +49,7 @@ export interface EngineSpawnAgentStageOptions {
 export interface EngineSpawnWorkflowBoundaryOptions {
   readonly kind: "workflow-boundary";
   readonly replayKey: string;
+  readonly identity?: DurableBoundaryRuntimeIdentity;
 }
 
 export type EngineSpawnStageOptions = EngineSpawnAgentStageOptions | EngineSpawnWorkflowBoundaryOptions;
@@ -84,7 +86,11 @@ export class EngineRuntime {
     options?: StageOptions,
     stageFailFastScope?: ParallelFailFastScope,
   ) => StageContextWithMeta;
-  private readonly spawnWorkflowBoundary: (name: string, replayKey: string) => WorkflowBoundaryStage;
+  private readonly spawnWorkflowBoundary: (
+    name: string,
+    replayKey: string,
+    identity?: DurableBoundaryRuntimeIdentity,
+  ) => WorkflowBoundaryStage;
 
   constructor(input: EngineRuntimeInput) {
     this.runId = input.runId;
@@ -138,7 +144,10 @@ export class EngineRuntime {
   spawnStage(name: string, opts?: EngineSpawnAgentStageOptions): EngineAgentStageHandle;
   spawnStage(name: string, opts: EngineSpawnStageOptions = {}): StageHandle {
     if (opts.kind === "workflow-boundary") {
-      return { kind: "workflow-boundary", boundary: this.spawnWorkflowBoundary(name, opts.replayKey) };
+      return {
+        kind: "workflow-boundary",
+        boundary: this.spawnWorkflowBoundary(name, opts.replayKey, opts.identity),
+      };
     }
     return { kind: "agent", context: this.spawnAgentStage(name, opts.options, opts.failFastScope) };
   }

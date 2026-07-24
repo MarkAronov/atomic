@@ -4,28 +4,32 @@ import type {
   WorkflowInputValues,
   WorkflowOutputValues,
   WorkflowRunChildArgs,
-  WorkflowSerializableValue,
 } from "../shared/types.js";
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
+import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import type { DurableWorkflowBackend } from "./backend.js";
-import type { DurableScope } from "./scoped-backend.js";
-import { recordCheckpointDurably } from "./tool-primitive.js";
+import {
+  DurableNestedTopologyError,
+  prepareDurableChildInvocation,
+  validateDurableChildInvocation,
+  validateDurableCompletedBoundary,
+  type DurableBoundaryDescriptor,
+  type DurableChildInvocation,
+} from "./boundary-topology.js";
+import { durableChildInvocationFingerprint } from "./child-invocation.js";
 import { stageCheckpointWithOutput, type DurableCompletedStageCheckpoint } from "./stage-primitive.js";
-import type { DurableStageCheckpoint } from "./types.js";
+import type { DurableCheckpoint, DurableStageRunTopology, WorkflowSerializableObject } from "./types.js";
+import { isWorkflowChildResult, parseWorkflowChildResult } from "./workflow-child-result.js";
 
 export function createDurableChildWorkflowPrimitive(input: {
   readonly workflowId: string;
   readonly rootWorkflowId: string;
   readonly backend: DurableWorkflowBackend;
-  readonly nextReplayKey: (name: string) => string;
+  readonly nextReplayKey: (name: string, invocationFingerprint: string) => string;
   readonly recordCachedStage: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
-  readonly checkpointMetadata: (replayKey: string) => Partial<DurableStageCheckpoint>;
-  /**
-   * Publish the durable scope computed for the next child invocation so the
-   * child runner can consume it and route its internal side-effect checkpoints
-   * under the root workflow. Avoids re-deriving the ordinal independently.
-   */
-  readonly setChildDurableScope: (scope: DurableScope) => void;
+  readonly runTopology: DurableStageRunTopology;
+  /** Publish the validated durable identity consumed by the child runner. */
+  readonly setChildDurableInvocation: (invocation: DurableChildInvocation) => void;
   readonly workflow: <
     TChildInputs extends WorkflowInputValues,
     TChildOutputs extends WorkflowOutputValues,
@@ -35,6 +39,12 @@ export function createDurableChildWorkflowPrimitive(input: {
     ...args: WorkflowRunChildArgs<TChildRunInputs>
   ) => Promise<WorkflowChildResult<TChildOutputs>>;
 }) {
+  const legacyReplayCounts = new Map<string, number>();
+  const nextLegacyReplayKey = (name: string): string => {
+    const next = (legacyReplayCounts.get(name) ?? 0) + 1;
+    legacyReplayCounts.set(name, next);
+    return `workflow:${name}:${next}`;
+  };
   return async <
     TChildInputs extends WorkflowInputValues,
     TChildOutputs extends WorkflowOutputValues,
@@ -44,43 +54,63 @@ export function createDurableChildWorkflowPrimitive(input: {
     ...args: WorkflowRunChildArgs<TChildRunInputs>
   ): Promise<WorkflowChildResult<TChildOutputs>> => {
     if (!isWorkflowDefinition(child)) throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));
-    const options = args[0] as { readonly stageName?: string } | undefined;
+    const options = args[0] as {
+      readonly stageName?: string;
+      readonly inputs?: Readonly<Record<string, unknown>>;
+    } | undefined;
     const boundaryName = options?.stageName ?? `workflow:${child.normalizedName}`;
-    const replayKey = input.nextReplayKey(boundaryName);
-    const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowChildResult);
-    if (cached !== undefined && isWorkflowChildResult(cached.output)) {
-      input.recordCachedStage(boundaryName, replayKey, cached);
-      return cached.output as WorkflowChildResult<TChildOutputs>;
+    const validatedInputs = resolveAndValidateInputs(
+      child.inputs,
+      options?.inputs ?? {},
+      `child workflow "${child.normalizedName}" (${child.name})`,
+    );
+    const invocationFingerprint = durableChildInvocationFingerprint(
+      child,
+      validatedInputs as WorkflowSerializableObject,
+    );
+    const newReplayKey = input.nextReplayKey(boundaryName, invocationFingerprint);
+    const legacyReplayKey = nextLegacyReplayKey(boundaryName);
+    const checkpoints = input.backend.listCheckpoints(input.workflowId);
+    const hasNew = hasInvocationData(checkpoints, newReplayKey);
+    const hasLegacy = hasInvocationData(checkpoints, legacyReplayKey);
+    if (hasNew && hasLegacy) {
+      throw new DurableNestedTopologyError(`new and legacy invocation scopes conflict at ${newReplayKey}`);
     }
-    // Route this child's internal side-effect checkpoints under the root
-    // workflow with the same stable boundary key used by the live boundary
-    // stage, so mixed cached/live repeated child calls do not desynchronize
-    // boundary and durable child-scope ordinals.
-    // cross-ref: issue #1498.
-    input.setChildDurableScope({ rootWorkflowId: input.rootWorkflowId, scopePrefix: replayKey });
-    const result = await input.workflow(child, ...args);
-    await recordCheckpointDurably(input.backend, {
-      kind: "stage",
+    const replayKey = hasNew ? newReplayKey : hasLegacy ? legacyReplayKey : newReplayKey;
+    const descriptor: DurableBoundaryDescriptor = {
       workflowId: input.workflowId,
-      checkpointId: `workflow:${replayKey}`,
-      name: boundaryName,
+      rootWorkflowId: input.rootWorkflowId,
+      backend: input.backend,
       replayKey,
-      output: result as WorkflowSerializableValue,
-      completedAt: Date.now(),
-      result: result.status,
-      ...input.checkpointMetadata(replayKey),
-    });
-    return result as WorkflowChildResult<TChildOutputs>;
+      boundaryName,
+      alias: child.normalizedName,
+      workflow: child.normalizedName,
+      childRunName: child.name,
+      invocationFingerprint,
+      runTopology: input.runTopology,
+    };
+    const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowChildResult);
+    const cachedResult = parseWorkflowChildResult(cached?.output);
+    if (cached !== undefined && cachedResult !== undefined) {
+      validateDurableCompletedBoundary({ ...descriptor, checkpoint: cached, output: cachedResult });
+      input.recordCachedStage(boundaryName, replayKey, cached);
+      return cachedResult as WorkflowChildResult<TChildOutputs>;
+    }
+    validateDurableChildInvocation(descriptor);
+    // Resolve durable ownership before either UUID can be allocated. A new
+    // invocation publishes an identity whose start record is awaited by the
+    // inner runner before child code is dispatched.
+    input.setChildDurableInvocation(prepareDurableChildInvocation(descriptor));
+    return await input.workflow(child, {
+      ...(options ?? {}),
+      inputs: validatedInputs,
+    } as never) as WorkflowChildResult<TChildOutputs>;
   };
 }
 
-
-function isWorkflowChildResult(value: WorkflowSerializableValue): value is WorkflowChildResult<WorkflowOutputValues> {
-  return typeof value === "object"
-    && value !== null
-    && !Array.isArray(value)
-    && typeof (value as { readonly workflow?: WorkflowSerializableValue }).workflow === "string"
-    && typeof (value as { readonly runId?: WorkflowSerializableValue }).runId === "string"
-    && typeof (value as { readonly status?: WorkflowSerializableValue }).status === "string"
-    && typeof (value as { readonly outputs?: WorkflowSerializableValue }).outputs === "object";
+function hasInvocationData(checkpoints: readonly DurableCheckpoint[], replayKey: string): boolean {
+  const prefix = `${replayKey}:`;
+  return checkpoints.some((checkpoint) => checkpoint.kind === "stage"
+    ? checkpoint.replayKey === replayKey || checkpoint.replayKey.startsWith(prefix)
+    : checkpoint.checkpointId.startsWith(prefix));
 }

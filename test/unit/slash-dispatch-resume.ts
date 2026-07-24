@@ -43,6 +43,8 @@ import {
     runFactory,
     writeWorkflowFixture,
 } from "./slash-dispatch-utils.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import type {
     ExtensionAPI,
     PiArgumentCompletion,
@@ -316,10 +318,14 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
             ...makeInflightRun(rootRunId),
             stages: [boundary("child-one", childOneRunId), boundary("child-two", childTwoRunId)],
         });
-        for (const childRunId of [childOneRunId, childTwoRunId]) {
+        for (const [childRunId, parentStageId] of [
+            [childOneRunId, "child-one"],
+            [childTwoRunId, "child-two"],
+        ] as const) {
             store.recordRunStart({
                 ...makeInflightRun(childRunId),
                 parentRunId: rootRunId,
+                parentStageId,
                 rootRunId,
                 stages: [{
                     id: nestedStageId,
@@ -341,6 +347,97 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
         const content = notifications.join("\n");
         assert.match(content, /Attached to .* stage review/);
         assert.doesNotMatch(content, /Stage not found/);
+    });
+
+    test.serial("routes /workflow attach through an actually hydrated durable child owner", async () => {
+        const rootRunId = `attach-hydrated-root-${Date.now()}`;
+        const childRunId = `attach-hydrated-child-${Date.now()}`;
+        const boundaryId = "hydrated-boundary";
+        const stageId = "hydrated-review";
+        const replayKey = "workflow:hydrated-child:1";
+        const backend = new InMemoryDurableBackend();
+        const child = {
+            runId: childRunId,
+            runName: "hydrated-child",
+            parentRunId: rootRunId,
+            parentStageId: boundaryId,
+            rootRunId: rootRunId,
+        };
+        const identity = {
+            version: 1 as const,
+            replayScope: replayKey,
+            alias: "hydrated-child",
+            workflow: "hydrated-child",
+            invocationFingerprint: "hydrated-fixture-fingerprint",
+            child,
+        };
+        backend.registerWorkflow({
+            workflowId: rootRunId, name: "hydrated-root", inputs: {},
+            createdAt: 1, updatedAt: 5, status: "completed",
+        });
+        backend.recordCheckpoint({
+            kind: "stage", workflowId: rootRunId, checkpointId: "hydrated-start",
+            name: "workflow:hydrated-child", replayKey, completedAt: 1,
+            topology: {
+                version: 1, stageId: boundaryId, parentIds: [], sourceOrder: 0,
+                status: "running", run: { runId: rootRunId, runName: "hydrated-root" },
+                boundary: { ...identity, event: "start", status: "running" },
+            },
+        });
+        backend.recordCheckpoint({
+            kind: "stage", workflowId: rootRunId, checkpointId: `${replayKey}:review`,
+            name: "hydrated-review", replayKey: `${replayKey}:stage:review:1`,
+            output: "reviewed", completedAt: 3, endedAt: 3,
+            topology: {
+                version: 1, stageId, parentIds: [], sourceOrder: 0,
+                status: "completed", run: child,
+            },
+        });
+        backend.recordCheckpoint({
+            kind: "stage", workflowId: rootRunId, checkpointId: "hydrated-terminal",
+            name: "workflow:hydrated-child", replayKey, completedAt: 4, endedAt: 4,
+            output: {
+                workflow: "hydrated-child", runId: childRunId, status: "completed",
+                exited: false, outputs: {},
+            },
+            topology: {
+                version: 1, stageId: boundaryId, parentIds: [], sourceOrder: 0,
+                status: "completed", run: { runId: rootRunId, runName: "hydrated-root" },
+                boundary: { ...identity, event: "terminal", status: "completed" },
+            },
+        });
+        assert.equal(openCompletedDurableWorkflow(rootRunId, {
+            durableBackend: backend, store, stageControlRegistry,
+        }).ok, true);
+
+        let overlayOpens = 0;
+        let attachedOwner: string | undefined;
+        const notifications: string[] = [];
+        const { pi, commands } = buildMockPi();
+        addFactoryStubs(pi);
+        pi.ui = {
+            notify: (message: string) => { notifications.push(message); },
+            setWidget: () => {},
+            custom: (factory) => {
+                overlayOpens += 1;
+                const component = factory(
+                    { requestRender: () => {}, terminal: { rows: 32, columns: 96 } }, {}, {}, () => {},
+                );
+                attachedOwner = store.runs().find((run) =>
+                    run.stages.some((stage) => stage.id === stageId && stage.attached === true)
+                )?.id;
+                component.dispose?.();
+                return undefined;
+            },
+        };
+        const factoryModule = await import("../../packages/workflows/src/extension/index.js");
+        factoryModule.default(pi);
+        const handler = commands.find((command) => command.name === "workflow")!.options.handler;
+        await handler(`attach ${rootRunId} ${childRunId}:${stageId}`, { hasUI: true, ui: pi.ui });
+
+        assert.equal(overlayOpens, 1);
+        assert.equal(attachedOwner, childRunId);
+        assert.match(notifications.join("\n"), /Attached to .* stage hydrated\./);
     });
 });
 
