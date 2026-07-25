@@ -2,7 +2,7 @@ export const WORKFLOW_TOOL_DESCRIPTION =
   "Run named builtin, project, user, or package workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; " +
   "when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; " +
   "discover with list/get/inputs/models, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, " +
-  "send prompt answers or steering, pause/resume/interrupt/quit runs, and reload workflow resources. " +
+  "send prompt answers or steering only while the root workflow is nonterminal, pause/resume/interrupt/quit runs, and reload workflow resources. " +
   "For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. " +
   "For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, " +
   "quote the exact path without rewriting separators (Windows backslashes are valid), " +
@@ -32,6 +32,7 @@ export const DEFAULT_PROMPT_GUIDANCE: string[] = [
   `**Workflow discovery and lifecycle**:
   - For unfamiliar named workflows, discover with \`action: "list"\`, inspect with \`action: "get"\` or \`action: "inputs"\`, and run with \`action: "run"\`, \`workflow\`, and validated \`inputs\`; do not invent workflow names or input keys.
   - In interactive chat, named workflow launches run in the background. Run \`/workflow connect <run>\` to see agents working and chat with and steer each stage. Inspection and control calls (\`status\`, \`stages\`, \`stage\`, \`transcript\`, \`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`quit\`) remain available while work runs.
+  - \`workflow send\` is nonterminal-only: once the authoritative root run has completed, failed, skipped, been cancelled or killed, or ended terminal-blocked, start a new workflow if tracked work remains. Proceed inline only when the remaining task is small, deterministic, and low risk. Use explicit \`/workflow attach <run> <stage>\` for user-driven post-mortem chat; it does not resume or modify workflow execution.
   - Natural-language instructions to create or use a worktree do not enable runner isolation. A named workflow must declare and implement any worktree inputs it supports; inspect its inputs before launching it.
   - Once you run a workflow, end the current turn and wait for user input or a lifecycle notice. Do not use sleep/status polling loops: key start, finish, and failure events arrive automatically. Use targeted \`status\`/\`stages\`/\`stage\` checks only when the user asks or the next step needs them, and use \`send\`/\`pause\`/\`resume\`/\`interrupt\`/\`quit\` only to answer, steer, or honor control requests.
   - For transcripts, avoid whole-file reads. Get \`sessionFile\`/\`transcriptPath\` from \`stages\` or \`stage\`, preserve the exact path and platform separators, search with \`rg\`/\`grep\`, and read small relevant ranges; use explicit \`tail\` or \`limit\` only for a bounded preview.`,

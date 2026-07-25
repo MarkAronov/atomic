@@ -49,8 +49,8 @@ export interface StageSessionRuntime {
   readonly queuedMessagesPaused?: boolean;
   /** Optional native optimization that synchronously holds queued work. */
   pauseQueuedMessages?(): void;
-  /** Optional native release; true reports that raw queued work was released. */
-  resumeQueuedMessages?(): boolean | Promise<boolean>;
+  /** Optional native release; calls `beforeRelease` at the final synchronous boundary. */
+  resumeQueuedMessages?(beforeRelease?: () => void): boolean | Promise<boolean>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   subscribe(listener: (event: StageSessionEvent) => void): () => void;
@@ -171,6 +171,7 @@ export interface InternalStageContext extends StageContext {
   __resume(
     message?: string,
     beforeResolve?: (result: import("./stage-runner-pause.js").StageSessionPauseResumeResult) => void,
+    beforeRelease?: () => void,
   ): Promise<import("./stage-runner-pause.js").StageSessionPauseResumeResult>;
   /** Internal: true while a controlled pause is in flight. */
   __isPaused(): boolean;

@@ -79,7 +79,7 @@ export interface AgentSessionQueuePauseControl {
 	readonly queuedMessagesPaused: boolean;
 	pauseQueuedMessages(): void;
 	/** Release the hold without starting a turn; true means raw queued work was released. */
-	resumeQueuedMessages(): Promise<boolean>;
+	resumeQueuedMessages(beforeRelease?: () => void): Promise<boolean>;
 }
 
 export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl {

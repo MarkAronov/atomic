@@ -27,6 +27,11 @@ export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
   "blocked",
 ]);
 
+/** Shared executor/store authority for terminal workflow lifecycle states. */
+export function isTerminalRunStatus(status: RunStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
 export interface ResolverEntry {
   readonly promptId: string;
   readonly resolve: (response: unknown) => void;

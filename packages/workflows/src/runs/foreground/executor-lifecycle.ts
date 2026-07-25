@@ -8,6 +8,7 @@ import type {
   StageSnapshot,
 } from "../../shared/store-types.js";
 import type { Store } from "../../shared/store.js";
+import { isTerminalRunStatus } from "../../shared/store-internal.js";
 import type { WorkflowPersistencePort, WorkflowOutputValues } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { appendRunBlocked, appendRunEnd } from "../../shared/persistence-session-entries.js";
@@ -48,15 +49,6 @@ export function appendRunEndWhenRecorded(
 ): void {
   if (!persistence || !recorded) return;
   appendRunEnd(persistence, payload);
-}
-
-export function isTerminalRunStatus(status: RunStatus): boolean {
-  return status === "completed" ||
-    status === "failed" ||
-    status === "killed" ||
-    status === "skipped" ||
-    status === "cancelled" ||
-    status === "blocked";
 }
 
 export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {

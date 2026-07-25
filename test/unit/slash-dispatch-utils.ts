@@ -442,17 +442,18 @@ export function registerLiveStageHandle(
         isStreaming: options?.isStreaming ?? false,
         messages: options?.messages ?? [],
         async ensureAttached(): Promise<void> {},
-        async prompt(text: string): Promise<void> {
-            prompts.push(text);
+        async sendUserMessage(text, delivery, beforeDelivery) {
+            beforeDelivery?.();
+            if (!(options?.isStreaming ?? false)) { prompts.push(text); return "prompt"; }
+            const action = delivery?.deliverAs ?? "followUp";
+            (action === "steer" ? steers : followUps).push(text);
+            return action;
         },
-        async steer(text: string): Promise<void> {
-            steers.push(text);
-        },
-        async followUp(text: string): Promise<void> {
-            followUps.push(text);
-        },
+        async prompt(text: string): Promise<void> { prompts.push(text); },
+        async steer(text: string): Promise<void> { steers.push(text); },
+        async followUp(text: string): Promise<void> { followUps.push(text); },
         async pause(): Promise<void> {},
-        async resume(): Promise<void> {},
+        async resume(_message, beforeResume): Promise<void> { beforeResume?.(); },
         subscribe: () => () => {},
     };
     return {

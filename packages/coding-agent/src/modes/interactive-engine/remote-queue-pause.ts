@@ -27,9 +27,10 @@ export class RemoteQueuePause {
 		void request.catch(() => {});
 	}
 
-	async resume(): Promise<boolean> {
+	async resume(beforeRelease?: () => void): Promise<boolean> {
 		if (!this.paused) return false;
 		if (this.pauseRequest) await this.pauseRequest;
+		beforeRelease?.();
 		const { released } = await this.client.requestInternal<{ released: boolean }>({ type: "resume_queued_messages" });
 		this.pauseRequest = undefined;
 		this.paused = false;

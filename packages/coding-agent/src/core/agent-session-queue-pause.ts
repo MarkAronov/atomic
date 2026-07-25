@@ -34,9 +34,12 @@ export function pauseQueuedMessages(this: AgentSession): void {
 }
 
 /** Release a pause hold without starting a turn; report whether raw work was released. */
-export async function resumeQueuedMessages(this: AgentSession): Promise<boolean> {
+export async function resumeQueuedMessages(
+	this: AgentSession,
+	beforeRelease?: () => void,
+): Promise<boolean> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.resumeQueuedMessages();
+	if (owner !== this) return owner.resumeQueuedMessages(beforeRelease);
 	if (!this._queuedMessagesPaused) return false;
 	const abortBoundary = this._queuedMessagesPauseAbortBoundary;
 	if (abortBoundary !== undefined) {
@@ -53,6 +56,7 @@ export async function resumeQueuedMessages(this: AgentSession): Promise<boolean>
 	}
 	if (this._pendingInterruptDeliveries > 0) await this._interruptDeliveryQueue;
 	if (!this._queuedMessagesPaused) return false;
+	beforeRelease?.();
 	const hold = this._activeInterruptQueueHold;
 	const released = hold !== undefined && (hold.steering.length > 0 || hold.followUp.length > 0);
 	this._queuedMessagesPaused = false;

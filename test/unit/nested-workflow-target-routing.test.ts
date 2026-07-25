@@ -81,11 +81,20 @@ function liveHandle(runId: string, stageId: string, calls: HandleCalls): StageCo
     isStreaming: false,
     messages: [],
     async ensureAttached() {},
+    async sendUserMessage(text, _options, beforeDelivery) {
+      beforeDelivery?.();
+      calls.prompts.push(text);
+      return "prompt";
+    },
     async prompt(text) { calls.prompts.push(text); },
     async steer() {},
     async followUp() {},
     async pause() { calls.pauses += 1; state.status = "paused"; },
-    async resume(message) { calls.resumes.push(message ?? ""); state.status = "running"; },
+    async resume(message, beforeResume) {
+      beforeResume?.();
+      calls.resumes.push(message ?? "");
+      state.status = "running";
+    },
     subscribe() { return () => {}; },
   };
 }

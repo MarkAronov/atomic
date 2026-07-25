@@ -121,7 +121,7 @@ function registerCompletedChatHandles(
     if (stage.sessionFile === undefined) continue;
     const key = completedChatKey(snapshot.id, stage.id);
     const registration = registrations.get(key);
-    const existing = registry.get(snapshot.id, stage.id);
+    const existing = registry.claim(snapshot.id, stage.id);
     if (existing?.sessionFile === stage.sessionFile && !existing.isDisposed) continue;
     if (registration !== undefined) {
       removeCompletedChatRegistration(registrations, key, registration);

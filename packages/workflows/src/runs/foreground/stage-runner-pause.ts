@@ -15,7 +15,7 @@ interface PauseResumeResolution extends StageSessionPauseResumeResult {
 interface NativeQueuePauseControl {
   readonly queuedMessagesPaused?: boolean;
   pauseQueuedMessages(): void;
-  resumeQueuedMessages(): boolean | Promise<boolean>;
+  resumeQueuedMessages(beforeRelease?: () => void): boolean | Promise<boolean>;
 }
 
 function nativeQueuePauseControl(session: StageSessionRuntime | undefined): NativeQueuePauseControl | undefined {
@@ -110,11 +110,15 @@ export class StageSessionPause {
   resume(
     message?: string,
     beforeResolve?: (result: StageSessionPauseResumeResult) => void,
+    beforeRelease?: () => void,
   ): Promise<StageSessionPauseResumeResult> {
     const request = this.request;
-    if (!request) return Promise.resolve({ releasedQueuedMessages: false, runnerOwnedDeliveryPending: false });
+    if (!request) {
+      beforeRelease?.();
+      return Promise.resolve({ releasedQueuedMessages: false, runnerOwnedDeliveryPending: false });
+    }
     if (request.resumePromise) return request.resumePromise;
-    request.resumePromise = this.completeResume(request, message, beforeResolve);
+    request.resumePromise = this.completeResume(request, message, beforeResolve, beforeRelease);
     return request.resumePromise;
   }
 
@@ -130,6 +134,7 @@ export class StageSessionPause {
     request: PauseRequest,
     message: string | undefined,
     beforeResolve: ((result: StageSessionPauseResumeResult) => void) | undefined,
+    beforeRelease: (() => void) | undefined,
   ): Promise<StageSessionPauseResumeResult> {
     try {
       await request.abortBoundary.promise;
@@ -139,9 +144,25 @@ export class StageSessionPause {
       throw error;
     }
 
+    let releaseAdmitted = false;
+    const admitRelease = (): void => {
+      if (releaseAdmitted) return;
+      beforeRelease?.();
+      releaseAdmitted = true;
+    };
     let releasedQueuedMessages: boolean;
     try {
-      releasedQueuedMessages = await request.nativeQueuePause?.resumeQueuedMessages() ?? false;
+      const nativeQueuePause = request.nativeQueuePause;
+      if (nativeQueuePause === undefined) {
+        admitRelease();
+        releasedQueuedMessages = false;
+      } else {
+        // Legacy adapters with no callback parameter linearize at invocation.
+        // Native Atomic sessions call this at their final synchronous release.
+        if (nativeQueuePause.resumeQueuedMessages.length === 0) admitRelease();
+        releasedQueuedMessages = await nativeQueuePause.resumeQueuedMessages(admitRelease);
+        admitRelease();
+      }
     } catch (error) {
       // Native release can fail transiently. Preserve this pause generation and
       // its waiter/deliveries; only retire the failed attempt so explicit resume

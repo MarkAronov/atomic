@@ -209,7 +209,10 @@ export class StageSessionController {
   resume(
     message?: string,
     beforeResolve?: (result: StageSessionPauseResumeResult) => void,
-  ): Promise<StageSessionPauseResumeResult> { return this.pauseControl.resume(message, beforeResolve); }
+    beforeRelease?: () => void,
+  ): Promise<StageSessionPauseResumeResult> {
+    return this.pauseControl.resume(message, beforeResolve, beforeRelease);
+  }
   isPaused(): boolean { return this.pauseControl.isPaused(); }
   sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined } {
     return { sessionId: this.session?.sessionId, sessionFile: this.session?.sessionFile };

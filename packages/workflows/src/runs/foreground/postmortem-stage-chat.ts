@@ -30,6 +30,7 @@ import { isReopenableSessionTranscript } from "../../shared/session-transcript.j
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import {
   type AgentSessionEventListener,
+  type DetachedStageHandleLease,
   type StageControlHandle,
   type StageControlRegistry,
 } from "./stage-control-registry.js";
@@ -43,6 +44,10 @@ export type PostMortemUnavailableReason =
 
 export type EnsurePostMortemStageHandleResult =
   | { readonly ok: true; readonly handle: StageControlHandle }
+  | { readonly ok: false; readonly reason: PostMortemUnavailableReason };
+
+export type AcquirePostMortemStageHandleResult =
+  | { readonly ok: true; readonly lease: DetachedStageHandleLease }
   | { readonly ok: false; readonly reason: PostMortemUnavailableReason };
 
 export interface PostMortemStageChatDeps {
@@ -82,7 +87,7 @@ export function ensurePostMortemStageHandle(
   deps: PostMortemStageChatDeps,
 ): EnsurePostMortemStageHandleResult {
   if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
-  const existing = deps.registry.get(runId, stage.id);
+  const existing = deps.registry.claim(runId, stage.id);
   if (existing !== undefined && existing.isDisposed !== true) {
     return { ok: true, handle: existing };
   }
@@ -96,6 +101,31 @@ export function ensurePostMortemStageHandle(
     createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
   );
   return { ok: true, handle };
+}
+
+/** Acquire a tentative detached handle for programmatic message admission. */
+export function acquirePostMortemStageHandle(
+  runId: string,
+  stage: StageSnapshot,
+  deps: PostMortemStageChatDeps,
+): AcquirePostMortemStageHandleResult {
+  if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
+  const existing = deps.registry.peek(runId, stage.id);
+  if (existing !== undefined && existing.isDisposed !== true) {
+    return {
+      ok: true,
+      lease: deps.registry.acquireDetached(runId, stage.id, () => existing),
+    };
+  }
+  if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+  const sessionFile = stage.sessionFile;
+  if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
+  if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
+  const adapters = deps.adapters;
+  const lease = deps.registry.acquireDetached(runId, stage.id, () =>
+    createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir)
+  );
+  return { ok: true, lease };
 }
 
 /**
@@ -141,6 +171,10 @@ export function createPostMortemStageHandle(
     get messages() { return context.messages; },
     get agentSession() { return context.__agentSession(); },
     async ensureAttached() { await ensureAttached(); },
+    async sendUserMessage(text, options, beforeDelivery) {
+      await ensureAttached();
+      return context.__sendUserMessage(text, options, beforeDelivery);
+    },
     async prompt(text: string) {
       await ensureAttached();
       await context.prompt(text);

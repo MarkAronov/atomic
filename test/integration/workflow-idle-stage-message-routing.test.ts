@@ -262,7 +262,7 @@ describe("issue #1850 integration — idle stage message routing", () => {
     assert.deepEqual(followUps, []);
   });
 
-  test("terminal completion removes live delivery while preserving explicit post-mortem compatibility", async () => {
+  test("terminal completion rejects programmatic delivery without touching the retained chat", async () => {
     const fixture = await startTwoStageIdleWorkflow("terminal-late-prompt-integration");
     const retained = stageControlRegistry.get(fixture.runId, fixture.stageId);
     assert.ok(retained);
@@ -285,8 +285,10 @@ describe("issue #1850 integration — idle stage message routing", () => {
       delivery: "resume",
       text: "unsupported terminal resume",
     });
-    assert.equal(late.status, "noop");
-    assert.equal(late.message, "Cannot resume a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
+    assert.equal(late.status, "failed");
+    assert.equal(late.delivery, "rejected");
+    assert.match(late.message, new RegExp(`workflow ${fixture.runId} has terminated with status completed`));
+    assert.match(late.message, /start a new workflow/);
     assert.deepEqual(fixture.promptCalls, before);
   });
 
