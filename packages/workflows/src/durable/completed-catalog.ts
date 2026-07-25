@@ -2,6 +2,7 @@ import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/sto
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
 import { isReopenableSessionTranscript } from "../shared/session-transcript.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { workflowToolOutcomeFromValue } from "./tool-outcome.js";
 import {
   DURABLE_STAGE_TOPOLOGY_VERSION,
   type DurableCheckpoint,
@@ -175,6 +176,10 @@ function completedToolNodes(
     const topologyRunId = checkpoint.topology?.run?.runId ?? rootRunId;
     if (topologyRunId !== runId) return [];
     const topology = checkpoint.topology;
+    const outcome = checkpoint.outcomeKind === undefined
+      ? undefined
+      : workflowToolOutcomeFromValue(checkpoint.output);
+    const failed = checkpoint.outcomeKind === "return_failure";
     return [{
       kind: "tool" as const,
       id: topology?.nodeId ?? checkpoint.checkpointId,
@@ -184,11 +189,13 @@ function completedToolNodes(
       parentIds: Object.freeze([...(topology?.parentIds ?? [])].map((parentId) => sourceIds.get(parentId) ?? parentId)),
       replayed: true,
       ...(topology === undefined ? { topologyState: "unavailable" as const } : {}),
-      status: "cached" as const,
+      status: failed ? "failed" as const : "cached" as const,
       executionOrder: topology?.order ?? firstSequenceByHash.get(checkpoint.argsHash)!,
       ...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
       endedAt: topology?.endedAt ?? checkpoint.completedAt,
-      resultSummary: summarizeCompletedToolResult(checkpoint.output),
+      ...(failed
+        ? { error: outcome?.ok === false ? outcome.error.message : "Invalid durable ctx.tool failure outcome" }
+        : { resultSummary: summarizeCompletedToolResult(checkpoint.output) }),
       attachable: false as const,
     }];
   });

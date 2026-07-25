@@ -1225,28 +1225,46 @@ See [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for 
 ### `ctx.tool(name, args, fn, options?)`
 
 ```typescript
+type WorkflowToolOutcome<TValue extends WorkflowSerializableValue> =
+  | { ok: true; value: TValue; attempts: number; cached: boolean }
+  | {
+      ok: false;
+      error: {
+        name: string;
+        message: string;
+        exitCode?: number;
+        stdout?: string;
+        stderr?: string;
+      };
+      attempts: number;
+      cached: boolean;
+    };
+
 ctx.tool<TValue extends WorkflowSerializableValue>(
   name: string,
   args: Readonly<Record<string, WorkflowSerializableValue>>,
   fn: () => Promise<TValue>,
-  options?: {
-    readonly retriesAllowed?: boolean;
-    readonly maxAttempts?: number;
-    readonly intervalMs?: number;
-    readonly backoffRate?: number;
-  },
+  options?: WorkflowToolThrowOptions,
 ): Promise<TValue>;
+
+ctx.tool<TValue extends WorkflowSerializableValue>(
+  name: string,
+  args: Readonly<Record<string, WorkflowSerializableValue>>,
+  fn: () => Promise<TValue>,
+  options: WorkflowToolOptions & { failureMode: "return" },
+): Promise<WorkflowToolOutcome<TValue>>;
 ```
 
 Runs arbitrary TypeScript code as a tracked, non-attachable durable workflow graph node and caches its serializable result by call order plus the content hash of `name` and `args`. The node is created before `fn` runs and may appear before, between, after, or without model stages. A completed call replays without rerunning `fn`, so use this primitive for workflow-owned durable side effects; keep pure computation as ordinary TypeScript.
 
 **Options:**
+- `failureMode` — `"throw"` keeps the default throw-on-failure behavior; `"return"` returns a typed success or failure outcome after retries.
 - `retriesAllowed` — retries failures when `true`; default `false`.
-- `maxAttempts` — maximum attempts when retries are enabled; default `3`.
+- `maxAttempts` — positive integer maximum when retries are enabled; default `3`. Invalid enabled retry bounds throw before the callback runs.
 - `intervalMs` — initial retry interval; default `1000`.
 - `backoffRate` — retry interval multiplier; default `2`.
 
-See [`ctx.tool` — durable cached tool execution](#ctxtool--durable-cached-tool-execution) for the full example and cancellation behavior.
+See [`ctx.tool` — durable cached tool execution](#ctxtool--durable-cached-tool-execution) for durable failure replay, process-output safety, explicit repair handoffs, and cancellation behavior.
 
 ### `ctx.exit(options?)`
 
@@ -2194,7 +2212,7 @@ When two sessions race to resume the same paused workflow, a durable first-write
 ### How it works
 
 - **Only `ctx.*` blocks are checkpointed**: code outside `ctx.*` is not durable.
-- **Durable side effects and graph nodes**: every `ctx.tool` invocation creates a tracked, non-chat graph node before its callback runs. Atomic flushes successful `ctx.tool` and `ctx.ui` writes before exposing completed results, so resume does not repeat an already-completed effect. Tool nodes can appear before, between, after, or without model stages.
+- **Durable side effects and graph nodes**: every `ctx.tool` invocation creates a tracked, non-chat graph node before its callback runs. Atomic flushes successful outputs and opt-in recoverable failure outcomes before exposing them, so resume does not repeat an already-settled callback. Tool nodes can appear before, between, after, or without model stages.
 - **Durable child identity before dispatch**: before a nested `ctx.workflow(...)` can run child code or a child side effect, Atomic persists and awaits a versioned boundary-start record containing its stable boundary and child run ids, root/parent ownership, source order and parents, composed replay scope, alias, workflow, lifecycle state, and a deterministic fingerprint of the definition plus exact validated inputs. Distinct-input parallel calls keep stable independent scopes even when restart reverses dispatch order; identical calls share that fingerprint and use their own ordinal. Replay validates and reuses that identity before allocating any UUID.
 - **Symmetric nested scopes**: child effects stay stored under the durable root, while every child sees only its own local checkpoint view. Each nesting layer strips exactly one scope and never suffix-matches sibling or root data, so the rule composes at any depth.
 - **Stable durable graph**: tool, stage, task, chain, parallel, and child-workflow checkpoints preserve stable source identity/order, parent DAG edges, actual status, owning-run/boundary metadata, timing, output summary, model, retained chat-session references, and exact `{ runId, stageId }` targets. Fresh-process resume and completed inspection reconstruct tool-only, nested-child, mixed, and parallel topology directly from DBOS.
@@ -2217,6 +2235,12 @@ Repeated, sibling, sequential, parallel, and multi-level child calls keep indepe
 The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code as a first-class durable graph node and caches the result durably. The node is non-attachable and has no stage chat controls. It is valid before, between, after, or without model stages, so a tool-only workflow completes normally; a workflow that returns normally without any stage, child, tool, or explicit exit remains invalid. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function—ensuring completed side effects are not repeated while still preserving two intentional same-name/same-args calls as distinct ordered nodes. Legacy child checkpoints without topology keep that cached output authoritative even if the additive ownership-migration write is temporarily unavailable: current replay uses inferred child ownership, a later replay retries the metadata write, and fresh completed inspection falls back to root ownership with topology unavailable until a migration succeeds.
 
 When the workflow body fulfills but one or more admitted tool calls failed, Atomic promotes the first admitted failure to the terminal run failure and persists that selected tool-node identity for status inspection and lifecycle output. An ordinary workflow-body rejection—including a direct uncaught `await ctx.tool(...)` rejection—retains the original error and failed graph node but does not claim a terminal tool origin: transparent native promise rejection carries no source-promise identity, so a later body throw that reuses the same object or primitive is observationally indistinguishable. Stage and workflow-body failures are therefore never mislabeled as tool failures.
+
+Set `failureMode: "return"` when a failed check is expected data for a later repair stage. Atomic runs all configured retries first, then returns a `WorkflowToolOutcome<TValue>`. A successful callback returns `{ ok: true, value, attempts, cached }`. An exhausted callback failure returns `{ ok: false, error, attempts, cached }`; `error` preserves integer `exitCode` and string or byte-buffer `stdout`/`stderr` when the thrown value exposes them. The live and restored tool node stays `failed`, while the workflow body may continue and complete. On replay, Atomic returns the same stored outcome with `cached: true` and does not run the callback again.
+
+Recoverable output is explicit data flow. Atomic does not add a failed tool outcome to a later stage prompt. The workflow author must place the needed fields in `prompt`, `previous`, an output, or an artifact. Each persisted error text field is best-effort secret-redacted with the workflow persistence rules and limited to 16 KiB of UTF-8; truncated fields keep the final bytes with a marker. Keep the database sensitive even with this filter.
+
+Cancellation, closed tool admission, and durable-storage faults still throw. They never become ordinary `{ ok: false }` callback outcomes. Omitting `failureMode: "return"` also keeps the existing behavior: an exhausted callback error rejects `ctx.tool` and fails the workflow unless author code catches it.
 
 Tool admission stays open while the workflow body runs and while already-admitted tools drain, including immediate promise-settlement continuations. Before any completed, failed, blocked, exited, or cancelled executor outcome is published, admission closes atomically. A detached call through a retained `ctx.tool` function after that point returns a rejected native promise without starting its callback, retries, graph node, or durable checkpoint; ignoring that promise does not emit an unhandled rejection.
 
@@ -2242,6 +2266,26 @@ export default workflow({
   },
 });
 ```
+
+A bounded repair loop can pass only the needed failure evidence and use distinct arguments for each real rerun:
+
+```ts
+for (let iteration = 1; iteration <= 2; iteration += 1) {
+  const tests = await ctx.tool(
+    "run-tests",
+    { iteration },
+    async () => runCommand(["bun", "test"]),
+    { failureMode: "return", retriesAllowed: true, maxAttempts: 2 },
+  );
+
+  if (tests.ok) break;
+  await ctx.task("repair-tests", {
+    prompt: `Fix these test failures:\n${tests.error.stderr ?? tests.error.message}`,
+  });
+}
+```
+
+Changing `iteration` makes each loop pass a distinct durable call. Reusing the same call position and arguments during resume replays its stored outcome instead of running it again.
 
 ### `/workflow resume` — cross-session resume selector
 
@@ -2286,7 +2330,8 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 | **Stage failure (recoverable)** | Workflow marked `failed` or `blocked` and remains resumable by default. `/workflow resume <id>` continues from the last completed checkpoint unless durable metadata explicitly sets `resumable: false`. |
 | **Stage failure (non-recoverable)** | Workflow marked `failed` or `blocked` with `resumable: false`, so it is excluded from resume discovery. |
 | **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in resume discovery when it has a durable checkpoint or pending prompt. Resume re-executes from the last completed checkpoint. |
-| **`ctx.tool` retry** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt and during retry backoff, so later attempts do not run after the workflow is cancelled. After exhausting retries, the error propagates and the workflow fails. |
+| **`ctx.tool` retry/default failure** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt and during retry backoff. Without `failureMode: "return"`, an exhausted callback error propagates and the workflow fails. |
+| **Recoverable `ctx.tool` failure** | With `failureMode: "return"`, exhausted callback failures are durably returned after retries. The tool node remains failed, downstream handoff is explicit, and replay returns the same outcome with `cached: true`. Cancellation and storage faults still throw. |
 | **`ctx.ui` pending prompt** | If a UI prompt was not answered before interruption, resume leaves off on that prompt — the user must answer it to continue. |
 
 ### Configuring DBOS/Postgres

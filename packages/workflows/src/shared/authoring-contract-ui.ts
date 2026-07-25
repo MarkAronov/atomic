@@ -115,24 +115,66 @@ export interface WorkflowRunContext<
   tool: WorkflowToolPrimitive;
 }
 
-/**
- * `ctx.tool` primitive signature. Runs an async function and caches the result.
- */
+/** Serializable process details copied from an exhausted `ctx.tool` callback error. */
+export interface WorkflowToolError extends WorkflowSerializableObject {
+  readonly name: string;
+  readonly message: string;
+  readonly exitCode?: number;
+  readonly stdout?: string;
+  readonly stderr?: string;
+}
+
+export interface WorkflowToolSuccess<TValue extends WorkflowSerializableValue> extends WorkflowSerializableObject {
+  readonly ok: true;
+  readonly value: TValue;
+  readonly attempts: number;
+  readonly cached: boolean;
+}
+
+export interface WorkflowToolFailure extends WorkflowSerializableObject {
+  readonly ok: false;
+  readonly error: WorkflowToolError;
+  readonly attempts: number;
+  readonly cached: boolean;
+}
+
+/** Typed result returned when `failureMode: "return"` is selected. */
+export type WorkflowToolOutcome<TValue extends WorkflowSerializableValue> =
+  | WorkflowToolSuccess<TValue>
+  | WorkflowToolFailure;
+
+/** Options for `ctx.tool`. Throwing after exhausted retries remains the default. */
+export interface WorkflowToolOptions {
+  readonly failureMode?: "throw" | "return";
+  readonly retriesAllowed?: boolean;
+  readonly maxAttempts?: number;
+  readonly intervalMs?: number;
+  readonly backoffRate?: number;
+}
+
+export type WorkflowToolReturnOptions = WorkflowToolOptions & { readonly failureMode: "return" };
+export type WorkflowToolThrowOptions = WorkflowToolOptions & { readonly failureMode?: "throw" };
+
+/** `ctx.tool` runs an async function and durably caches its serializable result. */
 export interface WorkflowToolPrimitive {
   <TValue extends WorkflowSerializableValue>(
     name: string,
     args: Readonly<Record<string, WorkflowSerializableValue>>,
     fn: () => Promise<TValue>,
-    options?: WorkflowToolOptions,
+    options: WorkflowToolReturnOptions,
+  ): Promise<WorkflowToolOutcome<TValue>>;
+  <TValue extends WorkflowSerializableValue>(
+    name: string,
+    args: Readonly<Record<string, WorkflowSerializableValue>>,
+    fn: () => Promise<TValue>,
+    options?: WorkflowToolThrowOptions,
   ): Promise<TValue>;
-}
-
-/** Options for `ctx.tool`. */
-export interface WorkflowToolOptions {
-  readonly retriesAllowed?: boolean;
-  readonly maxAttempts?: number;
-  readonly intervalMs?: number;
-  readonly backoffRate?: number;
+  <TValue extends WorkflowSerializableValue>(
+    name: string,
+    args: Readonly<Record<string, WorkflowSerializableValue>>,
+    fn: () => Promise<TValue>,
+    options?: WorkflowToolOptions,
+  ): Promise<TValue | WorkflowToolOutcome<TValue>>;
 }
 
 export type WorkflowRunFn<

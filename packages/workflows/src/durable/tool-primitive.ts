@@ -16,43 +16,28 @@
  */
 
 import { runCallback } from "@bastani/atomic";
+import { field, normalizeCode } from "../shared/workflow-failures-signals.js";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
-import type { WorkflowSerializableValue } from "../shared/types.js";
+import type {
+  WorkflowSerializableValue,
+  WorkflowToolOptions,
+  WorkflowToolOutcome,
+  WorkflowToolPrimitive,
+} from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
+import {
+  replayedWorkflowToolOutcome,
+  workflowToolFailure,
+  workflowToolOutcomeFromValue,
+  workflowToolSuccess,
+} from "./tool-outcome.js";
 import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableCheckpoint, type DurableStageRunTopology, type DurableToolCheckpoint } from "./types.js";
+export type { WorkflowToolOptions, WorkflowToolPrimitive } from "../shared/types.js";
 
-/**
- * Options for `ctx.tool(name, args, fn)`.
- */
-export interface WorkflowToolOptions {
-  /**
-   * When true, the tool function is retried on failure with exponential
-   * backoff. Defaults to false (matching DBOS step default).
-   */
-  readonly retriesAllowed?: boolean;
-  /** Max retry attempts when retriesAllowed is true. Default 3. */
-  readonly maxAttempts?: number;
-  /** Initial retry interval in ms. Default 1000. */
-  readonly intervalMs?: number;
-  /** Backoff multiplier. Default 2. */
-  readonly backoffRate?: number;
-}
-
-/**
- * The `ctx.tool` primitive type exposed on {@link WorkflowRunContext}.
- *
- * @param name Tool name (for display and checkpoint identity).
- * @param args Tool arguments (JSON-serializable; included in the content hash).
- * @param fn The async function to execute. Its return must be JSON-serializable.
- * @param options Retry configuration.
- */
-export type WorkflowToolPrimitive = <T extends WorkflowSerializableValue>(
-  name: string,
-  args: Readonly<Record<string, WorkflowSerializableValue>>,
-  fn: () => Promise<T>,
-  options?: WorkflowToolOptions,
-) => Promise<T>;
+type WorkflowToolInvocationResult<TValue extends WorkflowSerializableValue> =
+  | TValue
+  | WorkflowToolOutcome<TValue>;
 
 export type WorkflowToolExecutionAdmission =
   | { readonly accepted?: true; bindNode(nodeId: string): void }
@@ -82,15 +67,15 @@ export interface CreateToolPrimitiveInput {
  */
 export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowToolPrimitive {
   const ordinals = new Map<string, number>();
-  return <T extends WorkflowSerializableValue>(
+  return (<T extends WorkflowSerializableValue>(
     name: string,
     args: Readonly<Record<string, WorkflowSerializableValue>>,
     fn: () => Promise<T>,
     options?: WorkflowToolOptions,
-  ): Promise<T> => {
-    let resolveExecution!: (value: T | PromiseLike<T>) => void;
+  ): Promise<WorkflowToolInvocationResult<T>> => {
+    let resolveExecution!: (value: WorkflowToolInvocationResult<T> | PromiseLike<WorkflowToolInvocationResult<T>>) => void;
     let rejectExecution!: (reason?: unknown) => void;
-    const execution = new Promise<T>((resolve, reject) => {
+    const execution = new Promise<WorkflowToolInvocationResult<T>>((resolve, reject) => {
       resolveExecution = resolve;
       rejectExecution = reject;
     });
@@ -103,7 +88,7 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
     void executeToolInvocation(input, ordinals, name, args, fn, options, (nodeId) => admission?.bindNode(nodeId))
       .then(resolveExecution, rejectExecution);
     return execution;
-  };
+  }) as WorkflowToolPrimitive;
 }
 
 async function executeToolInvocation<T extends WorkflowSerializableValue>(
@@ -114,12 +99,18 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
   fn: () => Promise<T>,
   options: WorkflowToolOptions | undefined,
   bindNode: (nodeId: string) => void,
-): Promise<T> {
+): Promise<WorkflowToolInvocationResult<T>> {
   input.throwIfCancelled();
-  const callKey = durableHash({ name, args });
+  if (options?.retriesAllowed === true && options.maxAttempts !== undefined
+    && (!Number.isInteger(options.maxAttempts) || options.maxAttempts < 1)) {
+    throw new RangeError("atomic-workflows: ctx.tool maxAttempts must be a positive integer");
+  }
+  const returnFailure = options?.failureMode === "return";
+  const identityMode = returnFailure ? { failureMode: "return" as const } : {};
+  const callKey = durableHash({ name, args, ...identityMode });
   const ordinal = (ordinals.get(callKey) ?? 0) + 1;
   ordinals.set(callKey, ordinal);
-  const argsHash = durableHash({ name, args, ordinal });
+  const argsHash = durableHash({ name, args, ordinal, ...identityMode });
 
   const cached = input.backend.getToolCheckpoint(input.workflowId, argsHash);
   const node: ToolNodeSnapshot = {
@@ -142,13 +133,25 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
     const endedAt = cached.topology?.endedAt ?? cached.completedAt;
     try {
       await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+      const returnedOutcome = cached.outcomeKind === undefined
+        ? undefined
+        : workflowToolOutcomeFromValue<T>(cached.output);
+      if (cached.outcomeKind !== undefined && returnedOutcome === undefined) {
+        throw new Error(`atomic-workflows: invalid durable return outcome for ctx.tool ${name}`);
+      }
+      const output = returnedOutcome === undefined
+        ? cached.output as T
+        : replayedWorkflowToolOutcome(returnedOutcome);
+      const failed = cached.outcomeKind === "return_failure";
       input.onNodeEnd?.(node.id, {
-        status: "cached",
+        status: failed ? "failed" : "cached",
         endedAt,
-        resultSummary: summarizeToolResult(cached.output),
+        ...(failed && returnedOutcome?.ok === false
+          ? { error: returnedOutcome.error.message }
+          : { resultSummary: summarizeToolResult(output) }),
       });
       input.onNodeSettle?.(node.id);
-      return cached.output as T;
+      return output;
     } catch (error) {
       const status = input.signal?.aborted === true ? "cancelled" : "failed";
       input.onNodeEnd?.(node.id, { status, endedAt: Date.now(), error: error instanceof Error ? error.message : String(error) });
@@ -156,19 +159,30 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
       throw error;
     }
   }
+  let callbackError: unknown;
 
   const startedAt = Date.now();
+  let attempts = 0;
+  let callbackCompleted = false;
   input.onNodeRunning?.(node.id, startedAt);
   try {
     const result = await executeWithRetries(
-      () => runCallback(
-        { kind: "workflow.ctx_tool", name, runId: input.workflowId },
-        fn,
-      ),
+      () => {
+        attempts += 1;
+        return runCallback(
+          { kind: "workflow.ctx_tool", name, runId: input.workflowId },
+          fn,
+        ).catch((error: unknown) => {
+          callbackError = error;
+          throw error;
+        });
+      },
       options,
       input.throwIfCancelled,
       input.signal,
     );
+    callbackCompleted = true;
+    const output = returnFailure ? workflowToolSuccess(result, attempts, false) : result;
 
     // Linearization policy: cancellation observed before persistence prevents
     // a checkpoint. Once the durable write begins, a successful commit wins
@@ -181,7 +195,8 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
       checkpointId: `tool:${argsHash}`,
       name,
       argsHash,
-      output: result,
+      output,
+      ...(returnFailure ? { outcomeKind: "return_success" as const } : {}),
       completedAt,
       topology: {
         version: DURABLE_TOOL_TOPOLOGY_VERSION,
@@ -195,19 +210,144 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
       },
     };
     await recordCheckpointDurably(input.backend, checkpoint);
-    input.onNodeEnd?.(node.id, { status: "completed", endedAt: completedAt, resultSummary: summarizeToolResult(result) });
+    input.onNodeEnd?.(node.id, { status: "completed", endedAt: completedAt, resultSummary: summarizeToolResult(output) });
     input.onNodeSettle?.(node.id);
-    return result;
+    return output;
   } catch (error) {
-    const cancelled = input.signal?.aborted === true;
+    try {
+      throwIfInvocationCancelled(input);
+    } catch (cancelledError) {
+      input.onNodeEnd?.(node.id, {
+        status: "cancelled",
+        endedAt: Date.now(),
+        error: cancelledError instanceof Error ? cancelledError.message : String(cancelledError),
+      });
+      input.onNodeSettle?.(node.id);
+      throw cancelledError;
+    }
+    const callbackFailure = callbackError ?? error;
+    if (returnFailure && !callbackCompleted && isExplicitCallbackCancellation(callbackFailure)) {
+      const cancellationMessage = workflowToolFailure(callbackFailure, attempts, false).error.message;
+      input.onNodeEnd?.(node.id, {
+        status: "failed",
+        endedAt: Date.now(),
+        error: cancellationMessage,
+      });
+      input.onNodeSettle?.(node.id);
+      throw callbackFailure;
+    }
+    if (returnFailure && !callbackCompleted) {
+      const outcome = workflowToolFailure(callbackFailure, attempts, false);
+      const completedAt = Date.now();
+      const checkpoint: DurableToolCheckpoint = {
+        kind: "tool",
+        workflowId: input.workflowId,
+        checkpointId: `tool:${argsHash}`,
+        name,
+        argsHash,
+        output: outcome,
+        outcomeKind: "return_failure",
+        completedAt,
+        topology: {
+          version: DURABLE_TOOL_TOPOLOGY_VERSION,
+          nodeId: node.id,
+          ordinal,
+          order: node.executionOrder ?? 0,
+          parentIds: [...node.parentIds],
+          startedAt,
+          endedAt: completedAt,
+          ...(input.runTopology !== undefined ? { run: { ...input.runTopology } } : {}),
+        },
+      };
+      try {
+        await recordCheckpointDurably(input.backend, checkpoint);
+      } catch (persistenceError) {
+        input.onNodeEnd?.(node.id, {
+          status: "failed",
+          endedAt: Date.now(),
+          error: persistenceError instanceof Error ? persistenceError.message : String(persistenceError),
+        });
+        input.onNodeSettle?.(node.id);
+        throw persistenceError;
+      }
+      input.onNodeEnd?.(node.id, { status: "failed", endedAt: completedAt, error: outcome.error.message });
+      input.onNodeSettle?.(node.id);
+      throwIfInvocationCancelled(input);
+      return outcome;
+    }
     input.onNodeEnd?.(node.id, {
-      status: cancelled ? "cancelled" : "failed",
+      status: "failed",
       endedAt: Date.now(),
       error: error instanceof Error ? error.message : String(error),
     });
     input.onNodeSettle?.(node.id);
     throw error;
   }
+}
+
+function throwIfInvocationCancelled(input: CreateToolPrimitiveInput): void {
+  input.throwIfCancelled();
+  if (!input.signal?.aborted) return;
+  throw input.signal.reason instanceof Error
+    ? input.signal.reason
+    : new Error("atomic-workflows: workflow cancelled");
+}
+
+const CALLBACK_CANCELLATION_NAMES = new Set([
+  "aborterror",
+  "aborted",
+  "cancelederror",
+  "cancellederror",
+  "canceled",
+  "cancelled",
+]);
+const CALLBACK_CANCELLATION_CODES = new Set([
+  "aborterror",
+  "abort_err",
+  "aborted",
+  "canceled",
+  "cancelled",
+  "ecanceled",
+  "ecancelled",
+  "err_canceled",
+  "err_cancelled",
+]);
+const CALLBACK_CANCELLATION_STOP_REASONS = new Set(["aborted", "canceled", "cancelled"]);
+
+function safeCancellationField(error: unknown, key: string): unknown {
+  try {
+    return field(error, key);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasCancellationMarker(markers: ReadonlySet<string>, value: unknown): boolean {
+  return (typeof value === "string" || typeof value === "number")
+    && markers.has(normalizeCode(value) ?? "");
+}
+
+function hasProcessFailureEvidence(error: unknown): boolean {
+  return safeCancellationField(error, "exitCode") !== undefined
+    || safeCancellationField(error, "stdout") !== undefined
+    || safeCancellationField(error, "stderr") !== undefined;
+}
+
+function isExplicitCallbackCancellation(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  for (let depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    if (typeof current === "object") {
+      if (seen.has(current)) return false;
+      seen.add(current);
+    }
+    if (hasCancellationMarker(CALLBACK_CANCELLATION_NAMES, safeCancellationField(current, "name"))) return true;
+    if (hasCancellationMarker(CALLBACK_CANCELLATION_STOP_REASONS, safeCancellationField(current, "stopReason"))) return true;
+    if (!hasProcessFailureEvidence(current)
+      && hasCancellationMarker(CALLBACK_CANCELLATION_CODES, safeCancellationField(current, "code"))) return true;
+    current = safeCancellationField(current, "cause");
+  }
+  return false;
 }
 
 
@@ -251,6 +391,7 @@ async function recordReplayedToolTopology(
     name: node.name,
     argsHash,
     output: cached.output,
+    ...(cached.outcomeKind !== undefined ? { outcomeKind: cached.outcomeKind } : {}),
     completedAt: Date.now(),
     topology,
   });
@@ -284,6 +425,7 @@ async function executeWithRetries<T>(
     try {
       return await fn();
     } catch (err) {
+      if (isExplicitCallbackCancellation(err)) throw err;
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < maxAttempts) {
         await sleepOrAbort(delay, signal);

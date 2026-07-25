@@ -94,6 +94,46 @@ describe("ctx.tool persistence and cancellation races", () => {
     assert.equal(backend.listCheckpoints(result.runId).filter((checkpoint) => checkpoint.kind === "tool").length, 1);
   });
 
+  test("return-mode cancellation during failure commit throws before downstream code", async () => {
+    class GatedFailureBackend extends InMemoryDurableBackend {
+      readonly writeStarted = Promise.withResolvers<void>();
+      readonly releaseWrite = Promise.withResolvers<void>();
+      override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+        if (checkpoint.kind === "tool") {
+          this.writeStarted.resolve();
+          await this.releaseWrite.promise;
+        }
+        await super.recordCheckpointAsync(checkpoint);
+      }
+    }
+    const backend = new GatedFailureBackend();
+    const controller = new AbortController();
+    let downstreamRan = false;
+    let observedOutcome = false;
+    const pending = run(workflow({
+      name: "cancel during recoverable failure commit", description: "", inputs: {}, outputs: {},
+      run: async (ctx) => {
+        const outcome = await ctx.tool("failed-check", {}, async () => {
+          throw new Error("expected check failure");
+        }, { failureMode: "return" });
+        observedOutcome = outcome.ok === false;
+        downstreamRan = true;
+        return {};
+      },
+    }), {}, { store: createStore(), durableBackend: backend, signal: controller.signal });
+
+    await backend.writeStarted.promise;
+    controller.abort(new Error("cancelled while failure checkpoint was in flight"));
+    backend.releaseWrite.resolve();
+    const result = await pending;
+
+    assert.equal(result.status, "killed");
+    assert.equal(observedOutcome, false);
+    assert.equal(downstreamRan, false);
+    assert.equal(result.toolNodes?.[0]?.status, "failed");
+    assert.equal(backend.listCheckpoints(result.runId).filter((checkpoint) => checkpoint.kind === "tool").length, 1);
+  });
+
   test("tool-node terminal updates are idempotent", () => {
     const store = createStore();
     store.recordRunStart({ id: "terminal-idempotence", name: "terminal", inputs: {}, status: "running", stages: [], toolNodes: [], startedAt: 1 });

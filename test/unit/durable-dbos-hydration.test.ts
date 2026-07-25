@@ -11,6 +11,7 @@ import { describe, test, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
+import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableToolCheckpoint, DurableUiCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createMockSdk, seedMockWorkflow, seedMockCheckpoint } from "./durable-dbos-backend-helpers.js";
@@ -43,6 +44,56 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(toolCp.argsHash, hash);
     assert.deepEqual(toolCp.output, { data: 42 });
     assert.equal(toolCp.checkpointId, "tool:h1");
+  });
+
+  test("fresh hydration replays a recoverable tool failure without invoking its callback", async () => {
+    const workflowId = "wf-return-failure";
+    const name = "check";
+    const args = { suite: "unit" };
+    const argsHash = durableHash({ name, args, ordinal: 1, failureMode: "return" });
+    const cp: DurableToolCheckpoint = {
+      kind: "tool",
+      workflowId,
+      checkpointId: `tool:${argsHash}`,
+      name,
+      argsHash,
+      output: {
+        ok: false,
+        error: { name: "Error", message: "hydrated failure", exitCode: 1, stderr: "failed test" },
+        attempts: 2,
+        cached: false,
+      },
+      outcomeKind: "return_failure",
+      completedAt: 1000,
+    };
+    seedMockWorkflow(sdk, { workflowId, name: "return-failure", status: "PENDING" });
+    seedMockCheckpoint(sdk, workflowId, cp);
+    const fresh = new DbosDurableBackend(sdk);
+    await fresh.hydrateWorkflow(workflowId);
+    let callbackCalls = 0;
+    let nodeStatus = "";
+    const tool = createToolPrimitive({
+      workflowId,
+      backend: fresh,
+      nextCheckpointId: () => "unused",
+      throwIfCancelled: () => {},
+      onNodeEnd: (_nodeId, update) => { nodeStatus = update.status; },
+    });
+
+    const outcome = await tool(name, args, async () => {
+      callbackCalls += 1;
+      return "unexpected";
+    }, { failureMode: "return" });
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: { name: "Error", message: "hydrated failure", exitCode: 1, stderr: "failed test" },
+      attempts: 2,
+      cached: true,
+    });
+    assert.equal(callbackCalls, 0);
+    assert.equal(nodeStatus, "failed");
+    assert.equal(fresh.getToolCheckpoint(workflowId, argsHash)?.outcomeKind, "return_failure");
   });
 
   test("hydrateWorkflow reconstructs UI checkpoints from DBOS envelopes", async () => {

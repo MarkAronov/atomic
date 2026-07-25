@@ -12,6 +12,7 @@
  */
 
 import type { WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
+import { workflowToolOutcomeFromValue } from "./tool-outcome.js";
 import {
   DURABLE_BOUNDARY_TOPOLOGY_VERSION,
   DURABLE_STAGE_TOPOLOGY_VERSION,
@@ -48,6 +49,7 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly name?: string;
   readonly argsHash?: string;
   readonly promptKind?: UiPromptKind;
+  readonly outcomeKind?: "return_success" | "return_failure";
   readonly message?: string;
   readonly promptHash?: string;
   readonly replayKey?: string;
@@ -97,6 +99,7 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
       ...base,
       name: t.name,
       argsHash: t.argsHash,
+      ...(t.outcomeKind !== undefined ? { outcomeKind: t.outcomeKind } : {}),
       ...(t.topology !== undefined ? { topology: {
         version: t.topology.version,
         nodeId: t.topology.nodeId,
@@ -194,7 +197,11 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     || (env.hasOutput !== undefined && typeof env.hasOutput !== "boolean")) return undefined;
   const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
   if (env.kind === "tool") {
-    if (typeof env.argsHash !== "string" || env.output === undefined) return undefined;
+    if (typeof env.argsHash !== "string" || env.output === undefined
+      || (env.outcomeKind !== undefined && env.outcomeKind !== "return_success" && env.outcomeKind !== "return_failure")) return undefined;
+    const outcome = env.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue(env.output);
+    if ((env.outcomeKind === "return_success" && outcome?.ok !== true)
+      || (env.outcomeKind === "return_failure" && outcome?.ok !== false)) return undefined;
     const topology = env.topology === undefined ? undefined : toolTopology(env.topology);
     if (env.topology !== undefined && topology === undefined) return undefined;
     return {
@@ -203,6 +210,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
       name: env.name ?? "tool",
       argsHash: env.argsHash,
       output: env.output,
+      ...(env.outcomeKind !== undefined ? { outcomeKind: env.outcomeKind } : {}),
       ...(topology !== undefined ? { topology } : {}),
     } as DurableToolCheckpoint;
   }

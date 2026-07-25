@@ -103,6 +103,8 @@ export interface DurableToolCheckpoint {
   readonly argsHash: string;
   /** Cached tool output (JSON-serializable). */
   readonly output: WorkflowSerializableValue;
+  /** Explicit return-mode result kind; absent for legacy/default successful tools. */
+  readonly outcomeKind?: "return_success" | "return_failure";
   readonly completedAt: number;
   /** Additive graph topology; omitted by pre-#1991 checkpoints. */
   readonly topology?: DurableToolTopology;
