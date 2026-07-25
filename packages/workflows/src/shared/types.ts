@@ -424,30 +424,14 @@ export interface WorkflowRunContext<
   readonly models?: WorkflowModelCatalogPort;
 }
 
-/**
- * `ctx.tool` primitive signature. Runs an async function and caches the result
- * durably via the durable workflow backend.
- */
-export interface WorkflowToolPrimitive {
-  <TValue extends WorkflowSerializableValue>(
-    name: string,
-    args: Readonly<Record<string, WorkflowSerializableValue>>,
-    fn: () => Promise<TValue>,
-    options?: WorkflowToolOptions,
-  ): Promise<TValue>;
-}
-
-/** Options for `ctx.tool`. */
-export interface WorkflowToolOptions {
-  /** When true, the tool function is retried on failure. Default false. */
-  readonly retriesAllowed?: boolean;
-  /** Max retry attempts when retriesAllowed is true. Default 3. */
-  readonly maxAttempts?: number;
-  /** Initial retry interval in ms. Default 1000. */
-  readonly intervalMs?: number;
-  /** Backoff multiplier. Default 2. */
-  readonly backoffRate?: number;
-}
+export type WorkflowToolError = AuthoringContract.WorkflowToolError;
+export type WorkflowToolFailure = AuthoringContract.WorkflowToolFailure;
+export type WorkflowToolOptions = AuthoringContract.WorkflowToolOptions;
+export type WorkflowToolOutcome<TValue extends WorkflowSerializableValue> = AuthoringContract.WorkflowToolOutcome<TValue>;
+export type WorkflowToolPrimitive = AuthoringContract.WorkflowToolPrimitive;
+export type WorkflowToolReturnOptions = AuthoringContract.WorkflowToolReturnOptions;
+export type WorkflowToolSuccess<TValue extends WorkflowSerializableValue> = AuthoringContract.WorkflowToolSuccess<TValue>;
+export type WorkflowToolThrowOptions = AuthoringContract.WorkflowToolThrowOptions;
 
 // ---------------------------------------------------------------------------
 // WorkflowRuntimeConfig — resolved runtime tunables injected at composition root

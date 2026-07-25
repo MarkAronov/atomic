@@ -245,6 +245,22 @@ describe("DBOS checkpoint envelope", () => {
     assert.equal(s.checkpointId, "cp3");
   });
 
+
+  test("rejects marked return-mode tool checkpoints with a malformed outcome", () => {
+    const cp: DurableToolCheckpoint = {
+      kind: "tool",
+      workflowId: "w",
+      checkpointId: "bad-return-outcome",
+      name: "check",
+      argsHash: "bad-hash",
+      output: "not-an-outcome",
+      outcomeKind: "return_failure",
+      completedAt: 400,
+    };
+    const env = encodeCheckpoint(cp);
+
+    assert.equal(decodeToCheckpoint("w", "bad-return-outcome", env), undefined);
+  });
   test("isCheckpointEnvelope rejects plain values", () => {
     assert.equal(isCheckpointEnvelope("hello"), false);
     assert.equal(isCheckpointEnvelope(42), false);

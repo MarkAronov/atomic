@@ -85,7 +85,7 @@ import type {
   StageOptions, StageSendUserMessageOptions, StageSessionEvent, StageStatus, StageUserMessageContent,
   WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
   WorkflowMcpPort, WorkflowModelCatalogPort, WorkflowOutputSchemaMap, WorkflowPersistencePort, WorkflowRunOutput,
-  WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowUIAdapter,
+  WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowToolError, WorkflowToolOutcome, WorkflowUIAdapter,
   WorkflowCustomUiComponent, WorkflowCustomUiFactory, WorkflowCustomUiKeybindings, WorkflowCustomUiOptions,
   WorkflowCustomUiOverlayHandle, WorkflowCustomUiOverlayOptions, WorkflowCustomUiTheme, WorkflowCustomUiTui,
 } from "@bastani/workflows";
@@ -251,6 +251,24 @@ const authoredWorkflow = workflow({
       { name: "twelfth", prompt: tuple.join(":") },
       { name: "thirteenth", prompt: String(nothing) },
     ]);
+    const defaultToolValue: string = await ctx.tool("typed-default-tool", {}, async () => "value");
+    const recoverableTool: WorkflowToolOutcome<string> = await ctx.tool(
+      "typed-recoverable-tool",
+      {},
+      async () => "value",
+      { failureMode: "return" },
+    );
+    if (recoverableTool.ok) {
+      const successValue: string = recoverableTool.value;
+      void successValue;
+    } else {
+      const processError: WorkflowToolError = recoverableTool.error;
+      const exitCode: number | undefined = processError.exitCode;
+      const stdout: string | undefined = processError.stdout;
+      const stderr: string | undefined = processError.stderr;
+      void exitCode; void stdout; void stderr;
+    }
+    void defaultToolValue;
     return { summary: chained.at(-1)?.text ?? "", maybe: nickname };
   },
 }); const summarySchema = authoredWorkflow.outputs.summary; void summarySchema;
