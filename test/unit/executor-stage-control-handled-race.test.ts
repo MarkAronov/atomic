@@ -39,3 +39,57 @@ test("stage-control prompt does not reject after handled input was authorized", 
   await delivery;
   assert.equal(sideEffects, 1);
 });
+
+test("stage-control resume rechecks admission after awaited __resume setup", async () => {
+  const resumeStarted = Promise.withResolvers<void>();
+  const continueResume = Promise.withResolvers<void>();
+  const terminalError = new Error("root terminated during resume");
+  let terminal = false;
+  let nativeReleaseMutations = 0;
+  let snapshotMutations = 0;
+  const runtime = {
+    runId: "run-resume-race",
+    stageId: "stage-resume-race",
+    name: "resume race",
+    stageSnapshot: { status: "paused", sessionId: "session-resume-race" },
+    state: {
+      liveHandleReleased: false,
+      waitingForStageChatTurn: false,
+      resumeContinuationPending: false,
+    },
+    innerCtx: {
+      __sessionMeta: () => ({ sessionId: "session-resume-race", sessionFile: undefined }),
+      __isPaused: () => true,
+      subscribe: () => () => {},
+      async __resume(
+        _message: string | undefined,
+        _beforeResolve: ((result: { releasedQueuedMessages: boolean; runnerOwnedDeliveryPending: boolean }) => void) | undefined,
+        beforeRelease: (() => void) | undefined,
+      ) {
+        resumeStarted.resolve();
+        await continueResume.promise;
+        beforeRelease?.();
+        nativeReleaseMutations += 1;
+        return { releasedQueuedMessages: false, runnerOwnedDeliveryPending: false };
+      },
+    },
+    activeStore: {
+      recordStageResumed() { snapshotMutations += 1; return true; },
+      recordRunResumed() { snapshotMutations += 1; },
+    },
+    throwIfStageMutationBlocked() {},
+    captureStageSessionMeta() {},
+  };
+  const handle = createStageControlHandle(runtime as never);
+
+  const resume = handle.resume("late message", () => {
+    if (terminal) throw terminalError;
+  });
+  await resumeStarted.promise;
+  terminal = true;
+  continueResume.resolve();
+
+  await assert.rejects(resume, (error) => error === terminalError);
+  assert.equal(nativeReleaseMutations, 0);
+  assert.equal(snapshotMutations, 0);
+});

@@ -291,3 +291,130 @@ describe("stageControlRegistry — getOrCreateDetached", () => {
         assert.equal(r.get("run-1", "a"), fresh);
     });
 });
+
+describe("stageControlRegistry — provisional detached leases", () => {
+    test("disposes an uncommitted provisional handle after its final lease releases", async () => {
+        const r = createStageControlRegistry();
+        let disposes = 0;
+        const handle = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            async dispose() { disposes += 1; },
+        };
+        const first = r.acquireDetached("run-1", "a", () => handle);
+        const second = r.acquireDetached("run-1", "a", () => { throw new Error("must reuse"); });
+
+        await first.release();
+        assert.equal(r.peek("run-1", "a"), handle);
+        await second.release();
+
+        assert.equal(r.peek("run-1", "a"), undefined);
+        assert.equal(disposes, 1);
+    });
+
+    test("commit retains a provisionally-created detached handle", async () => {
+        const r = createStageControlRegistry();
+        let disposes = 0;
+        const handle = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            async dispose() { disposes += 1; },
+        };
+        const lease = r.acquireDetached("run-1", "a", () => handle);
+
+        lease.commit();
+        await lease.release();
+
+        assert.equal(r.peek("run-1", "a"), handle);
+        assert.equal(disposes, 0);
+    });
+
+    test("replacement disposes a provisional handle and settles every lease", async () => {
+        const r = createStageControlRegistry();
+        const disposeStarted = Promise.withResolvers<void>();
+        const finishDispose = Promise.withResolvers<void>();
+        let disposes = 0;
+        const provisional = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            async dispose() {
+                disposes += 1;
+                disposeStarted.resolve();
+                await finishDispose.promise;
+            },
+        };
+        const first = r.acquireDetached("run-1", "a", () => provisional);
+        const second = r.acquireDetached("run-1", "a", () => { throw new Error("must reuse"); });
+        const live = makeHandle("run-1", "a");
+
+        r.register(live);
+        await disposeStarted.promise;
+        let firstSettled = false;
+        let secondSettled = false;
+        const firstRelease = first.release().then(() => { firstSettled = true; });
+        const secondRelease = second.release().then(() => { secondSettled = true; });
+        await Promise.resolve();
+
+        assert.equal(firstSettled, false);
+        assert.equal(secondSettled, false);
+        assert.equal(r.get("run-1", "a"), live);
+        finishDispose.resolve();
+        await Promise.all([firstRelease, secondRelease]);
+
+        assert.equal(disposes, 1);
+        assert.equal(r.get("run-1", "a"), live);
+    });
+
+    test("a displaced provisional lease cannot commit and release joins disposal", async () => {
+        const r = createStageControlRegistry();
+        const disposeStarted = Promise.withResolvers<void>();
+        const finishDispose = Promise.withResolvers<void>();
+        const provisional = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            async dispose() { disposeStarted.resolve(); await finishDispose.promise; },
+        };
+        const lease = r.acquireDetached("run-1", "a", () => provisional);
+        const live = makeHandle("run-1", "a");
+
+        r.register(live);
+        await disposeStarted.promise;
+        assert.equal(lease.commit(), false);
+        let released = false;
+        const release = lease.release().then(() => { released = true; });
+        await Promise.resolve();
+
+        assert.equal(released, false);
+        finishDispose.resolve();
+        await release;
+        assert.equal(r.get("run-1", "a"), live);
+    });
+
+    test("ordinary get does not claim a provisional handle", async () => {
+        const r = createStageControlRegistry();
+        let disposes = 0;
+        const handle = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            async dispose() { disposes += 1; },
+        };
+        const lease = r.acquireDetached("run-1", "a", () => handle);
+
+        assert.equal(r.get("run-1", "a"), handle);
+        await lease.release();
+
+        assert.equal(r.peek("run-1", "a"), undefined);
+        assert.equal(disposes, 1);
+    });
+
+    test("ordinary claim keeps a provisional handle for attach or Intercom", async () => {
+        const r = createStageControlRegistry();
+        let disposes = 0;
+        const handle = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            async dispose() { disposes += 1; },
+        };
+        const lease = r.acquireDetached("run-1", "a", () => handle);
+
+        assert.equal(r.claim("run-1", "a"), handle);
+        await lease.release();
+
+        assert.equal(r.peek("run-1", "a"), handle);
+        assert.equal(disposes, 0);
+    });
+});

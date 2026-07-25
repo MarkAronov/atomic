@@ -20,20 +20,21 @@ function liveHandle(input: {
   readonly streaming: boolean;
   readonly calls: string[];
   readonly status?: StageControlHandle["status"];
+  readonly runStatus?: "running" | "paused";
 }): StageControlHandle {
   runIds.add(input.runId);
   store.recordRunStart({
     id: input.runId,
     name: "idle-routing",
     inputs: {},
-    status: "running",
+    status: input.runStatus ?? "running",
     stages: [],
     startedAt: 1,
   });
   store.recordStageStart(input.runId, {
     id: "stage-a",
     name: "chat",
-    status: "running",
+    status: input.status === "paused" ? "paused" : "running",
     parentIds: [],
     toolEvents: [],
   });
@@ -47,11 +48,24 @@ function liveHandle(input: {
     isStreaming: input.streaming,
     messages: [],
     async ensureAttached() {},
+    async sendUserMessage(text, options, beforeDelivery) {
+      beforeDelivery?.();
+      if (!input.streaming) {
+        input.calls.push(`prompt:${text}`);
+        return "prompt";
+      }
+      const delivery = options?.deliverAs ?? "followUp";
+      input.calls.push(`${delivery}:${text}`);
+      return delivery;
+    },
     async prompt(text) { input.calls.push(`prompt:${text}`); },
     async steer(text) { input.calls.push(`steer:${text}`); },
     async followUp(text) { input.calls.push(`followUp:${text}`); },
     async pause() {},
-    async resume(text) { input.calls.push(`resume:${text ?? ""}`); },
+    async resume(text, beforeResume) {
+      beforeResume?.();
+      input.calls.push(`resume:${text ?? ""}`);
+    },
     subscribe() { return () => {}; },
   };
   stageControlRegistry.register(handle);
@@ -102,10 +116,11 @@ describe("workflow send — idle-aware live-stage routing", () => {
     assert.equal(result.message, "Prompt sent to stage.");
   });
 
-  test("ordinary paused resume preserves its established response string", async () => {
+  test("paused root resume preserves its established response string", async () => {
     const runId = "ordinary-resume";
     const calls: string[] = [];
-    liveHandle({ runId, streaming: false, calls, status: "paused" });
+    liveHandle({ runId, streaming: false, calls, status: "paused", runStatus: "paused" });
+    assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
 
     const result = await workflowSendAction({
       runId,
@@ -213,6 +228,11 @@ describe("workflow send — idle-aware live-stage routing", () => {
       runId: childId, stageId: "stage-a", stageName: "chat", status: "running",
       sessionId: "session-a", sessionFile: undefined, isStreaming: false, messages: [],
       async ensureAttached() {},
+      async sendUserMessage(text, _options, beforeDelivery) {
+        beforeDelivery?.();
+        calls.push(`prompt:${text}`);
+        return "prompt";
+      },
       async prompt(text) { calls.push(`prompt:${text}`); },
       async steer() {}, async followUp() {}, async pause() {}, async resume() {},
       subscribe() { return () => {}; },

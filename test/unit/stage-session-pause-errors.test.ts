@@ -180,4 +180,36 @@ describe("StageSessionPause error settlement", () => {
     await resolution.runnerOwnedDeliverySettlement;
     assert.equal(control.isPaused(), false);
   });
+
+  test("final resume admission can reject before native queue release", async () => {
+    const releaseStarted = Promise.withResolvers<void>();
+    const continueRelease = Promise.withResolvers<void>();
+    const admissionError = new Error("root became terminal");
+    let queueReleased = false;
+    let rootTerminal = false;
+    const { session } = makeMockSession({
+      pauseQueuedMessages() {},
+      async abort() {},
+      async resumeQueuedMessages(beforeRelease?: () => void) {
+        releaseStarted.resolve();
+        await continueRelease.promise;
+        beforeRelease?.();
+        queueReleased = true;
+        return false;
+      },
+    });
+    const control = new StageSessionPause(() => session);
+    await control.requestPause();
+
+    const resume = control.resume(undefined, undefined, () => {
+      if (rootTerminal) throw admissionError;
+    });
+    await releaseStarted.promise;
+    rootTerminal = true;
+    continueRelease.resolve();
+
+    await assert.rejects(resume, (error) => error === admissionError);
+    assert.equal(queueReleased, false);
+    assert.equal(control.isPaused(), true);
+  });
 });

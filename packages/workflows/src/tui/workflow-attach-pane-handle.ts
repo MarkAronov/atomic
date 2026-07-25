@@ -16,7 +16,7 @@ export function resolveAttachedStageHandle(
   runId: string,
   stageId: string,
 ): AttachedStageHandleResolution {
-  const liveHandle = registry?.get(runId, stageId);
+  const liveHandle = registry?.claim(runId, stageId);
   if (liveHandle !== undefined) return { handle: liveHandle };
   const postMortem = resolvePostMortemHandle?.(runId, stageId);
   if (postMortem?.ok === true) return { handle: postMortem.handle };

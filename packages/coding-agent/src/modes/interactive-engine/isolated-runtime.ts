@@ -307,7 +307,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				},
 			},
 			pauseQueuedMessages: { configurable: true, value: () => this.queuePause.pause() },
-			resumeQueuedMessages: { configurable: true, value: () => this.queuePause.resume() },
+			resumeQueuedMessages: {
+				configurable: true,
+				value: (beforeRelease?: () => void) => this.queuePause.resume(beforeRelease),
+			},
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>) => {

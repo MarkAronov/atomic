@@ -64,10 +64,15 @@ export interface StageControlHandle {
   pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
   /** Ensure the SDK session exists. Cheap when already attached. */
   ensureAttached(): Promise<void>;
-  /** Deliver through the idle-aware session primitive and report the actual action. */
+  /**
+   * Deliver through the idle-aware session primitive and report the action.
+   * `beforeDelivery` must run synchronously after async setup and immediately
+   * before the underlying SDK admits or queues the message.
+   */
   sendUserMessage?(
     text: string,
     options?: { readonly deliverAs?: "steer" | "followUp" },
+    beforeDelivery?: () => void,
   ): Promise<StageUserMessageDeliveryAction>;
 
   /** Send a prompt. Use only when the stage is idle / not streaming. */
@@ -84,9 +89,9 @@ export interface StageControlHandle {
   pause(): Promise<void>;
   /**
    * Release a paused stage. If `message` is provided it is sent as the
-   * next user message before resuming.
+   * next user message before resuming. `beforeResume` guards final admission.
    */
-  resume(message?: string): Promise<void | StageUserMessageDeliveryAction>;
+  resume(message?: string, beforeResume?: () => void): Promise<void | StageUserMessageDeliveryAction>;
   /**
    * Subscribe to AgentSession events. The pending-listener semantics
    * from `InternalStageContext.subscribe` apply: listeners registered
@@ -95,6 +100,15 @@ export interface StageControlHandle {
   subscribe(listener: AgentSessionEventListener): () => void;
   /** Release the underlying SDK session and unregister this direct chat handle. */
   dispose?(): void | Promise<void>;
+}
+
+/** Tentative ownership used by workflow sends until final message admission. */
+export interface DetachedStageHandleLease {
+  readonly handle: StageControlHandle;
+  /** Keep the handle registered after admission; false when it was displaced. */
+  commit(): boolean;
+  /** Release tentative ownership and dispose an unclaimed provisional handle. */
+  release(): Promise<void>;
 }
 
 /**
@@ -143,11 +157,25 @@ export interface StageControlRegistry {
     create: () => StageControlHandle,
   ): StageControlHandle;
   /**
+   * Acquire tentative ownership of a detached handle. A newly-created handle
+   * stays provisional until one lease commits or an ordinary consumer claims
+   * it through `claim()` / `getOrCreateDetached()`.
+   */
+  acquireDetached(
+    runId: string,
+    stageId: string,
+    create: () => StageControlHandle,
+  ): DetachedStageHandleLease;
+  /** Inspect without claiming a provisional detached handle. */
+  peek(runId: string, stageId: string): StageControlHandle | undefined;
+  /** Resolve and permanently claim a provisional detached handle. */
+  claim(runId: string, stageId: string): StageControlHandle | undefined;
+  /**
    * Remove this stage from run-level pause/resume aggregates while keeping
    * `get()` chat attachment live until the registration disposer runs.
    */
   detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean;
-  /** Resolve a single stage handle by run + stage id, including detached chats. */
+  /** Resolve one stage handle by run + stage id, including detached chats. */
   get(runId: string, stageId: string): StageControlHandle | undefined;
   /** Resolve all currently-registered chat handles for a run. */
   forRun(runId: string): readonly StageControlHandle[];
@@ -169,6 +197,9 @@ export function createStageControlRegistry(): StageControlRegistry {
   type RegistryEntry = {
     handle: StageControlHandle;
     controlsDependencies: boolean;
+    permanent: boolean;
+    readonly leases: Set<symbol>;
+    disposal?: Promise<void>;
   };
 
   const _byRun = new Map<string, Map<string, RegistryEntry>>();
@@ -186,6 +217,20 @@ export function createStageControlRegistry(): StageControlRegistry {
     const runMap = _byRun.get(runId);
     if (!runMap) return [];
     return [...runMap.values()].filter((entry) => entry.controlsDependencies);
+  }
+
+  function disposeEntry(entry: RegistryEntry): Promise<void> {
+    if (entry.disposal !== undefined) return entry.disposal;
+    try {
+      entry.disposal = Promise.resolve(entry.handle.dispose?.());
+    } catch (error) {
+      entry.disposal = Promise.reject(error);
+    }
+    return entry.disposal;
+  }
+
+  function disposeEntryInBackground(entry: RegistryEntry, message: string): void {
+    void disposeEntry(entry).catch((err: unknown) => console.warn(message, err));
   }
 
   function makeRunHandle(runId: string): WorkflowRunControlHandle {
@@ -261,7 +306,19 @@ export function createStageControlRegistry(): StageControlRegistry {
   return {
     register(handle: StageControlHandle): () => void {
       const runMap = ensureRun(handle.runId);
-      runMap.set(handle.stageId, { handle, controlsDependencies: true });
+      const displaced = runMap.get(handle.stageId);
+      runMap.set(handle.stageId, {
+        handle,
+        controlsDependencies: true,
+        permanent: true,
+        leases: new Set(),
+      });
+      if (displaced !== undefined && displaced.handle !== handle && !displaced.permanent) {
+        disposeEntryInBackground(
+          displaced,
+          "atomic-workflows: displaced provisional stage handle dispose failed",
+        );
+      }
       return () => {
         const existing = _byRun.get(handle.runId);
         if (!existing) return;
@@ -278,16 +335,74 @@ export function createStageControlRegistry(): StageControlRegistry {
     ): StageControlHandle {
       const runMap = ensureRun(runId);
       const existing = runMap.get(stageId);
-      if (existing !== undefined && existing.handle.isDisposed !== true) return existing.handle;
+      if (existing !== undefined && existing.handle.isDisposed !== true) {
+        existing.permanent = true;
+        return existing.handle;
+      }
       if (existing !== undefined) {
         runMap.delete(stageId);
-        void Promise.resolve(existing.handle.dispose?.()).catch((err: unknown) => {
-          console.warn("atomic-workflows: stale stage handle dispose failed", err);
-        });
+        disposeEntryInBackground(existing, "atomic-workflows: stale stage handle dispose failed");
       }
       const handle = create();
-      runMap.set(handle.stageId, { handle, controlsDependencies: false });
+      runMap.set(handle.stageId, {
+        handle,
+        controlsDependencies: false,
+        permanent: true,
+        leases: new Set(),
+      });
       return handle;
+    },
+    acquireDetached(
+      runId: string,
+      stageId: string,
+      create: () => StageControlHandle,
+    ): DetachedStageHandleLease {
+      const runMap = ensureRun(runId);
+      let entry = runMap.get(stageId);
+      if (entry?.handle.isDisposed === true) {
+        runMap.delete(stageId);
+        disposeEntryInBackground(entry, "atomic-workflows: stale stage handle dispose failed");
+        entry = undefined;
+      }
+      if (entry === undefined) {
+        entry = {
+          handle: create(),
+          controlsDependencies: false,
+          permanent: false,
+          leases: new Set(),
+        };
+        runMap.set(stageId, entry);
+      }
+      const leasedEntry = entry;
+      const token = Symbol("detached-stage-handle-lease");
+      leasedEntry.leases.add(token);
+      let settled = false;
+      return {
+        handle: leasedEntry.handle,
+        commit() {
+          if (settled) return false;
+          if (runMap.get(stageId) !== leasedEntry || leasedEntry.disposal !== undefined) {
+            return false;
+          }
+          settled = true;
+          leasedEntry.leases.delete(token);
+          leasedEntry.permanent = true;
+          return true;
+        },
+        async release() {
+          if (settled) return;
+          settled = true;
+          leasedEntry.leases.delete(token);
+          if (runMap.get(stageId) !== leasedEntry) {
+            if (leasedEntry.disposal !== undefined) await leasedEntry.disposal;
+            return;
+          }
+          if (leasedEntry.permanent || leasedEntry.leases.size > 0) return;
+          runMap.delete(stageId);
+          if (runMap.size === 0) _byRun.delete(runId);
+          await disposeEntry(leasedEntry);
+        },
+      };
     },
     detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean {
       const entry = _byRun.get(runId)?.get(stageId);
@@ -296,6 +411,14 @@ export function createStageControlRegistry(): StageControlRegistry {
       if (!entry.controlsDependencies) return false;
       entry.controlsDependencies = false;
       return true;
+    },
+    peek(runId: string, stageId: string): StageControlHandle | undefined {
+      return _byRun.get(runId)?.get(stageId)?.handle;
+    },
+    claim(runId: string, stageId: string): StageControlHandle | undefined {
+      const entry = _byRun.get(runId)?.get(stageId);
+      if (entry !== undefined) entry.permanent = true;
+      return entry?.handle;
     },
     get(runId: string, stageId: string): StageControlHandle | undefined {
       return _byRun.get(runId)?.get(stageId)?.handle;
@@ -309,14 +432,10 @@ export function createStageControlRegistry(): StageControlRegistry {
       return makeRunHandle(runId);
     },
     clear(): void {
-      const handles = [..._byRun.values()].flatMap((runMap) =>
-        [...runMap.values()].map((entry) => entry.handle),
-      );
+      const entries = [..._byRun.values()].flatMap((runMap) => [...runMap.values()]);
       _byRun.clear();
-      for (const handle of handles) {
-        void Promise.resolve(handle.dispose?.()).catch((err: unknown) => {
-          console.warn("atomic-workflows: stage handle dispose failed", err);
-        });
+      for (const entry of entries) {
+        disposeEntryInBackground(entry, "atomic-workflows: stage handle dispose failed");
       }
     },
   };

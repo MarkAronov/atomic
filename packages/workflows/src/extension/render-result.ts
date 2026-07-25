@@ -11,7 +11,7 @@
  *  - pi-subagents src/extension/index.ts renderResult slot
  */
 
-import type { PendingPrompt, RunSnapshot, StageInputRequest, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import type { PendingPrompt, RunSnapshot, RunStatus, StageInputRequest, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import type { WorkflowDetails } from "../shared/types.js";
 import type { RunDetail } from "../runs/background/status.js";
@@ -143,7 +143,21 @@ type TranscriptResult = {
   fallbackNote?: string;
   inlineMode?: TranscriptInlineMode;
 };
-type SendResult = { action: "send"; runId: string; stageId: string; delivery: string; status: "ok" | "noop"; message: string };
+type SendResult = {
+  action: "send";
+  runId: string;
+  stageId: string;
+  delivery: string;
+  message: string;
+} & (
+  | { status: "ok" | "noop" }
+  | {
+      status: "failed";
+      code: "WORKFLOW_TERMINAL";
+      workflowStatus: RunStatus;
+      error: string;
+    }
+);
 type PauseResult = { action: "pause"; runId: string; status: string; message: string };
 type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "noop"; message: string };
 type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };

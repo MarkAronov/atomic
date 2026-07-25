@@ -95,7 +95,7 @@ describe("non-attachable tool interactions", () => {
     view.dispose();
   });
 
-  test("textual stage/chat/control targeting cannot resolve or create a handle for a tool", async () => {
+  test("terminal sends reject before textual tool targeting can create a handle", async () => {
     recordToolOnly(store, "completed");
     for (const target of ["tool:publish", "publish-api"]) {
       const resolved = resolveStageTarget("tool-interaction-run", target);
@@ -124,10 +124,16 @@ describe("non-attachable tool interactions", () => {
     );
     const interrupted = await workflowInterruptAction({ action: "interrupt", runId: "tool-interaction-run", stageId: "tool:publish" });
 
-    assert.equal(sent.status, "noop");
+    assert.equal(sent.status, "failed");
+    if (sent.status === "failed") {
+      assert.equal(sent.code, "WORKFLOW_TERMINAL");
+      assert.equal(sent.workflowStatus, "completed");
+    }
+    assert.equal(sent.delivery, "rejected");
     assert.equal(paused.status, "noop");
     assert.equal(interrupted.status, "noop");
-    assert.match(`${sent.message}\n${paused.message}\n${interrupted.message}`, /Stage not found/);
+    assert.match(sent.message, /workflow tool-interaction-run has terminated with status completed/);
+    assert.match(`${paused.message}\n${interrupted.message}`, /Stage not found/);
     assert.equal(postMortemCreates, 0);
     const resumed = await workflowResumeAction(
       { action: "resume", runId: "tool-interaction-run", stageId: "tool:publish" },

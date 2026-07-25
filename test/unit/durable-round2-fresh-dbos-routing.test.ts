@@ -140,7 +140,7 @@ async function persistRepeatedChildren(
   await backend.flush();
 }
 
-test.serial("fresh DBOS repeated-child collisions route exact expanded targets only to their child owner", async () => {
+test.serial("fresh completed DBOS graphs keep exact attach routing while terminal sends fail at the root", async () => {
   const directory = mkdtempSync(join(tmpdir(), "atomic-round2-routing-"));
   const sessionFiles = [transcript(directory, "child-a"), transcript(directory, "child-b")] as const;
   try {
@@ -195,11 +195,15 @@ test.serial("fresh DBOS repeated-child collisions route exact expanded targets o
       text: "route only to child a",
       delivery: "prompt",
     });
-    assert.deepEqual({ runId: sent.runId, stageId: sent.stageId }, {
-      runId: CHILD_IDS[0],
-      stageId: LOCAL_STAGE_ID,
-    });
-    assert.deepEqual(prompts, ["route only to child a"]);
+    assert.equal(sent.status, "failed");
+    if (sent.status === "failed") {
+      assert.equal(sent.code, "WORKFLOW_TERMINAL");
+      assert.equal(sent.workflowStatus, "completed");
+    }
+    assert.equal(sent.runId, ROOT_ID);
+    assert.equal(sent.stageId, expandedId);
+    assert.equal(sent.delivery, "rejected");
+    assert.deepEqual(prompts, []);
 
     const paused = await workflowPauseAction({ runId: ROOT_ID, stageId: expandedId });
     assert.ok("runId" in paused && "status" in paused);
@@ -213,12 +217,11 @@ test.serial("fresh DBOS repeated-child collisions route exact expanded targets o
       text: "must stay detached",
       delivery: "resume",
     });
-    assert.deepEqual({ runId: resumed.runId, stageId: resumed.stageId, status: resumed.status }, {
-      runId: CHILD_IDS[0],
-      stageId: LOCAL_STAGE_ID,
-      status: "noop",
-    });
-    assert.deepEqual(prompts, ["route only to child a"], "resume never falls back to root execution or chat");
+    assert.equal(resumed.status, "failed");
+    assert.equal(resumed.runId, ROOT_ID);
+    assert.equal(resumed.stageId, expandedId);
+    assert.equal(resumed.delivery, "rejected");
+    assert.deepEqual(prompts, [], "terminal send never falls back to root execution or chat");
     assert.equal(stageControlRegistry.get(ROOT_ID, LOCAL_STAGE_ID), undefined);
   } finally {
     rmSync(directory, { recursive: true, force: true });

@@ -55,15 +55,19 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       runtime.throwIfStageMutationBlocked();
       runtime.captureStageSessionMeta();
     },
-    async sendUserMessage(text, options) {
+    async sendUserMessage(text, options, beforeDelivery) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
       runtime.throwIfStageMutationBlocked();
+      const admitDelivery = (): void => {
+        runtime.throwIfStageMutationBlocked();
+        beforeDelivery?.();
+      };
       try {
         const action = await runtime.innerCtx.__sendUserMessage(
           text,
           options,
-          runtime.throwIfStageMutationBlocked,
+          admitDelivery,
         );
         if (action === "steer" || action === "followUp") {
           runtime.state.resumeContinuationPending = "queued-user-message";
@@ -138,7 +142,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       // pause-adjusted stage elapsed time even inside the normal 30s bucket.
       await runtime.captureStageSessionMeta({ forceDurable: true });
     },
-    async resume(message?: string) {
+    async resume(message?: string, beforeResume?: () => void) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
       runtime.throwIfStageMutationBlocked();
@@ -162,6 +166,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
               : previousResumeContinuation === false ? "resume" : previousResumeContinuation;
             wakeReleasedIdleStageChat = resumesIdleStageChat && releasedQueuedMessages;
           },
+          beforeResume,
         );
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
         if (changed) {
