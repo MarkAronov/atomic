@@ -116,13 +116,6 @@ export class InteractiveModeBase {
   isInitialized = false;
 
 
-  // GitHub Copilot CAPI context-window catalog load state (gated on the Copilot provider).
-  copilotCatalogApplied = false;
-
-
-  copilotCatalogInFlight?: Promise<void>;
-
-
   onInputCallback?: (text: string) => void;
 
 
@@ -413,6 +406,7 @@ export class InteractiveModeBase {
     this.ui = new TUI(
       options.terminal ?? new ProcessTerminal(),
       this.settingsManager.getShowHardwareCursor(),
+      runtimeHost.services.agentDir,
     );
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
     this.headerContainer = new Container();
