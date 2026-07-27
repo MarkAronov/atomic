@@ -2158,13 +2158,17 @@ readonly outputMode?: "inline" | "file-only";
 
 Writes stage/task output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
 
+The runner writes the stage's **final message** to `output` after the stage ends, so that path belongs to the runner. Never point `output` at a file the same stage's prompt asks the agent to author: the agent's file is overwritten by its closing message, and downstream stages read the leftover summary instead of the work. Pick one owner per artifact — either the stage returns the content as its final message and the runner saves it, or the prompt tells the agent to write a path the stage does not declare as `output`.
+
 ### `reads`
 
 ```typescript
 readonly reads?: readonly string[] | false;
 ```
 
-Provides files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
+Names files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
+
+`reads` passes **paths, not content**. It prepends a `[Read from: <paths>]` directive to the prompt and the stage reads those files itself with its own read tool, so a stage sees whatever is on disk when it runs — not a snapshot taken when the path was passed. Any stage that rewrites an artifact between producer and consumer changes what the consumer reads. This keeps large artifacts out of the prompt; state the expectation in the prompt too, for example `Read the file at ${artifactPath} before continuing.`
 
 ### `maxOutput`
 
@@ -3673,14 +3677,20 @@ A compressed handoff includes:
 - rejected alternatives when they matter
 - next action expected from the downstream stage
 
-Use `output`, `outputMode: "file-only"`, and `reads` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
+Pass file references, not content. This is the strongly encouraged default for every handoff — between stages and back to the caller — and it is what keeps a multi-stage run affordable. Use `output` with `outputMode: "file-only"` and `reads` for research bundles, logs, plans, diffs, reviewer reports, and any other stage product that can grow. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
 
-Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized.
+Three rules make that work in practice:
+
+1. **One owner per artifact.** The runner writes the stage's final message to `output` after the stage ends. Do not also ask that stage's prompt to author the same path, or the agent's file is overwritten by its closing message. Either the stage returns the content and the runner saves it, or the prompt writes a path the stage does not declare as `output`.
+2. **Do not read an artifact back just to return it.** `outputMode: "file-only"` exists so the parent receives a compact reference. Calling `readFile` on that artifact and returning its text as a workflow output cancels the saving and drops the whole report into the caller's context window. Return the reference and a `*_path` output instead.
+3. **Return paths from the workflow.** Declared outputs are consumed by the calling session, so a workflow's `result` should be a reference plus explicit `*_path` outputs. Callers that need the body read the path; callers that only need the outcome pay nothing for it.
+
+Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized. Remember that `reads` passes paths rather than content: a stage reads the file when it runs, so the artifact must hold the real report at that moment.
 
 ```ts
 const researchPath = ".atomic/workflows/runs/context-demo/research.md";
 await ctx.task("researcher", {
-  task: "Map the subsystem and save the report.",
+  task: "Map the subsystem and return the report as your final message; the workflow saves it.",
   output: researchPath,
   outputMode: "file-only",
 });
