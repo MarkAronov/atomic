@@ -7,6 +7,7 @@ import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
@@ -91,8 +92,6 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     if (this.isInitialized) return;
 
     this.registerSignalHandlers();
-
-    // Changelog and first-run onboarding are prepared lazily after first paint.
 
     // Add header container as first child. Populate it after theme initialization.
     this.ui.addChild(this.headerContainer);
@@ -186,7 +185,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       this.updateEditorBorderColor();
       this.updateTerminalTitle();
     } else {
-      await this.rebindCurrentSession();
+      await bindInitialEagerSession(this);
     }
 
     this.attachStartupNoticesContainer();
@@ -233,10 +232,9 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
 		this.checkTmuxKeyboardSetup().then((warning) => {
 			if (warning) this.showWarning(warning, startupNoticesContainer);
 		});
-		// When startup is deferred, the RESOURCES disclosure renders after the
-		// deferred extension load; hold the subscription warning until then so
-		// the disclosure always appears first.
-		if (!this.deferredStartupPending && !this.deferredStartupPromise && !this.pendingLoadedResourcesDisclosure) {
+		// Deferred startup releases chat output immediately after rendering the
+		// disclosure, so wait only while that startup work remains in flight.
+		if (!this.deferredStartupPending && !this.deferredStartupPromise) {
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, startupNoticesContainer);
 		}
 	}, 500);

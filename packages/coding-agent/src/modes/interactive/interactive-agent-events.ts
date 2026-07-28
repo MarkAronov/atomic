@@ -281,14 +281,6 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
         }
 
-		if (this.pendingLoadedResourcesDisclosure) {
-			this.pendingLoadedResourcesDisclosure = false;
-			this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
-			// Keep the subscription warning after the RESOURCES disclosure.
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-			this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-		}
         await this.checkShutdownRequested();
 
         this.ui.requestRender();

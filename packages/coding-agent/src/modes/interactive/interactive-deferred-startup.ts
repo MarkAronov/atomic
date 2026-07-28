@@ -9,6 +9,7 @@ import {
   resolveRestoredModelReference,
   setRegisteredThemes,
 } from "./interactive-mode-deps.ts";
+import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 
 export interface DeferredStartupMode {
     deferredStartupPending: boolean;
@@ -60,14 +61,10 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       this.setupExtensionShortcuts(this.session.extensionRunner);
       await applyDeferredModelScope(this);
       await this.retryDeferredModelRestore(this.startupNoticesContainer);
-      if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
-        this.pendingLoadedResourcesDisclosure = true;
-      } else {
-        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
-        // Keep the subscription warning after the RESOURCES disclosure.
-        void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-        this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-      }
+      this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.resourceDisclosureContainer });
+      // Keep the subscription warning after the RESOURCES disclosure.
+      void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+      this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
       const modelsJsonError = this.session.modelRegistry.getError();
       if (modelsJsonError) {
         this.showError(`models.json error: ${modelsJsonError}`);
@@ -87,6 +84,10 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       );
       // The RESOURCES disclosure will not render; surface the held warning.
       void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+    } finally {
+      // Extension loading has either produced the disclosure or definitively
+      // failed, so startup ordering is resolved before any prompt can run.
+      releaseStartupChatOutput(this);
     }
   };
 

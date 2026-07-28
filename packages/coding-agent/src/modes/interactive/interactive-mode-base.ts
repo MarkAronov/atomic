@@ -12,6 +12,7 @@ import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
   const trimmed = text.trimStart();
@@ -57,10 +58,8 @@ export class InteractiveModeBase {
 
 
   chatContainer: Container;
-
+  resourceDisclosureContainer: Container;
   startupNoticesContainer: Container;
-
-
   pendingMessagesContainer: Container;
 
 
@@ -276,7 +275,7 @@ export class InteractiveModeBase {
 
   // Deferred extension load state (first paint happens before extensions load)
   deferredStartupPending = false;
-
+  initialStartupBinding = false;
   deferredStartupPromise: Promise<void> | undefined = undefined;
 
 
@@ -284,10 +283,6 @@ export class InteractiveModeBase {
 
   firstSubmitRecorded = false;
 
-  deferLoadedResourcesDisclosureUntilAgentEnd = false;
-
-
-  pendingLoadedResourcesDisclosure = false;
 
 
 
@@ -416,8 +411,14 @@ export class InteractiveModeBase {
     );
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
     this.headerContainer = new Container();
-    this.chatContainer = new Container();
+    this.chatContainer = new StartupChatContainer();
+    this.resourceDisclosureContainer = new Container();
     this.startupNoticesContainer = new Container();
+    // The isolated engine can emit session_start UI requests as soon as its
+    // bridge attaches below, before init() mounts chat in the TUI. Reserve the
+    // ordering slots now so those messages can never precede RESOURCES.
+    this.chatContainer.addChild(this.resourceDisclosureContainer);
+    this.chatContainer.addChild(this.startupNoticesContainer);
     this.pendingMessagesContainer = new Container();
     this.statusContainer = new Container();
     this.widgetContainerAbove = new Container();

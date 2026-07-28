@@ -14,9 +14,6 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
   this.showWorkingLoaderNow();
   const deferredStartupNeedsPromptGate =
     this.deferredStartupPending || this.deferredStartupPromise !== undefined;
-  if (deferredStartupNeedsPromptGate) {
-    this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
-  }
   // Yield once so the freshly-mounted spinner paints before synchronous
   // preflight work can block the event loop.
   await yieldToEventLoop();
@@ -37,22 +34,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
       await this.session.resumeQueuedMessages();
       await this.session.prompt(userInput);
     }
-    this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-    if (this.pendingLoadedResourcesDisclosure) {
-      this.pendingLoadedResourcesDisclosure = false;
-      this.showLoadedResources({
-        force: true,
-        showDiagnosticsWhenQuiet: true,
-        targetContainer: this.startupNoticesContainer,
-      });
-      void this.maybeWarnAboutAnthropicSubscriptionAuth(
-        undefined,
-        this.startupNoticesContainer,
-      );
-      this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-    }
   } catch (error) {
-    this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
     this.discardDeferredRenderedUserInput(userInput);
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error occurred";
