@@ -6,7 +6,10 @@ import {
 	runVerbatimCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
+	type CompactionPlannerModel,
 	type CompactionPlanOptions,
+	type CompactionRung,
+	type FallbackPlannerContext,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
@@ -66,11 +69,22 @@ export async function _applyVerbatimCompaction(
 	const model = this.model;
 	const pathEntries = this.sessionManager.getBranch();
 	const settings = this.settingsManager.getCompactionSettings();
-	const preparation = prepareCompactionBoundary(pathEntries, settings, {
-		...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
-		...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
-		...(options.query === undefined ? {} : { query: options.query }),
-	});
+	// A sub-minimum region is admitted only when the caller already knows the
+	// context does not fit: overflow recovery, or a post-tool preflight over the
+	// provider hard input limit. A threshold crossing that still fits must not
+	// clear context — its follow-up request can be sent as-is. `load_bearing`
+	// alone does not mean "must destroy context".
+	const allowSmallRegion = options.urgency === "load_bearing" && options.allowSmallRegion === true;
+	const preparation = prepareCompactionBoundary(
+		pathEntries,
+		settings,
+		{
+			...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
+			...(options.query === undefined ? {} : { query: options.query }),
+		},
+		{ allowSmallRegion },
+	);
 	if (!preparation) {
 		if (options.reason === "overflow") throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
 		return undefined;
@@ -83,7 +97,13 @@ export async function _applyVerbatimCompaction(
 		callbacks: createSummarizationRetryCallbacks(this, { source: "compaction", reason: options.reason }),
 	};
 	let fromExtension = false;
-	let compacted: { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"] } | undefined;
+	let compacted: {
+		text: string;
+		stats: VerbatimCompactionStats;
+		rung: CompactionRung;
+		plannerModel?: CompactionPlannerModel;
+		keptTail: boolean;
+	} | undefined;
 
 	if (this._extensionRunner.hasHandlers("session_before_compact")) {
 		let snapshot: VerbatimCompactionPreparation;
@@ -103,26 +123,41 @@ export async function _applyVerbatimCompaction(
 		if (hookResult?.cancel) throw new Error("Compaction cancelled");
 		if (hookResult?.compactedText !== undefined) {
 			if (hookResult.compactedText.trim().length === 0) throw new Error("No compacted text provided by extension");
-			compacted = { text: hookResult.compactedText, stats: extensionStats(preparation, hookResult.compactedText), rung: "extension" };
+			compacted = { text: hookResult.compactedText, stats: extensionStats(preparation, hookResult.compactedText), rung: "extension", keptTail: true };
 			fromExtension = true;
 		}
 	}
 
 	if (!compacted) {
-		const auth = await options.resolvePlannerAuth();
-		if (!auth) throw new Error("Compaction provider authentication is unavailable");
-		compacted = await runVerbatimCompaction(
-			preparation,
-			auth.baseUrl === undefined ? model : { ...model, baseUrl: auth.baseUrl },
-			auth.apiKey,
-			auth.headers,
-			options.abortController.signal,
-			this.thinkingLevel,
-			plan,
-		);
+		// Borrowing walks the session's *effective* fallback list, which SDK
+		// options may override, and resolves credentials per candidate. It never
+		// touches session model state or the main chat's attempted-key set.
+		const fallback: FallbackPlannerContext = {
+			fallbackModels: this._fallbackModels,
+			registry: this._modelRegistry,
+			preferredProvider: model.provider,
+			sessionThinkingLevel: this.thinkingLevel,
+		};
+		const run = await runVerbatimCompaction(preparation, model, {
+			...plan,
+			resolveAuth: options.resolvePlannerAuth,
+			signal: options.abortController.signal,
+			thinkingLevel: this.thinkingLevel,
+			urgency: options.urgency,
+			fallback,
+		});
+		compacted = {
+			text: run.text,
+			stats: run.stats,
+			rung: run.rung,
+			...(run.plannerModel ? { plannerModel: run.plannerModel } : {}),
+			keptTail: run.keptTail,
+		};
 	}
 	if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
 
+	// A fresh rung that had to drop the protected tail persists no tail boundary.
+	const firstKeptEntryId = compacted.keptTail ? preparation.firstKeptEntryId : null;
 	const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
 	const details: VerbatimCompactionDetails = {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
@@ -130,18 +165,20 @@ export async function _applyVerbatimCompaction(
 		parameters: preparation.parameters,
 		stats: compacted.stats,
 		rung: compacted.rung,
+		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
-	const entryId = this.sessionManager.appendCompaction(compacted.text, preparation.firstKeptEntryId, preparation.tokensBefore, details);
+	const entryId = this.sessionManager.appendCompaction(compacted.text, firstKeptEntryId, preparation.tokensBefore, details);
 	this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 	const result: VerbatimCompactionResult = {
 		compactedText: compacted.text,
-		firstKeptEntryId: preparation.firstKeptEntryId,
+		firstKeptEntryId,
 		tokensBefore: preparation.tokensBefore,
 		stats: compacted.stats,
 		parameters: preparation.parameters,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 		rung: compacted.rung,
+		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;
@@ -166,10 +203,19 @@ async function runOwnedManualCompaction(
 	this._emit({ type: "compaction_start", reason: "manual" });
 	try {
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
-		const model = this.model;
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: () => this._getRequiredRequestAuth(model), abortController: controller,
-			backupLabel: "compact", reason: "manual", ...options,
+			// Caller parameters are projected explicitly, so no extra runtime
+			// property survives. A widened or cast object could otherwise carry
+			// `urgency: "load_bearing"` through a public `session.compact()` call and
+			// reach the context-destroying rung, which manual compaction must never do.
+			...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
+			...(options.query === undefined ? {} : { query: options.query }),
+			resolvePlannerAuth: (candidate) => this._getRequiredRequestAuth(candidate),
+			abortController: controller,
+			backupLabel: "compact",
+			reason: "manual",
+			urgency: "recoverable",
 		});
 		if (!result) throw new Error("Nothing to compact (session too small)");
 		this._emit({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });

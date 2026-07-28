@@ -21,6 +21,7 @@ const compactionMocks = vi.hoisted(() => ({
 		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
 		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 190_000, tokensAfter: 120_000, percentReduction: 36.8 },
 		rung: "planned" as const,
+		keptTail: true,
 	})),
 	estimateContextTokens: vi.fn(() => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null })),
 }));
@@ -33,9 +34,10 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: compactionMocks.estimateContextTokens,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
+	MIN_COMPACTABLE_REGION_LINES: 20,
 	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
 		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
 		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 190_000,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },

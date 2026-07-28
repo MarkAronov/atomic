@@ -13,7 +13,14 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
 import { parseRangeRecords, recoverTruncatedRecords } from "../src/core/compaction/truncated-range-recovery.ts";
-import { buildRangePlannerPrompt, planDeletedLineRanges, RangePlanError } from "../src/core/compaction/range-planner.ts";
+import {
+	buildRangePlannerPrompt,
+	MALFORMED_OUTPUT_MESSAGE,
+	NO_USABLE_RANGES_MESSAGE,
+	planDeletedLineRanges,
+	RangePlanError,
+} from "../src/core/compaction/range-planner.ts";
+import { planner } from "./compaction-planner-fixtures.ts";
 import type { RecoveryDiagnostic } from "../src/core/compaction/range-planner-diagnostics.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 
@@ -55,12 +62,23 @@ function recoveryFiles(dir: string): string[] {
 		.map((name) => join(dir, name));
 }
 
+/**
+ * Legacy ranges-or-throw adapter over the typed planner outcome, so these
+ * recovery/validation assertions keep their original shape.
+ */
 async function plan(text: string | string[], stopReason: string, opts?: { lineCount?: number; sessionFilePath?: string; apiKey?: string }) {
-	return planDeletedLineRanges(
-		region(opts?.lineCount ?? 100), params, mdl(),
-		{ apiKey: opts?.apiKey ?? "key" }, undefined, undefined, 16384, 50,
+	const outcome = await planDeletedLineRanges(
+		region(opts?.lineCount ?? 100), params,
+		planner(mdl(), undefined, { apiKey: opts?.apiKey ?? "key" }),
+		50,
 		{ streamFn: stream(text, stopReason) as never, sessionFilePath: opts?.sessionFilePath },
 	);
+	if (outcome.kind === "ranked" || outcome.kind === "recovered") return outcome.ranges;
+	if (outcome.kind === "unusable") {
+		const message = outcome.category === "malformed_output" ? MALFORMED_OUTPUT_MESSAGE : NO_USABLE_RANGES_MESSAGE;
+		throw new RangePlanError(message, 1, outcome.excerpt, false, outcome.diagnosticPath, outcome);
+	}
+	throw new RangePlanError(`planner outcome ${outcome.kind}`, 1, "", outcome.kind === "overflowed", outcome.diagnosticPath, outcome);
 }
 
 // 1. Complete output with/without terminal newline
@@ -199,14 +217,25 @@ describe("planDeletedLineRanges: non-length malformed output", () => {
 	});
 });
 
-// 5. Priority-order normalization (host sorts afterward)
+// 5. Priority-order parsing, then normalization at the airlock
 describe("planDeletedLineRanges: priority order", () => {
-	it("returns ranges in output order (not numeric order)", async () => {
-		// Model outputs highest-confidence deletion first (120,180 before 6,40)
+	it("parses priority-ordered output and returns it normalized", async () => {
+		// The model emits highest-confidence deletions first (120,180 before 6,40).
+		// `parseRangeRecords` preserves that order, which is what truncation
+		// recovery depends on. The planner door then returns *validated* line
+		// numbers, so they arrive sorted and merged — reconstruction sorted them
+		// anyway, and returning raw output would break the door's own guarantee.
+		expect(parseRangeRecords("120,180\n6,40\n50,55\n")).toEqual([
+			{ start: 120, end: 180 },
+			{ start: 6, end: 40 },
+			{ start: 50, end: 55 },
+		]);
 		const result = await plan("120,180\n6,40\n50,55\n", "stop", { lineCount: 200 });
-		expect(result[0]).toEqual({ start: 120, end: 180 });
-		expect(result[1]).toEqual({ start: 6, end: 40 });
-		expect(result[2]).toEqual({ start: 50, end: 55 });
+		expect(result).toEqual([
+			{ start: 6, end: 40 },
+			{ start: 50, end: 55 },
+			{ start: 120, end: 180 },
+		]);
 	});
 });
 
@@ -225,14 +254,17 @@ describe("truncated recovery: validation integration", () => {
 		expect(error).toBeInstanceOf(RangePlanError);
 	});
 
-	it("mixed ranges with some protected lines still succeeds", async () => {
+	it("mixed ranges keep only the unprotected part", async () => {
+		// Lines 1-3 are protected, so the door strips them and returns only the
+		// deletable remainder rather than handing a protected span downstream.
 		const result = await plan("1,3\n10,20\n", "length");
-		expect(result).toEqual([{ start: 1, end: 3 }, { start: 10, end: 20 }]);
+		expect(result).toEqual([{ start: 10, end: 20 }]);
 	});
 
 	it("out-of-bounds ranges are clamped through validation", async () => {
+		// The region is 50 lines, so 40,60 comes back clamped to the region bound.
 		const result = await plan("10,20\n40,60\n", "length", { lineCount: 50 });
-		expect(result).toEqual([{ start: 10, end: 20 }, { start: 40, end: 60 }]);
+		expect(result).toEqual([{ start: 10, end: 20 }, { start: 40, end: 50 }]);
 	});
 });
 
@@ -277,7 +309,7 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 		expect(content.rawResponse).toBe(truncatedText);
 		expect(content.stopReason).toBe("length");
 		expect(content.usage).toBeDefined();
-		expect(content.requestMaxTokens).toBeGreaterThan(0);
+		expect(content.requestMaxTokens).toBeUndefined();
 		expect(content.model.provider).toBe("copilot");
 		expect(content.model.id).toBe("gpt-4o");
 		expect(content.recoveredRangeCount).toBe(3);

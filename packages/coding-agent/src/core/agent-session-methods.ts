@@ -3,7 +3,7 @@ import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { BashResult } from "./bash-executor.ts";
-import type { VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
+import type { CompactionUrgency, PlannerAuth, VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -42,13 +42,26 @@ import type {
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
 export interface VerbatimCompactionApplyOptions {
-	resolvePlannerAuth: () => Promise<{ apiKey?: string; headers?: ProviderHeaders; baseUrl?: string } | undefined>;
+	/** Per-model planner credentials; a borrowed fallback uses its own, never the session model's. */
+	resolvePlannerAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
 	compression_ratio?: number;
 	preserve_recent?: number;
 	query?: string;
 	reason: "manual" | "threshold" | "overflow";
+	/** Only `load_bearing` may reach the context-destroying fresh rung. */
+	urgency: CompactionUrgency;
+	/**
+	 * Admit a compactable region below the planner minimum.
+	 *
+	 * Narrow on purpose. Overflow recovery sets it because a real provider
+	 * overflow is already known, and the post-tool preflight sets it only when its
+	 * projected context is genuinely over the provider hard input limit. A
+	 * threshold crossing that still fits must not clear context: the follow-up
+	 * request can be sent as-is.
+	 */
+	allowSmallRegion?: boolean;
 }
 
 export interface ExtensionResourcePathEntry {

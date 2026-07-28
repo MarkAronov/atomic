@@ -19,6 +19,7 @@ const compactionMocks = vi.hoisted(() => ({
 		ranges: [{ start: 2, end: 2 }],
 		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
 		rung: "planned" as const,
+		keptTail: true,
 	})),
 }));
 
@@ -53,9 +54,10 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
+	MIN_COMPACTABLE_REGION_LINES: 20,
 	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
 		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
 		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
@@ -122,7 +124,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await runAutoCompaction("threshold", false);
 
 		expect(compactionMocks.runVerbatimCompaction).toHaveBeenCalledTimes(1);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[5]).toBe("high");
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({ thinkingLevel: "high" });
 	});
 	it("passes active model and stream identity to one-pass context compaction", async () => {
 		const runAutoCompaction = (
@@ -133,11 +135,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await runAutoCompaction("threshold", false);
 		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[1]).toBe(session.model);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toMatchObject({ streamFn: session.agent.streamFunction });
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({ streamFn: session.agent.streamFunction, urgency: "recoverable" });
 
 		compactionMocks.runVerbatimCompaction.mockClear();
 		await runAutoCompaction("overflow", false);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toMatchObject({ streamFn: session.agent.streamFunction });
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({ streamFn: session.agent.streamFunction, urgency: "load_bearing" });
 	});
 	it.each(["threshold", "overflow"] as const)("does not persist or schedule continuation when %s planning fails", async (reason) => {
 		compactionMocks.runVerbatimCompaction.mockRejectedValueOnce(new Error("malformed planner response"));
