@@ -1,39 +1,45 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
+	type AuthResult,
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai/compat";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+} from "@earendil-works/pi-ai";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
+
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describe("createAgentSession stream options", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
+	let previousCodexFastModeEnv: string | undefined;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "atomic-sdk-stream-options-"));
+		tempDir = mkdtempSync(join(tmpdir(), "pi-sdk-stream-options-"));
+		previousCodexFastModeEnv = process.env[ENV_CODEX_FAST_MODE];
+		delete process.env[ENV_CODEX_FAST_MODE];
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 	});
-
 	afterEach(() => {
-		if (tempDir) {
-			rmSync(tempDir, { recursive: true, force: true });
-		}
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+		if (previousCodexFastModeEnv === undefined) delete process.env[ENV_CODEX_FAST_MODE];
+		else process.env[ENV_CODEX_FAST_MODE] = previousCodexFastModeEnv;
 	});
-
 	function createModel(api: Api): Model<Api> {
 		return {
 			id: "capture-model",
@@ -46,6 +52,7 @@ describe("createAgentSession stream options", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 128000,
 			maxTokens: 4096,
+			headers: { "x-model": "model" },
 		};
 	}
 
@@ -74,38 +81,48 @@ describe("createAgentSession stream options", () => {
 
 	async function captureStreamOptions(
 		api: Api,
-		settings: { httpIdleTimeoutMs?: number; websocketConnectTimeoutMs?: number },
+		settings: Partial<Settings>,
 		requestOptions: SimpleStreamOptions = {},
+		extensionSource?: string,
+		authResult?: AuthResult,
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
+		if (extensionSource) {
+			const extensionsDir = join(agentDir, "extensions");
+			mkdirSync(extensionsDir, { recursive: true });
+			writeFileSync(join(extensionsDir, "headers.ts"), extensionSource);
+		}
 
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey(model.provider, "test-api-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
 		let capturedOptions: SimpleStreamOptions | undefined;
 
 		modelRegistry.registerProvider(model.provider, {
 			api,
-			streamSimple: (_model, _context, providerOptions) => {
+			headers: { "x-provider": "provider" },
+			streamSimple: (_requestModel, _context, providerOptions) => {
 				capturedOptions = providerOptions;
 				return createDoneStream(api);
 			},
 		});
 
+		const modelRuntime = getModelRuntime(modelRegistry);
+		if (authResult !== undefined) vi.spyOn(modelRuntime, "getAuth").mockResolvedValue(authResult);
 		const sessionManager = SessionManager.inMemory(cwd);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
-			authStorage,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 			sessionManager,
 		});
 
 		try {
-			await session.agent.streamFunction(model, { messages: [] }, requestOptions);
+			const stream = await session.agent.streamFunction(model, { messages: [] }, requestOptions);
+			await stream.result();
 			return capturedOptions;
 		} finally {
 			session.dispose();
@@ -151,114 +168,166 @@ describe("createAgentSession stream options", () => {
 		expect(options?.websocketConnectTimeoutMs).toBe(0);
 	});
 
-	it("dispatches with the credential-specific Copilot baseUrl", async () => {
-		const authStorage = AuthStorage.inMemory({
-			"github-copilot": {
-				type: "oauth",
-				refresh: "github-token",
-				access: "tid=example;proxy-ep=proxy.enterprise.example.com;",
-				expires: Date.now() + 60_000,
-			},
+	it("forwards provider retry settings", async () => {
+		const options = await captureStreamOptions("openai-completions", {
+			retry: { provider: { maxRetries: 2, maxRetryDelayMs: 3000 } },
 		});
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const model = modelRegistry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
-		let dispatchedBaseUrl: string | undefined;
-		modelRegistry.registerProvider(model.provider, {
-			api: model.api,
-			streamSimple: (requestModel) => {
-				dispatchedBaseUrl = requestModel.baseUrl;
-				return createDoneStream(model.api);
-			},
+
+		expect(options?.maxRetries).toBe(2);
+		expect(options?.maxRetryDelayMs).toBe(3000);
+	});
+
+	it("runs before_provider_headers on assembled headers without forwarding the transform", async () => {
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{ headers: { "x-explicit": "explicit" } },
+			`export default function (pi) {
+				pi.on("before_provider_headers", (event) => {
+					event.headers["x-hook"] = [
+						event.headers["x-provider"],
+						event.headers["x-model"],
+						event.headers["x-explicit"],
+					].join(":");
+				});
+			}`,
+		);
+
+		expect(options?.headers).toMatchObject({
+			"x-provider": "provider",
+			"x-model": "model",
+			"x-explicit": "explicit",
+			"x-hook": "provider:model:explicit",
 		});
+		expect(options).not.toHaveProperty("transformHeaders");
+	});
+
+	it("preserves null credential headers through extension-provider dispatch", async () => {
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{},
+			undefined,
+			{
+				auth: {
+					apiKey: "credential-key",
+					headers: { Authorization: null, "x-api-key": null, "x-credential": "present" },
+				},
+			},
+		);
+
+		expect(options?.apiKey).toBe("credential-key");
+		expect(options?.headers).toMatchObject({
+			Authorization: null,
+			"x-api-key": null,
+			"x-credential": "present",
+		});
+	});
+
+	it("uses a credential-derived baseUrl for native Codex fast-mode dispatch", async () => {
+		const model: Model<Api> = { ...createModel("openai-responses"), provider: "openai" };
+		const modelRuntime = getModelRuntime(
+			await createModelRegistry(AuthStorage.inMemory(), join(agentDir, "models.json")),
+		);
+		vi.spyOn(modelRuntime, "getAuth").mockResolvedValue({
+			auth: { apiKey: "credential-key", baseUrl: "https://credential.example/v1" },
+		});
+		let dispatchedUrl: string | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+				dispatchedUrl = String(input);
+				const completed = {
+					type: "response.completed",
+					response: {
+						id: "resp_test",
+						status: "completed",
+						usage: {
+							input_tokens: 0,
+							input_tokens_details: { cached_tokens: 0 },
+							output_tokens: 0,
+							total_tokens: 0,
+						},
+					},
+				};
+				return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
-			authStorage,
-			modelRegistry,
-			settingsManager: SettingsManager.inMemory(),
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 
 		try {
-			await session.agent.streamFunction(model, { messages: [] });
-			expect(dispatchedBaseUrl).toBe("https://api.enterprise.example.com");
+			const stream = await session.agent.streamFunction(model, { messages: [] });
+			await stream.result();
+			expect(dispatchedUrl).toMatch(/^https:\/\/credential\.example\/v1\//u);
 		} finally {
 			session.dispose();
-			modelRegistry.unregisterProvider(model.provider);
 		}
 	});
 
-	it("preserves an empty credential baseUrl during SDK dispatch", async () => {
-		const authStorage = AuthStorage.inMemory();
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const model = modelRegistry.getAll()[0]!;
-		let dispatchedBaseUrl: string | undefined;
-		modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "key", baseUrl: "" });
-		modelRegistry.registerProvider(model.provider, {
+	it("rejects authHeader providers before Codex fast-mode dispatch when credentials are missing", async () => {
+		const model: Model<Api> = { ...createModel("openai-responses"), provider: "openai" };
+		const modelRuntime = getModelRuntime(
+			await createModelRegistry(AuthStorage.inMemory(), join(agentDir, "models.json")),
+		);
+		vi.spyOn(modelRuntime, "getAuth").mockResolvedValue(undefined);
+		const streamSimple = vi.fn(() => createDoneStream(model.api));
+		modelRuntime.registerProvider("openai", {
 			api: model.api,
-			streamSimple: (requestModel) => {
-				dispatchedBaseUrl = requestModel.baseUrl;
-				return createDoneStream(model.api);
-			},
+			baseUrl: model.baseUrl,
+			authHeader: true,
+			streamSimple,
 		});
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
-			authStorage,
-			modelRegistry,
-			settingsManager: SettingsManager.inMemory(),
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 
 		try {
-			await session.agent.streamFunction(model, { messages: [] });
-			expect(dispatchedBaseUrl).toBe("");
+			await expect(session.agent.streamFunction(model, { messages: [] })).rejects.toThrow(
+				`No API key found for "${model.provider}"`,
+			);
+			expect(streamSimple).not.toHaveBeenCalled();
 		} finally {
 			session.dispose();
-			modelRegistry.unregisterProvider(model.provider);
+			modelRuntime.unregisterProvider("openai");
 		}
 	});
 
-	it("resolves provider-owned null headers from a runtime API key through stream dispatch", async () => {
-		const previousAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
-		const previousGateway = process.env.CLOUDFLARE_GATEWAY_ID;
-		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
-		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey("cloudflare-ai-gateway", "runtime-cf-key");
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const model = modelRegistry.getAll().find((candidate) => candidate.provider === "cloudflare-ai-gateway")!;
-		let dispatchedHeaders: SimpleStreamOptions["headers"];
-		modelRegistry.registerProvider(model.provider, {
-			api: model.api,
-			streamSimple: (_requestModel, _context, options) => {
-				dispatchedHeaders = options?.headers;
-				return createDoneStream(model.api);
-			},
-		});
+	it("rejects native Codex fast-mode dispatch when provider auth is unresolved", async () => {
+		const model: Model<Api> = { ...createModel("openai-responses"), provider: "openai" };
+		const modelRuntime = getModelRuntime(
+			await createModelRegistry(AuthStorage.inMemory(), join(agentDir, "models.json")),
+		);
+		vi.spyOn(modelRuntime, "getAuth").mockResolvedValue(undefined);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
-			authStorage,
-			modelRegistry,
-			settingsManager: SettingsManager.inMemory(),
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } }),
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 
 		try {
-			await session.agent.streamFunction(model, { messages: [] });
-			expect(dispatchedHeaders?.["cf-aig-authorization"]).toBe("Bearer runtime-cf-key");
-			expect(dispatchedHeaders?.Authorization).toBeNull();
-			expect(dispatchedHeaders?.["x-api-key"]).toBeNull();
+			await expect(session.agent.streamFunction(model, { messages: [] })).rejects.toThrow(
+				`No API key found for "${model.provider}"`,
+			);
 		} finally {
 			session.dispose();
-			if (previousAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
-			else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccount;
-			if (previousGateway === undefined) delete process.env.CLOUDFLARE_GATEWAY_ID;
-			else process.env.CLOUDFLARE_GATEWAY_ID = previousGateway;
 		}
 	});
 });

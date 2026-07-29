@@ -5,7 +5,6 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import { AuthStorage } from "./auth-storage.ts";
 import {
   shouldApplyCodexFastMode,
   streamWithCodexFastMode,
@@ -16,7 +15,7 @@ import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
-import { ModelRegistry } from "./model-registry.ts";
+import { ModelRuntime } from "./model-runtime.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
@@ -85,22 +84,10 @@ export async function createAgentSession(
   const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
   let resourceLoader = options.resourceLoader;
 
-  // Use provided or create AuthStorage and ModelRegistry. When a modelRegistry
-  // is supplied (e.g. a workflow stage reusing one registry across model
-  // fallback candidates), do NOT also build a fresh AuthStorage: its
-  // constructor eagerly calls reload(), which acquires the auth.json file lock
-  // and, under contention, can fail and leave an empty credential set. Reusing
-  // the supplied registry's already-loaded auth avoids that race (issue #1431).
   const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
-  const modelsPath = options.agentDir
-    ? join(agentDir, "models.json")
-    : undefined;
-  const modelRegistry =
-    options.modelRuntime?.modelRegistry ??
-    options.modelRegistry ??
-    ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
-  // Restore persisted provider-owned catalogs before any synchronous model reads.
-  await modelRegistry.refresh({ allowNetwork: false });
+  const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
+  const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+  await modelRuntime.refresh({ allowNetwork: false });
 
   const settingsManager =
     options.settingsManager ?? SettingsManager.create(cwd, agentDir);
@@ -144,14 +131,11 @@ export async function createAgentSession(
 
   // If session has data, try to restore model from it
   if (!model && hasExistingSession && existingSession.model) {
-    const restoredModel = await resolveRestoredModelReference(
+    model = await resolveRestoredModelReference(
       existingSession.model.provider,
       existingSession.model.modelId,
-      modelRegistry,
+      modelRuntime,
     );
-    if (restoredModel && modelRegistry.hasConfiguredAuth(restoredModel)) {
-      model = restoredModel;
-    }
     if (!model) {
       modelFallbackMessage = `Could not restore model ${existingSession.model.provider}/${existingSession.model.modelId}`;
       modelFallbackReason = "session-restore";
@@ -164,7 +148,7 @@ export async function createAgentSession(
       defaultProvider: settingsManager.getDefaultProvider(),
       defaultModelId: settingsManager.getDefaultModel(),
       defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
-      modelRegistry,
+      modelRuntime,
     });
     model = result.model;
     if (!model) {
@@ -278,10 +262,16 @@ export async function createAgentSession(
     },
     convertToLlm: convertToLlmWithBlockImages,
     streamFn: async (model, context, streamOptions) => {
-      const auth = await modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
-        throw new Error(auth.error);
+      const authResult = await modelRuntime.getAuth(model);
+      const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
+      if (!authResult && compatibility?.authHeader) {
+        throw new Error(`No API key found for "${model.provider}"`);
       }
+      const auth = {
+        apiKey: authResult?.auth.apiKey,
+        headers: authResult?.auth.headers ?? compatibility?.headers,
+        baseUrl: authResult?.auth.baseUrl,
+      };
       const requestModel = auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl
         ? { ...model, baseUrl: auth.baseUrl }
         : model;
@@ -300,6 +290,12 @@ export async function createAgentSession(
       const attributionHeaders = headerRunner?.hasHandlers("before_provider_headers")
         ? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {}) : mergedHeaders;
       const fastModeEnabled = isCodexFastModeEnabled(model);
+      const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
+      const usesExtensionStream = extensionProvider?.streamSimple !== undefined
+        && requestModel.api === extensionProvider.api;
+      if (fastModeEnabled && !usesExtensionStream && !authResult) {
+        throw new Error(`No API key found for "${model.provider}"`);
+      }
       const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
         {
           ...streamOptions,
@@ -313,10 +309,12 @@ export async function createAgentSession(
         },
         fastModeEnabled,
       );
-      if (modelRegistry.hasRegisteredStreamSimpleForApi(requestModel.api)) {
-        return streamSimple(requestModel, context, codexFastModeStreamOptions);
+      if (usesExtensionStream) {
+        return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
       }
-      return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
+      return fastModeEnabled
+        ? streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions)
+        : modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
     },
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);
@@ -386,7 +384,7 @@ export async function createAgentSession(
     fallbackModels: options.fallbackModels ?? settingsManager.getFallbackModels(),
     resourceLoader,
     customTools: options.customTools,
-    modelRegistry,
+    modelRuntime,
     initialActiveToolNames,
     allowedToolNames,
     excludedToolNames: options.excludedTools,

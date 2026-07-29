@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createExtensionRuntime, type Extension, type SessionBeforeCompactEvent, type SessionBeforeCompactResult, type SessionCompactEvent, type SessionEvent } from "../src/core/extensions/index.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { createFauxStreamFn } from "./test-harness.ts";
 
@@ -40,13 +40,14 @@ describe("verbatim compaction extension hooks", () => {
 		return { path: "test", resolvedPath: "/test.ts", sourceInfo: createSyntheticSourceInfo("<test>", { source: "test" }), handlers, tools: new Map(), messageRenderers: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map() };
 	}
 
-	function create(ext: Extension, streamFn?: StreamFn): void {
+	async function create(ext: Extension, streamFn?: StreamFn): Promise<void> {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const manager = SessionManager.inMemory();
 		const agent = new Agent({ getApiKey: () => undefined, initialState: { model, systemPrompt: "test", tools: [] }, streamFn });
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		session = new AgentSession({ agent, sessionManager: manager, settingsManager: SettingsManager.inMemory(), cwd: process.cwd(), modelRegistry: ModelRegistry.create(authStorage), resourceLoader: { ...createTestResourceLoader(), getExtensions: () => ({ extensions: [ext], errors: [], runtime: createExtensionRuntime() }) } });
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRegistry = await createInMemoryModelRegistry(authStorage);
+		session = new AgentSession({ agent, sessionManager: manager, settingsManager: SettingsManager.inMemory(), cwd: process.cwd(), modelRuntime: getModelRuntime(modelRegistry), resourceLoader: { ...createTestResourceLoader(), getExtensions: () => ({ extensions: [ext], errors: [], runtime: createExtensionRuntime() }) } });
 		const now = Date.now();
 		for (let turn = 0; turn < 5; turn++) {
 			manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
@@ -56,7 +57,7 @@ describe("verbatim compaction extension hooks", () => {
 	}
 
 	it("accepts a non-empty offline compactedText override and emits observe-only result", async () => {
-		create(extension((event) => {
+		await create(extension((event) => {
 			const headers = event.preparation.region.headerLineNumbers as Set<number>;
 			const markers = event.preparation.region.priorMarkerNs as Map<number, number>;
 			expect(() => headers.add(999)).toThrow("Cannot mutate frozen compaction preparation");
@@ -75,7 +76,7 @@ describe("verbatim compaction extension hooks", () => {
 
 	it("persists zero retention and includes that durable summary on repeated compaction", async () => {
 		const compactedText = "[User]: retained exactly\n(filtered 30 lines)";
-		create(extension(() => ({ compactedText })));
+		await create(extension(() => ({ compactedText })));
 
 		const first = await session.compact({ preserve_recent: 0 });
 		expect(first.firstKeptEntryId).toBeNull();
@@ -95,7 +96,7 @@ describe("verbatim compaction extension hooks", () => {
 
 	it("sends the prior durable summary through the planner on repeated compaction", async () => {
 		const faux = createFauxStreamFn(["2,2\n", "2,2\n"]);
-		create(extension(() => undefined), faux.streamFn);
+		await create(extension(() => undefined), faux.streamFn);
 
 		await session.compact({ preserve_recent: 0 });
 		const long = Array.from({ length: 20 }, (_, index) => `planner line ${index}`).join("\n");
@@ -113,13 +114,13 @@ describe("verbatim compaction extension hooks", () => {
 	});
 
 	it("cancels without persistence", async () => {
-		create(extension(() => ({ cancel: true })));
+		await create(extension(() => ({ cancel: true })));
 		await expect(session.compact()).rejects.toThrow("Compaction cancelled");
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
 	it("rejects whitespace extension text before persistence", async () => {
-		create(extension(() => ({ compactedText: "  \n" })));
+		await create(extension(() => ({ compactedText: "  \n" })));
 		await expect(session.compact()).rejects.toThrow("No compacted text provided by extension");
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
@@ -129,7 +130,7 @@ describe("verbatim compaction extension hooks", () => {
 		["empty", ""],
 	])("does not persist a compaction entry after one %s planner response", async (_label, response) => {
 		const faux = createFauxStreamFn([response]);
-		create(extension(() => undefined), faux.streamFn);
+		await create(extension(() => undefined), faux.streamFn);
 		await expect(session.compact()).rejects.toThrow(/Compaction range planning/);
 		expect(faux.state.callCount).toBe(1);
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
@@ -141,13 +142,13 @@ describe("verbatim compaction extension hooks", () => {
 			calls++;
 			throw new Error("provider unavailable");
 		};
-		create(extension(() => undefined), failingStream);
+		await create(extension(() => undefined), failingStream);
 		await expect(session.compact()).rejects.toThrow("provider unavailable");
 		expect(calls).toBe(1);
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 	it("isolates errors from the post-commit observer", async () => {
-		create(extension(() => ({ compactedText: "[User]: retained" }), () => { throw new Error("observer failed"); }));
+		await create(extension(() => ({ compactedText: "[User]: retained" }), () => { throw new Error("observer failed"); }));
 		await expect(session.compact()).resolves.toMatchObject({ rung: "extension" });
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(true);
 	});

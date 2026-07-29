@@ -1,8 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { TUI } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
-import { ENV_OFFLINE } from "../src/config.ts";
-import type { ModelRegistry } from "../src/core/model-registry.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -20,26 +19,26 @@ const model = {
 	maxTokens: 1024,
 } as Model<Api>;
 
-type RefreshResult = Awaited<ReturnType<ModelRegistry["refresh"]>>;
+type RefreshResult = Awaited<ReturnType<ModelRuntime["refresh"]>>;
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 	let resolve!: (value: T) => void;
 	return { promise: new Promise<T>((done) => (resolve = done)), resolve };
 }
 
-function createSelector(refresh: ModelRegistry["refresh"]): ModelSelectorComponent {
+function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponent {
 	initTheme("dark");
-	const registry = {
+	const runtime = {
 		refresh,
 		getError: () => undefined,
-		getAvailable: async () => [model],
-		find: () => model,
-	} as unknown as ModelRegistry;
+		getAvailableSnapshot: () => [model],
+		getModel: () => model,
+	} as unknown as ModelRuntime;
 	return new ModelSelectorComponent(
 		{ requestRender: () => {} } as unknown as TUI,
 		model,
 		{ setDefaultModelAndProvider: () => {} } as unknown as SettingsManager,
-		registry,
+		runtime,
 		[],
 		() => {},
 		() => {},
@@ -50,6 +49,10 @@ async function renderedAfterWork(selector: ModelSelectorComponent): Promise<stri
 	for (let attempt = 0; attempt < 20; attempt++) await Promise.resolve();
 	return selector.render(100).join("\n");
 }
+
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 describe("model selector catalog refresh status", () => {
 	it("renders the stale snapshot immediately and then concise success", async () => {
@@ -64,14 +67,14 @@ describe("model selector catalog refresh status", () => {
 		expect(refreshed).toContain("Model catalogs refreshed.");
 	});
 
-	it("keeps available models and identifies a partial provider failure", async () => {
+	it("keeps cached models and identifies a partial provider failure", async () => {
 		const selector = createSelector(async () => ({
 			aborted: false,
 			errors: new Map([["configured", new Error("offline")]]),
 		}));
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("cached-model");
-		expect(rendered).toContain("Could not refresh configured; showing available models.");
+		expect(rendered).toContain("Could not refresh configured; showing cached models.");
 	});
 
 	it("summarizes multiple provider errors", async () => {
@@ -83,30 +86,37 @@ describe("model selector catalog refresh status", () => {
 			]),
 		}));
 		const rendered = await renderedAfterWork(selector);
-		expect(rendered).toContain("Could not refresh 2 model catalogs; showing available models.");
+		expect(rendered).toContain("Could not refresh 2 model catalogs; showing cached models.");
 	});
 
-	it("reports timeout while retaining cached models", async () => {
-		const selector = createSelector(async () => ({ aborted: true, errors: new Map() }));
+	it("aborts a slow refresh after the selector timeout and keeps cached models", async () => {
+		vi.useFakeTimers();
+		const selector = createSelector(
+			(options) =>
+				new Promise<RefreshResult>((resolve) => {
+					options?.signal?.addEventListener(
+						"abort",
+						() => resolve({ aborted: true, errors: new Map() }),
+						{ once: true },
+					);
+				}),
+		);
+		await vi.advanceTimersByTimeAsync(15_000);
+		vi.useRealTimers();
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("cached-model");
 		expect(rendered).toContain("Model refresh timed out; showing cached models.");
 	});
 
-	it("keeps selector refreshes cache-only in offline mode", async () => {
-		const previous = process.env[ENV_OFFLINE];
-		process.env[ENV_OFFLINE] = "1";
-		let observed: Parameters<ModelRegistry["refresh"]>[0];
-		try {
-			const selector = createSelector(async (options) => {
-				observed = options;
-				return { aborted: false, errors: new Map() };
-			});
-			await renderedAfterWork(selector);
-			expect(observed).toMatchObject({ allowNetwork: false, timeoutMs: 15_000 });
-		} finally {
-			if (previous === undefined) delete process.env[ENV_OFFLINE];
-			else process.env[ENV_OFFLINE] = previous;
-		}
+	it("delegates network gating to the runtime instead of passing allowNetwork", async () => {
+		let observed: Parameters<ModelRuntime["refresh"]>[0];
+		const selector = createSelector(async (options) => {
+			observed = options;
+			return { aborted: false, errors: new Map() };
+		});
+		await renderedAfterWork(selector);
+		expect(observed).toMatchObject({ signal: expect.any(AbortSignal) });
+		expect(observed).not.toHaveProperty("allowNetwork");
+		expect(observed).not.toHaveProperty("timeoutMs");
 	});
 });

@@ -5,9 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { loginIsolatedOAuthProvider } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-auth.ts";
+import { RemoteModelCatalog } from "../../packages/coding-agent/src/modes/interactive-engine/remote-model-catalog.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { formatLogoutStatus } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
 import { AuthStorage, type AuthStorageData } from "../../packages/coding-agent/src/core/auth-storage.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 
 function readAuth(path: string): AuthStorageData {
 	return JSON.parse(readFileSync(path, "utf8")) as AuthStorageData;
@@ -30,9 +34,9 @@ describe("logout credential invalidation (#1919)", () => {
 
 			try {
 				const storage = AuthStorage.create([primary, legacy]);
-				assert.equal(storage.has("github-copilot"), true);
-				await storage.logoutAsync("github-copilot");
-				assert.equal(storage.has("github-copilot"), false);
+				assert.notEqual(await storage.read("github-copilot"), undefined);
+				await storage.delete("github-copilot");
+				assert.equal(await storage.read("github-copilot"), undefined);
 
 				assert.deepEqual(readAuth(primary), {
 					openai: { type: "api_key", key: "primary-openai" },
@@ -42,8 +46,8 @@ describe("logout credential invalidation (#1919)", () => {
 				});
 
 				const restarted = AuthStorage.create([primary, legacy]);
-				assert.equal(restarted.has("github-copilot"), false);
-				assert.deepEqual(restarted.list(), ["anthropic", "openai"]);
+				assert.equal(await restarted.read("github-copilot"), undefined);
+				assert.deepEqual((await restarted.list()).map(({ providerId }) => providerId).sort(), ["anthropic", "openai"]);
 			} finally {
 				rmSync(directory, { recursive: true, force: true });
 			}
@@ -57,7 +61,7 @@ describe("logout credential invalidation (#1919)", () => {
 		await Bun.write(primary, JSON.stringify({ "github-copilot": { type: "api_key", key: "primary" } }));
 		await Bun.write(legacy, JSON.stringify({ "github-copilot": { type: "api_key", key: "legacy" } }));
 		const releaseLegacy = await lockfile.lock(legacy, { realpath: false });
-		const logout = AuthStorage.create([primary, legacy]).logoutAsync("github-copilot");
+		const logout = AuthStorage.create([primary, legacy]).delete("github-copilot");
 
 		try {
 			for (let attempt = 0; attempt < 50 && !existsSync(`${primary}.lock`); attempt += 1) await Bun.sleep(10);
@@ -198,24 +202,79 @@ describe("logout credential invalidation (#1919)", () => {
 		}
 	});
 
-	test("the isolated host applies the child logout catalog and only reloads its local credential view", async () => {
+	test("isolated login reloads the frontend credential snapshot after the engine persists OAuth", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-isolated-login-reload-"));
+		const authPath = join(directory, "auth.json");
+		await Bun.write(authPath, "{}\n");
+		const modelRuntime = await ModelRuntime.create({ authPath, modelsPath: null });
+		const session = { modelRuntime, scopedModels: [] };
+		const remoteCatalog = new RemoteModelCatalog({} as never);
+		remoteCatalog.patch(session as never);
+		const client = {
+			onExtensionUIRequest: () => () => {},
+			respondExtensionUI: async () => {},
+			cancelLoginProvider: async () => {},
+			requestInternal: async () => {
+				await Bun.write(authPath, JSON.stringify({
+					"corp-oauth": {
+						type: "oauth",
+						access: "engine-token",
+						refresh: "refresh-token",
+						expires: Date.now() + 60_000,
+					},
+				}));
+				return {
+					provider: "corp-oauth",
+					cancelled: false,
+					models: [{ provider: "corp-oauth", id: "corp-model" }],
+					scopedModels: [],
+					customAuthProviders: [],
+					oauthProviders: [{ id: "corp-oauth", name: "Corp OAuth" }],
+				};
+			},
+		};
+
+		try {
+			assert.deepEqual(modelRuntime.getProviderAuthStatus("corp-oauth"), { configured: false });
+			await loginIsolatedOAuthProvider(
+				session as never,
+				client as never,
+				remoteCatalog,
+				"corp-oauth",
+				{} as never,
+			);
+			assert.deepEqual(modelRuntime.getProviderAuthStatus("corp-oauth"), {
+				configured: true,
+				source: "stored",
+			});
+			assert.equal(modelRuntime.hasConfiguredAuth("corp-oauth"), true);
+			const logoutOptions = InteractiveModeBase.prototype.getLogoutProviderOptions.call({ session } as never);
+			assert.deepEqual(logoutOptions, [{ id: "corp-oauth", name: "Corp OAuth", authType: "oauth" }]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("the isolated host applies the child logout catalog without persisting frontend credentials", async () => {
 		const model = { provider: "github-copilot", id: "claude-haiku-4.5" };
 		const authStorage = AuthStorage.inMemory({
 			"github-copilot": { type: "api_key", key: "controlled-fake-key" },
 		});
-		let reloadCalls = 0;
-		authStorage.reload = () => { reloadCalls += 1; };
-		authStorage.logoutAsync = async () => {
-			throw new Error("frontend must not persist isolated logout");
+		let deleteCalls = 0;
+		const originalDelete = authStorage.delete.bind(authStorage);
+		authStorage.delete = async (...args) => {
+			deleteCalls += 1;
+			return originalDelete(...args);
 		};
-		const registry = {
-			authStorage,
-			getAvailable: () => [model],
-			find: () => model,
-			hasConfiguredAuth: () => true,
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		let reloadCalls = 0;
+		const originalReloadCredentials = modelRuntime.reloadCredentials.bind(modelRuntime);
+		modelRuntime.reloadCredentials = async () => {
+			reloadCalls += 1;
+			await originalReloadCredentials();
 		};
 		const session = {
-			modelRegistry: registry,
+			modelRuntime,
 			agent: {
 				state: { model, thinkingLevel: "medium", messages: [] },
 				steeringMode: "all",
@@ -223,6 +282,7 @@ describe("logout credential invalidation (#1919)", () => {
 			},
 			scopedModels: [],
 			sessionManager: {},
+			refreshCurrentModelFromRegistry: () => {},
 		};
 		const client = {
 			onEvent: () => () => {},
@@ -254,10 +314,12 @@ describe("logout credential invalidation (#1919)", () => {
 		);
 
 		await runtime.initializeFromEngine();
-		assert.deepEqual(await runtime.session.modelRegistry.getAvailable(), [model]);
+		assert.deepEqual(runtime.session.modelRuntime.getAvailableSnapshot(), [model]);
 		await runtime.logoutProvider("github-copilot");
-		assert.deepEqual(await runtime.session.modelRegistry.getAvailable(), []);
+		assert.deepEqual(runtime.session.modelRuntime.getAvailableSnapshot(), []);
+		assert.equal(deleteCalls, 0);
 		assert.equal(reloadCalls, 1);
+		assert.notEqual(await authStorage.read("github-copilot"), undefined);
 	});
 
 	test("logout status names remaining environment auth without changing ordinary success text", () => {

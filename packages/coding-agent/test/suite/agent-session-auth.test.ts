@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 } from "../../src/core/agent-session-runtime.ts";
-import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 import { createHarness, type Harness } from "./harness.ts";
+import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 
 const createRuntime = (async () => {
 	throw new Error("not used");
@@ -25,11 +25,11 @@ describe("provider-metadata authentication runtime", () => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
-	it("logs in through ModelRegistry provider metadata and persists the acquired credential", async () => {
+	it("logs in through provider-owned runtime metadata and persists the acquired credential", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		const providerId = "openrouter";
-		harness.session.modelRegistry.registerProvider(providerId, {
+		harness.session.modelRuntime.registerProvider(providerId, {
 			oauth: {
 				name: "Faux subscription",
 				login: async () => ({
@@ -41,6 +41,7 @@ describe("provider-metadata authentication runtime", () => {
 				getApiKey: (credentials) => credentials.access,
 			},
 		});
+		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({ ok: true, providers: [] });
 
 		await runtimeFor(harness).loginOAuthProvider(providerId, {
 			onAuth: () => {},
@@ -49,7 +50,7 @@ describe("provider-metadata authentication runtime", () => {
 			onSelect: async () => undefined,
 		});
 
-		expect(harness.authStorage.get(providerId)).toMatchObject({
+		expect(await harness.authStorage.read(providerId)).toMatchObject({
 			type: "oauth",
 			access: "access-token",
 			refresh: "refresh-token",
@@ -85,6 +86,6 @@ describe("provider-metadata authentication runtime", () => {
 			command: "save_provider_credential",
 			success: true,
 		});
-		expect(harness.authStorage.get(harness.getModel().provider)).toEqual(credential);
+		expect(await harness.authStorage.read(harness.getModel().provider)).toEqual(credential);
 	});
 });

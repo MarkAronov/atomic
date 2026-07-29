@@ -3,7 +3,6 @@ import { runCallback } from "../../core/callback-activity.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
-import { getOAuthProviderMetadata } from "../../core/oauth-provider-bridge.ts";
 import {
 	createRpcErrorResponse,
 	createRpcSuccessResponse,
@@ -127,7 +126,7 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
 			case "set_model": {
-				const models = await session.modelRegistry.getAvailable();
+				const models = await session.modelRuntime.getAvailableSnapshot();
 				const model = models.find((candidate) => candidate.provider === command.provider && candidate.id === command.modelId);
 				if (!model) {
 					return createRpcErrorResponse(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
@@ -143,12 +142,12 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
 			}
 			case "get_available_models": {
-				const models = await session.modelRegistry.getAvailable();
+				const models = await session.modelRuntime.getAvailableSnapshot();
 				return createRpcSuccessResponse(id, "get_available_models", {
 					models,
 					scopedModels: session.scopedModels,
-					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
-					oauthProviders: getOAuthProviderMetadata(),
+					customAuthProviders: [],
+					oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
 				});
 			}
 
@@ -175,20 +174,26 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "logout_provider", result);
 			}
 			case "refresh_models": {
-				session.modelRegistry.authStorage.reload();
-				const result = await session.modelRegistry.refresh({
-					timeoutMs: command.timeoutMs,
-					force: command.force,
-					allowNetwork: command.allowNetwork,
-				});
-				return createRpcSuccessResponse(id, "refresh_models", {
-					aborted: result.aborted,
-					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
-					models: session.modelRegistry.getAvailable(),
-					scopedModels: session.scopedModels,
-					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
-					oauthProviders: getOAuthProviderMetadata(),
-				});
+				await session.modelRuntime.reloadCredentials();
+				const controller = command.timeoutMs === undefined ? undefined : new AbortController();
+				const timeout = controller ? setTimeout(() => controller.abort(), command.timeoutMs) : undefined;
+				try {
+					const result = await session.modelRuntime.refresh({
+						allowNetwork: command.allowNetwork,
+						force: command.force,
+						signal: controller?.signal,
+					});
+					return createRpcSuccessResponse(id, "refresh_models", {
+						aborted: result.aborted,
+						errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
+						models: session.modelRuntime.getAvailableSnapshot(),
+						scopedModels: session.scopedModels,
+						customAuthProviders: [],
+						oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
+					});
+				} finally {
+					if (timeout) clearTimeout(timeout);
+				}
 			}
 
 			case "set_thinking_level": {

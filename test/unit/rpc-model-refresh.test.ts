@@ -6,8 +6,8 @@ import { join } from "node:path";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
-import { getOAuthProviderMetadata } from "../../packages/coding-agent/src/core/oauth-provider-bridge.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
+import { clearApiKeyCache } from "../../packages/coding-agent/src/core/provider-composer.ts";
 import { RemoteModelCatalog } from "../../packages/coding-agent/src/modes/interactive-engine/remote-model-catalog.ts";
 import type { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { createRpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
@@ -41,8 +41,8 @@ for (const scenario of [
 		try {
 			const authPath = join(tempDir, "auth.json");
 			const childAuth = AuthStorage.create(authPath);
-			const childRegistry = ModelRegistry.create(childAuth, join(tempDir, "models.json"));
-			const session = { modelRegistry: childRegistry, scopedModels: [] } as unknown as AgentSession;
+			const childRuntime = await ModelRuntime.create({ credentials: childAuth, modelsPath: null });
+			const session = { modelRuntime: childRuntime, scopedModels: [] } as unknown as AgentSession;
 			const handle = createRpcCommandHandler({
 				runtimeHost: { services: { agentDir: tempDir } } as unknown as AgentSessionRuntime,
 				getSession: () => session,
@@ -50,66 +50,108 @@ for (const scenario of [
 				output: () => {},
 			});
 
-			assert.equal(childAuth.hasAuth(scenario.provider), false);
-			assert.equal(childRegistry.getAvailable().some((model) => model.provider === scenario.provider), false);
+			assert.equal(await childAuth.read(scenario.provider), undefined);
+			assert.equal(childRuntime.getAvailableSnapshot().some((model) => model.provider === scenario.provider), false);
 
 			const hostAuth = AuthStorage.create(authPath);
-			hostAuth.set(scenario.provider, scenario.credential);
-			assert.equal(childAuth.hasAuth(scenario.provider), false, "child keeps its startup auth snapshot before RPC refresh");
+			await hostAuth.modify(scenario.provider, async () => scenario.credential);
+			assert.equal(await childAuth.read(scenario.provider), undefined);
 
 			const response = await handle({ id: scenario.provider, type: "refresh_models", allowNetwork: false });
 
-			assert.equal(childAuth.hasAuth(scenario.provider), true);
+			assert.equal((await childAuth.read(scenario.provider))?.type, scenario.credential.type);
 			assert.equal(availableProviders(response).has(scenario.provider), true);
-			assert.deepEqual(response && "data" in response ? response.data : undefined, {
-				aborted: false,
-				errors: [],
-				models: childRegistry.getAvailable(),
-				scopedModels: [],
-				customAuthProviders: [],
-				oauthProviders: getOAuthProviderMetadata(),
-			});
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 }
 
-test("refresh_models uses a newly persisted credential for dynamic model discovery", async () => {
+test("refresh_models uses newly persisted credentials for forced dynamic discovery", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-rpc-dynamic-model-refresh-"));
 	try {
 		const authPath = join(tempDir, "auth.json");
 		const childAuth = AuthStorage.create(authPath);
-		const childRegistry = ModelRegistry.create(childAuth, join(tempDir, "models.json"));
-		const template = ModelRegistry.inMemory(AuthStorage.inMemory({
-			"kimi-coding": { type: "api_key", key: "template-key" },
-		})).getAvailable().find((model) => model.provider === "kimi-coding");
-		assert.ok(template);
+		const childRuntime = await ModelRuntime.create({ credentials: childAuth, modelsPath: null });
 		let observedKey: string | undefined;
-		childRegistry.registerProvider("dynamic-login", {
-			refreshModels: async ({ credential, allowNetwork, force }) => {
+		let observedForce: boolean | undefined;
+		childRuntime.registerProvider("dynamic-login", {
+			baseUrl: "https://dynamic.test/v1",
+			api: "openai-completions",
+			apiKey: "$DYNAMIC_LOGIN_KEY",
+			models: [],
+			refreshModels: async ({ credential, force }) => {
 				observedKey = credential?.type === "api_key" ? credential.key : undefined;
-				assert.equal(allowNetwork, false);
-				assert.equal(force, true);
-				return observedKey ? [{ ...template, provider: "dynamic-login", id: "discovered-after-login" }] : [];
+				observedForce = force;
+				return observedKey ? [{
+					id: "discovered-after-login",
+					name: "Discovered",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128_000,
+					maxTokens: 4_096,
+				}] : [];
 			},
 		});
-		const session = { modelRegistry: childRegistry, scopedModels: [] } as unknown as AgentSession;
+		const session = { modelRuntime: childRuntime, scopedModels: [] } as unknown as AgentSession;
 		const handle = createRpcCommandHandler({
 			runtimeHost: { services: { agentDir: tempDir } } as unknown as AgentSessionRuntime,
 			getSession: () => session,
 			rebindSession: async () => {},
 			output: () => {},
 		});
-		AuthStorage.create(authPath).set("dynamic-login", { type: "api_key", key: "new-dynamic-key" });
+		await AuthStorage.create(authPath).modify("dynamic-login", async () => ({ type: "api_key", key: "new-dynamic-key" }));
+		assert.equal(await childAuth.read("dynamic-login"), undefined);
+
 		const response = await handle({ type: "refresh_models", allowNetwork: false, force: true });
+
+		assert.deepEqual(await childAuth.read("dynamic-login"), { type: "api_key", key: "new-dynamic-key" });
 		assert.equal(observedKey, "new-dynamic-key");
+		assert.equal(observedForce, true);
 		assert.equal(availableProviders(response).has("dynamic-login"), true);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });
 
+test("refresh_models is unbounded by default and honors an explicit caller timeout", async () => {
+	const signals: Array<AbortSignal | undefined> = [];
+	let reloads = 0;
+	const modelRuntime = {
+		reloadCredentials: async () => { reloads += 1; },
+		refresh: async ({ signal }: { signal?: AbortSignal }) => {
+			signals.push(signal);
+			if (signal && !signal.aborted) {
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+			}
+			return { aborted: signal?.aborted ?? false, errors: new Map<string, Error>() };
+		},
+		getAvailableSnapshot: () => [],
+		getProviders: () => [],
+		getOAuthProviderMetadata: () => [],
+	};
+	const session = { modelRuntime, scopedModels: [] } as unknown as AgentSession;
+	const handle = createRpcCommandHandler({
+		runtimeHost: {} as AgentSessionRuntime,
+		getSession: () => session,
+		rebindSession: async () => {},
+		output: () => {},
+	});
+
+	const unbounded = await handle({ type: "refresh_models", allowNetwork: false });
+	const bounded = await handle({ type: "refresh_models", allowNetwork: false, timeoutMs: 5 });
+
+	assert.equal(unbounded?.success, true);
+	assert.equal(signals[0], undefined);
+	assert.ok(signals[1] instanceof AbortSignal);
+	assert.equal(signals[1].aborted, true);
+	assert.ok(bounded?.success);
+	assert.equal(bounded.command, "refresh_models");
+	assert.ok("data" in bounded);
+	assert.equal(bounded.data.aborted, true);
+	assert.equal(reloads, 2);
+});
 test("bearer-only Anthropic models survive RPC and isolated catalog transport", async () => {
 	const originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
 	const originalApiKey = process.env.ANTHROPIC_API_KEY;
@@ -118,8 +160,8 @@ test("bearer-only Anthropic models survive RPC and isolated catalog transport", 
 		process.env.ANTHROPIC_AUTH_TOKEN = "gateway-token";
 		delete process.env.ANTHROPIC_API_KEY;
 		delete process.env.ANTHROPIC_OAUTH_TOKEN;
-		const hostRegistry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		const hostSession = { modelRegistry: hostRegistry, scopedModels: [] } as unknown as AgentSession;
+		const hostRuntime = await ModelRuntime.create({ modelsPath: null });
+		const hostSession = { modelRuntime: hostRuntime, scopedModels: [] } as unknown as AgentSession;
 		const handle = createRpcCommandHandler({
 			runtimeHost: { services: { agentDir: "/tmp/atomic-anthropic-bearer-rpc" } } as unknown as AgentSessionRuntime,
 			getSession: () => hostSession,
@@ -134,13 +176,13 @@ test("bearer-only Anthropic models survive RPC and isolated catalog transport", 
 		assert.ok(response.data.models.some((model) => model.provider === "anthropic"));
 
 		delete process.env.ANTHROPIC_AUTH_TOKEN;
-		const isolatedRegistry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		const isolatedSession = { modelRegistry: isolatedRegistry, scopedModels: [] } as unknown as AgentSession;
-		assert.equal(isolatedRegistry.getAvailable().some((model) => model.provider === "anthropic"), false);
+		clearApiKeyCache();
+		const isolatedRuntime = await ModelRuntime.create({ modelsPath: null });
+		const isolatedSession = { modelRuntime: isolatedRuntime, scopedModels: [] } as unknown as AgentSession;
 		const remoteCatalog = new RemoteModelCatalog({} as RpcClient);
 		remoteCatalog.apply(response.data);
 		remoteCatalog.patch(isolatedSession);
-		assert.equal(isolatedRegistry.getAvailable().some((model) => model.provider === "anthropic"), true);
+		assert.deepEqual(isolatedRuntime.getAvailableSnapshot(), response.data.models);
 	} finally {
 		if (originalAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
 		else process.env.ANTHROPIC_AUTH_TOKEN = originalAuthToken;
