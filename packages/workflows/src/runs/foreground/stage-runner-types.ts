@@ -29,6 +29,12 @@ export type WorkflowFastModeSettingsManager = {
 
 export type StageUserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 
+/** Internal session preparation and side-effect-free eligibility boundary. */
+export interface StageUserMessagePreparation {
+  readonly sessionFile?: string;
+  readonly beforePreparation?: () => void;
+}
+
 export interface StageUserMessageDeliveryHooks {
   readonly beforeDelivery?: () => void;
   /** Releases serialized admission once an idle prompt synchronously owns the turn. */
@@ -152,7 +158,17 @@ export interface InternalStageContext extends StageContext {
     content: StageUserMessageContent,
     options?: StageSendUserMessageOptions,
     beforeDelivery?: () => void,
+    preparation?: StageUserMessagePreparation,
   ): Promise<StageUserMessageDeliveryAction>;
+  /**
+   * Internal: subscribe to workflow-owned delivery lifecycle facts for this
+   * stage. An accepted idle delivery reports `delivery_start` before the public
+   * `agent_start` reaches subscribers, so an attached chat can paint Working
+   * for the whole turn rather than only after the SDK event queue drains.
+   */
+  __subscribeDeliveryActivity(
+    listener: (event: import("./stage-delivery-activity.js").StageDeliveryActivityEvent) => void,
+  ): () => void;
   /** Internal: synchronously reject new detached traffic without waiting for active work. */
   __sealGeneration(): void;
   /** Internal: atomically stop detached traffic admission and drain admitted work. */

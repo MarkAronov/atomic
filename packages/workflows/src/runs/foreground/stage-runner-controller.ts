@@ -9,8 +9,9 @@ import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-ou
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
+import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { nextResumedContextOverflowFallbackIndex, terminatingToolCallId, unresolvedContextOverflowFailure, unresolvedContextOverflowMessage } from "./stage-runner-unresolved-overflow.js";
-import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
+import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, StageUserMessagePreparation, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
 import { StageSessionReplacement } from "./stage-runner-replacement.js";
 import { StageSessionPause, type StageSessionPauseResumeResult } from "./stage-runner-pause.js";
 
@@ -44,6 +45,7 @@ export class StageSessionController {
   private sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
   private readonly replacement = new StageSessionReplacement();
   private readonly messageAdmission = new StageMessageAdmission();
+  private readonly deliveryActivity = new StageDeliveryActivity();
 
   constructor(
     private readonly opts: StageRunnerOpts,
@@ -106,21 +108,25 @@ export class StageSessionController {
     return session;
   }
 
-  async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions, beforeDelivery?: () => void):
-    Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
+  async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions,
+    beforeDelivery?: () => void, preparation?: StageUserMessagePreparation): Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
     return this.messageAdmission.run(async (release) => {
-      const pausedDelivery = this.pauseControl.deferRunnerOwnedDelivery(
-        () => this.sendUserMessage(content, options, beforeDelivery),
+      const pausedDelivery = this.pauseControl.deferRunnerOwnedDelivery(() =>
+        this.sendUserMessage(content, options, beforeDelivery, preparation));
+      if (pausedDelivery !== undefined) { release(); return pausedDelivery; }
+      preparation?.beforePreparation?.();
+      const sessionFile = preparation?.sessionFile;
+      const deliver = async (activity?: StageDeliveryActivity) => sendStageUserMessage(
+        sessionFile === undefined ? await this.ensureSession("prompt")
+          : await this.ensureSessionFromFile(sessionFile, "prompt"),
+        content, options, beforeDelivery, release, this.messageAdmission, activity,
       );
-      if (pausedDelivery !== undefined) {
-        release();
-        return pausedDelivery;
-      }
-      return sendStageUserMessage(
-        await this.ensureSession("prompt"), content, options, beforeDelivery, release, this.messageAdmission,
-      );
+      if (this.session === undefined || sessionFile !== undefined) return this.deliveryActivity.runWithLease(() => deliver());
+      return deliver(this.deliveryActivity);
     });
   }
+  /** Internal pre-stream delivery lifecycle consumed by an attached stage chat. */
+  subscribeDeliveryActivity(listener: StageDeliveryActivityListener): () => void { return this.deliveryActivity.subscribe(listener); }
 
   sealGeneration(): void {
     this.generationSealed = true;
@@ -201,7 +207,7 @@ export class StageSessionController {
     this.pendingListeners.clear();
     this.unsubscribeTerminateWatcher?.();
     this.unsubscribeTerminateWatcher = undefined;
-    this.terminatingToolCallIds.clear(); this.messageAdmission.dispose();
+    this.terminatingToolCallIds.clear(); this.messageAdmission.dispose(); this.deliveryActivity.dispose();
     await this.replacement.dispose();
     await disposeStageSession(this.session);
   }
