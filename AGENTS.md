@@ -66,6 +66,16 @@ test("hello world", () => {
 });
 ```
 
+### Per-test timeout policy
+
+- The suite-wide per-test budget is **30000 ms**, declared once as `--timeout 30000` in the `test:unit`, `test:integration`, and `test:ci-contracts` scripts in the root `package.json`. `test/ci/ci-workflow-contracts.test.ts` enforces that all three still declare it and still agree.
+- Do **not** move the budget to `bunfig.toml`. Bun 1.3.14 silently ignores `[test] timeout`; it looks correct and does nothing. Do not set it only in `.github/workflows/test.yml` either: CI reaches every suite through `bun run <script>`, so `package.json` is the one place that keeps local and CI budgets identical.
+- One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse.
+- Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a `tsc` invocation, a built-package install). Name the constant and keep it at the call site. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
+- `scripts/run-flaky-test-suite.ts` scores every duration Bun prints against that test's effective timeout: warn at 40 % of budget, fail the step at 70 %. Every attempt is scored, so a fast bounded retry cannot hide a first attempt that burned a test's headroom. It always writes the per-test duration table to `.ci-diagnostics/<suite>-durations.md`, on green runs too. If it fails your test, make the test faster or justify a structural explicit timeout — do not raise the shared default.
+- The gate reads the `(pass) name [Nms]` records Bun prints per test, so `scripts/run-flaky-test-suite.ts` clears `CLAUDECODE`/`REPL_ID`/`AGENT` for the suite it spawns (Bun's agent-quiet reporter prints only the aggregate footer) and understands the `::group::` file headers Bun emits on GitHub Actions. A suite that runs tests yet prints no durations fails the step as *blind* rather than reporting a clean sheet.
+- The gate only reads a budget from a Bun *test* invocation (`bun test --timeout N`, or a `bun run <script>` whose script is one). Any other wrapped command leaves it disabled rather than scoring that command's output against a timeout Bun never applied. Explicit per-test budgets are matched by the fully qualified `scope > name` Bun prints, so a declaration inside `describe` never lends its budget to a same-named test in another scope.
+
 ### Hook name compatibility
 
 Bun's `bun:test` exports `beforeAll`/`afterAll` (not `before`/`after`). Use `beforeAll`/`afterAll` for once-per-suite setup/teardown and `beforeEach`/`afterEach` for per-test hooks.
