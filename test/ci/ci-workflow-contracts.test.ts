@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -410,4 +411,68 @@ test("the toolchain warm workflow stays read-only, gated, and key-compatible", a
   const zigVersion = /uses: mlugg\/setup-zig@[^\n]*\n\s+with:\n\s+version: (\S+)/u;
   assert.equal(zigVersion.exec(warm)?.[1], zigVersion.exec(publish)?.[1], "warm and release Zig versions must match");
   assert.match(await readText(join(root, "docs/ci.md")), /xwin-v1/u);
+});
+
+type MatrixEntry = Record<string, string | number | boolean>;
+
+interface WorkflowMatrix {
+  include?: MatrixEntry[];
+  [key: string]: string[] | MatrixEntry[] | undefined;
+}
+
+interface Workflow {
+  jobs?: Record<string, { "runs-on"?: string | string[]; strategy?: { matrix?: WorkflowMatrix } }>;
+}
+
+/**
+ * Every runner a job can select.
+ *
+ * `runs-on: ${{ matrix.<key> }}` is resolved through the job's own matrix. Reading
+ * the literal alone would let `matrix: { os: [ubuntu-24.04] }` pick an unapproved
+ * GitHub-hosted runner that no contract here ever sees.
+ */
+function jobRunners(label: string, job: NonNullable<Workflow["jobs"]>[string]): string[] {
+  const runsOn = job["runs-on"] ?? [];
+  return (typeof runsOn === "string" ? [runsOn] : runsOn).flatMap((value) => {
+    const key = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/u.exec(value)?.[1];
+    if (key === undefined) {
+      // An expression this cannot resolve must not pass as a literal runner name.
+      assert.doesNotMatch(value, /\$\{\{/u, `${label}: unresolvable runs-on ${value}`);
+      return [value];
+    }
+    const matrix = job.strategy?.matrix ?? {};
+    const values = [...(matrix[key] ?? []), ...(matrix.include ?? []).map((entry) => entry[key])]
+      .filter((entry): entry is string => typeof entry === "string");
+    assert.ok(values.length > 0, `${label}: matrix.${key} names no runner`);
+    return values;
+  });
+}
+
+test("Blacksmith runners are used everywhere they are supported", async () => {
+  const publish = await readText(publishPath);
+  // Enumerate the directory rather than a fixed list: a workflow added later
+  // must not be able to introduce an unapproved GitHub-hosted runner unnoticed.
+  const workflowDir = join(root, ".github/workflows");
+  const workflowFiles = (await readdir(workflowDir))
+    .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
+    .sort();
+  assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
+  const hosted: string[] = [];
+  for (const file of workflowFiles) {
+    const workflow = Bun.YAML.parse(await readText(join(workflowDir, file))) as Workflow;
+    for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+      hosted.push(...jobRunners(`${file} ${name}`, job).filter((runner) => !runner.startsWith("blacksmith-")));
+    }
+  }
+  // Only two jobs may stay GitHub-hosted, and each for a reason that a future
+  // "move everything to Blacksmith" pass must not quietly undo:
+  //   macos-26-intel - Blacksmith macOS is Apple Silicon only, so this is the
+  //     only runner that can produce the darwin x64 native binding.
+  //   ubuntu-latest  - npm trusted publishing rejects self-hosted runners, and
+  //     Blacksmith registers through GitHub's org-level registration API.
+  assert.deepEqual(hosted.sort(), ["macos-26-intel", "ubuntu-latest"]);
+  assert.match(publish, /# Blacksmith macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
+  assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,160}?runs-on: ubuntu-latest/u);
+  // ubuntu-latest is only ever acceptable on the OIDC publish job.
+  assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
 });
