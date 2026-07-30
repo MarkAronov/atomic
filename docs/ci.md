@@ -8,7 +8,7 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent` and `@bastani/at
 Pull request / selected branch push
 └─ test.yml (four concurrent work jobs + one result gate)
    ├─ suites (Linux, Windows): build package -> unit -> integration
-   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest
+   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node, then Bun)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, Mintlify, contracts
    └─ test (2 legs): result gate carrying both required contexts
@@ -41,7 +41,7 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 | Job | Platforms | Chain | Linux | Windows |
 | --- | --- | --- | ---: | ---: |
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
-| `agent-suite` | both | build native bindings -> coding-agent vitest | 126 s | 232 s |
+| `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
 | `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
 | `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
@@ -82,9 +82,10 @@ The structural result still stands and is what matters for the next decision: wa
 Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact, because rebuilding in parallel is cheaper in wall clock than serializing on an upload/download pair.
 
 - `test/unit/pi-0.82.1-artifacts.test.ts` gates its assertions on `packages/coding-agent/dist` and degrades to `test.skip` with a warning when the build has not run, so the unit suite must stay behind the package build. Moving it into a build-less job would lose coverage without failing anything.
-- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node 24 and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
-- `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `bun run --cwd packages/natives build`.
+- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
+- `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
 - `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. `suites` and `static-checks` need no Rust at all.
+- `agent-suite` runs the coding-agent package in one step; its SQLite selectors resolve `node:sqlite` under Node and fall back to `bun:sqlite` under Bun.
 
 No suite uses `--parallel`, `--shard`, `--concurrent`, or `--max-concurrency`. `--parallel` implies `--isolate`, and 20 files in `test/unit` import 108 sibling `*.test.ts` files, so a fresh module registry per file re-executes those tests: 5407 executions against 4426 distinct tests, with the duplicates scored twice by the duration guard, once under contention. `--shard` is deterministic and roughly 1.85x faster locally, but it buys no wall clock while Windows `agent-suite` is the critical path. If a further cut is wanted, shard vitest first, then unit; that is worth roughly 70 s for a 60 % increase in runner count.
 
@@ -298,7 +299,7 @@ Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, e
 
 After native and smoke jobs pass, `build`:
 
-1. Installs with `bun install --frozen-lockfile` and runs `bun run check:shrinkwrap`.
+1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
 3. Runs `scripts/build-binaries.sh --skip-install` for all six archives.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, six native modules, and six exact-version native optional dependencies.

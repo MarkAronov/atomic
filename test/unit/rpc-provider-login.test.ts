@@ -1,10 +1,11 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { createRpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
+import { sleep } from "../helpers/runtime.js";
 
 async function createSessionRuntime() {
 	const authStorage = AuthStorage.inMemory();
@@ -51,7 +52,10 @@ test("login_provider prompts in the host, persists the credential, refreshes, an
 	assert.ok(state.refreshCount() > 0);
 	if (!response.data.cancelled) {
 		assert.deepEqual(response.data.customAuthProviders, []);
-		assert.equal(response.data.models.some((model) => model.provider === "extension-login"), true);
+		assert.equal(
+			response.data.models.some((model) => model.provider === "extension-login"),
+			true,
+		);
 	}
 });
 
@@ -64,14 +68,15 @@ test("cancel_login_provider aborts an active child login without storing credent
 		rebindSession: async () => {},
 		output: () => {},
 		inputForm: {
-			open: async (_request, signal) => new Promise((resolve) => {
-				signal?.addEventListener("abort", () => resolve(undefined), { once: true });
-			}),
+			open: async (_request, signal) =>
+				new Promise((resolve) => {
+					signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+				}),
 		},
 	});
 
 	const login = handle({ id: "login", type: "login_provider", provider: "extension-login" });
-	await Bun.sleep(0);
+	await sleep(0);
 	const cancelled = await handle({ id: "cancel", type: "cancel_login_provider", provider: "extension-login" });
 	const response = await login;
 
