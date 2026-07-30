@@ -181,7 +181,8 @@ Atomic will:
 
 - ask clarifying questions if stage purpose, inputs, models, or handoffs are ambiguous,
 - write a `.atomic/workflows/<name>.ts` definition that uses `workflow({ ... })` and imports `Type` from `typebox`,
-- and run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`.
+- run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`,
+- then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
 
 The same plain-chat approach works for editing or hardening an existing workflow. For the full authoring reference, see [Workflows](/workflows), including composition with user-defined workflows and all nine builtins from `@bastani/workflows/builtin`.
 
