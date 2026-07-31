@@ -122,24 +122,32 @@ export function createNestedRoute(rootRunId: string): NestedRoute {
 	return { rootRunId, eventSink, controlInbox, capabilityToken };
 }
 
-function newestMtimeMs(filePath: string): number {
-	let newest = fs.statSync(filePath).mtimeMs;
+/** Whether any entry in the tree rooted at filePath has an mtime at or after cutoff, stopping at the first hit. */
+export function hasEntryNewerThan(filePath: string, cutoff: number): boolean {
+	const stat = fs.statSync(filePath);
+	if (stat.mtimeMs >= cutoff) return true;
+	if (!stat.isDirectory()) return false;
+	return directoryHasEntryNewerThan(filePath, cutoff);
+}
+
+function directoryHasEntryNewerThan(dirPath: string, cutoff: number): boolean {
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(filePath);
+		entries = fs.readdirSync(dirPath);
 	} catch {
-		return newest;
+		return false;
 	}
 	for (const entry of entries) {
-		const childPath = path.join(filePath, entry);
+		const childPath = path.join(dirPath, entry);
 		try {
 			const stat = fs.statSync(childPath);
-			newest = Math.max(newest, stat.isDirectory() ? newestMtimeMs(childPath) : stat.mtimeMs);
+			if (stat.mtimeMs >= cutoff) return true;
+			if (stat.isDirectory() && directoryHasEntryNewerThan(childPath, cutoff)) return true;
 		} catch {
 			// Nested runtime cleanup is best-effort housekeeping.
 		}
 	}
-	return newest;
+	return false;
 }
 
 function cleanupOldSubdirectories(root: string, maxAgeDays: number): void {
@@ -154,7 +162,7 @@ function cleanupOldSubdirectories(root: string, maxAgeDays: number): void {
 	for (const entry of entries) {
 		const entryPath = path.join(root, entry);
 		try {
-			if (newestMtimeMs(entryPath) < cutoff) fs.rmSync(entryPath, { recursive: true, force: true });
+			if (!hasEntryNewerThan(entryPath, cutoff)) fs.rmSync(entryPath, { recursive: true, force: true });
 		} catch {
 			// Keep startup resilient if a child process removes or rewrites an entry while scanning.
 		}
