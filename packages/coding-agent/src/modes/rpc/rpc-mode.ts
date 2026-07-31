@@ -16,6 +16,7 @@ import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
+import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
@@ -48,7 +49,7 @@ export type {
 export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
 	takeOverStdout();
 
-	const interactiveEngineChild = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1";
+	const interactiveEngineChild = isInteractiveEngineChild();
 	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
 	if (keybindings) setKeybindings(keybindings);
 
@@ -160,6 +161,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
+		// Only the interactive engine host consults this ownership boundary.
+		announceRequestAccepted: interactiveEngineChild
+			? (requestId, command) =>
+					writeRawStdout(
+						serializeInteractiveEngineMessage({ type: "engine_request_accepted", requestId, command }),
+					)
+			: undefined,
 		handleInteractiveEngineLine:
 			customUi || renderService || sessionPicker || inputForm
 				? (line) =>

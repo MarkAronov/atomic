@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { BashExecutionComponent, type TruncationResult } from "./interactive-mode-deps.ts";
+import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
 export const COMPACTION_ALREADY_IN_PROGRESS_WARNING =
@@ -89,7 +90,15 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 		if (this.bashComponent) {
 			this.bashComponent.setComplete(undefined, false);
 		}
+		this.bashComponent = undefined;
+		this.ui.requestRender();
+		// A send the engine never accepted belongs to the submit handler, which
+		// restores the `!` draft. Ownership comes from the child's admission
+		// frame, not from output: a command can create files and print nothing,
+		// and offering that text back invites a second run.
+		if (isEngineSendFailure(error)) throw error;
 		this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+		return;
 	}
 
 	this.bashComponent = undefined;
@@ -120,8 +129,11 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 
 	try {
 		await this.session.compact();
-	} catch {
-		// Ignore, will be emitted as an event
+	} catch (error) {
+		// Compaction failures arrive as events, so they stay ignored here — except
+		// a send the engine never accepted, which the submit handler turns back
+		// into an editor draft.
+		if (isEngineSendFailure(error)) throw error;
 	}
 };
 

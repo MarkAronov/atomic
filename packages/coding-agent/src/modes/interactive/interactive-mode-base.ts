@@ -5,7 +5,7 @@
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
-import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
+import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
@@ -48,6 +48,7 @@ import {
 import type {} from "./interactive-mode-surface.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
 	const trimmed = text.trimStart();
@@ -55,7 +56,7 @@ function isCommandLikeStartupInput(text: string): boolean {
 }
 
 export function seedStartupInput(
-	pendingUserInputs: string[],
+	pendingUserInputs: InteractiveSubmission[],
 	editor: { setText(text: string): void },
 	startupInput: EarlyInputSnapshot | undefined,
 	startupReplayInputs: string[] = [],
@@ -73,7 +74,7 @@ export function seedStartupInput(
 			editor.setText(commandText);
 			setStartupReplayActiveInput?.(commandText);
 		} else {
-			pendingUserInputs.push(submission);
+			pendingUserInputs.push({ text: submission, draft: submission });
 		}
 	}
 	if (startupInput.text.length === 0) return;
@@ -129,9 +130,9 @@ export class InteractiveModeBase {
 
 	isInitialized = false;
 
-	onInputCallback?: (text: string) => void;
+	onInputCallback?: (submission: InteractiveSubmission) => void;
 
-	pendingUserInputs: string[] = [];
+	pendingUserInputs: InteractiveSubmission[] = [];
 
 	startupReplayInputs: string[] = [];
 
@@ -372,14 +373,12 @@ export class InteractiveModeBase {
 		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
 			runtimeHost,
 			this.createExtensionUIContext(),
-			(diagnostic) => {
-				if (diagnostic.message.startsWith("Engine terminated;")) {
-					this.stopWorkingLoader();
-					this.ui.setFocus(this.editor);
-					this.ui.requestRender();
-				}
-				if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) this.showError(diagnostic.message);
-			},
+			(diagnostic) =>
+				renderEngineDiagnostic(diagnostic, {
+					stopWorkingLoader: () => this.stopWorkingLoader(),
+					showStatus: (message) => this.showStatus(message),
+					showError: (message) => this.showError(message),
+				}),
 			(handler) => {
 				this.interactiveEngineShortcutHandler = handler;
 				this.defaultEditor.onExtensionShortcut = handler;

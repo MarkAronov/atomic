@@ -16,7 +16,10 @@ import type {
 	Container,
 	EditorFactory,
 	ExtensionCommandContext,
+	ExtensionEditorComponent,
+	ExtensionInputComponent,
 	ExtensionRunner,
+	ExtensionSelectorComponent,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -44,6 +47,7 @@ import type {
 	TUI,
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 
 declare module "./interactive-mode-base.ts" {
 	interface InteractiveModeBase {
@@ -188,7 +192,7 @@ declare module "./interactive-mode-base.ts" {
 			options: string[],
 			opts?: ExtensionUIDialogOptions,
 		): Promise<string | undefined>;
-		hideExtensionSelector(): void;
+		hideExtensionSelector(instance?: ExtensionSelectorComponent): void;
 		showExtensionConfirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
 		promptForMissingSessionCwd(error: MissingSessionCwdError): Promise<string | undefined>;
 		showExtensionInput(
@@ -196,9 +200,13 @@ declare module "./interactive-mode-base.ts" {
 			placeholder?: string,
 			opts?: ExtensionUIDialogOptions,
 		): Promise<string | undefined>;
-		hideExtensionInput(): void;
-		showExtensionEditor(title: string, prefill?: string): Promise<string | undefined>;
-		hideExtensionEditor(): void;
+		hideExtensionInput(instance?: ExtensionInputComponent): void;
+		showExtensionEditor(
+			title: string,
+			prefill?: string,
+			opts?: ExtensionUIDialogOptions,
+		): Promise<string | undefined>;
+		hideExtensionEditor(instance?: ExtensionEditorComponent): void;
 		setCustomEditorComponent(factory: EditorFactory | undefined): void;
 		showExtensionNotify(message: string, type?: "info" | "warning" | "error"): void;
 		showExtensionCustom<T>(
@@ -247,8 +255,8 @@ declare module "./interactive-mode-base.ts" {
 		): void;
 		renderInitialMessages(): void;
 		attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
-		getUserInput(): Promise<string>;
-		runUserPromptTurn(userInput: string): Promise<void>;
+		getUserInput(): Promise<InteractiveSubmission>;
+		runUserPromptTurn(submission: InteractiveSubmission | string): Promise<void>;
 		renderDeferredUserInput(text: string): void;
 		consumeDeferredRenderedUserInput(text: string): boolean;
 		discardDeferredRenderedUserInput(text: string): void;
