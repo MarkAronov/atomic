@@ -22,6 +22,11 @@ import type {
 	WorkflowRunChildOptions,
 } from "../../shared/types.js";
 import type { EngineRuntime } from "../runtime.js";
+import {
+	findWorkflowGracefulQuit,
+	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+	WorkflowGracefulQuitError,
+} from "../workflow-tool-abort.js";
 
 export function createChildWorkflowRunner(input: {
 	readonly runtime: EngineRuntime;
@@ -70,6 +75,7 @@ export function createChildWorkflowRunner(input: {
 		await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
 		let childRunId: string | undefined;
 		let detachParentAbort: (() => void) | undefined;
+		let childControllerForCleanup: AbortController | undefined;
 		try {
 			if (boundary.replayedChild !== undefined) {
 				await Promise.resolve();
@@ -88,6 +94,7 @@ export function createChildWorkflowRunner(input: {
 
 			childRunId = durableInvocation?.identity.childRunId ?? crypto.randomUUID();
 			const childController = new AbortController();
+			childControllerForCleanup = childController;
 			const childRef: WorkflowChildRunRef = { alias: childName, workflow: child.normalizedName, runId: childRunId };
 			boundary.linkChildRun(childRef, childController);
 
@@ -127,6 +134,15 @@ export function createChildWorkflowRunner(input: {
 			const childRun = await childRunPromise;
 			runtime.exit.throwIfWorkflowExitSelected();
 
+			// A gracefully quit child is a suspension, not a child failure: carry the
+			// quit up so the parent also suspends without a terminal boundary record.
+			if (
+				childRun.status === "paused" &&
+				childRun.exitReason === WORKFLOW_GRACEFUL_QUIT_EXIT_REASON &&
+				childRunId !== undefined
+			) {
+				throw new WorkflowGracefulQuitError(childRunId, `child workflow "${childName}" (${child.name})`);
+			}
 			if (!isWorkflowExitStatus(childRun.status)) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				throw new Error(
@@ -169,6 +185,9 @@ export function createChildWorkflowRunner(input: {
 			await durableInvocation?.recordTerminal("completed", childResult);
 			return childResult;
 		} catch (err) {
+			// Suspension leaves the boundary untouched: quit owns the paused record and
+			// a later resume replays this boundary instead of a failed child.
+			if (findWorkflowGracefulQuit(err) !== undefined) throw err;
 			const exit =
 				findWorkflowExitSignal(err, runtime.exit.exitScope) ??
 				findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
@@ -182,7 +201,10 @@ export function createChildWorkflowRunner(input: {
 			throw err;
 		} finally {
 			detachParentAbort?.();
-			if (childRunId !== undefined) runtime.childRunOptions.cancellation?.unregister(childRunId);
+			// Identity-conditional: a stale child finalizer must not evict a newer
+			// registration that reused this child run id.
+			if (childRunId !== undefined && childControllerForCleanup !== undefined)
+				runtime.childRunOptions.cancellation?.unregister(childRunId, childControllerForCleanup);
 		}
 	};
 }
