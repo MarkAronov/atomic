@@ -3,10 +3,12 @@ import { parseArgs, printHelp } from "./cli/args.ts";
 import {
 	type CredentialPrintCommand,
 	CredentialPrintError,
+	emitCredential,
 	isCredentialPrintHelp,
 	parseCredentialPrintCommand,
 	printCredentialPrintHelp,
 	resolveCredentialForPrint,
+	toCredentialPrintError,
 	validateCredentialPrintArgs,
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -34,7 +36,7 @@ import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
@@ -100,9 +102,10 @@ export type { MainOptions } from "./main-types.ts";
  * Stdout discipline is enforced here rather than trusted: `takeOverStdout()`
  * routes every ordinary write — including native `console.log` under Bun, which
  * bypasses a patched `process.stdout.write` — to stderr for the whole
- * resolution, and the secret is the only thing ever handed to the real stdout,
- * through `writeRawStdout`. A failing run therefore cannot leave a partial line
- * or a warning on the stream a caller is capturing.
+ * resolution. This function never touches the real stdout itself: the credential
+ * reaches it only through `emitCredential`, the single egress in `src`, so a
+ * failing run cannot leave a partial line or a warning on the stream a caller is
+ * capturing.
  */
 async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 	if (isCredentialPrintHelp(args)) {
@@ -139,18 +142,14 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 			validateCredentialPrintArgs(parsed);
 			const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
 			const secret = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
-			// take() is the single read, and the template below interpolates the
-			// plain string it returns — never the Secret itself.
-			writeRawStdout(`${secret.take()}\n`);
-			await flushRawStdout();
+			// The Secret arrives unreadable here; emitCredential owns the only take().
+			await emitCredential(secret);
 		} catch (error) {
-			const failure =
-				error instanceof CredentialPrintError
-					? error
-					: new CredentialPrintError(
-							"NoCredentialConfigured",
-							error instanceof Error ? error.message : "Failed to resolve credential",
-						);
+			// Every code toCredentialPrintError can produce belongs to a failure
+			// that emitted nothing, so the exit code set here never contradicts
+			// an empty stdout; a genuinely unclassified error is reported as a
+			// credential-resolution failure.
+			const failure = toCredentialPrintError(error);
 			console.error(chalk.red(`Error: ${failure.message}`));
 			process.exitCode = failure.exitCode;
 		}

@@ -9,7 +9,9 @@
  * - `--model` is required, so no ambient "current model" can emit a credential
  *   the caller did not name;
  * - there is no `--output <file>` and no clipboard path — stdout only;
- * - every failure is a distinct exit code, and stdout stays empty on all of them;
+ * - every failure is a distinct exit code, and stdout stays empty on all of
+ *   them but one — `CredentialTruncated` (exit 9) exists to report the case
+ *   where it cannot be, because bytes already left and cannot be recalled;
  * - a failed OAuth refresh never mutates the stored credential.
  *
  * One residual, and it is upstream: when a model infers several eligible
@@ -25,6 +27,7 @@ import { ModelsError } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
+import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
 import type { Args } from "./args.ts";
 
 export type CredentialPrintKind = "api_key" | "bearer_token";
@@ -42,16 +45,37 @@ export type CredentialPrintErrorCode =
 	| "ProviderAmbiguous"
 	| "KindUnsupportedForProvider"
 	| "RefreshFailed"
-	| "MinValidityUnreachable";
+	| "MinValidityUnreachable"
+	| "OAuthUnavailable"
+	| "CredentialNotEmitted"
+	| "CredentialTruncated";
 
-const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
+/**
+ * Exported so a test can walk the whole taxonomy: every declared code has to
+ * name an exercised path, and the record type makes a new member without an
+ * exit code a compile error rather than a review miss.
+ *
+ * Every one of these leaves stdout empty except `CredentialTruncated`, which
+ * exists to report the one case where it cannot be: bytes already went out and
+ * cannot be recalled. `STDOUT_EMPTY_ON_EXIT` names that split so the taxonomy
+ * test asserts it rather than assuming it.
+ */
+export const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
 	Usage: 1,
 	NoCredentialConfigured: 2,
 	ProviderAmbiguous: 3,
 	KindUnsupportedForProvider: 4,
 	RefreshFailed: 5,
 	MinValidityUnreachable: 6,
+	OAuthUnavailable: 7,
+	CredentialNotEmitted: 8,
+	CredentialTruncated: 9,
 };
+
+/** The codes whose contract is an empty stdout. See `EXIT_CODES`. */
+export const STDOUT_EMPTY_ON_EXIT: ReadonlySet<CredentialPrintErrorCode> = new Set(
+	(Object.keys(EXIT_CODES) as CredentialPrintErrorCode[]).filter((code) => code !== "CredentialTruncated"),
+);
 
 export class CredentialPrintError extends Error {
 	readonly code: CredentialPrintErrorCode;
@@ -110,6 +134,93 @@ export class Secret {
 	}
 }
 
+/**
+ * The single credential egress in `src`.
+ *
+ * `Secret.take()` is called here and nowhere else in the source tree, so this
+ * is the one statement that can turn a configured credential back into a string
+ * and the one that hands it to the real stdout. A caller — `main.ts` included —
+ * receives a `Secret` it cannot read, print, or serialize, so a second export
+ * path cannot be grafted on without moving this function.
+ *
+ * A failed payload write is answered from the stream rather than from the shape
+ * of the error, because `bytesWritten` says how much of the credential actually
+ * left and the right report differs for each amount.
+ *
+ * Nothing left — the write call threw, or the callback failed with the counter
+ * unmoved — is `CredentialNotEmitted` (exit 8) with stdout provably empty,
+ * which is what that exit promises. It must not fall through to the caller's
+ * credential-resolution catch, which would report exit 2.
+ *
+ * All of it left and the failure came after: the caller holds the credential it
+ * asked for, so this is reported on stderr with the exit code left at 0, for
+ * the same reason the trailing drain is. A non-zero exit over a stream carrying
+ * a whole credential is the thing this door never produces.
+ *
+ * Part of it left is neither. Those bytes cannot be recalled, so stdout is not
+ * empty and cannot be made empty; but they are a fragment, not a credential,
+ * and reporting success over them would hand a caller a truncated secret it
+ * cannot tell from a whole one. That case gets `CredentialTruncated` (exit 9),
+ * the one code in this taxonomy whose contract is *not* an empty stdout —
+ * stated as such in `EXIT_CODES` and asserted through `STDOUT_EMPTY_ON_EXIT`,
+ * rather than left for a caller to discover.
+ *
+ * `test/credential-print.test.ts` asserts that chokepoint against the whole of
+ * `packages/coding-agent/src`.
+ */
+export async function emitCredential(secret: Secret): Promise<void> {
+	// take() returns a plain string; the Secret itself is never interpolated.
+	const payload = `${secret.take()}\n`;
+	try {
+		await writeRawStdoutOnce(payload);
+	} catch (error) {
+		if (error instanceof RawStdoutWriteError && error.emitted === "all") {
+			// The caller holds the whole credential. Exiting non-zero here would be
+			// a non-zero exit over a stream carrying it, which this door never does.
+			console.error(
+				`Warning: the credential reached stdout but the write did not complete cleanly: ${error.message}`,
+			);
+			return;
+		}
+		if (error instanceof RawStdoutWriteError && error.emitted === "partial") {
+			throw new CredentialPrintError(
+				"CredentialTruncated",
+				"Only part of the credential reached stdout; discard the output, it is not a usable credential",
+				{ cause: error },
+			);
+		}
+		throw new CredentialPrintError(
+			"CredentialNotEmitted",
+			"Failed to write the credential to stdout; nothing was emitted",
+			{ cause: error },
+		);
+	}
+	try {
+		await flushRawStdout();
+	} catch (error) {
+		console.error(
+			`Warning: the credential was written to stdout but the stream did not drain cleanly: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+/**
+ * The single place a thrown value becomes an exit code for this door.
+ *
+ * `main.ts` routes every failure through here. Every code it can produce leaves
+ * stdout empty, so an exit code from this door never contradicts the stream.
+ */
+export function toCredentialPrintError(error: unknown): CredentialPrintError {
+	if (error instanceof CredentialPrintError) return error;
+	return new CredentialPrintError(
+		"NoCredentialConfigured",
+		error instanceof Error ? error.message : "Failed to resolve credential",
+		{ cause: error },
+	);
+}
+
 export interface CredentialPrintCommand {
 	kind: CredentialPrintKind;
 	/** Remaining argv for the normal parser (`--model`, `--provider`). */
@@ -132,7 +243,7 @@ export function printCredentialPrintHelp(): void {
 
 Prints one configured credential alone on stdout. Everything else — warnings,
 provider selection, refresh notices — goes to stderr, and stdout stays empty on
-any failure.
+every failure but exit 9, which reports that it could not be.
 
 --model is required: there is no ambient "current model". Provider inference
 uses configured credentials; pass --provider to select one explicitly.
@@ -148,7 +259,11 @@ Exit codes:
   3  provider ambiguous
   4  credential kind unsupported for that provider
   5  refresh failed (the stored credential is left untouched)
-  6  provider cannot mint a token that lives long enough`);
+  6  provider cannot mint a token that lives long enough
+  7  the provider's OAuth credential could not be used
+  8  the credential could not be written (nothing was emitted)
+  9  the credential was written only in part; stdout holds an unusable
+     fragment, which the caller must discard rather than use`);
 }
 
 function parseDuration(value: string | undefined): number {
@@ -174,22 +289,54 @@ export function parseCredentialPrintCommand(args: string[]): CredentialPrintComm
 		);
 	}
 
+	const INLINE_MIN_EXPIRY = "--min-expiry=";
 	const commandArgs: string[] = [];
 	let minExpiryMs: number | undefined;
 	for (let index = 2; index < args.length; index++) {
-		if (args[index] !== "--min-expiry") {
-			commandArgs.push(args[index]);
+		const arg = args[index];
+		const inline = arg.startsWith(INLINE_MIN_EXPIRY) ? arg.slice(INLINE_MIN_EXPIRY.length) : undefined;
+		if (arg !== "--min-expiry" && inline === undefined) {
+			commandArgs.push(arg);
 			continue;
 		}
 		// An API key has no expiry, so the option is an error rather than a
 		// silently ignored no-op that would imply a guarantee it cannot give.
+		// Both spellings are refused: `--min-expiry=30m` reaching the ordinary
+		// parser as an unknown flag would report the wrong cause.
 		if (kind !== "bearer_token") {
 			throw new CredentialPrintError("Usage", "--min-expiry is only supported by print-bearer-token");
 		}
-		minExpiryMs = parseDuration(args[++index]);
+		minExpiryMs = parseDuration(inline ?? args[++index]);
 	}
 
 	return minExpiryMs === undefined ? { kind, args: commandArgs } : { kind, args: commandArgs, minExpiryMs };
+}
+
+/**
+ * The only two fields of `Args` this door accepts.
+ *
+ * Validation is an allowlist rather than a list of refusals, because the
+ * refusal list only held while the dispatcher happened to ignore every other
+ * flag. `--export <path>`, `--session-dir <path>`, `--print`, and `--help` are
+ * all parsed by `parseArgs`; under an exclusion check they passed silently and
+ * the door's "no file sink" guarantee rested on a downstream accident.
+ */
+const ACCEPTED_ARG_FIELDS: ReadonlySet<string> = new Set(["model", "provider"]);
+
+/** Names every field of a parsed `Args` that the caller actually set. */
+function populatedArgFields(args: Args): string[] {
+	const populated: string[] = [];
+	for (const [field, value] of Object.entries(args)) {
+		if (ACCEPTED_ARG_FIELDS.has(field) || value === undefined) continue;
+		if (Array.isArray(value)) {
+			if (value.length > 0) populated.push(field);
+		} else if (value instanceof Map) {
+			if (value.size > 0) populated.push(field);
+		} else {
+			populated.push(field);
+		}
+	}
+	return populated;
 }
 
 export function validateCredentialPrintArgs(args: Args): void {
@@ -202,8 +349,12 @@ export function validateCredentialPrintArgs(args: Args): void {
 			"Credential printing reads configured credentials; --api-key is not supported",
 		);
 	}
-	if (args.messages.length > 0 || args.fileArgs.length > 0 || args.unknownFlags.size > 0) {
-		throw new CredentialPrintError("Usage", "Credential printing only accepts --provider and --model");
+	const refused = populatedArgFields(args);
+	if (refused.length > 0) {
+		throw new CredentialPrintError(
+			"Usage",
+			`Credential printing only accepts --provider and --model (refused: ${refused.join(", ")})`,
+		);
 	}
 }
 
@@ -273,25 +424,53 @@ export function redactCredentialShapes(text: string): string {
 }
 
 /**
- * pi-ai reports both refresh outcomes as `ModelsError` with code `oauth`. The
- * post-refresh validity failure is the only one that carries this phrase, and it
- * is the only signal available to separate exit 6 from exit 5.
- *
- * The provider's own words are redacted before they become a message a caller
- * prints; the unredacted error stays reachable as `cause`, which this door never
- * logs.
+ * The literal phrase pi-ai throws when a refresh itself failed, from inside
+ * `credentials.modify` and therefore before anything is persisted. This is the
+ * only oauth-coded error that can claim the stored credential was left alone.
  */
-function classifyOAuthFailure(error: ModelsError): CredentialPrintError {
+export const OAUTH_REFRESH_FAILED_PHRASE = "OAuth refresh failed for";
+
+/**
+ * The literal phrase pi-ai throws when a refresh succeeded but the rotated
+ * token still expires inside the requested window. It is the only signal that
+ * separates exit 6 from exit 5.
+ */
+export const OAUTH_EXPIRES_TOO_SOON_PHRASE = "expires too soon";
+
+/**
+ * pi-ai raises three different `oauth`-coded failures from
+ * `dist/auth/resolve.js`, and only one of them is a failed refresh.
+ *
+ * `OAuth auth derivation failed for <provider>` is thrown after
+ * `credentials.modify` has already persisted a rotated credential, and also on
+ * the branch where no refresh was attempted at all — so it gets its own code
+ * and a message that makes no claim about the stored credential. Treating it as
+ * `RefreshFailed` asserted a rollback the command never verified.
+ *
+ * Classification reads the raw message, because redaction could rewrite the
+ * phrase it matches on; only the text that becomes a user-facing message is
+ * redacted. The unredacted error stays reachable as `cause`, which this door
+ * never logs.
+ *
+ * `test/credential-print.test.ts` pins both phrases against the installed
+ * pi-ai build, so an upstream rewording fails the suite rather than silently
+ * collapsing exit 6 into exit 5.
+ */
+export function classifyOAuthFailure(error: ModelsError): CredentialPrintError {
 	const detail = redactCredentialShapes(error.message);
-	return /expires too soon/iu.test(error.message)
-		? new CredentialPrintError(
-				"MinValidityUnreachable",
-				`The provider refreshed the token but it still expires sooner than requested: ${detail}`,
-				{ cause: error },
-			)
-		: new CredentialPrintError("RefreshFailed", `${detail} (the stored credential was left untouched)`, {
-				cause: error,
-			});
+	if (error.message.includes(OAUTH_EXPIRES_TOO_SOON_PHRASE)) {
+		return new CredentialPrintError(
+			"MinValidityUnreachable",
+			`The provider refreshed the token but it still expires sooner than requested: ${detail}`,
+			{ cause: error },
+		);
+	}
+	if (error.message.startsWith(OAUTH_REFRESH_FAILED_PHRASE)) {
+		return new CredentialPrintError("RefreshFailed", `${detail} (the stored credential was left untouched)`, {
+			cause: error,
+		});
+	}
+	return new CredentialPrintError("OAuthUnavailable", detail, { cause: error });
 }
 
 /**
