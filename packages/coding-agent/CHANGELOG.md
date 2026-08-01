@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.10] - 2026-08-01
+
 ### Fixed
 
 - Fixed an isolated interactive-engine exit after an admitted tool call leaving that session permanently pending and unusable on resume. Reopening an inactive session now derives explicit error results for unanswered `toolUse` calls without rewriting its append-only JSONL, so the transcript can render, compact, and accept another prompt while preserving that the interrupted command's side effects are unknown. Unexpected-restart notices now also retain the bounded exit kind, code, or signal that triggered recovery while excluding child stderr.
