@@ -130,6 +130,14 @@ if (bindingPackageVersion !== '0.1.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHE
 			},
 			"packages/beta": { name: "@fixture/beta", version: "0.1.0" },
 			"packages/natives": { name: "@bastani/atomic-natives", version: "0.1.0" },
+			// A nested third-party install under a workspace path -- the production
+			// shape (@napi-rs/cli under packages/natives/node_modules) that a bare
+			// `packages/` prefix check mistakes for a workspace entry.
+			"packages/natives/node_modules/nested-tool": {
+				version: "3.8.1",
+				resolved: "https://registry.npmjs.org/nested-tool/-/nested-tool-3.8.1.tgz",
+				dependencies: { "third-party": "9.9.9" },
+			},
 		},
 	});
 
@@ -197,6 +205,14 @@ describe("scripts/bump-version.ts", () => {
 			// rewriting either would invalidate the lock rather than stamp it.
 			assert.equal(lock.packages["packages/alpha"]?.dependencies?.["third-party"], "9.9.9");
 			assert.equal(lock.packages["node_modules/third-party"]?.version, "9.9.9");
+			// A nested node_modules entry under a workspace path is third-party,
+			// not a workspace entry: stamping it desynchronizes the lock and makes
+			// `npm ci` refuse the tagged release commit.
+			assert.equal(lock.packages["packages/natives/node_modules/nested-tool"]?.version, "3.8.1");
+			assert.equal(
+				lock.packages["packages/natives/node_modules/nested-tool"]?.dependencies?.["third-party"],
+				"9.9.9",
+			);
 			assert.equal(lock.packages["node_modules/@fixture/alpha"]?.link, true);
 			assert.equal(lock.packages["node_modules/@fixture/alpha"]?.version, undefined);
 			assert.match(result.stdout, /package-lock\.json: 3 workspace entries → 1\.2\.3-alpha\.1/u);
