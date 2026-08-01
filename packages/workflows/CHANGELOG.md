@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11-alpha.9] - 2026-08-01
+
 ### Added
 
 - Added per-node cancellation to `ctx.tool`. Every callback now receives a `WorkflowToolContext` (`{ signal }`) derived from a per-invocation `AbortController` combined with the run signal, so a run abort still cascades to every node while one node can be aborted alone. All retries of a call share that one signal, and existing zero-argument callbacks keep compiling and running unchanged. `WorkflowToolContext` is exported from the authoring surface ([#2078](https://github.com/bastani-inc/atomic/issues/2078)).
