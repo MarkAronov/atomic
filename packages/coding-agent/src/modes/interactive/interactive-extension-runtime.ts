@@ -1,3 +1,4 @@
+import { copyScopedModels } from "../../core/extensions/runner-context.ts";
 import { ModelRegistry } from "../../core/model-registry.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -35,6 +36,10 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 		sessionManager: this.sessionManager,
 		modelRegistry: new ModelRegistry(this.session.modelRuntime),
 		model: this.session.model,
+		// Copied through the same helper `createExtensionContext` uses: this
+		// hand-built context reaches the same shortcut handlers, so it owes them
+		// the same guarantee, entries included.
+		scopedModels: copyScopedModels(this.session.scopedModels),
 		isIdle: () => !this.session.isStreaming,
 		isProjectTrusted: () => this.session.settingsManager.isProjectTrusted(),
 		signal: this.session.agent.signal,
