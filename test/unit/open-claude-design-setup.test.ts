@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
 	buildLivePreviewDisplayPrompt,
+	buildLiveReviewGateMessage,
 	buildReferenceDiscoveryPrompt,
+	isUiUnavailableRejection,
+	LIVE_REVIEW_GATE_OPTIONS,
 	persistReferencesBrief,
 	REFERENCE_DESIGN_SITES,
 	runDiscoveryAndInit,
@@ -140,6 +143,8 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /`annotated_snapshot`/);
 			assert.match(prompt, /`live_changes`/);
 			assert.match(prompt, /the just-generated HTML artifact/);
+			assert.match(prompt, /BEFORE starting any long-poll wait/);
+			assert.match(prompt, /print the exact review URL/i);
 			assert.ok(prompt.includes("/tmp/run/preview.html"));
 		});
 
@@ -167,6 +172,46 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /FINAL refinement pass/);
 			assert.match(prompt, /re-run/i);
 			assert.match(prompt, /do NOT (solicit|collect)/i);
+		});
+
+		test("live-review gate message names the preview, round, and connect affordance", () => {
+			const message = buildLiveReviewGateMessage({
+				iteration: 2,
+				maxRefinements: 3,
+				previewPath: "/tmp/run/preview.html",
+				previewFileUrl: "file:///tmp/run/preview.html",
+			});
+			assert.match(message, /review round 2 of 3/i);
+			assert.ok(message.includes("/tmp/run/preview.html"));
+			assert.ok(message.includes("file:///tmp/run/preview.html"));
+			assert.ok(message.includes("/workflow connect"));
+			for (const option of LIVE_REVIEW_GATE_OPTIONS) {
+				assert.ok(message.includes(option), option);
+			}
+			assert.deepEqual(
+				[...LIVE_REVIEW_GATE_OPTIONS],
+				["Start live review", "Skip remaining review rounds and export as-is"],
+			);
+		});
+
+		test("isUiUnavailableRejection accepts only the executor's unavailable-UI rejections", () => {
+			const unavailableMessages = [
+				"atomic-workflows: HIL ctx.ui.select is unavailable because Atomic runtime did not provide a UI adapter",
+				"atomic-workflows: interactive ctx.ui.select is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage",
+				"atomic-workflows: ctx.ui.custom prompt node is unavailable",
+			];
+			for (const message of unavailableMessages) {
+				assert.equal(isUiUnavailableRejection(new Error(message)), true, message);
+			}
+			const lifecycleFailures = [
+				new Error("durable checkpoint persistence failed"),
+				new Error("workflow interrupted"),
+				new Error("run aborted"),
+				"ctx.ui.select is unavailable", // not an Error instance
+			];
+			for (const failure of lifecycleFailures) {
+				assert.equal(isUiUnavailableRejection(failure), false, String(failure));
+			}
 		});
 	});
 

@@ -13,7 +13,13 @@ import {
   userAnnotationsBlock,
   type PreviewFeedback,
 } from "./open-claude-design-feedback.js";
-import { buildLivePreviewDisplayPrompt } from "./open-claude-design-setup.js";
+import {
+  LIVE_REVIEW_GATE_OPTIONS,
+  buildLiveReviewGateMessage,
+  buildLivePreviewDisplayPrompt,
+  isUiUnavailableRejection,
+  type LiveReviewGateUi,
+} from "./open-claude-design-setup.js";
 
 const GROUNDED_REPORTING =
   "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.";
@@ -53,6 +59,7 @@ type RefineOptions = {
   readonly workflowCwd: string;
   readonly referencesBrief?: string;
   readonly importContext?: string;
+  readonly ui: LiveReviewGateUi;
 };
 
 export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ readonly latestDesign: string; readonly approvedForExport: boolean; readonly refinementCount: number; }> {
@@ -102,6 +109,27 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     latestDesign = generated.text;
     latestGenerateSessionFile = generated.sessionFile ?? latestGenerateSessionFile;
     refinementCount = iteration;
+
+    // Deterministic live-review gate (issue #2060): the user-feedback stage
+    // waits on a browser long-poll that never sets `awaiting_input`, so raise
+    // a run-level `ctx.ui` prompt first. It fires the needs-attention badge,
+    // names the preview URL, and syncs the review to the user's presence.
+    // Only the executor's unavailable-UI rejection (headless / no adapter)
+    // degrades to running the review; lifecycle failures such as interruption
+    // or a failed durable checkpoint must propagate and stop the workflow.
+    const gateChoice = await options.ui
+      .select(
+        buildLiveReviewGateMessage({ iteration, maxRefinements, previewPath, previewFileUrl }),
+        LIVE_REVIEW_GATE_OPTIONS,
+      )
+      .catch((error: unknown) => {
+        if (isUiUnavailableRejection(error)) return LIVE_REVIEW_GATE_OPTIONS[0];
+        throw error;
+      });
+    if (gateChoice === LIVE_REVIEW_GATE_OPTIONS[1]) {
+      approvedForExport = true;
+      break;
+    }
 
     const userFeedbackResult = await designContext
       .task(`user-feedback-${iteration}`, {
