@@ -137,22 +137,28 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       break;
     }
 
-    const userFeedbackResult = await designContext
-      .task(`user-feedback-${iteration}`, {
-        prompt: buildLivePreviewDisplayPrompt({
-          previewPath,
-          previewFileUrl,
-          browserBootstrapRules,
-          iteration,
-          maxRefinements,
-        }),
-        ...designModelConfig,
-        ...forkContinuationOptions(latestUserFeedbackSessionFile),
-      })
-      .catch(() => undefined);
+    // A rejected feedback stage propagates and fails the run (issue #2123;
+    // the #1499 catch-then-approve path). Browser/tooling trouble never
+    // rejects: playwright-cli is auto-installed up front, the runner exits
+    // early when the browser is unavailable, and the stage prompt requires a
+    // degraded non-empty report instead of failing. What rejects here is
+    // model/infra failure — provider errors, fallback exhaustion, broken
+    // session forks — and that must never be laundered into approval. Only a
+    // resolved result with no meaningful notes means the user approved.
+    const userFeedbackResult = await designContext.task(`user-feedback-${iteration}`, {
+      prompt: buildLivePreviewDisplayPrompt({
+        previewPath,
+        previewFileUrl,
+        browserBootstrapRules,
+        iteration,
+        maxRefinements,
+      }),
+      ...designModelConfig,
+      ...forkContinuationOptions(latestUserFeedbackSessionFile),
+    });
 
     latestUserFeedbackSessionFile =
-      userFeedbackResult?.sessionFile ?? latestUserFeedbackSessionFile;
+      userFeedbackResult.sessionFile ?? latestUserFeedbackSessionFile;
     const feedback = toPreviewFeedback({
       iteration,
       stageName: `user-feedback-${iteration}`,
@@ -291,20 +297,26 @@ type ExportOptions = {
   readonly browserBootstrapRules: string;
   /** Path to the persisted design-context.md artifact (issue #2121). */
   readonly designContextFile: string;
+  /** Path to the persisted references.md artifact (issue #2121). */
+  readonly referencesFile: string;
   readonly latestDesign: string;
   readonly designModelConfig: ModelConfig;
 };
 
 export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ readonly latestDesign: string; readonly handoff: WorkflowTaskResult; }> {
-  const { designContext, prompt, outputType, previewPath, previewFileUrl, specPath, specFileUrl, browserBootstrapRules, designContextFile, designModelConfig } = options;
+  const { designContext, prompt, outputType, previewPath, previewFileUrl, specPath, specFileUrl, browserBootstrapRules, designContextFile, referencesFile, designModelConfig } = options;
   const latestDesign = options.latestDesign;
 
   const handoff = await designContext.task("exporter", {
-    reads: [designContextFile],
+    reads: [designContextFile, referencesFile],
     prompt: taggedPrompt([
       [
         "design_context_file",
         `Read the file at ${designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* design-system evidence to document.`,
+      ],
+      [
+        "reference_inspiration_file",
+        `Read the file at ${referencesFile} for the curated reference research that informed the approved design; use it wherever the spec cites visual direction or reference provenance.`,
       ],
       ["preview_artifact_path", previewPath],
       ["spec_artifact_path", specPath],
