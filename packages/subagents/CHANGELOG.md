@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.9] - 2026-08-01
+
 ### Fixed
 
 - Fixed startup artifact cleanup escaping isolated agent directories. When the host provides a non-default session directory (for example an isolated programmatic `agentDir` used by tests and embedders), the global artifact scan now stays inside that sessions root; the real global and legacy `~/.pi` sessions roots are only scanned when no host-provided root is available ([#2070](https://github.com/bastani-inc/atomic/issues/2070)).

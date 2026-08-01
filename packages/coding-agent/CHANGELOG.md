@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.9] - 2026-08-01
+
 ### Breaking Changes
 
 - Adopted pi 0.83.0 (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` at `^0.83.0`), which moves the bundled TypeBox to 1.3.7. TypeBox 1.3.7 **removes seven deprecated APIs**. Atomic inherits the removal exactly as upstream shipped it and does not provide a compatibility shim, so an extension, skill, workflow, or MCP schema that still calls one of these will now fail to compile and to run. Atomic's own sources use none of them; the migration below is for package authors. TypeBox 1.3.7 also fixes compiled validation of nullable array tool arguments, and — because `typebox` is pinned to a single hoisted `1.3.7` node — an Atomic-defined tool schema and a pi-defined one now validate identically in the same process.
