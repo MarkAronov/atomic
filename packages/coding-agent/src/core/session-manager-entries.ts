@@ -17,6 +17,7 @@ import {
 	type SessionHeader,
 	type SessionInfoEntry,
 	type SessionMessageEntry,
+	type SessionSummaryEntry,
 	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
 } from "./session-manager-types.ts";
@@ -143,6 +144,53 @@ export function createSessionInfoEntry(
 		...entryBase(byId, parentId),
 		name: name.trim(),
 	};
+}
+
+export function createSessionSummaryEntry(
+	summary: string,
+	summarizedThroughId: string,
+	usage: Usage | undefined,
+	byId: { has(id: string): boolean },
+	parentId: string | null,
+): SessionSummaryEntry {
+	return {
+		type: "session_summary",
+		...entryBase(byId, parentId),
+		summary: summary.trim(),
+		summarizedThroughId,
+		usage,
+	};
+}
+
+/**
+ * Anchor for a session summary: the newest user/assistant message entry.
+ *
+ * Both sides of the freshness check call this so they cannot drift apart. Tool results and
+ * non-message entries are ignored, and an assistant turn made only of tool calls still counts —
+ * it carries no text, but it is a real conversation step.
+ */
+export function getLastConversationMessageId(entries: FileEntry[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type !== "message") continue;
+		const role = entry.message.role;
+		if (role === "user" || role === "assistant") return entry.id;
+	}
+	return undefined;
+}
+
+/**
+ * Latest generated resume summary, entry and all.
+ *
+ * Returns the entry rather than its text: callers need `summarizedThroughId` alongside the
+ * summary to decide whether it still describes the conversation.
+ */
+export function getLatestSessionSummary(entries: SessionEntry[]): SessionSummaryEntry | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "session_summary") return entry;
+	}
+	return undefined;
 }
 
 export function getLatestSessionName(entries: SessionEntry[]): string | undefined {
