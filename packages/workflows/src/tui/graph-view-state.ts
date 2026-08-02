@@ -5,14 +5,15 @@ import {
 	type ExpandedWorkflowStageTarget,
 	expandedStageTarget,
 	expandWorkflowGraph,
+	refreshExpandedWorkflowGraph,
+	sameExpandedWorkflowTopology,
 } from "../shared/expanded-workflow-graph.js";
 import type { Store } from "../shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
-import type { LayoutNode } from "./layout.js";
-import { computeLayout } from "./layout.js";
+import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { createPromptCardState, type PromptCardState } from "./prompt-card.js";
 import type { SwitcherState } from "./switcher.js";
 import { createToastManager } from "./toast.js";
@@ -39,6 +40,30 @@ interface GraphNodeHitRect {
 interface GraphViewportGeometry {
 	leftMargin: number;
 	viewportWidth: number;
+}
+
+interface GraphLayoutBand {
+	top: number;
+	bottom: number;
+	nodeIndices: number[];
+}
+
+interface GraphRenderEdge {
+	parentX: number;
+	parentY: number;
+	childX: number;
+	childY: number;
+	top: number;
+	bottom: number;
+	left: number;
+	right: number;
+}
+
+interface GraphRenderGeometry {
+	canvasWidth: number;
+	totalRows: number;
+	bands: GraphLayoutBand[];
+	edges: GraphRenderEdge[];
 }
 
 /** Expansion, focus, prompt, and store-backed layout state for GraphView. */
@@ -69,6 +94,8 @@ export abstract class GraphViewState {
 	protected toastManager = createToastManager();
 	protected detailsExpanded = true;
 	protected cachedLayout: LayoutNode[] = [];
+	/** Stages mirrored from `cachedLayout` — shared across card renders. */
+	protected cachedDisplayStages: StageSnapshot[] = [];
 	protected expandedGraph: ExpandedWorkflowGraph = {
 		stages: [],
 		renderStages: [],
@@ -81,9 +108,14 @@ export abstract class GraphViewState {
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
 	protected lastGraphViewport: GraphViewportGeometry | null = null;
+	protected lastGraphTotalRows = 0;
 	protected lastOverlayFrameWidth = 80;
 	protected pendingEnsureFocusedVisible = true;
 	protected lastAutoFocusedAwaitingInputKey: string | null = null;
+	protected lastBuiltSnapshotVersion: number | null = null;
+	protected topologySnapshot: StoreSnapshot | null = null;
+	protected hasAnimatingStages = false;
+	protected cachedRenderGeometry: GraphRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [] };
 
 	protected _intervalId: ReturnType<typeof setInterval> | null = null;
 	protected _lastGTime: number | null = null;
@@ -125,18 +157,35 @@ export abstract class GraphViewState {
 		// gate in place the previous tmux scrollback "ghost overlay"
 		// failure mode does not apply: pi-tui owns the screen buffer
 		// and diff-blits frames in place.
+		//
+		// Skip ticks when nothing is animating (#2100): a large completed
+		// or pending-only graph must not burn ~10 full paints/sec.
 		if (this.mode === "overlay" && this.requestRender) {
 			this._intervalId = setInterval(() => {
+				if (!this._needsAnimationTick()) return;
 				this.requestRender?.();
 			}, ANIMATION_TICK_MS);
 			(this._intervalId as { unref?: () => void }).unref?.();
 		}
 	}
 
+	protected _needsAnimationTick(): boolean {
+		return this.promptState !== null || this.toastManager.hasActive() || this.hasAnimatingStages;
+	}
+
 	protected _rebuildLayout(): void {
+		const version = this.currentSnapshot?.version ?? null;
+		// Overlay adapter calls `invalidate()` after GraphView's own store
+		// subscriber already rebuilt for this snapshot — skip the duplicate.
+		if (version !== null && version === this.lastBuiltSnapshotVersion) {
+			return;
+		}
+
 		const run = this._getCurrentRun();
 		if (!run) {
 			this.cachedLayout = [];
+			this.cachedDisplayStages = [];
+			this.cachedRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [] };
 			this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
 			this.focusedIndex = 0;
 			this.graphScrollOffset = 0;
@@ -145,16 +194,109 @@ export abstract class GraphViewState {
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
 			this.promptState = null;
+			this.topologySnapshot = this.currentSnapshot;
+			this.hasAnimatingStages = false;
+			this.lastBuiltSnapshotVersion = version;
 			return;
 		}
 
 		const previousFocusedStageId = this.cachedLayout[this.focusedIndex]?.stage.id;
 		const graphStages = this._graphStages(run);
+		const sameTopology =
+			this.cachedLayout.length === graphStages.length &&
+			this.cachedLayout.length > 0 &&
+			this.cachedLayout.every((node, index) => {
+				const next = graphStages[index];
+				if (!next || node.stage.id !== next.id || node.stage.nodeKind !== next.nodeKind) return false;
+				if (node.stage.parentIds.length !== next.parentIds.length) return false;
+				return node.stage.parentIds.every((parentId, parentIndex) => parentId === next.parentIds[parentIndex]);
+			});
+
+		if (sameTopology) {
+			for (let index = 0; index < this.cachedLayout.length; index++) {
+				this.cachedLayout[index]!.stage = graphStages[index]!;
+			}
+			this.cachedDisplayStages = [...graphStages];
+			this.hasAnimatingStages = graphStages.some(
+				(stage) => stage.status === "running" || stage.status === "awaiting_input",
+			);
+			this._finalizeFocusAndPrompt(run, previousFocusedStageId, true);
+			this.lastBuiltSnapshotVersion = version;
+			return;
+		}
+
 		const nextLayout = computeLayout(graphStages, { orientation: "vertical" });
 		this.cachedLayout = nextLayout;
+		this.cachedDisplayStages = nextLayout.map((node) => node.stage);
+		this.cachedRenderGeometry = this._buildRenderGeometry(nextLayout);
+		this.hasAnimatingStages = graphStages.some(
+			(stage) => stage.status === "running" || stage.status === "awaiting_input",
+		);
 		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;
+		this._finalizeFocusAndPrompt(run, previousFocusedStageId, false);
+		this.lastBuiltSnapshotVersion = version;
+	}
 
+	private _buildRenderGeometry(layout: readonly LayoutNode[]): GraphRenderGeometry {
+		let canvasWidth = 0;
+		let totalRows = 0;
+		const nodeByStageId = new Map<string, LayoutNode>();
+		const bandsByTop = new Map<number, GraphLayoutBand>();
+		for (let index = 0; index < layout.length; index++) {
+			const node = layout[index]!;
+			canvasWidth = Math.max(canvasWidth, node.x + NODE_W);
+			totalRows = Math.max(totalRows, node.y + NODE_H);
+			nodeByStageId.set(node.stage.id, node);
+			const band = bandsByTop.get(node.y);
+			if (band) band.nodeIndices.push(index);
+			else bandsByTop.set(node.y, { top: node.y, bottom: node.y + NODE_H, nodeIndices: [index] });
+		}
+
+		const edges: GraphRenderEdge[] = [];
+		for (const node of layout) {
+			for (const parentId of node.stage.parentIds) {
+				const parent = nodeByStageId.get(parentId);
+				if (!parent) continue;
+				const parentCol = parent.x + Math.floor(NODE_W / 2);
+				const childCol = node.x + Math.floor(NODE_W / 2);
+				edges.push({
+					parentX: parent.x,
+					parentY: parent.y,
+					childX: node.x,
+					childY: node.y,
+					top: parent.y + NODE_H,
+					bottom: node.y,
+					left: Math.min(parentCol, childCol),
+					right: Math.max(parentCol, childCol) + 1,
+				});
+			}
+		}
+		return {
+			canvasWidth,
+			totalRows,
+			bands: [...bandsByTop.values()].sort((left, right) => left.top - right.top),
+			edges,
+		};
+	}
+
+	protected _firstVisibleLayoutBand(viewportTop: number): number {
+		const bands = this.cachedRenderGeometry.bands;
+		let low = 0;
+		let high = bands.length;
+		while (low < high) {
+			const middle = Math.floor((low + high) / 2);
+			if (bands[middle]!.bottom <= viewportTop) low = middle + 1;
+			else high = middle;
+		}
+		return low;
+	}
+
+	protected _finalizeFocusAndPrompt(
+		run: RunSnapshot,
+		previousFocusedStageId: string | undefined,
+		preserveHitRects: boolean,
+	): void {
 		let focusNeedsReveal = this.pendingEnsureFocusedVisible;
 		// One-shot: if the host passed `initialFocusedStageId`, snap the
 		// cursor to that stage now that the layout exists. The attach shell
@@ -206,6 +348,10 @@ export abstract class GraphViewState {
 			focusNeedsReveal = true;
 		}
 		this.pendingEnsureFocusedVisible = focusNeedsReveal;
+		if (!preserveHitRects && focusNeedsReveal) {
+			this.graphNodeHitRects = [];
+			this.lastGraphViewport = null;
+		}
 		this._syncPromptState(run.pendingPrompt);
 	}
 
@@ -247,9 +393,13 @@ export abstract class GraphViewState {
 	}
 
 	protected _graphStages(run: RunSnapshot): ExpandedWorkflowStage[] {
-		this.expandedGraph = this.currentSnapshot
-			? expandWorkflowGraph(this.currentSnapshot, run.id)
-			: { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
+		const snapshot = this.currentSnapshot;
+		if (!snapshot) return [];
+		const canRefresh =
+			this.topologySnapshot !== null && sameExpandedWorkflowTopology(this.topologySnapshot, snapshot);
+		const refreshed = canRefresh ? refreshExpandedWorkflowGraph(this.expandedGraph, snapshot) : undefined;
+		this.expandedGraph = refreshed ?? expandWorkflowGraph(snapshot, run.id);
+		this.topologySnapshot = snapshot;
 		const stages = [...this.expandedGraph.renderStages];
 		const hasStagePrompt = stages.some(
 			(stage) =>
@@ -258,8 +408,6 @@ export abstract class GraphViewState {
 		);
 		if (!hasStagePrompt) return stages;
 		return stages.filter((stage) => {
-			// Prompt-node injection can leave unstarted author stages in the store
-			// while the prompt node owns focus; hide only these inert placeholders.
 			const isUnstartedPlaceholder =
 				stage.status === "pending" &&
 				stage.startedAt === undefined &&
@@ -324,7 +472,7 @@ export abstract class GraphViewState {
 	}
 
 	protected _displayStages(run: RunSnapshot): StageSnapshot[] {
-		return this.cachedLayout.length > 0 ? this.cachedLayout.map((layoutNode) => layoutNode.stage) : [...run.stages];
+		return this.cachedDisplayStages.length > 0 ? this.cachedDisplayStages : [...run.stages];
 	}
 
 	protected _counts(stages: readonly StageSnapshot[]): GraphStageCounts {

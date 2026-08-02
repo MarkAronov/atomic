@@ -1,15 +1,15 @@
-// @ts-nocheck
-
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const { makeStage, makeSnap, makeStore, defaultTheme, waitForRenderCount } = h;
 
 describe("GraphView animation timer", () => {
-	it("fires requestRender on a steady cadence in overlay mode", async () => {
-		const stages = [makeStage("A")];
+	it("fires requestRender on a steady cadence while stages are animating", async () => {
+		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
@@ -31,8 +31,67 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
-	it("does not start the timer in widget mode", async () => {
+	it("skips animation ticks when no stage needs wall-clock paint", async () => {
 		const stages = [makeStage("A")];
+		const snap = makeSnap(stages);
+		const store = makeStore(snap);
+		const requestRender = vi.fn(() => {});
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			requestRender,
+		});
+		try {
+			await new Promise((r) => setTimeout(r, 250));
+			assert.equal(requestRender.mock.calls.length, 0, "pending-only graphs must not burn animation frames");
+		} finally {
+			view.dispose();
+		}
+	});
+
+	it("stops timer-driven render requests after a real-store running stage completes", () => {
+		vi.useFakeTimers();
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-1",
+			name: "animation transition",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordStageStart("run-1", { ...makeStage("A"), status: "running", startedAt: 1 });
+		const requestRender = vi.fn(() => {});
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			requestRender,
+		});
+		try {
+			vi.advanceTimersByTime(300);
+			assert.equal(requestRender.mock.calls.length, 3);
+			store.recordStageEnd("run-1", {
+				...makeStage("A"),
+				status: "completed",
+				startedAt: 1,
+				endedAt: 2,
+				durationMs: 1,
+			});
+			requestRender.mockClear();
+			vi.advanceTimersByTime(500);
+			assert.equal(requestRender.mock.calls.length, 0);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not start the timer in widget mode", async () => {
+		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
@@ -66,7 +125,7 @@ describe("GraphView animation timer", () => {
 	});
 
 	it("stops firing renders after dispose", async () => {
-		const stages = [makeStage("A")];
+		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});

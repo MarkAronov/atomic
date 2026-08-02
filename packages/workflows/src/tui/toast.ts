@@ -32,6 +32,7 @@ export function createToastManager(): {
 	dismiss(id: string): void;
 	tick(now: number): void;
 	active(): Toast[];
+	hasActive(): boolean;
 } {
 	const toasts: Toast[] = [];
 
@@ -56,6 +57,9 @@ export function createToastManager(): {
 		},
 		active() {
 			return [...toasts];
+		},
+		hasActive() {
+			return toasts.length > 0;
 		},
 	};
 }

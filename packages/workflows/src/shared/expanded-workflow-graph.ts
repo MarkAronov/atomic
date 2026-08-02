@@ -255,6 +255,160 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
 	};
 }
 
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+	if (left.length !== right.length) return false;
+	for (let index = 0; index < left.length; index++) {
+		if (left[index] !== right[index]) return false;
+	}
+	return true;
+}
+
+function topologyStatus(status: StageSnapshot["status"]): "terminal-boundary" | "other" {
+	return status === "failed" || status === "skipped" ? "terminal-boundary" : "other";
+}
+
+interface RefreshRunSources {
+	readonly run: RunSnapshot;
+	readonly stages: ReadonlyMap<string, StageSnapshot>;
+	readonly tools: ReadonlyMap<string, ToolNodeSnapshot>;
+}
+
+function refreshRunSources(snapshot: StoreSnapshot): Map<string, RefreshRunSources> {
+	return new Map(
+		snapshot.runs.map((run) => [
+			run.id,
+			{
+				run,
+				stages: new Map(run.stages.map((stage) => [stage.id, stage])),
+				tools: new Map((run.toolNodes ?? []).map((tool) => [tool.id, tool])),
+			},
+		]),
+	);
+}
+
+export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSnapshot): boolean {
+	if (left.runs.length !== right.runs.length) return false;
+	for (let runIndex = 0; runIndex < left.runs.length; runIndex++) {
+		const a = left.runs[runIndex]!;
+		const b = right.runs[runIndex]!;
+		if (
+			a.id !== b.id ||
+			a.parentRunId !== b.parentRunId ||
+			a.parentStageId !== b.parentStageId ||
+			a.rootRunId !== b.rootRunId ||
+			a.stages.length !== b.stages.length ||
+			(a.toolNodes?.length ?? 0) !== (b.toolNodes?.length ?? 0)
+		)
+			return false;
+		for (let stageIndex = 0; stageIndex < a.stages.length; stageIndex++) {
+			const x = a.stages[stageIndex]!;
+			const y = b.stages[stageIndex]!;
+			const xChildRunId = authoritativeWorkflowChildRunId(x);
+			const yChildRunId = authoritativeWorkflowChildRunId(y);
+			if (
+				x.id !== y.id ||
+				x.executionOrder !== y.executionOrder ||
+				x.nodeKind !== y.nodeKind ||
+				xChildRunId !== yChildRunId ||
+				(xChildRunId !== undefined && topologyStatus(x.status) !== topologyStatus(y.status)) ||
+				!sameIds(x.parentIds, y.parentIds)
+			)
+				return false;
+		}
+		const aTools = a.toolNodes ?? [];
+		const bTools = b.toolNodes ?? [];
+		for (let toolIndex = 0; toolIndex < aTools.length; toolIndex++) {
+			const x = aTools[toolIndex]!;
+			const y = bTools[toolIndex]!;
+			if (x.id !== y.id || x.executionOrder !== y.executionOrder || !sameIds(x.parentIds, y.parentIds)) return false;
+		}
+	}
+	return true;
+}
+
+export function refreshExpandedWorkflowGraph(
+	graph: ExpandedWorkflowGraph,
+	snapshot: StoreSnapshot,
+): ExpandedWorkflowGraph | undefined {
+	const sourcesByRunId = refreshRunSources(snapshot);
+	const refreshedStages = new Map<string, ExpandedWorkflowStage>();
+	const refreshedTools = new Map<string, ExpandedWorkflowTool>();
+	const renderStages: ExpandedWorkflowStage[] = [];
+
+	for (const cached of graph.renderStages) {
+		const target = graph.targets.get(cached.id);
+		const sources = target ? sourcesByRunId.get(target.runId) : undefined;
+		if (!target || !sources) return undefined;
+		if (cached.nodeKind === "tool") {
+			const source = sources.tools.get(target.stageId);
+			if (!source) return undefined;
+			const stage: ExpandedWorkflowStage = {
+				id: cached.id,
+				name: source.name,
+				status: projectedToolStatus(source),
+				parentIds: cached.parentIds,
+				executionOrder: source.executionOrder,
+				nodeKind: "tool",
+				toolStatus: source.status,
+				startedAt: source.startedAt,
+				endedAt: source.endedAt,
+				result: source.resultSummary,
+				error: source.error,
+				toolEvents: [],
+				attachable: false,
+				workflowGraphTarget: target,
+			};
+			renderStages.push(stage);
+			refreshedStages.set(stage.id, stage);
+			continue;
+		}
+		const source = sources.stages.get(target.stageId);
+		if (!source) return undefined;
+		const stage: ExpandedWorkflowStage = {
+			...source,
+			id: cached.id,
+			parentIds: cached.parentIds,
+			workflowGraphTarget: target,
+		};
+		renderStages.push(stage);
+		refreshedStages.set(stage.id, stage);
+	}
+
+	const stages = renderStages.filter((stage) => stage.nodeKind !== "tool");
+	const tools: ExpandedWorkflowTool[] = [];
+
+	for (const cached of graph.tools) {
+		const target = graph.targets.get(cached.id);
+		const sources = target ? sourcesByRunId.get(target.runId) : undefined;
+		const source = target ? sources?.tools.get(target.stageId) : undefined;
+		if (!target || !sources || !source) return undefined;
+		const tool: ExpandedWorkflowTool = {
+			...source,
+			id: cached.id,
+			parentIds: cached.parentIds,
+			runId: sources.run.id,
+			runName: sources.run.name,
+			depth: target.depth,
+		};
+		tools.push(tool);
+		refreshedTools.set(tool.id, tool);
+	}
+
+	const nodes: ExpandedWorkflowNode[] = [];
+	for (const node of graph.nodes) {
+		if (node.kind === "stage") {
+			const stage = refreshedStages.get(node.stage.id);
+			if (!stage) return undefined;
+			nodes.push({ kind: "stage", stage });
+			continue;
+		}
+		const tool = refreshedTools.get(node.tool.id);
+		if (!tool) return undefined;
+		nodes.push({ kind: "tool", tool });
+	}
+	return { stages, tools, nodes, renderStages, targets: graph.targets };
+}
+
 export function expandedStageTarget(
 	graph: ExpandedWorkflowGraph,
 	virtualStageIdValue: string,
