@@ -2,12 +2,21 @@
  * Unit tests for src/tui/session-picker.ts — selection logic, key handling,
  * and a render-smoke test (no thrown errors, expected content present).
  */
-
 import assert from "node:assert/strict";
+
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
-import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
+import {
+	isWorkflowRunResumable,
+	type WorkflowRunResumeCandidate,
+} from "../../packages/workflows/src/durable/resume-eligibility.ts";
+import type { RunSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
+import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
+	createSessionPickerResumeCandidateCache,
 	createSessionPickerState,
 	handleSessionPickerInput,
 	renderSessionPicker,
@@ -27,6 +36,9 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 		durationMs: over.durationMs,
 		result: over.result,
 		error: over.error,
+		resumable: over.resumable,
+		failureRecoverability: over.failureRecoverability,
+		exitReason: over.exitReason,
 	};
 }
 
@@ -58,6 +70,139 @@ test("selectRunsForPicker buckets active vs retained terminal by default", () =>
 	assert.deepEqual(
 		legacyRecentOnly.map((r) => r.run.id),
 		["a-active", "b-recent"],
+	);
+});
+
+test("resume picker inclusion agrees with the shared resumability predicate across run states", () => {
+	const statuses: RunSnapshot["status"][] = ["failed", "running", "paused", "completed", "killed"];
+	const endedValues: Array<number | undefined> = [undefined, 2_000];
+	const resumableValues: Array<boolean | undefined> = [undefined, false, true];
+	const recoverabilityValues: Array<RunSnapshot["failureRecoverability"]> = [undefined, "recoverable"];
+	const exitReasons: Array<string | undefined> = [undefined, "quit"];
+	let index = 0;
+	for (const status of statuses) {
+		for (const endedAt of endedValues) {
+			for (const resumable of resumableValues) {
+				for (const failureRecoverability of recoverabilityValues) {
+					for (const exitReason of exitReasons) {
+						const run = makeRun({
+							id: `resume-${index++}`,
+							status,
+							endedAt,
+							resumable,
+							failureRecoverability,
+							exitReason,
+						});
+						// The picker derives `hasPausedState` from the snapshot exactly as the
+						// resume command does, so both sides consult one predicate.
+						const hasPausedState = status === "paused" || exitReason === "quit";
+						const expected = isWorkflowRunResumable({ ...run, hasPausedState });
+						const rows = selectRunsForPicker([run], "", true, Date.now(), "resume");
+						assert.equal(
+							rows.length === 1,
+							expected,
+							`${status}/${endedAt}/${resumable}/${failureRecoverability}/${exitReason}`,
+						);
+					}
+				}
+			}
+		}
+	}
+});
+
+test("a paused run whose artifacts were pruned is not resumable", () => {
+	const paused = makeRun({ id: "pruned-artifacts", status: "paused", resumable: true });
+	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true }), true);
+	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true, artifactsIntact: false }), false);
+	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true, hasDurableCheckpoint: false }), false);
+});
+
+test("resume picker production filtering hides a run whose referenced artifact directory is missing", async () => {
+	const root = await mkdtemp(join(tmpdir(), "session-picker-artifact-root-"));
+	const runId = "artifact-aware-run";
+	const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+	try {
+		process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
+		const referenced = join(root, "runs", runId, "transcripts", "stage.transcript.md");
+		const run = makeRun({
+			id: runId,
+			status: "paused",
+			resumable: true,
+			result: { transcript_path: referenced },
+		});
+		assert.equal(selectRunsForPicker([run], "", true, Date.now(), "resume").length, 0);
+		await mkdir(join(root, "runs", runId), { recursive: true });
+		assert.equal(selectRunsForPicker([run], "", true, Date.now(), "resume").length, 1);
+	} finally {
+		if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("resume candidate probes are memoized across selections within one store revision", () => {
+	const runs = [
+		makeRun({ id: "cache-a", status: "paused", resumable: true }),
+		makeRun({ id: "cache-b", status: "paused", resumable: true }),
+	];
+	const snapshot: StoreSnapshot = { runs, notices: [], version: 7 };
+	let probeCount = 0;
+	const probe = (run: RunSnapshot): WorkflowRunResumeCandidate => {
+		probeCount += 1;
+		return {
+			status: run.status,
+			endedAt: run.endedAt,
+			resumable: run.resumable,
+			failureRecoverability: run.failureRecoverability,
+			exitReason: run.exitReason,
+			hasPausedState: true,
+			hasDurableCheckpoint: true,
+		};
+	};
+	const cache = createSessionPickerResumeCandidateCache(probe);
+	const now = 10_000;
+	const baseline = selectRunsForPicker(runs, "", true, now, "resume");
+	const first = selectRunsForPicker(runs, "", true, now, "resume", cache(snapshot));
+	const second = selectRunsForPicker(runs, "", true, now, "resume", cache(snapshot));
+
+	assert.equal(JSON.stringify(first), JSON.stringify(baseline));
+	assert.equal(JSON.stringify(second), JSON.stringify(baseline));
+	assert.equal(probeCount, runs.length, "render and input selections share one probe per run");
+
+	selectRunsForPicker(runs, "", true, now, "resume", cache({ ...snapshot, version: 8 }));
+	assert.equal(probeCount, runs.length * 2, "a store revision invalidates the cached probes");
+});
+
+test("cached resume selection keeps the offered rows byte-identical", () => {
+	const runs = [makeRun({ id: "byte-identical", status: "paused", resumable: true })];
+	const snapshot: StoreSnapshot = { runs, notices: [], version: 12 };
+	const cache = createSessionPickerResumeCandidateCache((run) => ({
+		status: run.status,
+		endedAt: run.endedAt,
+		resumable: run.resumable,
+		failureRecoverability: run.failureRecoverability,
+		exitReason: run.exitReason,
+		hasPausedState: true,
+		hasDurableCheckpoint: true,
+	}));
+	const baseline = selectRunsForPicker(runs, "", true, 10_000, "resume");
+	const cached = selectRunsForPicker(runs, "", true, 10_000, "resume", cache(snapshot));
+	assert.equal(JSON.stringify(cached), JSON.stringify(baseline));
+});
+
+test("connect picker remains broad while resume hides a completed run", () => {
+	const completed = makeRun({ id: "completed", status: "completed", endedAt: 2_000 });
+	assert.equal(selectRunsForPicker([completed], "", true, Date.now(), "connect").length, 1);
+	assert.equal(selectRunsForPicker([completed], "", true, Date.now(), "resume").length, 0);
+});
+
+test("resume picker lists a resumable paused run and hides a non-resumable one", () => {
+	const resumablePaused = makeRun({ id: "resumable-paused", status: "paused", resumable: true });
+	const refusedPaused = makeRun({ id: "refused-paused", status: "paused", resumable: false });
+	const rows = selectRunsForPicker([resumablePaused, refusedPaused], "", true, Date.now(), "resume");
+	assert.deepEqual(
+		rows.map((row) => row.run.id),
+		["resumable-paused"],
 	);
 });
 

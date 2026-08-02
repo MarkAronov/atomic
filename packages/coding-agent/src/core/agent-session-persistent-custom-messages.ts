@@ -2,7 +2,7 @@ import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-for
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { DrainedAgentQueues } from "./agent-session-types.ts";
 import { customMessageExcludesContext } from "./agent-session-types.ts";
-import type { CustomMessage } from "./messages.ts";
+import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
 type ProtectedDelivery = "steer" | "followUp";
 type ProtectedPhase = "queued" | "consumed-unpersisted" | "persistence-failed";
@@ -30,6 +30,7 @@ function appendDurableDisplayCard(
 	delivery: ProtectedDelivery,
 ): { readonly card: CustomMessage & { excludeFromContext: true }; readonly intentEntryId: string } {
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
+	const admitted = message as StageAdmittedCustomMessage;
 	// The card and recovery marker share one append, so either both survive a
 	// process exit or neither does.
 	const intentEntryId = session.sessionManager.appendCustomMessageEntry(
@@ -39,6 +40,7 @@ function appendDurableDisplayCard(
 		card.details,
 		true,
 		{ delivery },
+		admitted.stageAdmissionKey,
 	);
 	session.agent.state.messages.push(card);
 	return { card, intentEntryId };
@@ -239,6 +241,7 @@ export function persistProtectedStreamingCustomMessage(session: AgentSession, me
 	const index = pending.findIndex((entry) => entry.message === message);
 	if (index === -1) return false;
 	const entry = pending[index];
+	const admitted = message as StageAdmittedCustomMessage;
 	if (entry.phase !== "consumed-unpersisted" && entry.phase !== "persistence-failed") return true;
 	session.sessionManager.appendCustomMessageEntry(
 		message.customType,
@@ -246,6 +249,8 @@ export function persistProtectedStreamingCustomMessage(session: AgentSession, me
 		message.display,
 		message.details,
 		customMessageExcludesContext(message),
+		undefined,
+		admitted.stageAdmissionKey,
 	);
 	pending.splice(index, 1);
 	return true;
@@ -316,12 +321,15 @@ export function prepareProtectedStreamingCustomMessagesForDisposal(session: Agen
 		throw new Error("Cannot dispose a session with a queued protected reconciliation");
 	}
 	for (const entry of queued) {
+		const admitted = entry.message as StageAdmittedCustomMessage;
 		session.sessionManager.appendCustomMessageEntry(
 			entry.message.customType,
 			entry.message.content,
 			entry.message.display,
 			entry.message.details,
 			customMessageExcludesContext(entry.message),
+			undefined,
+			admitted.stageAdmissionKey,
 		);
 		removeQueuedProtectedReference(session, entry.message);
 		const index = pending.indexOf(entry);

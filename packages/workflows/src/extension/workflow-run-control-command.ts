@@ -1,4 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -6,6 +7,7 @@ import { interruptAllRuns, interruptRun, pauseRun, resumeRun } from "../runs/bac
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store } from "../shared/store.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { renderSessionList } from "../tui/session-list.js";
 import { openSessionPicker } from "../tui/session-overlays.js";
@@ -246,7 +248,7 @@ export async function handleRunControlCommand(
 				const runtime = deps.runtimeForContext(ctx);
 				const hydrate = async (): Promise<ResumePickerCatalogRows> => {
 					await ensureWorkflowResourcesVisible();
-					const catalog = await prepareWorkflowResumeCatalog(runtime, initial.activeLiveIds);
+					const catalog = await prepareWorkflowResumeCatalog(runtime, initial.suppressedLiveIds);
 					return { durable: catalog.resumable, completed: catalog.completed };
 				};
 				let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;
@@ -276,14 +278,12 @@ export async function handleRunControlCommand(
 						return true;
 					}
 					const run = store.runs().find((r) => r.id === resolved.runId);
-					const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+					const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 					const isResumableContinuation =
 						run !== undefined &&
 						!isPaused &&
-						((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
-							(run.endedAt === undefined &&
-								run.resumable === true &&
-								run.failureRecoverability === "recoverable"));
+						run.exitReason !== "quit" &&
+						isWorkflowRunResumable(workflowRunResumeCandidate(run));
 					if (isResumableContinuation) {
 						await ensureWorkflowResourcesVisible();
 						const continuation = await deps
@@ -482,8 +482,8 @@ export async function handleRunControlCommand(
 		const isResumableContinuation =
 			run !== undefined &&
 			!isPaused &&
-			((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
-				(run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+			run.exitReason !== "quit" &&
+			isWorkflowRunResumable(workflowRunResumeCandidate(run));
 		const isActivelyRunning =
 			run !== undefined &&
 			run.endedAt === undefined &&

@@ -7,9 +7,13 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "vitest";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
 
 function entry(
@@ -54,6 +58,66 @@ function pausedLiveRun(id = "live-paused", activityAt = 100): RunSnapshot {
 }
 
 describe("workflow resume selector rows", () => {
+	test("omits a live run with missing artifacts from resumable rows while retaining completed inspection", async () => {
+		const root = await mkdtemp(join(tmpdir(), "workflow-resume-selector-missing-artifact-"));
+		const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		try {
+			process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
+			const runId = "missing-artifact-run";
+			const run = {
+				...pausedLiveRun(runId),
+				result: { transcript_path: join(root, "runs", runId, "transcripts", "stage.md") },
+			};
+			const items = workflowResumeSelectorItems([run], [entry(runId, "paused")], [entry(runId, "completed")]);
+			assert.deepEqual(
+				items.map((item) => item.result.kind),
+				["completed"],
+			);
+		} finally {
+			if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+			else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+	test("keeps a completed local snapshot visible exactly once alongside durable inspection", () => {
+		const runId = "completed-local-run";
+		const completed = {
+			...pausedLiveRun(runId),
+			status: "completed" as const,
+			endedAt: 500,
+			resumable: false,
+		};
+		const items = workflowResumeSelectorItems([completed], [], [entry(runId, "completed")]);
+		assert.deepEqual(
+			items.map((item) => item.result.kind),
+			["completed"],
+		);
+		assert.equal(items[0]?.result.kind === "completed" ? items[0].result.workflowId : undefined, runId);
+	});
+
+	test("offers a healthy paused live run exactly once instead of durable or completed duplicates", async () => {
+		const root = await mkdtemp(join(tmpdir(), "workflow-resume-selector-healthy-artifact-"));
+		const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		try {
+			process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
+			const runId = "healthy-artifact-run";
+			await mkdir(join(root, "runs", runId), { recursive: true });
+			const run = {
+				...pausedLiveRun(runId),
+				result: { transcript_path: join(root, "runs", runId, "transcripts", "stage.md") },
+			};
+			const items = workflowResumeSelectorItems([run], [entry(runId, "paused")], [entry(runId, "completed")]);
+			assert.deepEqual(
+				items.map((item) => item.result.kind),
+				["live"],
+			);
+			assert.equal(items[0]?.result.kind === "live" ? items[0].result.runId : undefined, runId);
+		} finally {
+			if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+			else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 	test("globally orders mixed rows and renders completed rows with a green semantic", () => {
 		const items = workflowResumeSelectorItems(
 			[pausedLiveRun()],

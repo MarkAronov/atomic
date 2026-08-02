@@ -9,12 +9,12 @@ import { assertStringOutput, makeMockCtx } from "./builtin-workflows-helpers.js"
 
 /**
  * The research stage declares `output: <researchPath>` with
- * `outputMode: "file-only"`, so the runner writes the stage's final message to
- * that path after the stage ends. The prompt therefore must not also ask the
- * agent to author that same file: anything it writes there is overwritten, and
- * downstream stages that follow `[Read from: ...]` then read a stub instead of
- * the report. `reads` passes a path, not file content, so whatever is on disk
- * when the next stage runs is exactly what that stage sees.
+ * `outputMode: "file-only"`, so the runner writes the stage's nominated final
+ * message to that path and always emits a durable searchable transcript. The
+ * prompt must not also ask the agent to author that same file: the runner owns
+ * the curated artifact while the transcript preserves tool output and admitted
+ * external turns. `reads` passes a path, not file content, so whatever is on
+ * disk when the next stage runs is exactly what that stage sees.
  */
 describe("ralph research artifact ownership", () => {
 	let tempCwd: string | undefined;
@@ -91,17 +91,24 @@ describe("ralph research artifact ownership", () => {
 			assertStringOutput(options?.output);
 			const researchPath = options.output;
 
-			// The runner owns the artifact, so the prompt must route the report
-			// through the final message rather than a direct write.
+			// The runner owns the artifact and states that contract itself via
+			// `stageOutputInstruction`, so the workflow prompt only has to ask for the
+			// report. It must not describe the write mechanism: the prompt that spelled
+			// out nomination went stale the moment that logic was deleted.
 			assert.match(
 				prompt,
 				/Return the (complete|rewritten) research report[\s\S]*as your final message/,
-				`${stage} must ask for the report as its final message`,
+				`${stage} must ask for the complete report as its final message`,
 			);
-			assert.match(
+			assert.doesNotMatch(
+				prompt,
+				/UTF-8 bytes|3:2|post-admission|nominat|companion transcript/i,
+				`${stage} must not describe runner-owned write mechanics`,
+			);
+			assert.doesNotMatch(
 				prompt,
 				new RegExp(`Do not write ${escapeRegExp(researchPath)} yourself`),
-				`${stage} must forbid authoring the runner-owned artifact`,
+				`${stage} must not carry the obsolete artifact-authoring prohibition`,
 			);
 			assert.doesNotMatch(
 				prompt,

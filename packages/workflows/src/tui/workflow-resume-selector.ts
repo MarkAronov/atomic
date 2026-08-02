@@ -1,8 +1,10 @@
 import type { SessionInfo } from "@bastani/atomic";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 
 export type WorkflowResumeSelectorResult =
 	| { kind: "live"; runId: string }
@@ -55,6 +57,9 @@ function completedStageCount(run: RunSnapshot): number {
 	return run.stages.filter((stage) => stage.status === "completed" || stage.status === "failed").length;
 }
 
+function isResumePickerLiveRun(run: RunSnapshot): boolean {
+	return isWorkflowRunResumable(workflowRunResumeCandidate(run));
+}
 interface WorkflowStatusPresentation {
 	readonly label: string;
 	readonly color?: "success" | "warning" | "error";
@@ -132,19 +137,27 @@ export function workflowResumeSelectorItems(
 	durableEntries: readonly ResumableWorkflowEntry[],
 	completedEntries: readonly ResumableWorkflowEntry[] = [],
 ): WorkflowResumeSelectorItem[] {
-	const liveIds = new Set(liveRuns.map((run) => run.id));
-	const durableIds = new Set(durableEntries.map((entry) => entry.workflowId));
+	const classifiedLiveRuns = liveRuns.map((run) => ({ run, resumable: isResumePickerLiveRun(run) }));
+	const eligibleLiveRuns = classifiedLiveRuns.filter(({ resumable }) => resumable).map(({ run }) => run);
+	const visibleLiveIds = new Set(eligibleLiveRuns.map((run) => run.id));
+	// An actively executing live snapshot is intentionally not resumable here, but its durable
+	// row remains the existing fallback. Other predicate-rejected snapshots must disappear from
+	// the resumable row kinds, or a missing-artifact live run would reappear as a durable duplicate.
+	const suppressedLiveIds = new Set(
+		classifiedLiveRuns
+			.filter(({ run, resumable }) => resumable || !(run.status === "running" && run.endedAt === undefined))
+			.map(({ run }) => run.id),
+	);
+	const visibleDurableEntries = durableEntries.filter((entry) => !suppressedLiveIds.has(entry.workflowId));
+	const durableIds = new Set(visibleDurableEntries.map((entry) => entry.workflowId));
 	return [
-		...liveRuns.map(liveRunSession),
-		...durableEntries
-			.filter((entry) => !liveIds.has(entry.workflowId))
-			.map((entry) => durableWorkflowSession(entry, "durable")),
+		...eligibleLiveRuns.map(liveRunSession),
+		...visibleDurableEntries.map((entry) => durableWorkflowSession(entry, "durable")),
 		...completedEntries
-			.filter((entry) => !liveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))
+			.filter((entry) => !visibleLiveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))
 			.map((entry) => durableWorkflowSession(entry, "completed")),
 	].sort(compareResumeItemsByRecency);
 }
-
 export interface WorkflowResumeCatalogRows {
 	readonly durable: readonly ResumableWorkflowEntry[];
 	readonly completed: readonly ResumableWorkflowEntry[];

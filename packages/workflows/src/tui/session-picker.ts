@@ -19,9 +19,11 @@
  */
 
 import { keyText } from "@bastani/atomic";
+import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
@@ -55,21 +57,47 @@ export interface PickerRow {
 	readonly bucket: "active" | "terminal";
 }
 
-const RECENT_WINDOW_MS = 60 * 60 * 1000;
+export type ResumeCandidateProbe = (run: RunSnapshot) => WorkflowRunResumeCandidate;
+export type ResumeCandidateLookup = (run: RunSnapshot) => WorkflowRunResumeCandidate;
 
+/** Cache resume probes for one store revision so render and input share the same filesystem/backend work. */
+export function createSessionPickerResumeCandidateCache(
+	probe: ResumeCandidateProbe = workflowRunResumeCandidate,
+): (snapshot: StoreSnapshot) => ResumeCandidateLookup {
+	let cachedVersion: number | undefined;
+	let cachedRuns: readonly RunSnapshot[] | undefined;
+	let candidates = new Map<string, WorkflowRunResumeCandidate>();
+
+	return (snapshot: StoreSnapshot): ResumeCandidateLookup => {
+		if (cachedVersion !== snapshot.version || cachedRuns !== snapshot.runs) {
+			cachedVersion = snapshot.version;
+			cachedRuns = snapshot.runs;
+			candidates = new Map();
+		}
+		return (run: RunSnapshot): WorkflowRunResumeCandidate => {
+			const cached = candidates.get(run.id);
+			if (cached !== undefined) return cached;
+			const candidate = probe(run);
+			candidates.set(run.id, candidate);
+			return candidate;
+		};
+	};
+}
+
+const RECENT_WINDOW_MS = 60 * 60 * 1000;
 /**
  * Slice runs into picker rows. Active = `endedAt === undefined`. Terminal =
- * retained terminal runs. With `includeAll` false, terminal rows are limited
- * to the legacy recent-ended one-hour window.
- *
- * Sort: active first (newest start last in the list = bottom-of-pane),
- * then terminal newest-end first.
+ * retained terminal runs. Resume intent uses the shared resumability predicate;
+ * connect/attach and the legacy status list retain their broader listing.
+ * With `includeAll` false, terminal rows are limited to the recent-ended window.
  */
 export function selectRunsForPicker(
 	runs: readonly RunSnapshot[],
 	query: string,
 	includeAll: boolean,
 	now: number = Date.now(),
+	intent: "connect" | "resume" | "pause" = "connect",
+	resumeCandidateLookup?: ResumeCandidateLookup,
 ): PickerRow[] {
 	const q = query.trim().toLowerCase();
 	const matches = (r: RunSnapshot): boolean => {
@@ -82,7 +110,10 @@ export function selectRunsForPicker(
 	for (const r of runs) {
 		if (!isTopLevelWorkflowRun(r)) continue;
 		if (!matches(r)) continue;
-
+		if (intent === "resume") {
+			const candidate = resumeCandidateLookup?.(r) ?? workflowRunResumeCandidate(r);
+			if (!isWorkflowRunResumable(candidate)) continue;
+		}
 		const endedAt = r.endedAt;
 		if (endedAt === undefined) {
 			active.push({ run: r, bucket: "active" });

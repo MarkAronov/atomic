@@ -2,10 +2,12 @@ import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js"
 import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
@@ -42,7 +44,7 @@ export type WorkflowResumeTargetResolution =
 
 export async function prepareWorkflowResumeCatalog(
 	runtime: ExtensionRuntime,
-	activeLiveIds: ReadonlySet<string>,
+	suppressedLiveIds: ReadonlySet<string>,
 	target?: string,
 ): Promise<WorkflowResumeCatalog> {
 	const shared = await runtime.prepareDurableCatalog?.();
@@ -50,8 +52,11 @@ export async function prepareWorkflowResumeCatalog(
 	const backend = getDurableBackend();
 	const isDisplayLoadable = (entry: ResumableWorkflowEntry): boolean =>
 		shared !== undefined || backend.isWorkflowLoadable(entry.workflowId);
+	// The durable catalog is already produced by `listResumableWorkflows()`, which
+	// applies `isDurableWorkflowResumable`; re-filtering here would only drop rows
+	// a hydrating backend has not yet materialized.
 	const resumable = filterSelectorDurableEntries(runtime, prepared).filter(
-		(entry) => !activeLiveIds.has(entry.workflowId) && isDisplayLoadable(entry),
+		(entry) => !suppressedLiveIds.has(entry.workflowId) && isDisplayLoadable(entry),
 	);
 	const completed =
 		shared?.completed ??
@@ -60,7 +65,7 @@ export async function prepareWorkflowResumeCatalog(
 			: listOpenableCompletedWorkflows(backend));
 	return {
 		resumable,
-		completed: completed.filter((entry) => !activeLiveIds.has(entry.workflowId) && isDisplayLoadable(entry)),
+		completed: completed.filter((entry) => isDisplayLoadable(entry)),
 	};
 }
 
@@ -200,12 +205,10 @@ export function resolveWorkflowResumeTarget(
 }
 
 function isExplicitResumeCandidate(run: RunSnapshot): boolean {
-	if (run.status === "completed" || run.status === "paused" || run.exitReason === "quit") return true;
-	if (run.stages.some((stage) => stage.status === "paused")) return true;
-	if (run.status === "failed") return run.resumable !== false;
-	if (run.endedAt !== undefined) return false;
-	if (run.status === "running") return true;
-	return run.resumable === true && run.failureRecoverability === "recoverable";
+	if (run.status === "completed") return true;
+	return (
+		isWorkflowRunResumable(workflowRunResumeCandidate(run)) || (run.endedAt === undefined && run.status === "running")
+	);
 }
 
 async function resumeDurableTarget(
