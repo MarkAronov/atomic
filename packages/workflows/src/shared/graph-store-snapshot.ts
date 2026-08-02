@@ -11,11 +11,24 @@ import type {
 } from "./store-types.js";
 import type { WorkflowOutputValues } from "./types.js";
 
-const COMPACT_RESULT_FIELD_LIMIT = 1024;
+export const COMPACT_RESULT_FIELD_LIMIT = 1024;
+
+/**
+ * V8 backs `slice()` of a flat string of 13 characters or more with a
+ * SlicedString that points at its parent, so a 1 KiB projection of a
+ * multi-megabyte run result would keep the whole result alive for as long as
+ * the projection lives — and `graphSnapshot()` memoizes projections, so the
+ * store would outlive the run it dropped. `split("").join("")` copies the
+ * characters into a fresh flat string with no parent pointer.
+ */
+function flattenTruncatedField(value: string): string {
+	return value.split("").join("");
+}
 
 function compactResultField(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
-	return value.length <= COMPACT_RESULT_FIELD_LIMIT ? value : value.slice(0, COMPACT_RESULT_FIELD_LIMIT);
+	if (value.length <= COMPACT_RESULT_FIELD_LIMIT) return value;
+	return flattenTruncatedField(value.slice(0, COMPACT_RESULT_FIELD_LIMIT));
 }
 
 function compactRunResult(result: WorkflowOutputValues | undefined): WorkflowOutputValues | undefined {
