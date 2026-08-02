@@ -142,11 +142,13 @@ test("live events and re-attach hydration use the same status mapping and busy s
 		assert.equal(liveHost.statusText(), compactionStatusMessage(reason));
 		assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
 		assert.equal(reattachedHost.isCompacting(), liveHost.isCompacting());
-		assert.equal(reattachedHost.isStreaming(), liveHost.isStreaming());
 		if (reason === "branchSummary") {
-			assert.equal(reattachedHost.isCompacting(), false);
-			assert.equal(reattachedHost.renderWorkingStatus(100).length, 0);
+			// Live sdkBusy belongs to a retry lifecycle paired with onRetryFinished;
+			// a re-attached host is outside that lifecycle, so reproducing it would strand the host.
+			assert.equal(reattachedHost.isStreaming(), false);
+			assert.match(reattachedHost.renderBody(100, 3).join("\n"), /summarizing branch…/);
 		} else {
+			assert.equal(reattachedHost.isStreaming(), liveHost.isStreaming());
 			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /Cancel/);
 		}
 		liveHost.dispose();

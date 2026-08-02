@@ -101,8 +101,9 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	snapshotMessagesFromSessionFile(ctx, initialStage);
 	absorbStageNotices(ctx, initialStage);
 	syncPromptState(ctx, initialStage?.pendingPrompt);
-	if (isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status))
-		ctx.chatHost.clearBusyForTerminalWorkflowStage();
+	const initialChatIsTerminal =
+		isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status);
+	if (initialChatIsTerminal) ctx.chatHost.clearBusyForTerminalWorkflowStage();
 	ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
 	ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
@@ -112,7 +113,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
 		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
-		rehydrateCompactionStatus(ctx);
+		if (!initialChatIsTerminal) rehydrateCompactionStatus(ctx);
 		rehydrateQueuedMessages(ctx);
 	}
 	ctx.chatHost.syncAnimationTick();

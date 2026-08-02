@@ -120,7 +120,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.statusMessage = "";
 		} else {
 			this.state.compacting = reason !== "branchSummary";
-			this.state.sdkBusy = true;
+			if (reason !== "branchSummary") this.state.sdkBusy = true;
 			this.state.statusMessage = compactionStatusMessage(reason);
 		}
 		this.syncAnimationTick();

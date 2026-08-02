@@ -203,6 +203,38 @@ describe("StageChatView", () => {
 			view.dispose();
 		}
 	});
+	test("does not rehydrate compaction status for a terminal run or stage", () => {
+		const cases = [
+			{ name: "terminal run", runTerminal: true, stageStatus: "running" as const },
+			{ name: "terminal stage", runTerminal: false, stageStatus: "completed" as const },
+		];
+
+		for (const { name, runTerminal, stageStatus } of cases) {
+			const store = createStore();
+			setupRun(store, "run-1", "stage-a", stageStatus);
+			if (runTerminal) assert.equal(store.recordRunEnd("run-1", "completed"), true);
+			const agentSession = Object.assign(fakeFooterAgentSession(false), {
+				compactionReason: "threshold",
+				isCompacting: true,
+			});
+			const { handle } = makeHandle(undefined, [], "completed", agentSession);
+			const view = new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "test-wf",
+				handle,
+				onDetach: () => {},
+				onClose: () => {},
+			});
+
+			const rendered = stripAnsi(view.render(96).join("\n"));
+			assert.doesNotMatch(rendered, /Auto-compacting\.\.\.|Working\.\.\./, name);
+			assert.equal(view._hasAnimationTick, false, name);
+			view.dispose();
+		}
+	});
 
 	test("stops the compaction spinner and surfaces planner failures", () => {
 		const store = createStore();

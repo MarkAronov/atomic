@@ -67,6 +67,24 @@ function createGate() {
 	};
 	return { factory, started, release: () => release(), calls };
 }
+/** Extension whose tree-navigation hook blocks until the test releases it. */
+function createTreeGate() {
+	let signalStarted!: () => void;
+	let release!: () => void;
+	const started = new Promise<void>((resolve) => {
+		signalStarted = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const factory: ExtensionFactory = (pi) => {
+		pi.on("session_before_tree", async () => {
+			signalStarted();
+			await released;
+		});
+	};
+	return { factory, started, release: () => release() };
+}
 
 describe("manual compaction re-entrancy", () => {
 	const harnesses: Harness[] = [];
@@ -229,5 +247,20 @@ describe("manual compaction re-entrancy", () => {
 		automaticGate.release();
 		await automatic;
 		assert.equal(automaticHarness.session.compactionReason, undefined);
+	});
+	test("records and clears the active reason during branch navigation", async () => {
+		const treeGate = createTreeGate();
+		const harness = await createHarness(treeGate.factory);
+		const targetId = harness.sessionManager.getTree()[0]?.entry.id;
+		assert.ok(targetId);
+
+		const navigation = harness.session.navigateTree(targetId, { summarize: false });
+		await treeGate.started;
+		assert.equal(harness.session.compactionReason, "branchSummary");
+		treeGate.release();
+		const result = await navigation;
+
+		assert.equal(result.cancelled, false);
+		assert.equal(harness.session.compactionReason, undefined);
 	});
 });
