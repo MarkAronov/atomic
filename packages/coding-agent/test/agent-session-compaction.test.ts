@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { agentSessionCompactionMethods } from "../src/core/agent-session-compaction.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 
-test("exposes compact as the only boundary-creating manual door", () => {
-	assert.equal(typeof agentSessionCompactionMethods.compact, "function");
-	assert.equal(["context", "Compact"].join("") in agentSessionCompactionMethods, false);
-	assert.equal(typeof agentSessionCompactionMethods._applyVerbatimCompaction, "function");
+describe("AgentSession compaction surface", () => {
+	it("exposes compact as the only boundary-creating manual door", () => {
+		expect(agentSessionCompactionMethods.compact).toBeTypeOf("function");
+		expect(["context", "Compact"].join("") in agentSessionCompactionMethods).toBe(false);
+		expect(agentSessionCompactionMethods._applyVerbatimCompaction).toBeTypeOf("function");
+	});
 });
 
 test("RPC get_state round-trips the active compaction reason", async () => {

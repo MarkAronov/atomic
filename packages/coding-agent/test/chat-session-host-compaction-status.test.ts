@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { EditorTheme } from "@earendil-works/pi-tui";
 import { type Component, Text } from "@earendil-works/pi-tui";
-import { test } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import type { CompactionReason } from "../src/core/agent-session.ts";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
 import { compactionStatusMessage } from "../src/modes/interactive/components/chat-session-host-events.ts";
@@ -66,24 +66,26 @@ const labels: Readonly<Record<CompactionReason, string>> = {
 	branchSummary: "summarizing branch…",
 };
 
-test("renders Atomic's ∀ indicator with an escape cancel hint", () => {
-	const state = makeState();
-	state.compacting = true;
-	state.statusMessage = "Auto-compacting...";
+describe("chat session compaction status", () => {
+	it("renders Atomic's ∀ indicator with an escape cancel hint", () => {
+		const state = makeState();
+		state.compacting = true;
+		state.statusMessage = "Auto-compacting...";
 
-	const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
+		const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
 
-	assert.match(rendered, /∀/);
-	assert.match(rendered, /Auto-compacting\.\.\. \(esc Cancel\)/);
-});
+		expect(rendered).toContain("∀");
+		expect(rendered).toContain("Auto-compacting... (esc Cancel)");
+	});
 
-test("uses the host keybinding display for the cancel hint", () => {
-	const state = makeState({ getActionKeyDisplay: () => "ctrl+c" });
-	state.compacting = true;
+	it("uses the host keybinding display for the cancel hint", () => {
+		const state = makeState({ getActionKeyDisplay: () => "ctrl+c" });
+		state.compacting = true;
 
-	const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
+		const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
 
-	assert.match(rendered, /Compacting context\.\.\. \(ctrl\+c Cancel\)/);
+		expect(rendered).toContain("Compacting context... (ctrl+c Cancel)");
+	});
 });
 
 test("rehydrates reason-specific labels for every compaction reason", () => {
@@ -92,11 +94,13 @@ test("rehydrates reason-specific labels for every compaction reason", () => {
 		host.hydrateCompactionStatus(reason);
 		const rendered = host.renderWorkingStatus(100).join("\n");
 
-		assert.equal(host.statusText(), label);
 		if (reason === "branchSummary") {
+			assert.equal(host.statusText(), "");
 			assert.equal(host.isCompacting(), false);
-			assert.equal(rendered, "");
+			assert.match(rendered, /Working\.\.\./);
+			assert.doesNotMatch(rendered, /summarizing branch…/);
 		} else {
+			assert.equal(host.statusText(), label);
 			assert.match(rendered, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			assert.doesNotMatch(rendered, /Working\.\.\./);
 		}
@@ -109,20 +113,25 @@ test("clears the label on compaction_end and on a non-compacting attach", () => 
 	host.hydrateCompactionStatus("threshold");
 	assert.match(host.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\./);
 
-	host.applyAgentEvent({
+	host.hydrateCompactionStatus(undefined);
+	assert.equal(host.statusText(), "");
+	assert.equal(host.isCompacting(), false);
+	assert.doesNotMatch(host.renderWorkingStatus(100).join("\n"), /compacting/i);
+	host.dispose();
+
+	const endedHost = makeHost();
+	endedHost.hydrateCompactionStatus("threshold");
+	endedHost.applyAgentEvent({
 		type: "compaction_end",
 		reason: "threshold",
 		result: undefined,
 		aborted: false,
 		willRetry: false,
 	});
-	assert.equal(host.statusText(), "");
-	assert.doesNotMatch(host.renderWorkingStatus(100).join("\n"), /compacting|Working\.\.\./i);
-
-	host.hydrateCompactionStatus(undefined);
-	assert.equal(host.statusText(), "");
-	assert.equal(host.isCompacting(), false);
-	host.dispose();
+	assert.equal(endedHost.statusText(), "");
+	assert.equal(endedHost.isCompacting(), false);
+	assert.doesNotMatch(endedHost.renderWorkingStatus(100).join("\n"), /compacting/i);
+	endedHost.dispose();
 });
 
 test("live events and re-attach hydration use the same status mapping and busy state", () => {
@@ -140,18 +149,31 @@ test("live events and re-attach hydration use the same status mapping and busy s
 		reattachedHost.hydrateCompactionStatus(reason);
 
 		assert.equal(liveHost.statusText(), compactionStatusMessage(reason));
-		assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
-		assert.equal(reattachedHost.isCompacting(), liveHost.isCompacting());
+		assert.equal(liveHost.isCompacting(), reason !== "branchSummary");
 		if (reason === "branchSummary") {
-			// Live sdkBusy belongs to a retry lifecycle paired with onRetryFinished;
-			// a re-attached host is outside that lifecycle, so reproducing it would strand the host.
-			assert.equal(reattachedHost.isStreaming(), false);
-			assert.match(reattachedHost.renderBody(100, 3).join("\n"), /summarizing branch…/);
+			assert.equal(reattachedHost.statusText(), "");
+			assert.equal(reattachedHost.isCompacting(), false);
+			assert.doesNotMatch(reattachedHost.renderBody(100, 3).join("\n"), /summarizing branch…/);
 		} else {
+			assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
+			assert.equal(reattachedHost.isCompacting(), true);
 			assert.equal(reattachedHost.isStreaming(), liveHost.isStreaming());
 			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /Cancel/);
 		}
 		liveHost.dispose();
 		reattachedHost.dispose();
 	}
+});
+
+test("branch-summary hydration leaves the ordinary working spinner available", () => {
+	const host = makeHost();
+	host.hydrateCompactionStatus("branchSummary");
+
+	assert.equal(host.statusText(), "");
+	assert.equal(host.isCompacting(), false);
+	const rendered = host.renderWorkingStatus(100).join("\n");
+	assert.match(rendered, /∀/);
+	assert.match(rendered, /Working\.\.\./);
+	assert.doesNotMatch(rendered, /summarizing branch…/);
+	host.dispose();
 });

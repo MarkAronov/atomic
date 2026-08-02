@@ -109,19 +109,22 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 * `compaction_start` it never saw. The label resolves through the same
 	 * mapping the live event path uses, so the two cannot drift.
 	 *
-	 * No active reason on a host showing no compaction is a no-op: a freshly
-	 * mounted host has no stale compaction label to clear, and clearing
-	 * unrelated busy state here would erase a replayed workflow delivery.
+	 * Branch summaries deliberately do not paint here: their label belongs to
+	 * a retry lifecycle this re-attached host is not inside, and no event exists
+	 * to clear it after the summary finishes. An absent paintable reason is a
+	 * no-op unless this host is actively showing a compaction label, so unrelated
+	 * workflow delivery busy state is preserved.
 	 */
 	hydrateCompactionStatus(reason: CompactionReason | undefined): void {
-		if (reason === undefined) {
+		const compactionReason = reason === "branchSummary" ? undefined : reason;
+		if (compactionReason === undefined) {
 			if (!this.state.compacting) return;
 			this.state.compacting = false;
 			this.state.statusMessage = "";
 		} else {
-			this.state.compacting = reason !== "branchSummary";
-			if (reason !== "branchSummary") this.state.sdkBusy = true;
-			this.state.statusMessage = compactionStatusMessage(reason);
+			this.state.compacting = true;
+			this.state.sdkBusy = true;
+			this.state.statusMessage = compactionStatusMessage(compactionReason);
 		}
 		this.syncAnimationTick();
 		this.state.requestRender?.();
