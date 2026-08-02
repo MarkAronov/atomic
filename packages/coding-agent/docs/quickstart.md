@@ -34,7 +34,7 @@ Atomic does not require package install scripts. If you want to disable dependen
 
 ### Alpine and musl Linux archives
 
-For Alpine Linux, use `atomic-linux-x64-musl.tar.gz` on x64 or `atomic-linux-arm64-musl.tar.gz` on arm64. These archives provide native search and PTY bindings. Install their runtime libraries with `apk add --no-cache libgcc libstdc++`, then see the [Alpine and musl Linux archive notes](/#alpine-and-musl-linux-archives) for the clipboard fallback and external Postgres or Docker requirement for durable workflows.
+For Alpine Linux, use `atomic-linux-x64-musl.tar.gz` on x64 or `atomic-linux-arm64-musl.tar.gz` on arm64. These archives provide native search and PTY bindings. Install their runtime libraries with `apk add --no-cache libgcc libstdc++`, then see the [Alpine and musl Linux archive notes](/index#alpine-and-musl-linux-archives) for the clipboard fallback and external Postgres or Docker requirement for durable workflows.
 
 Then start Atomic in the project directory you want it to work on:
 
