@@ -280,6 +280,32 @@ describe("store run pausing", () => {
 		assert.equal(run.resumedAt, 16_000);
 		assert.equal(run.pausedDurationMs, 10_000);
 	});
+	test("records quit time separately from paused time and clears it on resume", () => {
+		const originalNow = Date.now;
+		let now = 10_000;
+		Date.now = () => now;
+		try {
+			const s = createStore();
+			s.recordRunStart({ ...makeRun("quit"), startedAt: 1_000 });
+			const pausedAt = now;
+			assert.equal(s.recordRunPaused("quit", pausedAt), true);
+
+			now += 5_000;
+			const quitAt = now;
+			assert.equal(s.recordRunPaused("quit", undefined, { exitReason: "quit", resumable: true }), true);
+			let run = s.snapshot().runs[0]!;
+			assert.equal(run.pausedAt, pausedAt);
+			assert.equal(run.quitAt, quitAt);
+			assert.equal(run.endedAt, undefined);
+
+			assert.equal(s.recordRunResumed("quit", now + 1_000), true);
+			run = s.snapshot().runs[0]!;
+			assert.equal(run.quitAt, undefined);
+			assert.equal(run.exitReason, undefined);
+		} finally {
+			Date.now = originalNow;
+		}
+	});
 
 	test("recordRunEnd excludes paused time from final duration", () => {
 		const originalNow = Date.now;
