@@ -15,7 +15,7 @@
 
 ### Fixed
 
-- Fixed workflow-stage re-attach status falling back to `Working...` while context compaction is still active; the active compaction reason now survives host remounts so auto-compaction, overflow recovery, manual compaction, and branch summarization retain their factual status label.
+- Fixed workflow-stage re-attach status falling back to `Working...` while context compaction is still active; the active compaction reason now survives host remounts so manual compaction, threshold auto-compaction, and overflow recovery retain their factual status labels.
 
 ## [0.9.11-alpha.10] - 2026-08-01
 

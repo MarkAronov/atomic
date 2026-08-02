@@ -113,7 +113,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
 		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
-		if (!initialChatIsTerminal) rehydrateCompactionStatus(ctx);
+		if (!initialChatIsTerminal) rehydrateCompactionStatusAfterAttach(ctx);
 		rehydrateQueuedMessages(ctx);
 	}
 	ctx.chatHost.syncAnimationTick();
@@ -129,6 +129,29 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 function rehydrateCompactionStatus(ctx: StageChatViewContext): void {
 	const session = liveHandle(ctx)?.agentSession;
 	ctx.chatHost.hydrateCompactionStatus(session?.isCompacting === true ? session.compactionReason : undefined);
+}
+
+/**
+ * The live stage handle may create its session lazily. Re-read compaction state
+ * after that async attach so a host mounted while the session is already
+ * compacting does not stay on the generic Working row forever.
+ */
+function rehydrateCompactionStatusAfterAttach(ctx: StageChatViewContext): void {
+	const handle = liveHandle(ctx);
+	if (!handle) return;
+	rehydrateCompactionStatus(ctx);
+	void handle.ensureAttached().then(
+		() => {
+			if (ctx._unsubscribeHandle === null || liveHandle(ctx) === undefined) return;
+			if (isTerminalStageChatState(currentRun(ctx)?.status) || isTerminalStageChatState(currentStage(ctx)?.status)) {
+				return;
+			}
+			rehydrateCompactionStatus(ctx);
+			ctx.chatHost.syncAnimationTick();
+			ctx.requestRender?.();
+		},
+		() => {},
+	);
 }
 
 /**

@@ -263,4 +263,33 @@ describe("manual compaction re-entrancy", () => {
 		assert.equal(result.cancelled, false);
 		assert.equal(harness.session.compactionReason, undefined);
 	});
+	test("preserves an outer automatic reason across overlapping branch navigation", async () => {
+		const compactionGate = createGate();
+		const treeGate = createTreeGate();
+		const harness = await createHarnessWithExtensions({
+			extensionFactories: [compactionGate.factory, treeGate.factory],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+		seedTranscript(harness);
+
+		const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		await compactionGate.started;
+		assert.equal(harness.session.compactionReason, "threshold");
+
+		const targetId = harness.sessionManager.getTree()[0]?.entry.id;
+		assert.ok(targetId);
+		const navigation = harness.session.navigateTree(targetId, { summarize: false });
+		await treeGate.started;
+		assert.equal(harness.session.compactionReason, "threshold");
+
+		treeGate.release();
+		const result = await navigation;
+		assert.equal(result.cancelled, false);
+		assert.equal(harness.session.compactionReason, "threshold");
+
+		compactionGate.release();
+		await automatic;
+		assert.equal(harness.session.compactionReason, undefined);
+	});
 });

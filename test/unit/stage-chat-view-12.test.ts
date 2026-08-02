@@ -5,6 +5,7 @@ import {
 	createStore,
 	deriveGraphTheme,
 	fakeFooterAgentSession,
+	flush,
 	makeHandle,
 	StageChatView,
 	setupRun,
@@ -253,6 +254,100 @@ describe("StageChatView", () => {
 		const rendered = stripAnsi(view.render(96).join("\n"));
 		assert.match(rendered, /Working\.\.\./);
 		assert.doesNotMatch(rendered, /compacting/i);
+		view.dispose();
+	});
+	test("rehydrates active compaction after a lazy handle attach", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const agentSession = Object.assign(fakeFooterAgentSession(true), {
+			compactionReason: "threshold",
+			isCompacting: true,
+		});
+		let attachedSession: ReturnType<typeof fakeFooterAgentSession> | undefined;
+		let releaseAttach!: () => void;
+		const attach = new Promise<void>((resolve) => {
+			releaseAttach = resolve;
+		});
+		const { handle: baseHandle, state: handleState } = makeHandle(undefined, [], "running");
+		handleState.isStreaming = true;
+		const handle = {
+			...baseHandle,
+			get agentSession() {
+				return attachedSession;
+			},
+			async ensureAttached() {
+				await attach;
+				attachedSession = agentSession;
+			},
+		};
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		const beforeAttach = stripAnsi(view.render(96).join("\n"));
+		assert.match(beforeAttach, /Working\.\.\./);
+		assert.doesNotMatch(beforeAttach, /Auto-compacting/);
+		releaseAttach();
+		await flush();
+		await flush();
+
+		const afterAttach = stripAnsi(view.render(96).join("\n"));
+		assert.match(afterAttach, /Auto-compacting\.\.\./);
+		assert.doesNotMatch(afterAttach, /Working\.\.\./);
+		view.dispose();
+	});
+
+	test("does not resurrect a compaction label that ended before lazy attach", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const agentSession = Object.assign(fakeFooterAgentSession(true), {
+			compactionReason: "threshold" as "threshold" | undefined,
+			isCompacting: true,
+		});
+		let attachedSession: ReturnType<typeof fakeFooterAgentSession> | undefined;
+		let releaseAttach!: () => void;
+		const attach = new Promise<void>((resolve) => {
+			releaseAttach = resolve;
+		});
+		const { handle: baseHandle, state: handleState } = makeHandle(undefined, [], "running");
+		handleState.isStreaming = true;
+		const handle = {
+			...baseHandle,
+			get agentSession() {
+				return attachedSession;
+			},
+			async ensureAttached() {
+				await attach;
+				attachedSession = agentSession;
+			},
+		};
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		agentSession.isCompacting = false;
+		agentSession.compactionReason = undefined;
+		releaseAttach();
+		await flush();
+		await flush();
+
+		const rendered = stripAnsi(view.render(96).join("\n"));
+		assert.match(rendered, /Working\.\.\./);
+		assert.doesNotMatch(rendered, /Auto-compacting|Compacting context/);
 		view.dispose();
 	});
 	test("does not rehydrate compaction status for a terminal run or stage", () => {

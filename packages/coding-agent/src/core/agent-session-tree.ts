@@ -80,7 +80,7 @@ export async function navigateTree(
 
 	// Set up abort controller for summarization
 	this._branchSummaryAbortController = new AbortController();
-	this._compactionReason = "branchSummary";
+	if (this._compactionReason === undefined) this._compactionReason = "branchSummary";
 
 	try {
 		let extensionSummary: { summary: string; details?: unknown } | undefined;
