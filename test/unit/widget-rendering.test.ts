@@ -15,6 +15,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { statusRuns } from "../../packages/workflows/src/runs/background/status.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
@@ -140,6 +142,48 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(lines[0]!.includes("BACKGROUND  1 run  1 quit"));
 		assert.ok(joined.includes("quit · resumable via /workflow resume"));
 	});
+	test("quit card expires from the widget after the recent window while status stays resumable", () => {
+		const originalNow = Date.now;
+		let now = 1_000_000;
+		Date.now = () => now;
+		try {
+			const store = createStore();
+			const runId = "quit-after-pause";
+			store.recordRunStart(makeRun(runId, "resume-me-later", "running", [], now - RECENT_ENDED_WINDOW_MS * 3));
+			const pausedAt = now - RECENT_ENDED_WINDOW_MS * 2;
+			assert.equal(store.recordRunPaused(runId, pausedAt), true);
+
+			now += RECENT_ENDED_WINDOW_MS / 6;
+			const quitAt = now;
+			assert.equal(store.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true }), true);
+
+			const quitRun = store.snapshot().runs[0]!;
+			assert.equal(quitRun.status, "paused");
+			assert.equal(quitRun.endedAt, undefined);
+			assert.equal(quitRun.pausedAt, pausedAt, "quitting must not repurpose pausedAt");
+			assert.equal(quitRun.quitAt, quitAt, "expiry must start when the run is quit");
+			assert.equal(quitRun.resumable, true);
+			assert.ok(
+				renderWidgetLines(store.snapshot(), 120)
+					.map(stripAnsi)
+					.join("\n")
+					.includes("quit · resumable via /workflow resume"),
+				"a newly quit run should render immediately",
+			);
+
+			now = quitAt + RECENT_ENDED_WINDOW_MS + 1;
+			assert.deepEqual(renderWidgetLines(store.snapshot(), 120), [], "expired quit card should disappear");
+
+			const status = statusRuns({ store });
+			assert.deepEqual(
+				status.map((entry) => [entry.runId, entry.status]),
+				[[runId, "paused"]],
+			);
+			assert.equal(store.snapshot().runs[0]!.resumable, true, "expiry must not change resumability");
+		} finally {
+			Date.now = originalNow;
+		}
+	});
 
 	test("running run shows chain mode when multi-stage", () => {
 		const run = makeRun("xyz000aaaa", "deep-research", "running", [
@@ -187,6 +231,20 @@ describe("renderWidgetLines — standard form", () => {
 		const wfTwoIdx = lines.findIndex((l) => l.includes("wf-two"));
 		const wfOneIdx = lines.findIndex((l) => l.includes("wf-one"));
 		assert.ok(wfTwoIdx < wfOneIdx, "most recently started run renders first");
+	});
+	test("more than four concurrent runs all render without truncation", () => {
+		const now = Date.now();
+		const runs = Array.from({ length: 6 }, (_, index) =>
+			makeRun(`run-${index}-abcdef`, `wf-${index}`, "running", [], now - (6 - index) * 100),
+		);
+		const lines = renderWidgetLines(makeSnap(runs), 120).map(stripAnsi);
+		const joined = lines.join("\n");
+
+		assert.ok(lines[0]!.includes("6 runs"));
+		for (let index = 0; index < runs.length; index++) {
+			assert.ok(joined.includes(`wf-${index}`), `workflow ${index} should render`);
+		}
+		assert.equal(lines.filter((line) => line.includes("single")).length, 6);
 	});
 
 	test("hides nested child workflow runs, showing only the top-level run", () => {
@@ -269,6 +327,24 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(header.includes("❚❚ 1 paused"), "paused badge");
 		assert.ok(header.includes("✓ 1 complete"), "completed badge");
 		assert.ok(header.includes("✗ 1 failed"), "failed badge");
+	});
+	test("expired quit runs do not contribute quit badges after their cards disappear", () => {
+		const now = 1_000_000;
+		const active = makeRun("active-run", "still-running", "running", [], now - 1_000);
+		const expiredQuit = makeRun("expired-quit", "already-quit", "paused", [], now - RECENT_ENDED_WINDOW_MS * 2);
+		expiredQuit.pausedAt = now - RECENT_ENDED_WINDOW_MS * 2;
+		expiredQuit.quitAt = now - RECENT_ENDED_WINDOW_MS - 1;
+		expiredQuit.exitReason = "quit";
+		expiredQuit.resumable = true;
+		const snap = makeSnap([active, expiredQuit]);
+
+		const wide = renderWidgetLines(snap, 120).map(stripAnsi);
+		assert.ok(wide.join("\n").includes("still-running"));
+		assert.ok(!wide[0]!.includes("quit"), "wide quit badge must match rendered cards");
+
+		const collapsed = renderWidgetLines(snap, 60).map(stripAnsi);
+		assert.ok(collapsed[0]!.includes("1 background"));
+		assert.ok(!collapsed[0]!.includes("quit"), "collapsed quit badge must match rendered cards");
 	});
 
 	test("ctx.exit blocked remains distinct from completed exit statuses", () => {
@@ -359,6 +435,20 @@ describe("renderWidgetLines — standard form", () => {
 
 		const ended = makeRun("r2xxxxxx", "wf-d", "completed", [], now - 20_000, now - 10_000);
 		assert.equal(nextWidgetRefreshDelayMs(makeSnap([offsetActive, ended]), now), 750);
+	});
+	test("quit runs schedule the expiry repaint from quitAt", () => {
+		const now = 1_000_000;
+		const quitAt = now - RECENT_ENDED_WINDOW_MS / 6;
+		const quit = makeRun("quit-refresh", "wf-quit", "paused", [], now - RECENT_ENDED_WINDOW_MS * 2);
+		quit.pausedAt = now - RECENT_ENDED_WINDOW_MS * 2;
+		quit.quitAt = quitAt;
+		quit.exitReason = "quit";
+		quit.resumable = true;
+
+		assert.equal(
+			nextWidgetRefreshDelayMs(makeSnap([quit]), now),
+			RECENT_ENDED_WINDOW_MS - RECENT_ENDED_WINDOW_MS / 6 + 1,
+		);
 	});
 
 	test("standard panel scales to the provided terminal width", () => {

@@ -39,7 +39,6 @@ import type { PiTheme } from "./store-widget-installer.js";
 // ---------------------------------------------------------------------------
 
 const SHORT_ID_LEN = 6;
-const MAX_VISIBLE_RUNS = 4;
 export const RECENT_ENDED_WINDOW_MS = 30_000;
 const COLLAPSED_BREAKPOINT_COLS = 80;
 
@@ -62,16 +61,28 @@ export function formatDuration(ms: number): string {
 // Run classification + selection
 // ---------------------------------------------------------------------------
 
+function isQuitRun(run: RunSnapshot): boolean {
+	return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
+}
+
 function isActive(run: RunSnapshot): boolean {
-	return run.endedAt === undefined;
+	return run.endedAt === undefined && !isQuitRun(run);
 }
 
 function recentlyEnded(run: RunSnapshot, now: number): boolean {
 	return run.endedAt !== undefined && now - run.endedAt <= RECENT_ENDED_WINDOW_MS;
 }
 
-function isQuitRun(run: RunSnapshot): boolean {
-	return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
+/**
+ * Returns the timestamp from which a quit card's display-only expiry is measured.
+ * Older snapshots do not have `quitAt`, so retain the bounded legacy fallbacks.
+ */
+function quitExpiryTimestamp(run: RunSnapshot): number {
+	return run.quitAt ?? run.pausedAt ?? run.startedAt;
+}
+
+function recentlyQuit(run: RunSnapshot, now: number): boolean {
+	return isQuitRun(run) && now - quitExpiryTimestamp(run) <= RECENT_ENDED_WINDOW_MS;
 }
 
 interface RunCounts {
@@ -123,7 +134,7 @@ function countRuns(runs: readonly RunSnapshot[], allRuns: readonly RunSnapshot[]
 /**
  * Returns the next wall-clock boundary that can change the visible widget.
  * Running elapsed labels tick on exact one-second boundaries; paused runs stay
- * frozen. Recently ended cards retain their independent one-shot expiry.
+ * frozen. Recently ended and quit cards retain their independent one-shot expiry.
  * Reactive-widget updates the existing mounted component in place, so these
  * ticks repaint the visible panel without disposing or remounting it.
  */
@@ -131,9 +142,14 @@ export function nextWidgetRefreshDelayMs(snap: StoreSnapshot, now = Date.now()):
 	const display = selectDisplayRuns(snap, now);
 	if (display.length === 0) return undefined;
 
-	const delays: number[] = display
-		.filter((run) => run.endedAt !== undefined)
-		.map((run) => Math.max(1, run.endedAt! + RECENT_ENDED_WINDOW_MS - now + 1));
+	const delays: number[] = [];
+	for (const run of display) {
+		if (run.endedAt !== undefined) {
+			delays.push(Math.max(1, run.endedAt + RECENT_ENDED_WINDOW_MS - now + 1));
+		} else if (isQuitRun(run)) {
+			delays.push(Math.max(1, quitExpiryTimestamp(run) + RECENT_ENDED_WINDOW_MS - now + 1));
+		}
+	}
 	for (const run of display) {
 		if (run.endedAt !== undefined || effectiveRunStatus(run) !== "running" || run.pausedAt !== undefined) continue;
 		const remainder = elapsedRunMs(run, now) % 1_000;
@@ -150,11 +166,10 @@ function selectDisplayRuns(snap: StoreSnapshot, now: number): RunSnapshot[] {
 	// rule `statusRuns`/the `status` action already apply.
 	const all = topLevelWorkflowRuns(snap.runs);
 	const active = all.filter((r) => isActive(r));
-	const recent = all.filter((r) => recentlyEnded(r, now));
+	const recent = all.filter((r) => recentlyEnded(r, now) || recentlyQuit(r, now));
 	// Most recently started first within each bucket; active runs precede recent.
 	const sort = (xs: RunSnapshot[]) => [...xs].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
-	const ordered = [...sort(active), ...sort(recent)];
-	return ordered.slice(0, MAX_VISIBLE_RUNS);
+	return [...sort(active), ...sort(recent)];
 }
 
 // ---------------------------------------------------------------------------

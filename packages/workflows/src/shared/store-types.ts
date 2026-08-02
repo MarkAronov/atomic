@@ -282,6 +282,8 @@ export interface RunSnapshot {
 	pausedDurationMs?: number;
 	/** Timestamp set when a controlled pause begins; cleared on resume. */
 	pausedAt?: number;
+	/** Timestamp when the run entered resumable quit state; display-only expiry marker. */
+	quitAt?: number;
 	/** Timestamp recorded on the most recent resume from a paused state. */
 	resumedAt?: number;
 	result?: WorkflowOutputValues;

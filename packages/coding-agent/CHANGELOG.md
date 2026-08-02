@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+
+- Removed the four-workflow display cap from the BACKGROUND widget so every qualifying top-level run is rendered.
+
+### Fixed
+
+- Quit workflow cards now expire from the BACKGROUND widget after the same recent-run window as finished cards while remaining resumable and discoverable through workflow status.
 
 ## [0.9.11-alpha.10] - 2026-08-01
 
