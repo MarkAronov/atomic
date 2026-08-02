@@ -150,6 +150,8 @@ function platformDescriptorFromNapiTarget(packageJson, target) {
 		"aarch64-apple-darwin": { suffix: "darwin-arm64", os: ["darwin"], cpu: ["arm64"] },
 		"x86_64-unknown-linux-gnu": { suffix: "linux-x64-gnu", os: ["linux"], cpu: ["x64"], libc: ["glibc"] },
 		"aarch64-unknown-linux-gnu": { suffix: "linux-arm64-gnu", os: ["linux"], cpu: ["arm64"], libc: ["glibc"] },
+		"x86_64-unknown-linux-musl": { suffix: "linux-x64-musl", os: ["linux"], cpu: ["x64"], libc: ["musl"] },
+		"aarch64-unknown-linux-musl": { suffix: "linux-arm64-musl", os: ["linux"], cpu: ["arm64"], libc: ["musl"] },
 	};
 	const mapping = mappings[target];
 	if (!mapping) {

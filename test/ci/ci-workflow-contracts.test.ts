@@ -182,6 +182,7 @@ test("publish graph stages a draft before npm and undrafts last", async () => {
 		"native-artifacts",
 		"linux-binary-smoke",
 		"windows-binary-smoke",
+		"alpine-binary-smoke",
 		"build",
 		"stage-github-release",
 		"publish-npm",
@@ -192,7 +193,7 @@ test("publish graph stages a draft before npm and undrafts last", async () => {
 	}
 	assert.match(
 		jobBlock(workflow, "build", "stage-github-release"),
-		/needs: \[integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke\]/,
+		/needs: \[integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke, alpine-binary-smoke\]/,
 	);
 	const stage = jobBlock(workflow, "stage-github-release", "publish-npm");
 	assert.match(stage, /needs: \[integrity, build\]/);
@@ -229,7 +230,7 @@ test("publish permissions, timeouts, runners, and OIDC are least privilege", asy
 		assert.match(writeJob, /GH_REPO: \$\{\{ github\.repository \}\}/);
 		assert.doesNotMatch(writeJob, /id-token: write|npm publish/);
 	}
-	assert.equal([...workflow.matchAll(/^ {4}timeout-minutes:/gmu)].length, 9);
+	assert.equal([...workflow.matchAll(/^ {4}timeout-minutes:/gmu)].length, 10);
 	assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404-arm/);
 	assert.match(workflow, /macos-26-intel/);
 	assert.match(workflow, /blacksmith-6vcpu-macos-26/);
@@ -243,13 +244,19 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 		"x86_64-unknown-linux-gnu",
 		"aarch64-unknown-linux-gnu",
 		"x86_64-apple-darwin",
+		"x86_64-unknown-linux-musl",
+		"aarch64-unknown-linux-musl",
 		"aarch64-apple-darwin",
 		"x86_64-pc-windows-msvc",
 		"aarch64-pc-windows-msvc",
 	])
 		assert.match(native, new RegExp(target));
 	assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /GLIBC_FLOOR: "2\.17"/);
-	assert.match(native, /build_target="\$\{BARE_TARGET\}\.\$\{GLIBC_FLOOR\}"/);
+	assert.match(
+		native,
+		/\[\[ "\$BARE_TARGET" != \*-unknown-linux-gnu \]\] \|\| build_target="\$\{BARE_TARGET\}\.\$\{GLIBC_FLOOR\}"/u,
+	);
+	assert.doesNotMatch(native, /linux-musl[^\n]*GLIBC_FLOOR/u);
 	assert.match(native, /toolchain: 1\.97\.0/);
 	assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /RUSTUP_TOOLCHAIN: "1\.97\.0"/);
 	assert.match(native, /NATIVE_TARGET: \$\{\{ matrix\.platform == 'darwin' && matrix\.target \|\| '' \}\}/);
@@ -257,7 +264,7 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	assert.match(native, /cargo-zigbuild/);
 	assert.match(native, /RUSTFLAGS=-C target-cpu=x86-64-v2/);
 	assert.match(native, /fail-fast: false/);
-	assert.match(native, /name: atomic-natives-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}/);
+	assert.match(native, /name: atomic-natives-\$\{\{ matrix\.slug \}\}/u);
 	assert.match(native, /macos-26-intel/);
 	assert.match(native, /blacksmith-6vcpu-macos-26/);
 	assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup/iu);
@@ -271,6 +278,17 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	);
 });
 
+test("Alpine smoke consumes the x64 musl artifact and installs its runtime libraries", async () => {
+	const workflow = await readText(publishPath);
+	const alpine = jobBlock(workflow, "alpine-binary-smoke", "build");
+	assert.match(alpine, /needs: \[integrity, native-artifacts\]/u);
+	assert.match(alpine, /name: atomic-natives-linux-x64-musl/u);
+	assert.match(alpine, /atomic-linux-x64-musl\.tar\.gz/u);
+	assert.match(alpine, /apk add --no-cache libgcc libstdc\+\+/u);
+	assert.match(alpine, /node:22-alpine/u);
+	assert.match(alpine, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
+});
+
 test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
 	const workflow = await readText(publishPath);
 	assert.match(workflow, /"win32-arm64-msvc"/);
@@ -279,8 +297,10 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /Build Linux x64 archive[\s\S]*--platform linux-x64/);
 	assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
 	assert.match(workflow, /Failed to load extension/);
-	assert.match(workflow, /native optionalDependencies must be the six exact-version platform packages/);
-	assert.match(workflow, /test .* = 8/);
+	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
+	assert.match(workflow, /test .* = 10/u);
+	assert.match(workflow, /Build Linux x64 musl archive[\s\S]*--platform linux-x64-musl/u);
+	assert.match(workflow, /apk add --no-cache libgcc libstdc\+\+/u);
 	assert.doesNotMatch(
 		workflow,
 		/Release-base-ref|Release-base-sha|RELEASE_BASE_REFS|deterministic release tree|create-event binding/iu,
@@ -396,7 +416,7 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
 	}
 	const publish = await readText(publishPath);
 	const testWorkflow = await readText(testPath);
-	assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "build"), /useblacksmith/u);
+	assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "alpine-binary-smoke"), /useblacksmith/u);
 	// Every cross-platform job in test.yml now checks out for itself, so each one
 	// must keep the Linux/non-Linux checkout pair.
 	const crossPlatformJobs = ["suites", "agent-suite", "release-archive"] as const;
@@ -449,6 +469,8 @@ test("each native leg declares its own measured job and compile budget", async (
 		...native.matchAll(/platform: (\w+), arch: (\w+),[^}]*timeout_minutes: (\d+), build_timeout_minutes: (\d+)/gu),
 	].map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
 	assert.deepEqual(legs, [
+		"linux x64 7/5",
+		"linux arm64 8/5",
 		"linux x64 7/5",
 		"linux arm64 8/5",
 		"darwin x64 9/8",

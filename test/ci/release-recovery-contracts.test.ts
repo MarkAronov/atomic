@@ -25,7 +25,8 @@ test("integrity always verifies the tag while recovery builds the selected sourc
 	for (const [name, next] of [
 		["native-artifacts", "linux-binary-smoke"],
 		["linux-binary-smoke", "windows-binary-smoke"],
-		["windows-binary-smoke", "build"],
+		["windows-binary-smoke", "alpine-binary-smoke"],
+		["alpine-binary-smoke", "build"],
 		["build", "stage-github-release"],
 	] as const) {
 		const job = jobBlock(workflow, name, next);

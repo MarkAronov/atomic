@@ -11,7 +11,8 @@
 #   --skip-install       Reuse dependencies installed by the caller
 #   --skip-package-build Reuse packages/coding-agent/dist built by the caller
 #   --platform <name>    Build only for specified platform
-#                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64)
+#                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
+#                         linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64)
 #
 # Output:
 #   packages/coding-agent/binaries/
@@ -19,6 +20,8 @@
 #     atomic-darwin-x64.tar.gz
 #     atomic-linux-x64.tar.gz
 #     atomic-linux-arm64.tar.gz
+#     atomic-linux-x64-musl.tar.gz
+#     atomic-linux-arm64-musl.tar.gz
 #     atomic-windows-x64.zip
 #     atomic-windows-arm64.zip
 
@@ -71,11 +74,11 @@ done
 
 if [[ -n "$PLATFORM" ]]; then
     case "$PLATFORM" in
-        darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64|windows-arm64)
+        darwin-arm64|darwin-x64|linux-x64|linux-arm64|linux-x64-musl|linux-arm64-musl|windows-x64|windows-arm64)
             ;;
         *)
             echo "Invalid platform: $PLATFORM"
-            echo "Valid platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64"
+            echo "Valid platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64, linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64"
             exit 1
             ;;
     esac
@@ -97,7 +100,7 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
     # because none of these are meant to run on this host.
     natives_version="$(node -p 'require("./packages/natives/package.json").version')"
     natives_targets=()
-    for natives_platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc win32-arm64-msvc; do
+    for natives_platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl win32-x64-msvc win32-arm64-msvc; do
         natives_targets+=("@bastani/atomic-natives-${natives_platform}@${natives_version}")
     done
     # A versionless release base pins every manifest at the 0.0.0 placeholder, and
@@ -158,7 +161,7 @@ mkdir -p binaries
 if [[ -n "$PLATFORM" ]]; then
     PLATFORMS=("$PLATFORM")
 else
-    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64 windows-arm64)
+    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl windows-x64 windows-arm64)
 fi
 
 shared_app_dir="binaries/.app"
@@ -206,6 +209,8 @@ atomic_native_filename() {
         darwin-x64) echo "atomic_natives.darwin-x64.node" ;;
         linux-x64) echo "atomic_natives.linux-x64-gnu.node" ;;
         linux-arm64) echo "atomic_natives.linux-arm64-gnu.node" ;;
+        linux-x64-musl) echo "atomic_natives.linux-x64-musl.node" ;;
+        linux-arm64-musl) echo "atomic_natives.linux-arm64-musl.node" ;;
         windows-x64) echo "atomic_natives.win32-x64-msvc.node" ;;
         windows-arm64) echo "atomic_natives.win32-arm64-msvc.node" ;;
         *) echo "Unknown platform: $1" >&2; return 1 ;;
@@ -244,6 +249,11 @@ for platform in "${PLATFORMS[@]}"; do
     fi
 
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
+    if [[ "$platform" == linux-*-musl ]]; then
+        # The embedded-postgres wrapper remains useful for its Docker/in-memory fallback,
+        # but its optional @embedded-postgres/* packages contain glibc binaries only.
+        rm -rf "binaries/$platform/node_modules/@embedded-postgres"
+    fi
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
     atomic_native="$(atomic_native_filename "$platform")"

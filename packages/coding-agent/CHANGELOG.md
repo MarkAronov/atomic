@@ -11,6 +11,10 @@
 - Fixed detached foreground subagent completion notifications rendering as an unstyled dump of the full child output. They now use the same structured, collapsed notification UI as background completions while preserving the distinct detached-task wording, and persisted notifications with custom labels remain parseable.
 - Fixed workflow-stage re-attach status falling back to `Working...` while context compaction is still active; the active compaction reason now survives host remounts so manual compaction, threshold auto-compaction, and overflow recovery retain their factual status labels.
 
+### Added
+
+- Added first-class Alpine/musl Linux support for x64 and arm64, including native search and PTY bindings and the `atomic-linux-x64-musl.tar.gz` and `atomic-linux-arm64-musl.tar.gz` release archives. The musl archives omit the clipboard native binding and glibc-linked `@embedded-postgres/*` binaries: Atomic falls back to Linux clipboard commands/OSC52, while durable Alpine workflows require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker; otherwise the existing loud non-durable in-memory fallback applies.
+
 ## [0.9.11-alpha.10] - 2026-08-01
 
 ### Fixed
