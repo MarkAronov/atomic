@@ -146,21 +146,25 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		// surface that interacts with the prompt. When the stage switcher is
 		// open it owns the body/input, so hide the prompt card until it closes.
 		if (!this.promptState || this.switcherOpen) return;
-
+		const run = this._getCurrentRun();
 		const cardWidth = Math.min(72, Math.max(40, frameWidth - 6));
 		const cardLines = renderPromptCard({
 			state: this.promptState,
 			theme: this.graphTheme,
 			width: cardWidth,
 			cursorOn: ((Date.now() / 530) | 0) % 2 === 0,
+			identity: run ? { runId: run.id, name: run.name } : undefined,
+			maxRows: bodyTarget,
 		});
 		const bodyStart = 3;
-		const bodyEnd = 3 + bodyTarget;
+		const bodyEnd = bodyStart + bodyTarget;
 		const slot = Math.max(bodyStart, bodyStart + Math.floor((bodyTarget - cardLines.length) / 2));
+		// The card renderer owns row budgeting, but keep this composition boundary
+		// defensive: a complete card fits wholly in the body or is not painted.
+		if (cardLines.length > bodyTarget || slot + cardLines.length > bodyEnd) return;
 		const leftPad = Math.max(0, Math.floor((frameWidth - cardWidth) / 2));
 		for (let i = 0; i < cardLines.length; i++) {
 			const lineIdx = slot + i;
-			if (lineIdx >= bodyEnd) break;
 			const base = lines[lineIdx] ?? this._blankRow(frameWidth);
 			lines[lineIdx] = this._overlayCard(base, cardLines[i]!, leftPad, frameWidth);
 		}

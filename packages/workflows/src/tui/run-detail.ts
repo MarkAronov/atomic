@@ -24,10 +24,10 @@ import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { wrapIdentifierLines } from "./run-identity-rows.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
-const SHORT_ID_LEN = 6;
 const STAGE_NAME_COL = 14;
 const KEY_COL = 14;
 
@@ -56,9 +56,10 @@ export function renderRunDetail(detail: RunDetail, opts: RenderRunDetailOpts = {
 
 function renderPlain(detail: RunDetail, now: number, width: number): string {
 	const out: string[] = [];
-
-	const sid = shortId(detail.runId);
 	const stateBadge = stateLabel(detail);
+
+	out.push(...renderIdentifierRows(detail.runId, width - 2));
+	out.push("");
 
 	for (const [k, v] of summaryRows(detail, now)) {
 		if (v === undefined) continue;
@@ -89,18 +90,10 @@ function renderPlain(detail: RunDetail, now: number, width: number): string {
 		out.push("");
 	}
 
-	if (detail.endedAt === undefined) {
-		const hint =
-			detail.status === "paused"
-				? ` ▸ workflow resume id=${sid}    continue workflow `
-				: ` ▸ workflow interrupt   id=${sid}    cancel `;
-		out.push(truncateToWidth(hint, width - 2, "…"));
-	} else {
-		out.push(truncateToWidth(` ▸ workflow resume id=${sid}    reopen graph `, width - 2, "…"));
-	}
+	out.push(...renderDetailHintRows(detail, width - 2));
 
 	return renderRoundedBox({
-		title: `RUN ${sid}  ${detail.name}  ${stateBadge}`,
+		title: `RUN ${detail.name}  ${stateBadge}`,
 		bodyLines: out,
 		width,
 	});
@@ -115,9 +108,10 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: 
 	const muted = hexToAnsi(theme.textMuted);
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
-	const accent = hexToAnsi(theme.accent);
 
-	const sid = shortId(detail.runId);
+	out.push(...renderIdentifierRows(detail.runId, width - 2, theme));
+	out.push("");
+
 	const badges = stateBadges(detail, theme);
 
 	for (const [k, v] of summaryRows(detail, now)) {
@@ -151,25 +145,11 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: 
 		out.push("");
 	}
 
-	if (detail.endedAt === undefined) {
-		const hint =
-			detail.status === "paused"
-				? ` ${dim}▸${RESET} ${accent}workflow resume id=${sid}${RESET}${dim}    continue workflow${RESET} `
-				: ` ${dim}▸${RESET} ${accent}workflow interrupt   id=${sid}${RESET}${dim}    cancel${RESET} `;
-		out.push(truncateToWidth(hint, width - 2, "…"));
-	} else {
-		out.push(
-			truncateToWidth(
-				` ${dim}▸${RESET} ${accent}workflow resume id=${sid}${RESET}${dim}    reopen graph${RESET} `,
-				width - 2,
-				"…",
-			),
-		);
-	}
+	out.push(...renderDetailHintRows(detail, width - 2, theme));
 
 	const badgeText = badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
 	return renderRoundedBox({
-		title: `RUN ${sid}  ${detail.name}${badgeText}`,
+		title: `RUN ${detail.name}${badgeText}`,
 		bodyLines: out,
 		accent: theme.accent,
 		theme,
@@ -389,14 +369,51 @@ function statePlain(detail: RunDetail): string {
 // Tiny formatters
 // ---------------------------------------------------------------------------
 
-function shortId(id: string): string {
-	return id.length > SHORT_ID_LEN ? id.slice(0, SHORT_ID_LEN) : id;
-}
-
 function pad(s: string, n: number): string {
 	const width = visibleWidth(s);
 	if (width >= n) return s;
 	return s + " ".repeat(n - width);
+}
+
+function renderIdentifierRows(id: string, width: number, theme?: GraphTheme): string[] {
+	const rows = wrapIdentifierLines(id, width, " run id  ", "         ");
+	if (!theme) return rows.map((row) => `${row.prefix}${row.chunk}`);
+	const muted = hexToAnsi(theme.textMuted);
+	const accent = hexToAnsi(theme.accent);
+	return rows.map((row, index) => {
+		const prefix = index === 0 ? `${muted}${row.prefix}${RESET}` : row.prefix;
+		return `${prefix}${accent}${row.chunk}${RESET}`;
+	});
+}
+
+function renderDetailHintRows(detail: RunDetail, width: number, theme?: GraphTheme): string[] {
+	const prefix =
+		detail.endedAt === undefined
+			? detail.status === "paused"
+				? " ▸ workflow resume id="
+				: " ▸ workflow interrupt   id="
+			: " ▸ workflow resume id=";
+	const suffix =
+		detail.endedAt === undefined
+			? detail.status === "paused"
+				? "    continue workflow "
+				: "    cancel "
+			: "    reopen graph ";
+	const continuation = "    ";
+	const rows = wrapIdentifierLines(detail.runId, width, prefix, continuation);
+	const last = rows[rows.length - 1]!;
+	if (visibleWidth(`${last.prefix}${last.chunk}${suffix}`) <= width) {
+		last.chunk += suffix;
+	} else {
+		rows.push({
+			prefix: continuation,
+			chunk: truncateToWidth(suffix.trimStart(), Math.max(1, width - visibleWidth(continuation)), "…"),
+		});
+	}
+	if (!theme) return rows.map((row) => `${row.prefix}${row.chunk}`);
+	const dim = hexToAnsi(theme.dim);
+	const accent = hexToAnsi(theme.accent);
+	return rows.map((row) => `${dim}${row.prefix}${RESET}${accent}${row.chunk}${RESET}`);
 }
 
 function formatTime(ms: number): string {

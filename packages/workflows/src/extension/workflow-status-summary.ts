@@ -33,8 +33,6 @@ import { elapsedRunMs } from "../shared/timing.js";
  */
 export type WorkflowRunStatusFilter = StageStatus | RunStatus | "all";
 
-const RUN_ID_PREFIX_LEN = 8;
-
 /** A currently active (running or awaiting-input) stage within a run. */
 export interface WorkflowStatusActiveStage {
 	/** Expanded-graph stage id; valid for stage-scoped send/pause/resume. */
@@ -81,8 +79,6 @@ export interface WorkflowStatusToolNode {
  */
 export interface WorkflowRunStatusSummary {
 	readonly runId: string;
-	/** Abbreviated run id as printed by status surfaces; a valid prefix input. */
-	readonly runIdPrefix: string;
 	/** Workflow/run name. */
 	readonly name: string;
 	readonly status: RunStatus;
@@ -152,7 +148,6 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 	const awaitingInput = awaitingInputEntries(run);
 	return {
 		runId: run.id,
-		runIdPrefix: run.id.slice(0, RUN_ID_PREFIX_LEN),
 		name: run.name,
 		status: effectiveRunStatus(run),
 		startedAt: run.startedAt,

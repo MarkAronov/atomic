@@ -22,6 +22,8 @@ import { hexBg, hexToAnsi } from "../../packages/workflows/src/tui/color-utils.j
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -35,6 +37,8 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		status: opts.status ?? ("pending" as StageStatus),
 		parentIds: opts.parentIds ?? [],
 		topologyState: opts.topologyState,
+		nodeKind: opts.nodeKind,
+		toolStatus: opts.toolStatus,
 		toolEvents: opts.toolEvents ?? [],
 		durationMs: opts.durationMs,
 		pausedDurationMs: opts.pausedDurationMs,
@@ -45,6 +49,7 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		blockedByStageId: opts.blockedByStageId,
 		model: opts.model,
 		workflowChild: opts.workflowChild,
+		workflowChildRun: opts.workflowChildRun,
 		fastMode: opts.fastMode,
 	};
 }
@@ -93,6 +98,33 @@ describe("renderNodeCard — queued-message badge", () => {
 		assert.doesNotMatch(badged, /1 dep/);
 	});
 
+	test("keeps child identity, status, full UUID, and queued badge at the real card geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				workflowChildRun: { alias: "child", workflow: "publish-child", runId },
+			}),
+			{ theme, queuedMessageCount: 2 },
+		);
+		const plainLines = lines.map(stripAnsi);
+		const rendered = plainLines.join("\n");
+		const renderedRunId = plainLines
+			.slice(1, -1)
+			.map((line) => line.slice(1, -1).trim())
+			.filter((line) => /^(?:run )?[0-9a-f-]+$/.test(line))
+			.join("")
+			.replace(/^run /, "");
+
+		assert.equal(lines.length, NODE_H);
+		for (const line of plainLines) assert.equal(line.length, NODE_W);
+		assert.match(rendered, /publish-child/);
+		assert.match(rendered, new RegExp(`${statusIcon("running")} running`));
+		assert.match(rendered, /✉ 2 queued/);
+		assert.equal(renderedRunId, runId);
+		assert.doesNotMatch(rendered, /…/);
+	});
+
 	test("renders a single queued message count verbatim", () => {
 		const lines = renderNodeCard(makeStage({ status: "running", startedAt: 1 }), {
 			theme,
@@ -118,6 +150,52 @@ describe("renderNodeCard — queued-message badge", () => {
 		assert.doesNotMatch(rendered, /waiting for response/);
 	});
 
+	test("keeps queued badges on awaiting-input child boundaries at the real card geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const childBoundaries: Array<{ label: string; stage: Partial<StageSnapshot> }> = [
+			{
+				label: "live child",
+				stage: { workflowChildRun: { alias: "child", workflow: "publish-child", runId } },
+			},
+			{
+				label: "completed child",
+				stage: {
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: {},
+					},
+				},
+			},
+		];
+
+		for (const { label, stage } of childBoundaries) {
+			for (const queuedMessageCount of [1, 2, 12, 100]) {
+				const lines = renderNodeCard(makeStage({ ...stage, status: "awaiting_input" }), {
+					theme,
+					width: 24,
+					height: 5,
+					queuedMessageCount,
+				});
+				const plainLines = lines.map(stripAnsi);
+				const rendered = plainLines.join("\n");
+				const context = `${label} queuedMessageCount=${queuedMessageCount}`;
+				const badgeLine = plainLines.find((line) => line.includes(`${queuedMessageCount} queued`));
+				const badgeText = badgeLine?.slice(1, -1).trim();
+
+				assert.equal(lines.length, 5, context);
+				for (const line of plainLines) assert.equal(visibleWidth(line), 24, context);
+				assert.notEqual(badgeText, undefined, context);
+				assert.match(badgeText!, new RegExp(`^\\S ${queuedMessageCount} queued$`), context);
+				assert.doesNotMatch(badgeText!, /…/, context);
+				assert.match(rendered, new RegExp(`${statusIcon("awaiting_input")} awaiting input`), context);
+				assert.match(rendered, /↵ enter to respond/, context);
+			}
+		}
+	});
+
 	test("omits the badge for zero, negative, and absent counts", () => {
 		for (const queuedMessageCount of [undefined, 0, -1, Number.NaN]) {
 			const lines = renderNodeCard(makeStage({ status: "running", startedAt: 1 }), {
@@ -127,6 +205,61 @@ describe("renderNodeCard — queued-message badge", () => {
 			assert.doesNotMatch(stripAnsi(lines.join("\n")), /queued/, `count ${String(queuedMessageCount)}`);
 			assert.equal(lines.length, NODE_H);
 			for (const line of lines) assert.equal(stripAnsi(line).length, NODE_W);
+		}
+	});
+	test("keeps every child-run queued badge whole for long status labels at the real geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const statuses: Array<{
+			label: string;
+			stage: Partial<StageSnapshot>;
+			expectedStatusText: string;
+		}> = [
+			{
+				label: "cancelled",
+				stage: { status: "skipped", nodeKind: "tool", toolStatus: "cancelled" },
+				expectedStatusText: `${statusIcon("cancelled")} cancelled`,
+			},
+			{
+				label: "complete",
+				stage: {
+					status: "completed",
+					durationMs: 1,
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: { artifact: "ready" },
+					},
+				},
+				expectedStatusText: `${statusIcon("completed")} complete`,
+			},
+			{
+				label: "running",
+				stage: { status: "running", startedAt: 1 },
+				expectedStatusText: `${statusIcon("running")} running`,
+			},
+		];
+
+		for (const { label, stage, expectedStatusText } of statuses) {
+			for (const queuedMessageCount of [1, 12, 100]) {
+				const lines = renderNodeCard(
+					makeStage({
+						...stage,
+						workflowChildRun: { alias: "child", workflow: "publish-child", runId },
+					}),
+					{ theme, width: 24, height: 5, queuedMessageCount },
+				);
+				const plainLines = lines.map(stripAnsi);
+				const rendered = plainLines.join("\n");
+				const context = `${label} queuedMessageCount=${queuedMessageCount}`;
+
+				assert.equal(lines.length, 5, context);
+				for (const line of plainLines) assert.equal(line.length, 24, context);
+				assert.match(rendered, new RegExp(`${queuedMessageCount} queued`), context);
+				assert.doesNotMatch(rendered, /…/, context);
+				if (queuedMessageCount === 1) assert.match(rendered, new RegExp(expectedStatusText), context);
+			}
 		}
 	});
 });
@@ -343,8 +476,75 @@ describe("renderNodeCard — metadata line", () => {
 		const rendered = stripAnsi(lines.join("\n"));
 		assert.match(rendered, /↳ pr1135-import-child/);
 		assert.match(rendered, /✓ complete/);
-		assert.match(rendered, /run run_1234 · 1 out/);
+		// The child run id is never shortened: at node width it wraps across rows,
+		// so reassemble the identity rows before asserting the complete value.
+		const interior = lines.slice(1, -1).map((line) => stripAnsi(line).replaceAll("│", "").trim());
+		assert.ok(interior.slice(0, 2).join("").includes("run run_1234567890abcdef"));
+		assert.match(rendered, /· 1 out/);
 		assert.doesNotMatch(stripAnsi(lines[1]!), /0ms|—/);
+	});
+
+	test("keeps full child-run UUIDs and intact suffix tokens within fixed geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const cases: Array<{ label: string; stage: StageSnapshot; suffix: string }> = [
+			{
+				label: "live",
+				stage: makeStage({
+					status: "running",
+					workflowChildRun: { alias: "child", workflow: "publish-child", runId },
+				}),
+				suffix: "· live",
+			},
+			{
+				label: "one output",
+				stage: makeStage({
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: { artifact: "ready" },
+					},
+				}),
+				suffix: "· 1 out",
+			},
+			{
+				label: "three outputs",
+				stage: makeStage({
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: { artifact: "ready", checksum: "ok", notes: "done" },
+					},
+				}),
+				suffix: "· 3 outs",
+			},
+		];
+
+		for (const { label, stage, suffix } of cases) {
+			const lines = renderNodeCard(stage, { theme });
+			const interior = lines
+				.slice(1, -1)
+				.map((line) => stripAnsi(line).replaceAll("│", "").trim())
+				.join("");
+			const rendered = stripAnsi(lines.join("\n"));
+			assert.equal(lines.length, NODE_H, label);
+			assert.ok(interior.includes(runId), `${label}: ${interior}`);
+			assert.ok(interior.endsWith(suffix), `${label}: ${interior}`);
+			assert.match(rendered, /publish-child/, label);
+			assert.match(
+				rendered,
+				new RegExp(
+					stage.status === "running" ? `${statusIcon("running")} running` : `${statusIcon("completed")} complete`,
+				),
+				label,
+			);
+			assert.doesNotMatch(rendered, /…/, label);
+		}
 	});
 
 	test("stages show a visible fast marker without mutating model metadata", () => {
