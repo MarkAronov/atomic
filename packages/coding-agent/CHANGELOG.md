@@ -8,10 +8,8 @@
 ### Fixed
 
 - Quit workflow cards now expire from the BACKGROUND widget after the same recent-run window as finished cards while remaining resumable and discoverable through workflow status; the header count now matches the rendered cards after expiry.
-
-### Fixed
-
 - Fixed detached foreground subagent completion notifications rendering as an unstyled dump of the full child output. They now use the same structured, collapsed notification UI as background completions while preserving the distinct detached-task wording, and persisted notifications with custom labels remain parseable.
+- Fixed workflow-stage re-attach status falling back to `Working...` while context compaction is still active; the active compaction reason now survives host remounts so manual compaction, threshold auto-compaction, and overflow recovery retain their factual status labels.
 
 ## [0.9.11-alpha.10] - 2026-08-01
 

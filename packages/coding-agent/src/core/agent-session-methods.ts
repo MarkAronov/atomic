@@ -110,6 +110,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly systemPrompt: string;
 	readonly retryAttempt: number;
 	readonly isCompacting: boolean;
+	readonly compactionReason?: import("./agent-session-types.ts").CompactionReason;
 	readonly messages: AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
@@ -311,6 +312,7 @@ export interface AgentSessionPublicSurface
 		| "systemPrompt"
 		| "retryAttempt"
 		| "isCompacting"
+		| "compactionReason"
 		| "messages"
 		| "steeringMode"
 		| "followUpMode"
@@ -415,6 +417,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_compactionAbortController: AbortController | undefined;
 	_manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
+	_compactionReason: import("./agent-session-types.ts").CompactionReason | undefined;
 	_overflowRecoveryAttempted: boolean;
 	_branchSummaryAbortController: AbortController | undefined;
 	_retryAbortController: AbortController | undefined;

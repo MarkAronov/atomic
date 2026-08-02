@@ -101,8 +101,9 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	snapshotMessagesFromSessionFile(ctx, initialStage);
 	absorbStageNotices(ctx, initialStage);
 	syncPromptState(ctx, initialStage?.pendingPrompt);
-	if (isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status))
-		ctx.chatHost.clearBusyForTerminalWorkflowStage();
+	const initialChatIsTerminal =
+		isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status);
+	if (initialChatIsTerminal) ctx.chatHost.clearBusyForTerminalWorkflowStage();
 	ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
 	ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
@@ -112,9 +113,45 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
 		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
+		if (!initialChatIsTerminal) rehydrateCompactionStatusAfterAttach(ctx);
 		rehydrateQueuedMessages(ctx);
 	}
 	ctx.chatHost.syncAnimationTick();
+}
+
+/**
+ * Restore the factual compaction indicator into a freshly mounted host.
+ *
+ * Compaction start is an event, but the active reason lives on the session so
+ * a host rebuilt after detach can render the same label even when it missed
+ * that event. An absent reason explicitly clears the fresh host's status.
+ */
+function rehydrateCompactionStatus(ctx: StageChatViewContext): void {
+	const session = liveHandle(ctx)?.agentSession;
+	ctx.chatHost.hydrateCompactionStatus(session?.isCompacting === true ? session.compactionReason : undefined);
+}
+
+/**
+ * The live stage handle may create its session lazily. Re-read compaction state
+ * after that async attach so a host mounted while the session is already
+ * compacting does not stay on the generic Working row forever.
+ */
+function rehydrateCompactionStatusAfterAttach(ctx: StageChatViewContext): void {
+	const handle = liveHandle(ctx);
+	if (!handle) return;
+	rehydrateCompactionStatus(ctx);
+	void handle.ensureAttached().then(
+		() => {
+			if (ctx._unsubscribeHandle === null || liveHandle(ctx) === undefined) return;
+			if (isTerminalStageChatState(currentRun(ctx)?.status) || isTerminalStageChatState(currentStage(ctx)?.status)) {
+				return;
+			}
+			rehydrateCompactionStatus(ctx);
+			ctx.chatHost.syncAnimationTick();
+			ctx.requestRender?.();
+		},
+		() => {},
+	);
 }
 
 /**
