@@ -1,5 +1,16 @@
 import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
+import {
+	type CredentialPrintCommand,
+	CredentialPrintError,
+	emitCredential,
+	isCredentialPrintHelp,
+	parseCredentialPrintCommand,
+	printCredentialPrintHelp,
+	resolveCredentialForPrint,
+	toCredentialPrintError,
+	validateCredentialPrintArgs,
+} from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
@@ -24,6 +35,7 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
+import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
@@ -39,6 +51,7 @@ import {
 	resolveAppMode,
 	resolveCliPaths,
 	resolveExcludedToolsForAppMode,
+	shouldStartRpcCatalogRefresh,
 	toPrintOutputMode,
 } from "./main-app-mode.ts";
 import {
@@ -75,13 +88,77 @@ import {
 	readInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
-import { captureInteractiveEngineStartupEnv } from "./utils/interactive-engine-env.ts";
+import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
 import { normalizePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
+
+/**
+ * `atomic auth …` — the credential-export door. Returns true when it owned the
+ * argv, having already set `process.exitCode`.
+ *
+ * Stdout discipline is enforced here rather than trusted: `takeOverStdout()`
+ * routes every ordinary write — including native `console.log` under Bun, which
+ * bypasses a patched `process.stdout.write` — to stderr for the whole
+ * resolution. This function never touches the real stdout itself: the credential
+ * reaches it only through `emitCredential`, the single egress in `src`, so a
+ * failing run cannot leave a partial line or a warning on the stream a caller is
+ * capturing.
+ */
+async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
+	if (isCredentialPrintHelp(args)) {
+		printCredentialPrintHelp();
+		return true;
+	}
+
+	let command: CredentialPrintCommand | undefined;
+	try {
+		command = parseCredentialPrintCommand(args);
+	} catch (error) {
+		const failure =
+			error instanceof CredentialPrintError
+				? error
+				: new CredentialPrintError("Usage", "Failed to parse auth command");
+		console.error(chalk.red(`Error: ${failure.message}`));
+		process.exitCode = failure.exitCode;
+		return true;
+	}
+	if (!command) return false;
+
+	takeOverStdout();
+	try {
+		const parsed = parseArgs(command.args);
+		if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			for (const diagnostic of parsed.diagnostics) {
+				console.error(chalk.red(`Error: ${diagnostic.message}`));
+			}
+			process.exitCode = 1;
+			return true;
+		}
+
+		try {
+			validateCredentialPrintArgs(parsed);
+			const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+			const secret = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
+			// The Secret arrives unreadable here; emitCredential owns the only take().
+			await emitCredential(secret);
+		} catch (error) {
+			// Every code toCredentialPrintError can produce belongs to a failure
+			// that emitted nothing, so the exit code set here never contradicts
+			// an empty stdout; a genuinely unclassified error is reported as a
+			// credential-resolution failure.
+			const failure = toCredentialPrintError(error);
+			console.error(chalk.red(`Error: ${failure.message}`));
+			process.exitCode = failure.exitCode;
+		}
+	} finally {
+		restoreStdout();
+	}
+	return true;
+}
 export async function main(argv: string[], options?: MainOptions) {
 	// Consume the private engine handshake before anything else: the bootstrap
 	// file carries engine role, host PID, guardian path, and any API key, is read
@@ -113,6 +190,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		return;
 	}
 	if (await handleConfigCommand(args, { extensionFactories })) {
+		return;
+	}
+	if (await runCredentialPrintCommand(args)) {
+		const exitCode = process.exitCode ?? 0;
+		await drainProcessStdio();
+		process.exit(exitCode);
 		return;
 	}
 	const parsed = parseArgs(args);
@@ -521,7 +604,13 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 
 	if (appMode === "rpc") {
-		if (!offlineMode) void modelRuntime.refresh().catch(() => {});
+		// Standalone RPC preserves its eager catalog refresh. The isolated
+		// interactive engine does not: /model owns its bounded refresh, while an
+		// eager unbounded refresh can hold credential locks and lend its in-flight
+		// promise to later cache-only or timed refreshes.
+		if (shouldStartRpcCatalogRefresh(offlineMode, isInteractiveEngineChild())) {
+			void modelRuntime.refresh().catch(() => {});
+		}
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {

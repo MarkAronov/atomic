@@ -173,6 +173,38 @@ These commands manage Atomic packages and `atomic update` can update the Atomic 
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
+### Credential Commands
+
+```bash
+atomic auth print-api-key --model <model> [--provider <p>]
+atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
+```
+
+Print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+
+`--model` is required. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one. `--provider` and `--model` are the only options either subcommand accepts: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+
+`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. Any other subcommand exits `1` and names the two valid ones. Help never uses stdout, so stdout from this command family is a credential or empty.
+
+`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — an API key has no expiry. A failed refresh leaves your stored credential untouched.
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Credential written to stdout, one trailing newline |
+| `1` | Usage error |
+| `2` | No credential configured for that model/provider |
+| `3` | Several configured providers match — pass `--provider` |
+| `4` | That credential kind is unsupported for the provider |
+| `5` | OAuth refresh failed; the stored credential is unchanged |
+| `6` | The provider cannot mint a token that lives as long as `--min-expiry` |
+| `7` | The provider's OAuth credential could not be used — no claim is made about the stored credential |
+| `8` | The credential could not be written; nothing was emitted |
+| `9` | Only part of the credential was written; discard the output |
+
+Exit `5` is reported only for a refresh that itself failed, which happens before anything is persisted; that is the only exit that promises your stored credential is untouched. Any other OAuth failure exits `7` and makes no such promise.
+
+Stdout is empty on every non-zero exit but one. Once the credential reaches stdout the command has succeeded: if the stream then fails to drain — a reader that closed the pipe, for example — that is reported on stderr and the exit code stays `0`, because a non-zero exit here would contradict the bytes the caller already holds. The exception is exit `9`, which reports that only part of the credential was written before the stream failed; those bytes cannot be recalled, so stdout is not empty, and the output is a fragment to discard rather than a credential to use. See [Security](/security#credential-export) before wiring this into a script.
+
 ### Modes
 
 | Flag | Description |

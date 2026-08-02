@@ -1,13 +1,16 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
 	buildLivePreviewDisplayPrompt,
+	buildLiveReviewGateMessage,
 	buildReferenceDiscoveryPrompt,
+	isUiUnavailableRejection,
+	LIVE_REVIEW_GATE_OPTIONS,
 	persistReferencesBrief,
 	REFERENCE_DESIGN_SITES,
 	runDiscoveryAndInit,
@@ -95,8 +98,7 @@ describe("open-claude-design setup", () => {
 			const prompt = buildReferenceDiscoveryPrompt({
 				prompt: "Design a landing page",
 				outputType: "page",
-				designContextHint:
-					"PRODUCT.md=/p DESIGN.md=/d\n\nDesign-system/reference discovery evidence from ds-* stages:\n### ds-locator\nFound tokens.",
+				designContextFile: "/tmp/run/design-context.md",
 				artifactDir: "/tmp/run",
 				browserBootstrapRules: "which playwright-cli ... @playwright/cli",
 			});
@@ -104,7 +106,10 @@ describe("open-claude-design setup", () => {
 				assert.ok(prompt.includes(site.url), site.url);
 			}
 			assert.match(prompt, /<browser_use_guidelines>/);
-			assert.match(prompt, /<design_context>/);
+			assert.match(prompt, /<design_context_file>/);
+			assert.ok(prompt.includes("Read the file at /tmp/run/design-context.md"));
+			// The research payload must not travel inline (issue #2121).
+			assert.doesNotMatch(prompt, /Found tokens/);
 			assert.match(prompt, /video-start/);
 			assert.match(prompt, /scroll-through video/i);
 			assert.match(prompt, /screenshot --full-page/);
@@ -123,6 +128,26 @@ describe("open-claude-design setup", () => {
 			assert.ok(existsSync(join(dir, "references.md")));
 			assert.match(readFileSync(join(dir, "references.md"), "utf8"), /Awwwards hero/);
 		});
+
+		test("persistDesignContext writes design-context.md at the shared path", async () => {
+			const mod = await import("../../packages/workflows/builtin/open-claude-design-setup.js");
+			const dir = tempDir();
+			mod.persistDesignContext(dir, "## Project design context\n\nds-locator evidence.");
+			const path = mod.designContextPath(dir);
+			assert.ok(existsSync(path));
+			assert.match(readFileSync(path, "utf8"), /ds-locator evidence/);
+			assert.equal(mod.referencesBriefPath(dir), join(dir, "references.md"));
+		});
+
+		test("required context artifact write failures propagate instead of being swallowed", async () => {
+			const mod = await import("../../packages/workflows/builtin/open-claude-design-setup.js");
+			const dir = tempDir();
+			// A regular file where the artifact dir should be makes mkdirSync throw.
+			const blocker = join(dir, "blocker");
+			writeFileSync(blocker, "not a directory");
+			assert.throws(() => mod.persistDesignContext(blocker, "content"), /required design-context artifact/);
+			assert.throws(() => persistReferencesBrief(blocker, "content"), /required references-brief artifact/);
+		});
 	});
 
 	describe("buildLivePreviewDisplayPrompt", () => {
@@ -140,6 +165,8 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /`annotated_snapshot`/);
 			assert.match(prompt, /`live_changes`/);
 			assert.match(prompt, /the just-generated HTML artifact/);
+			assert.match(prompt, /BEFORE starting any long-poll wait/);
+			assert.match(prompt, /print the exact review URL/i);
 			assert.ok(prompt.includes("/tmp/run/preview.html"));
 		});
 
@@ -167,6 +194,46 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /FINAL refinement pass/);
 			assert.match(prompt, /re-run/i);
 			assert.match(prompt, /do NOT (solicit|collect)/i);
+		});
+
+		test("live-review gate message names the preview, round, and connect affordance", () => {
+			const message = buildLiveReviewGateMessage({
+				iteration: 2,
+				maxRefinements: 3,
+				previewPath: "/tmp/run/preview.html",
+				previewFileUrl: "file:///tmp/run/preview.html",
+			});
+			assert.match(message, /review round 2 of 3/i);
+			assert.ok(message.includes("/tmp/run/preview.html"));
+			assert.ok(message.includes("file:///tmp/run/preview.html"));
+			assert.ok(message.includes("/workflow connect"));
+			for (const option of LIVE_REVIEW_GATE_OPTIONS) {
+				assert.ok(message.includes(option), option);
+			}
+			assert.deepEqual(
+				[...LIVE_REVIEW_GATE_OPTIONS],
+				["Start live review", "Skip remaining review rounds and export as-is"],
+			);
+		});
+
+		test("isUiUnavailableRejection accepts only the executor's unavailable-UI rejections", () => {
+			const unavailableMessages = [
+				"atomic-workflows: HIL ctx.ui.select is unavailable because Atomic runtime did not provide a UI adapter",
+				"atomic-workflows: interactive ctx.ui.select is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage",
+				"atomic-workflows: ctx.ui.custom prompt node is unavailable",
+			];
+			for (const message of unavailableMessages) {
+				assert.equal(isUiUnavailableRejection(new Error(message)), true, message);
+			}
+			const lifecycleFailures = [
+				new Error("durable checkpoint persistence failed"),
+				new Error("workflow interrupted"),
+				new Error("run aborted"),
+				"ctx.ui.select is unavailable", // not an Error instance
+			];
+			for (const failure of lifecycleFailures) {
+				assert.equal(isUiUnavailableRejection(failure), false, String(failure));
+			}
 		});
 	});
 

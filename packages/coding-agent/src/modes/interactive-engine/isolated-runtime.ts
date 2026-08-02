@@ -112,7 +112,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async logoutProvider(provider: string) {
 		const result = await this.client.logoutProvider(provider);
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
-		await super.session.modelRuntime.reloadCredentials();
+		await super.session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+		super.session.modelRuntime.applyExternalProviderAuthStatus(provider, result.authStatus);
 		super.session.refreshCurrentModelFromRegistry();
 		return result;
 	}
@@ -274,6 +275,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
 	}
+
+	/**
+	 * The child engine already settled (and persisted) its own turn before it
+	 * reported the replacement, and the host facade's `abort()` is `abortAndRecover()`
+	 * — an unbounded cooperative round trip. Re-entering it during teardown would
+	 * hang session replacement on an unresponsive or dead engine, which is exactly
+	 * what engine recovery exists to survive.
+	 */
+	protected override async settleActiveResponseBeforeTeardown(): Promise<void> {}
 
 	override async dispose(): Promise<void> {
 		// Joins any in-flight replacement: shutdown voids the client's restart

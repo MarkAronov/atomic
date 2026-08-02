@@ -9,6 +9,7 @@ import {
 	Text,
 	type TUI,
 } from "@earendil-works/pi-tui";
+import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../../core/model-refresh-timeout.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
@@ -160,22 +161,24 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
-		const timeoutMs = 15_000;
-		let timedOut = false;
-		this.refreshTimeout = setTimeout(() => {
-			timedOut = true;
-			this.refreshAbortController.abort();
-		}, timeoutMs);
+		const timedOut = Symbol("model refresh timed out");
+		const timeoutResult = new Promise<typeof timedOut>((resolve) => {
+			this.refreshTimeout = setTimeout(() => {
+				this.refreshAbortController.abort();
+				resolve(timedOut);
+			}, INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
+		});
 		try {
-			const result = await this.modelRuntime.refresh({ signal: this.refreshAbortController.signal });
+			const refresh = this.modelRuntime.refresh({ signal: this.refreshAbortController.signal });
+			const outcome = await Promise.race([refresh, timeoutResult]);
 			if (this.closed) return;
 			this.refreshStatusMessage = "";
-			if (result.aborted && timedOut) {
+			if (outcome === timedOut) {
 				this.errorMessage = "Model refresh timed out; showing cached models.";
-			} else if (result.errors.size === 1) {
-				this.errorMessage = `Could not refresh ${result.errors.keys().next().value}; showing cached models.`;
-			} else if (result.errors.size > 1) {
-				this.errorMessage = `Could not refresh ${result.errors.size} model catalogs; showing cached models.`;
+			} else if (outcome.errors.size === 1) {
+				this.errorMessage = `Could not refresh ${outcome.errors.keys().next().value}; showing cached models.`;
+			} else if (outcome.errors.size > 1) {
+				this.errorMessage = `Could not refresh ${outcome.errors.size} model catalogs; showing cached models.`;
 			} else {
 				this.errorMessage = this.modelRuntime.getError();
 				if (!this.errorMessage) {
@@ -183,6 +186,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 					this.refreshStatusSuccess = true;
 				}
 			}
+			this.loadModelsFromSnapshot();
+			this.filterModels(this.searchInput.getValue());
+			this.tui.requestRender();
+		} catch {
+			if (this.closed) return;
+			this.refreshStatusMessage = "";
+			this.errorMessage = "Could not refresh model catalogs; showing cached models.";
 			this.loadModelsFromSnapshot();
 			this.filterModels(this.searchInput.getValue());
 			this.tui.requestRender();
@@ -238,7 +248,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 					getModelSelectorSearchText({ id, provider, name: model.name }),
 				)
 			: this.activeModels;
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+		// When filtering by a query, move the selector to the top row so the best
+		// match is highlighted. When the query is cleared, keep the current position
+		// clamped to the (restored) list length.
+		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
 		this.updateList();
 	}
 

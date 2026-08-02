@@ -384,7 +384,12 @@ async function bumpNpmLock(filePath: string, version: string): Promise<void> {
 	const lock = (await Bun.file(fullPath).json()) as { packages?: Record<string, NpmLockEntry> };
 	let changed = 0;
 	for (const [entryPath, entry] of Object.entries(lock.packages ?? {})) {
-		if (!entryPath.startsWith("packages/") || entry.version === undefined) continue;
+		// Only direct workspace entries are stamped. A nested install under a
+		// workspace path (packages/*/node_modules/*) is a third-party package;
+		// stamping it desynchronizes the lock and `npm ci` refuses the tagged
+		// release commit.
+		if (!entryPath.startsWith("packages/") || entryPath.includes("/node_modules/")) continue;
+		if (entry.version === undefined) continue;
 		entry.version = version;
 		changed += 1;
 		for (const section of FIRST_PARTY_DEPENDENCY_SECTIONS) {

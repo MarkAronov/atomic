@@ -179,15 +179,30 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "logout_provider", result);
 			}
 			case "refresh_models": {
-				await session.modelRuntime.reloadCredentials();
 				const controller = command.timeoutMs === undefined ? undefined : new AbortController();
-				const timeout = controller ? setTimeout(() => controller.abort(), command.timeoutMs) : undefined;
+				const timedOut = Symbol("model refresh timed out");
+				let timeout: ReturnType<typeof setTimeout> | undefined;
+				const timeoutResult =
+					controller && command.timeoutMs !== undefined
+						? new Promise<typeof timedOut>((resolve) => {
+								timeout = setTimeout(() => {
+									controller.abort();
+									resolve(timedOut);
+								}, command.timeoutMs);
+							})
+						: undefined;
 				try {
-					const result = await session.modelRuntime.refresh({
-						allowNetwork: command.allowNetwork,
-						force: command.force,
-						signal: controller?.signal,
-					});
+					const refresh = (async () => {
+						await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+						if (controller?.signal.aborted) return { aborted: true, errors: new Map<string, Error>() };
+						return session.modelRuntime.refresh({
+							allowNetwork: command.allowNetwork,
+							force: command.force,
+							signal: controller?.signal,
+						});
+					})();
+					const outcome = timeoutResult ? await Promise.race([refresh, timeoutResult]) : await refresh;
+					const result = outcome === timedOut ? { aborted: true, errors: new Map<string, Error>() } : outcome;
 					return createRpcSuccessResponse(id, "refresh_models", {
 						aborted: result.aborted,
 						errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
@@ -264,13 +279,26 @@ export function createRpcCommandHandler({
 						excludeFromContext: command.excludeFromContext,
 						isCurrent: () => getSession() === session,
 					},
-					(onUpdate) =>
-						session.executeBash(command.command, onUpdate, {
+					// A `bash` command is still a user-initiated shell request, so it must
+					// reach `user_bash` handlers (sandboxes, remote shells) exactly like the
+					// `user_bash` command does. Ownership, streaming correlation, and result
+					// recording stay with the owning request either way.
+					async (onUpdate) => {
+						const intercepted = await session.extensionRunner.emitUserBash({
+							type: "user_bash",
+							command: command.command,
+							excludeFromContext: command.excludeFromContext === true,
+							cwd: session.sessionManager.getCwd(),
+						});
+						if (intercepted?.result) return intercepted.result;
+						return session.executeBash(command.command, onUpdate, {
 							excludeFromContext: command.excludeFromContext,
 							id,
+							operations: intercepted?.operations,
 							emitEvent: false,
 							recordResult: false,
-						}),
+						});
+					},
 				);
 				return createRpcSuccessResponse(id, "bash", result);
 			}
