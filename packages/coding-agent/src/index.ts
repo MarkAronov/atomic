@@ -345,7 +345,6 @@ export {
 	CustomEntryComponent,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
-	compactionStatusMessage,
 	DynamicBorder,
 	ExtensionEditorComponent,
 	ExtensionInputComponent,

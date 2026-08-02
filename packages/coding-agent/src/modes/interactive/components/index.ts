@@ -21,7 +21,6 @@ export {
 	type ChatSessionSubmitMode,
 } from "./chat-session-host.ts";
 export type { CompactionReason } from "./chat-session-host-events.ts";
-export { compactionStatusMessage } from "./chat-session-host-events.ts";
 export {
 	addChatTranscriptEntry,
 	type ChatTranscriptCacheKey,

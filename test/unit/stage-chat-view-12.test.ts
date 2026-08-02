@@ -180,11 +180,12 @@ describe("StageChatView", () => {
 		for (const [reason, expected] of cases) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a");
-			const agentSession = Object.assign(fakeFooterAgentSession(false), {
+			const agentSession = Object.assign(fakeFooterAgentSession(true), {
 				compactionReason: reason,
 				isCompacting: true,
 			});
-			const { handle } = makeHandle(undefined, [], "running", agentSession);
+			const { handle, state: handleState } = makeHandle(undefined, [], "running", agentSession);
+			handleState.isStreaming = true;
 			const view = new StageChatView({
 				store,
 				graphTheme: deriveGraphTheme({}),
@@ -197,8 +198,8 @@ describe("StageChatView", () => {
 			});
 
 			const rendered = stripAnsi(view.render(96).join("\n"));
-			assert.match(rendered, expected);
 			assert.doesNotMatch(rendered, /Working\.\.\./);
+			assert.match(rendered, expected);
 			view.dispose();
 		}
 	});

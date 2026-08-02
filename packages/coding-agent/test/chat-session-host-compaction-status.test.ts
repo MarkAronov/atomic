@@ -92,8 +92,14 @@ test("rehydrates reason-specific labels for every compaction reason", () => {
 		host.hydrateCompactionStatus(reason);
 		const rendered = host.renderWorkingStatus(100).join("\n");
 
-		assert.match(rendered, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-		assert.doesNotMatch(rendered, /Working\.\.\./);
+		assert.equal(host.statusText(), label);
+		if (reason === "branchSummary") {
+			assert.equal(host.isCompacting(), false);
+			assert.equal(rendered, "");
+		} else {
+			assert.match(rendered, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+			assert.doesNotMatch(rendered, /Working\.\.\./);
+		}
 		host.dispose();
 	}
 });
@@ -119,9 +125,9 @@ test("clears the label on compaction_end and on a non-compacting attach", () => 
 	host.dispose();
 });
 
-test("live events and re-attach hydration use the same status mapping", () => {
+test("live events and re-attach hydration use the same status mapping and busy state", () => {
 	for (const reason of Object.keys(labels) as CompactionReason[]) {
-		const liveHost = makeHost();
+		const liveHost = makeHost({ isStreaming: () => false });
 		if (reason === "branchSummary") {
 			liveHost.applyAgentEvent({
 				type: "summarization_retry_attempt_start",
@@ -130,11 +136,19 @@ test("live events and re-attach hydration use the same status mapping", () => {
 		} else {
 			liveHost.applyAgentEvent({ type: "compaction_start", reason });
 		}
-		const reattachedHost = makeHost();
+		const reattachedHost = makeHost({ isStreaming: () => false });
 		reattachedHost.hydrateCompactionStatus(reason);
 
 		assert.equal(liveHost.statusText(), compactionStatusMessage(reason));
 		assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
+		assert.equal(reattachedHost.isCompacting(), liveHost.isCompacting());
+		assert.equal(reattachedHost.isStreaming(), liveHost.isStreaming());
+		if (reason === "branchSummary") {
+			assert.equal(reattachedHost.isCompacting(), false);
+			assert.equal(reattachedHost.renderWorkingStatus(100).length, 0);
+		} else {
+			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /Cancel/);
+		}
 		liveHost.dispose();
 		reattachedHost.dispose();
 	}

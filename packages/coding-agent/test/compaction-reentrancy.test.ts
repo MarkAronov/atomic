@@ -1,9 +1,11 @@
+import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, test } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { createHarnessWithExtensions, type Harness } from "./test-harness.ts";
 
-type AutoCompactionRunner = {
+type AutoCompactionRunner = AgentSession & {
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
 };
 
@@ -135,7 +137,7 @@ describe("manual compaction re-entrancy", () => {
 		const gate = createGate();
 		const harness = await createHarness(gate.factory);
 
-		const auto = (harness.session as unknown as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		const auto = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
 		await gate.started;
 		expect(harness.session.isCompacting).toBe(true);
 
@@ -172,7 +174,7 @@ describe("manual compaction re-entrancy", () => {
 			);
 		});
 
-		const auto = (harness.session as unknown as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		const auto = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
 		await gate.started;
 		expect(manualOutcome).toBeDefined();
 
@@ -208,5 +210,24 @@ describe("manual compaction re-entrancy", () => {
 		expect(gate.calls).toEqual(["manual", "manual"]);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(2);
 		expect(boundaryCount(harness)).toBe(2);
+	});
+	test("records and clears the active reason for manual and automatic compaction", async () => {
+		const manualGate = createGate();
+		const manualHarness = await createHarness(manualGate.factory);
+		const manual = manualHarness.session.compact({ preserve_recent: 2 });
+		await manualGate.started;
+		assert.equal(manualHarness.session.compactionReason, "manual");
+		manualGate.release();
+		await manual;
+		assert.equal(manualHarness.session.compactionReason, undefined);
+
+		const automaticGate = createGate();
+		const automaticHarness = await createHarness(automaticGate.factory);
+		const automatic = (automaticHarness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		await automaticGate.started;
+		assert.equal(automaticHarness.session.compactionReason, "threshold");
+		automaticGate.release();
+		await automatic;
+		assert.equal(automaticHarness.session.compactionReason, undefined);
 	});
 });
