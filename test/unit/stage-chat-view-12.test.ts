@@ -203,6 +203,33 @@ describe("StageChatView", () => {
 			view.dispose();
 		}
 	});
+	test("re-attaches during a branch summary with the ordinary working status and no stuck row", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const agentSession = Object.assign(fakeFooterAgentSession(true), {
+			compactionReason: "branchSummary",
+			isCompacting: true,
+		});
+		const { handle, state: handleState } = makeHandle(undefined, [], "running", agentSession);
+		handleState.isStreaming = true;
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		const rendered = stripAnsi(view.render(96).join("\n"));
+		assert.doesNotMatch(rendered, /summarizing branch…/);
+		assert.doesNotMatch(rendered, /\(esc Cancel\)/);
+		assert.match(rendered, /Working\.\.\./);
+		assert.doesNotMatch(rendered, /Auto-compacting|Compacting context/);
+		view.dispose();
+	});
 	test("reattaches a non-compacting session with the ordinary working status", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
