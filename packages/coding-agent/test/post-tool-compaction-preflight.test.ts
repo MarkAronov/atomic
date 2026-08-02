@@ -136,6 +136,58 @@ describe("post-tool compaction preflight", () => {
 		assert.equal(harness.session.compactionReason, undefined);
 	});
 
+	// Regression (greptile P1 on PR #2136): ownership was published and
+	// `compaction_start` emitted BEFORE the `try`, so a synchronous subscriber
+	// that threw skipped the `finally` entirely. `_autoCompactionAbortController`
+	// and `_compactionReason` stayed set, wedging every later threshold
+	// compaction behind "another automatic compaction is already active" and
+	// pinning the compaction label on attached clients forever.
+	test("clears compaction ownership when a compaction_start listener throws", async () => {
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-post-tool-throw", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [compactOffline],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		// Drive the production preflight directly: the agent loop absorbs a throwing
+		// listener into its own error handling, which would mask whether ownership
+		// was released. Greptile's harness reproduced it at this level too.
+		const unsubscribe = harness.session.subscribe((event) => {
+			if (event.type === "compaction_start") throw new Error("listener exploded");
+		});
+
+		const oversized = Array.from({ length: 400 }, (_, index) => ({
+			role: "user" as const,
+			content: [{ type: "text" as const, text: `filler line ${index} ${longPrompt}` }],
+		}));
+
+		await assert.rejects(
+			harness.session._preflightPostToolContext(oversized),
+			/listener exploded/,
+			"the throwing compaction_start listener must propagate",
+		);
+		unsubscribe();
+
+		// The throw must not leave the session owning a compaction that never ran.
+		assert.equal(harness.session.compactionReason, undefined);
+		assert.equal(harness.session.isCompacting, false);
+
+		// And the next threshold compaction must not be rejected as already active.
+		await assert.doesNotReject(harness.session._preflightPostToolContext(oversized));
+	});
+
 	// Regression: the compaction preflight used to return `agent.state.messages`, whose
 	// getter hands back the live internal array. The agent loop adopted it as
 	// `currentContext.messages`, so from the following turn on both `runLoop` and the
