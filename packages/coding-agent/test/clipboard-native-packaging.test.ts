@@ -1,9 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CLIPBOARD_NATIVE_TARGETS, copyClipboardNativeBindings } from "../scripts/copy-clipboard-native-bindings.ts";
+import {
+	CLIPBOARD_NATIVE_TARGETS,
+	CLIPBOARD_PLATFORMS_WITHOUT_BINDING,
+	copyClipboardNativeBindings,
+} from "../scripts/copy-clipboard-native-bindings.ts";
 import { stageClipboardNativePackages } from "../scripts/stage-clipboard-native-bindings.ts";
 
 const tempDirs: string[] = [];
@@ -44,6 +48,24 @@ describe("standalone clipboard native packaging", () => {
 			const copied = join(destinationNodeModules, "@mariozechner", "clipboard", target.bindingName);
 			expect(readFileSync(copied, "utf-8")).toBe(`binding:${target.packageName}`);
 		}
+	});
+	it("skips the metadata-only musl leaves instead of sending them to the strict copier", () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-clipboard-musl-packaging-"));
+		tempDirs.push(root);
+		const sourceNodeModules = join(root, "source");
+		const destinationNodeModules = join(root, "destination");
+		writePackage(sourceNodeModules, "@mariozechner/clipboard", "0.3.9");
+		writePackage(destinationNodeModules, "@mariozechner/clipboard", "0.3.9");
+
+		expect(CLIPBOARD_PLATFORMS_WITHOUT_BINDING).toEqual(["linux-x64-musl", "linux-arm64-musl"]);
+		expect(() =>
+			copyClipboardNativeBindings({
+				sourceNodeModules,
+				destinationNodeModules,
+				platforms: CLIPBOARD_PLATFORMS_WITHOUT_BINDING,
+			}),
+		).not.toThrow();
+		expect(readdirSync(join(destinationNodeModules, "@mariozechner", "clipboard"))).toEqual(["package.json"]);
 	});
 
 	it("rejects a native package version that differs from the generic wrapper", () => {
