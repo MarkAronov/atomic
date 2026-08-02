@@ -51,6 +51,11 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				);
 			},
 		},
+		compactionReason: {
+			get() {
+				return this._compactionReason;
+			},
+		},
 		messages: {
 			get() {
 				return this.agent.state.messages;

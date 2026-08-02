@@ -44,6 +44,7 @@ export async function _preflightPostToolContext(
 	signal?.addEventListener("abort", relayAbort, { once: true });
 	if (signal?.aborted) abortController.abort();
 	this._autoCompactionAbortController = abortController;
+	this._compactionReason = "threshold";
 	this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
 	try {
@@ -105,6 +106,7 @@ export async function _preflightPostToolContext(
 	} finally {
 		signal?.removeEventListener("abort", relayAbort);
 		this._autoCompactionAbortController = undefined;
+		if (this._compactionReason === "threshold") this._compactionReason = undefined;
 	}
 }
 

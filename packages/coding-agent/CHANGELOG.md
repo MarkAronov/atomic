@@ -13,6 +13,10 @@
 
 - Fixed detached foreground subagent completion notifications rendering as an unstyled dump of the full child output. They now use the same structured, collapsed notification UI as background completions while preserving the distinct detached-task wording, and persisted notifications with custom labels remain parseable.
 
+### Fixed
+
+- Fixed workflow-stage re-attach status falling back to `Working...` while context compaction is still active; the active compaction reason now survives host remounts so auto-compaction, overflow recovery, manual compaction, and branch summarization retain their factual status label.
+
 ## [0.9.11-alpha.10] - 2026-08-01
 
 ### Fixed

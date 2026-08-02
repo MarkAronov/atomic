@@ -4,6 +4,7 @@ import {
 	assert,
 	createStore,
 	deriveGraphTheme,
+	fakeFooterAgentSession,
 	makeHandle,
 	StageChatView,
 	setupRun,
@@ -165,6 +166,39 @@ describe("StageChatView", () => {
 				willRetry: false,
 			} as unknown as AgentSessionEvent);
 			assert.equal(view._hasAnimationTick, false);
+			view.dispose();
+		}
+	});
+
+	test("re-attaches with the active compaction label instead of Working", () => {
+		const cases = [
+			["threshold", /Auto-compacting\.\.\./],
+			["overflow", /Context overflow detected\. Auto-compacting\.\.\./],
+			["manual", /Compacting context\.\.\./],
+		] as const;
+
+		for (const [reason, expected] of cases) {
+			const store = createStore();
+			setupRun(store, "run-1", "stage-a");
+			const agentSession = Object.assign(fakeFooterAgentSession(false), {
+				compactionReason: reason,
+				isCompacting: true,
+			});
+			const { handle } = makeHandle(undefined, [], "running", agentSession);
+			const view = new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "test-wf",
+				handle,
+				onDetach: () => {},
+				onClose: () => {},
+			});
+
+			const rendered = stripAnsi(view.render(96).join("\n"));
+			assert.match(rendered, expected);
+			assert.doesNotMatch(rendered, /Working\.\.\./);
 			view.dispose();
 		}
 	});

@@ -1,5 +1,5 @@
 import type { Component, Focusable } from "@earendil-works/pi-tui";
-import type { AgentSessionEvent } from "../../../core/agent-session.ts";
+import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.ts";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import {
@@ -14,7 +14,7 @@ import {
 	handleChatSessionInput,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
-import { applyChatSessionAgentEvent } from "./chat-session-host-events.ts";
+import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
 import {
 	renderChatSessionBody,
 	renderChatSessionEditor,
@@ -102,6 +102,29 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	applyAgentEvent(event: AgentSessionEvent): boolean {
 		return applyChatSessionAgentEvent(this.state, event);
+	}
+
+	/**
+	 * Restore the factual compaction indicator on a host mounted after the
+	 * `compaction_start` it never saw. The label resolves through the same
+	 * mapping the live event path uses, so the two cannot drift.
+	 *
+	 * No active reason on a host showing no compaction is a no-op: a freshly
+	 * mounted host has no stale compaction label to clear, and clearing
+	 * unrelated busy state here would erase a replayed workflow delivery.
+	 */
+	hydrateCompactionStatus(reason: CompactionReason | undefined): void {
+		if (reason === undefined) {
+			if (!this.state.compacting) return;
+			this.state.compacting = false;
+			this.state.statusMessage = "";
+		} else {
+			this.state.compacting = true;
+			this.state.sdkBusy = true;
+			this.state.statusMessage = compactionStatusMessage(reason);
+		}
+		this.syncAnimationTick();
+		this.state.requestRender?.();
 	}
 
 	render(width: number): string[] {

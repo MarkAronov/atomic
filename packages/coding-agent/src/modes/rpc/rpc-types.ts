@@ -15,7 +15,7 @@ import type {
 	OAuthSelectPrompt,
 } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
+import type { AgentSessionEvent, CompactionReason, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -171,6 +171,7 @@ export interface RpcSessionState {
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;
+	compactionReason?: CompactionReason;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	sessionFile?: string;

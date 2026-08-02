@@ -110,6 +110,7 @@ export function createRpcCommandHandler({
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
+					compactionReason: session.compactionReason,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					sessionFile: session.sessionFile,

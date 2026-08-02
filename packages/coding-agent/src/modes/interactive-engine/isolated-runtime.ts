@@ -1,5 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.ts";
+import type { AgentSession, AgentSessionEvent, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -26,6 +26,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly patchedSessions = new WeakSet<AgentSession>();
 	private streaming = false;
 	private compacting = false;
+	private compactionReason: CompactionReason | undefined;
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
@@ -62,6 +63,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			clearActivity: () => {
 				this.streaming = false;
 				this.compacting = false;
+				this.compactionReason = undefined;
 				this.engineCallbackActive = false;
 				this.health.markCooperativeAbortSettled();
 			},
@@ -94,6 +96,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
 		this.compacting = state.isCompacting;
+		this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 		this.queuePause.synchronize(state.queuedMessagesPaused === true);
 		this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 		this.refreshSessionView();
@@ -300,6 +303,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
+			compactionReason: { configurable: true, get: () => this.compactionReason },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
@@ -550,9 +554,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "compaction_start":
 				this.compacting = true;
+				this.compactionReason = event.reason;
 				break;
 			case "compaction_end":
 				this.compacting = false;
+				this.compactionReason = undefined;
 				break;
 			case "queue_update":
 				this.steeringMessages = [...event.steering];

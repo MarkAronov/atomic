@@ -112,9 +112,22 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
 		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
+		rehydrateCompactionStatus(ctx);
 		rehydrateQueuedMessages(ctx);
 	}
 	ctx.chatHost.syncAnimationTick();
+}
+
+/**
+ * Restore the factual compaction indicator into a freshly mounted host.
+ *
+ * Compaction start is an event, but the active reason lives on the session so
+ * a host rebuilt after detach can render the same label even when it missed
+ * that event. An absent reason explicitly clears the fresh host's status.
+ */
+function rehydrateCompactionStatus(ctx: StageChatViewContext): void {
+	const session = liveHandle(ctx)?.agentSession;
+	ctx.chatHost.hydrateCompactionStatus(session?.isCompacting === true ? session.compactionReason : undefined);
 }
 
 /**
