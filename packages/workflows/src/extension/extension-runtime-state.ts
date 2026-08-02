@@ -3,6 +3,7 @@ import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
+import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
 	WorkflowExecutionPolicy,
@@ -87,7 +88,10 @@ export function createWorkflowExtensionRuntimeState(
 	const lifecycleNotificationState = createWorkflowLifecycleNotificationState();
 	const hilAnswerNotificationState = createWorkflowHilAnswerNotificationState();
 	const beforeRestoreCompleted = (snapshots: readonly RunSnapshot[]): void => {
-		seedWorkflowLifecycleNotificationState(lifecycleNotificationState, { ...store.snapshot(), runs: snapshots });
+		seedWorkflowLifecycleNotificationState(lifecycleNotificationState, {
+			...readGraphStoreSnapshot(store),
+			runs: snapshots,
+		});
 	};
 	const lifecycleNotificationConfigRef: { current: WorkflowLifecycleNotificationConfig } = {
 		current: WORKFLOW_CONFIG_DEFAULTS.workflowNotifications,

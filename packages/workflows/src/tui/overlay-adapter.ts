@@ -34,6 +34,7 @@ import type { StageControlRegistry } from "../runs/foreground/stage-control-regi
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
@@ -274,7 +275,8 @@ export function buildGraphOverlayAdapter(
 
 	function makeComponent(view: WorkflowAttachPane, tui: PiCustomOverlayFactoryTui): PiCustomComponent {
 		requestMountedRender = () => tui.requestRender?.();
-		const onStoreUpdate = (snapshot: StoreSnapshot): void => {
+		const onStoreUpdate = (): void => {
+			const snapshot = readGraphStoreSnapshot(store);
 			// Always invalidate retained view state so a later reopen renders the
 			// current snapshot — but while the overlay is hidden, never ask the
 			// host to render (#1856): each hidden-overlay render request became
@@ -285,7 +287,7 @@ export function buildGraphOverlayAdapter(
 			refocusVisibleOverlayForAwaitingInput(snapshot);
 			tui.requestRender?.();
 		};
-		const unsubscribe = store.subscribe(onStoreUpdate);
+		const unsubscribe = subscribeStoreInvalidation(store, onStoreUpdate);
 		return {
 			render: (width: number) => view.render(width),
 			handleInput: (data: string) => {

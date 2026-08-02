@@ -1,3 +1,4 @@
+import { createGraphStoreSnapshot } from "./graph-store-snapshot.js";
 import type { PromptAnswerRecord, RunEndMetadata } from "./store-public-types.js";
 import type {
 	PendingPrompt,
@@ -42,6 +43,7 @@ export interface StoreState {
 	readonly runs: RunSnapshot[];
 	readonly notices: WorkflowNotice[];
 	readonly listeners: Set<(snap: StoreSnapshot) => void>;
+	readonly invalidationListeners: Set<() => void>;
 	readonly resolvers: Map<string, ResolverEntry>;
 	readonly stagePromptAnswers: Map<string, PromptAnswerRecord>;
 	readonly stagePromptDrafts: Map<string, string>;
@@ -51,6 +53,7 @@ export interface StoreState {
 export interface StoreContext {
 	readonly state: StoreState;
 	snapshot(): StoreSnapshot;
+	graphSnapshot(): StoreSnapshot;
 	notify(): void;
 	bumpAndNotify(): void;
 	findRun(runId: string): RunSnapshot | undefined;
@@ -128,6 +131,7 @@ export function createStoreState(): StoreState {
 		runs: [],
 		notices: [],
 		listeners: new Set(),
+		invalidationListeners: new Set(),
 		resolvers: new Map(),
 		stagePromptAnswers: new Map(),
 		stagePromptDrafts: new Map(),
@@ -136,16 +140,28 @@ export function createStoreState(): StoreState {
 }
 
 export function createStoreContext(state: StoreState = createStoreState()): StoreContext {
+	let cachedGraphVersion = -1;
+	let cachedGraphSnapshot: StoreSnapshot | undefined;
+
 	function snapshot(): StoreSnapshot {
 		return JSON.parse(
 			JSON.stringify({ runs: state.runs, notices: state.notices, version: state.version }),
 		) as StoreSnapshot;
 	}
 
+	function graphSnapshot(): StoreSnapshot {
+		if (cachedGraphSnapshot === undefined || cachedGraphVersion !== state.version) {
+			cachedGraphSnapshot = createGraphStoreSnapshot(state.runs, state.notices, state.version);
+			cachedGraphVersion = state.version;
+		}
+		return cachedGraphSnapshot;
+	}
+
 	function notify(): void {
-		const snap = snapshot();
-		for (const fn of state.listeners) {
-			fn(snap);
+		for (const fn of state.invalidationListeners) fn();
+		if (state.listeners.size > 0) {
+			const snap = snapshot();
+			for (const fn of state.listeners) fn(snap);
 		}
 	}
 
@@ -209,6 +225,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	return {
 		state,
 		snapshot,
+		graphSnapshot,
 		notify,
 		bumpAndNotify,
 		findRun,

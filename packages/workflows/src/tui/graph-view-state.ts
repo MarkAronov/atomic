@@ -9,6 +9,7 @@ import {
 	sameExpandedWorkflowTopology,
 } from "../shared/expanded-workflow-graph.js";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
@@ -139,11 +140,11 @@ export abstract class GraphViewState {
 		this.footerData = opts.footerData;
 		this.getStageQueuedMessageCount = opts.getStageQueuedMessageCount;
 
-		this._unsubscribe = this.store.subscribe((snap) => {
-			this.currentSnapshot = snap;
+		this._unsubscribe = subscribeStoreInvalidation(this.store, () => {
+			this.currentSnapshot = readGraphStoreSnapshot(this.store);
 			this._rebuildLayout();
 		});
-		this.currentSnapshot = this.store.snapshot();
+		this.currentSnapshot = readGraphStoreSnapshot(this.store);
 		this._rebuildLayout();
 
 		// Animation tick: while the overlay is mounted, fire a render

@@ -7,6 +7,7 @@ import {
 } from "../shared/returned-run-status.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type {
 	PendingPrompt,
 	PromptKind,
@@ -175,7 +176,9 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 	const notifyOn = new Set<WorkflowLifecycleNoticeKind>(options.config.notifyOn);
 	const state = options.state ?? createWorkflowLifecycleNotificationState();
 	let delivery!: ReturnType<typeof createLifecycleNoticeDelivery>;
-	if (options.seedExisting !== false) seedWorkflowLifecycleNotificationState(state, options.store.snapshot());
+	if (options.seedExisting !== false) {
+		seedWorkflowLifecycleNotificationState(state, readGraphStoreSnapshot(options.store));
+	}
 
 	const emit = (details: WorkflowLifecycleNoticeDetails): boolean | Promise<boolean> => {
 		try {
@@ -266,8 +269,8 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		if (notifyOn.has(details.kind)) delivery.deliver(key, details);
 	}
 
-	const unsubscribe = options.store.subscribe(inspect);
-	inspect(options.store.snapshot());
+	const unsubscribe = subscribeStoreInvalidation(options.store, () => inspect(readGraphStoreSnapshot(options.store)));
+	inspect(readGraphStoreSnapshot(options.store));
 	return () => {
 		unsubscribe();
 		delivery.dispose();

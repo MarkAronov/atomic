@@ -18,6 +18,7 @@ import { WorkflowGracefulQuitError } from "../../engine/workflow-tool-abort.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { store as defaultStore } from "../../shared/store.js";
+import { readGraphStoreSnapshot } from "../../shared/store-observation.js";
 import type { Store } from "../../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowCancelledToolNode, WorkflowToolNodeIdentity } from "../../shared/types.js";
@@ -100,7 +101,7 @@ export async function quitRun(
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 
-	const graph = expandWorkflowGraph(activeStore.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(activeStore), runId);
 	const handles = controllableHandles(activeStore, registry, runId);
 	const admissionBoundaries = controllableAdmissionBoundaries(activeStore, toolControls, runId);
 	const promptStages = graph.stages.filter(
@@ -303,7 +304,7 @@ function controllableHandles(
 	registry: StageControlRegistry,
 	runId: string,
 ): Array<{ controlRunId: string; handle: StageControlHandle }> {
-	const graph = expandWorkflowGraph(activeStore.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(activeStore), runId);
 	const controlRunIds = new Set<string>([runId]);
 	for (const stage of graph.stages) controlRunIds.add(stage.workflowGraphTarget.runId);
 	return [...controlRunIds].flatMap((controlRunId) =>

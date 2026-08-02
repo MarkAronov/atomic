@@ -153,6 +153,8 @@ export interface WorkflowChildReplaySnapshot {
 	/** True when the child reached this terminal status through ctx.exit(). */
 	readonly exited?: boolean;
 	readonly outputs: WorkflowOutputValues;
+	/** Payload-free output count used by compact graph projections. */
+	readonly outputCount?: number;
 	readonly exitReason?: string;
 }
 

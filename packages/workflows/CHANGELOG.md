@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow graph rendering for large, wide fan-outs by clipping cards, edges, and composed rows to the visible viewport, retaining cached topology and layout across status-only updates, and making idle animation eligibility constant-time ([#2100](https://github.com/bastani-inc/atomic/issues/2100)).
+- Fixed every interactive store mutation cloning the full run payload before the graph could repaint. A status or question update used to build a complete `JSON.stringify`/`JSON.parse` snapshot, traversing workflow inputs, authored stage result bodies, child output values, and tool input/output bodies, so mutation cost scaled with payload size rather than with the graph. Store observation now offers a synchronous invalidation-only channel plus one immutable memoized graph projection per store version, and the graph, overlay, attach pane, stage chat, widget, lifecycle and HIL notifications, resume picker, and send admission all read that projection. Topology, status, timing, prompts, attachment state, notices, bounded returned-status fields, durable tool summaries, and child output counts are preserved; the existing `Store.snapshot()` / `Store.subscribe(snapshot)` contract is unchanged for external consumers ([#2100](https://github.com/bastani-inc/atomic/issues/2100)).
 
 ## [0.9.11-alpha.9] - 2026-08-01
 

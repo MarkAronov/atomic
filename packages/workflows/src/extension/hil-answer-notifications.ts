@@ -1,5 +1,6 @@
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type {
 	PendingPrompt,
 	PromptKind,
@@ -99,10 +100,12 @@ export function installWorkflowHilAnswerNotifications(options: WorkflowHilAnswer
 		}
 	};
 
-	const unsubscribeStore = options.store.subscribe(inspectWorkflowPromptAnswers);
+	const unsubscribeStore = subscribeStoreInvalidation(options.store, () =>
+		inspectWorkflowPromptAnswers(readGraphStoreSnapshot(options.store)),
+	);
 	const unsubscribeBroker = options.stageUiBroker?.onStagePromptResolved((event) => {
 		if (event.answerSource === "workflow_tool") return;
-		const answeredStage = findStageSnapshot(options.store.snapshot(), event.runId, event.stageId);
+		const answeredStage = findStageSnapshot(readGraphStoreSnapshot(options.store), event.runId, event.stageId);
 		if (answeredStage === undefined) return;
 
 		emitOnce(

@@ -1,6 +1,7 @@
 import { type AgentSessionEvent, ChatSessionHost } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { createPromptCardState } from "./prompt-card.js";
@@ -105,7 +106,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	const initialChatIsTerminal =
 		isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status);
 	if (initialChatIsTerminal) ctx.chatHost.clearBusyForTerminalWorkflowStage();
-	ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
+	ctx._unsubscribeStore = subscribeStoreInvalidation(ctx.store, () => handleStoreUpdate(ctx));
 	ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
 	if (ctx.handle) {
@@ -346,7 +347,7 @@ function absorbStageNotices(ctx: StageChatViewContext, stage: StageSnapshot | un
 }
 
 export function currentRun(ctx: StageChatViewContext): RunSnapshot | undefined {
-	return ctx.store.snapshot().runs.find((r) => r.id === ctx.runId);
+	return readGraphStoreSnapshot(ctx.store).runs.find((r) => r.id === ctx.runId);
 }
 
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {

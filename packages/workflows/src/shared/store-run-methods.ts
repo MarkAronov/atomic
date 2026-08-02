@@ -27,7 +27,9 @@ type RunStoreMethods = Pick<
 	| "recordRunResumed"
 	| "clear"
 	| "snapshot"
+	| "graphSnapshot"
 	| "subscribe"
+	| "subscribeInvalidation"
 >;
 
 export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
@@ -233,11 +235,20 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			return context.snapshot();
 		},
 
+		graphSnapshot(): StoreSnapshot {
+			return context.graphSnapshot();
+		},
+
 		subscribe(fn: (snap: StoreSnapshot) => void): () => void {
 			state.listeners.add(fn);
 			return () => {
 				state.listeners.delete(fn);
 			};
+		},
+
+		subscribeInvalidation(fn: () => void): () => void {
+			state.invalidationListeners.add(fn);
+			return () => state.invalidationListeners.delete(fn);
 		},
 	};
 }

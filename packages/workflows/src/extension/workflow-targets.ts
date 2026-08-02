@@ -8,6 +8,7 @@ import {
 import { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store } from "../shared/store.js";
+import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunStatus } from "../shared/store-types.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
@@ -115,7 +116,7 @@ export type ToolStageTarget = { ok: true; runId?: string; stageId?: string } | {
 export function resolveStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, runId };
-	const graph = expandWorkflowGraph(store.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), runId);
 	const exactVirtualIds = graph.stages.filter((stage) => stage.id === target);
 	if (exactVirtualIds.length === 1) return resolvedStageTarget(exactVirtualIds[0]!);
 	if (exactVirtualIds.length > 1) return ambiguousStageTarget(target, exactVirtualIds);
@@ -166,7 +167,7 @@ export type ControlNodeTarget =
 export function resolveControlNodeTarget(runId: string, stageTarget?: string): ControlNodeTarget {
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, kind: "run" };
-	const graph = expandWorkflowGraph(store.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), runId);
 	const nodes = graph.renderStages;
 	const candidates: Array<readonly ExpandedWorkflowStage[]> = [
 		nodes.filter((node) => node.id === target),
