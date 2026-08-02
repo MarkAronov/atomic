@@ -12,7 +12,6 @@ import { stageClipboardNativePackages } from "../scripts/stage-clipboard-native-
 
 const tempDirs: string[] = [];
 
-// Missing musl leaves require a real Bun package staging install; this structural network cost exceeds the suite default.
 interface ClipboardWrapperMetadata {
 	readonly version: string;
 	readonly optionalDependencies?: Readonly<Record<string, string>>;
@@ -23,6 +22,7 @@ interface MissingClipboardLeaf {
 	readonly packageName: string;
 }
 
+// Missing musl leaves require a real Bun package staging install; this structural network cost exceeds the suite default.
 const REAL_CLIPBOARD_STALENESS_GUARD_TIMEOUT_MS = 180_000;
 
 function clipboardPackageDirectory(nodeModulesRoot: string, packageName: string): string {
