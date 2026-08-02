@@ -386,7 +386,7 @@ export function buildThemedWidgetLines(
 	const display = selectDisplayRuns(snap, now);
 	if (display.length === 0) return [];
 
-	const counts = countRuns(topLevelWorkflowRuns(snap.runs), snap.runs);
+	const displayCounts = countRuns(display, snap.runs);
 	// Active + recently-ended dominate the badge counts so a finished run
 	// visually persists for a beat before dropping off.
 	const visibleCounts: RunCounts = {
@@ -400,7 +400,7 @@ export function buildThemedWidgetLines(
 		blocked: display.filter((r) => effectiveRunStatus(r) === "blocked").length,
 		failed: display.filter((r) => r.endedAt !== undefined && ["failed", "killed"].includes(effectiveRunStatus(r)))
 			.length,
-		awaiting: counts.awaiting,
+		awaiting: displayCounts.awaiting,
 	};
 
 	const themed = piTheme !== undefined;
@@ -411,7 +411,7 @@ export function buildThemedWidgetLines(
 		return [themed ? themedCollapsed(visibleCounts, graphTheme) : plainCollapsed(visibleCounts)];
 	}
 
-	const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
+	const total = display.length;
 	const subtitle = `${total} run${total === 1 ? "" : "s"}`;
 
 	const badgeList = countBadges(visibleCounts, graphTheme);

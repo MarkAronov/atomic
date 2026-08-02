@@ -328,7 +328,7 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(header.includes("✓ 1 complete"), "completed badge");
 		assert.ok(header.includes("✗ 1 failed"), "failed badge");
 	});
-	test("expired quit runs do not contribute quit badges after their cards disappear", () => {
+	test("expired quit runs do not contribute counts after their cards disappear", () => {
 		const now = 1_000_000;
 		const active = makeRun("active-run", "still-running", "running", [], now - 1_000);
 		const expiredQuit = makeRun("expired-quit", "already-quit", "paused", [], now - RECENT_ENDED_WINDOW_MS * 2);
@@ -340,6 +340,7 @@ describe("renderWidgetLines — standard form", () => {
 
 		const wide = renderWidgetLines(snap, 120).map(stripAnsi);
 		assert.ok(wide.join("\n").includes("still-running"));
+		assert.ok(wide[0]!.includes("BACKGROUND  1 run"), "wide header total must match its single rendered card");
 		assert.ok(!wide[0]!.includes("quit"), "wide quit badge must match rendered cards");
 
 		const collapsed = renderWidgetLines(snap, 60).map(stripAnsi);
