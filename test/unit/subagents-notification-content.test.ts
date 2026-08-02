@@ -48,6 +48,25 @@ describe("subagent notification content parsing", () => {
 		});
 	});
 
+	test("parses a detached notice label with a known status", () => {
+		assert.deepEqual(parseSubagentNotifyContent("Detached subagent task completed: **worker**\n\nresult"), {
+			agent: "worker",
+			status: "completed",
+			resultPreview: "result",
+		});
+	});
+
+	test("rejects unrelated content with an invalid notification shape", () => {
+		for (const content of [
+			"Detached subagent task unknown: **worker**\n\nresult",
+			"Detached subagent task completed **worker**\n\nresult",
+			"Detached subagent task completed: **worker\n\nresult",
+			"The worker completed the task and reported a result.",
+		]) {
+			assert.equal(parseSubagentNotifyContent(content), undefined, content);
+		}
+	});
+
 	test("rejects malformed notification headers", () => {
 		for (const content of [
 			"Background task completed: ****\n\nresult",

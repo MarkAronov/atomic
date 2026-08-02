@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed detached foreground subagent completion notifications rendering as an unstyled dump of the full child output. They now use the same structured, collapsed notification UI as background completions while preserving the distinct detached-task wording, and persisted notifications with custom labels remain parseable.
+
 ## [0.9.11-alpha.10] - 2026-08-01
 
 ### Fixed
