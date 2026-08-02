@@ -54,7 +54,8 @@ export const CLIPBOARD_NATIVE_TARGETS = {
  * ship the wrapper without a binding and `loadClipboardNative()` returns null — the same
  * degradation a headless Linux box without DISPLAY already takes.
  *
- * Delete an entry here the moment upstream publishes a real musl binding.
+ * `packages/coding-agent/test/clipboard-native-packaging.test.ts` fails when an excluded package
+ * gains a `.node` payload, so the exclusion cannot silently outlive its upstream justification.
  */
 export const CLIPBOARD_PLATFORMS_WITHOUT_BINDING: readonly string[] = ["linux-x64-musl", "linux-arm64-musl"];
 

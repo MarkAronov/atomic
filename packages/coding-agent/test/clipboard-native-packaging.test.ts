@@ -12,6 +12,57 @@ import { stageClipboardNativePackages } from "../scripts/stage-clipboard-native-
 
 const tempDirs: string[] = [];
 
+// Missing musl leaves require a real Bun package staging install; this structural network cost exceeds the suite default.
+interface ClipboardWrapperMetadata {
+	readonly version: string;
+	readonly optionalDependencies?: Readonly<Record<string, string>>;
+}
+
+interface MissingClipboardLeaf {
+	readonly platform: string;
+	readonly packageName: string;
+}
+
+const REAL_CLIPBOARD_STALENESS_GUARD_TIMEOUT_MS = 180_000;
+
+function clipboardPackageDirectory(nodeModulesRoot: string, packageName: string): string {
+	return join(nodeModulesRoot, ...packageName.split("/"));
+}
+
+function nativeBindingFiles(packageDirectory: string): string[] {
+	const nativeFiles: string[] = [];
+	for (const entry of readdirSync(packageDirectory, { withFileTypes: true })) {
+		const entryPath = join(packageDirectory, entry.name);
+		if (entry.isDirectory()) {
+			nativeFiles.push(...nativeBindingFiles(entryPath));
+		} else if (entry.isFile() && entry.name.endsWith(".node")) {
+			nativeFiles.push(entryPath);
+		}
+	}
+	return nativeFiles;
+}
+
+function muslClipboardRemediation(platform: string): string {
+	return (
+		`Upstream now ships a real musl binding for ${platform}; remove ${platform} from ` +
+		"CLIPBOARD_PLATFORMS_WITHOUT_BINDING and add it to CLIPBOARD_NATIVE_TARGETS in " +
+		"packages/coding-agent/scripts/copy-clipboard-native-bindings.ts."
+	);
+}
+
+function readClipboardWrapperMetadata(repoRoot: string): ClipboardWrapperMetadata {
+	const packageJsonPath = join(repoRoot, "node_modules", "@mariozechner", "clipboard", "package.json");
+	if (!existsSync(packageJsonPath)) {
+		throw new Error(`Clipboard wrapper metadata is missing: ${packageJsonPath}`);
+	}
+	try {
+		return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as ClipboardWrapperMetadata;
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(`Clipboard wrapper metadata could not be inspected: ${detail}`);
+	}
+}
+
 function writePackage(root: string, packageName: string, version: string, bindingName?: string): void {
 	const packageDir = join(root, ...packageName.split("/"));
 	mkdirSync(packageDir, { recursive: true });
@@ -67,6 +118,97 @@ describe("standalone clipboard native packaging", () => {
 		).not.toThrow();
 		expect(readdirSync(join(destinationNodeModules, "@mariozechner", "clipboard"))).toEqual(["package.json"]);
 	});
+	it(
+		"fails loudly if an excluded musl leaf gains a native binding",
+		() => {
+			const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
+			const wrapperMetadata = readClipboardWrapperMetadata(repoRoot);
+			if (!wrapperMetadata.version.trim()) {
+				throw new Error("Clipboard wrapper metadata has no version; the staleness guard cannot be evaluated");
+			}
+			const optionalDependencies = wrapperMetadata.optionalDependencies;
+			if (!optionalDependencies) {
+				throw new Error("Clipboard wrapper has no optionalDependencies; the staleness guard cannot be evaluated");
+			}
+
+			const rootNodeModules = join(repoRoot, "node_modules");
+			const packageDirectories = new Map<string, string>();
+			const missingLeaves: MissingClipboardLeaf[] = [];
+			for (const platform of CLIPBOARD_PLATFORMS_WITHOUT_BINDING) {
+				const packageName = `@mariozechner/clipboard-${platform}`;
+				const declaredVersion = optionalDependencies[packageName];
+				if (!declaredVersion) {
+					throw new Error(
+						`Clipboard wrapper no longer declares ${packageName}; the musl staleness guard cannot be evaluated`,
+					);
+				}
+				if (declaredVersion !== wrapperMetadata.version) {
+					throw new Error(
+						`Clipboard wrapper declares ${packageName}@${declaredVersion}, not its own version ${wrapperMetadata.version}; the musl staleness guard cannot be evaluated`,
+					);
+				}
+
+				const packageDirectory = clipboardPackageDirectory(rootNodeModules, packageName);
+				if (existsSync(packageDirectory)) {
+					packageDirectories.set(platform, packageDirectory);
+				} else {
+					missingLeaves.push({ platform, packageName });
+				}
+			}
+
+			if (missingLeaves.length > 0) {
+				const stagingRoot = mkdtempSync(join(tmpdir(), "atomic-clipboard-musl-guard-"));
+				tempDirs.push(stagingRoot);
+				try {
+					stageClipboardNativePackages({
+						destination: stagingRoot,
+						version: wrapperMetadata.version,
+						packageNames: missingLeaves.map(({ packageName }) => packageName),
+					});
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					const platforms = missingLeaves.map(({ platform }) => platform).join(", ");
+					throw new Error(`Clipboard musl staleness guard could not inspect ${platforms}: ${detail}`);
+				}
+
+				const stagedNodeModules = join(stagingRoot, "node_modules");
+				for (const { platform, packageName } of missingLeaves) {
+					const packageDirectory = clipboardPackageDirectory(stagedNodeModules, packageName);
+					if (!existsSync(packageDirectory)) {
+						throw new Error(
+							`Clipboard musl staleness guard could not inspect ${platform}: staged package ${packageName} is missing`,
+						);
+					}
+					packageDirectories.set(platform, packageDirectory);
+				}
+			}
+
+			for (const platform of CLIPBOARD_PLATFORMS_WITHOUT_BINDING) {
+				const packageDirectory = packageDirectories.get(platform);
+				if (!packageDirectory) {
+					throw new Error(
+						`Clipboard musl staleness guard could not inspect ${platform}: package path is unavailable`,
+					);
+				}
+				if (!existsSync(join(packageDirectory, "package.json"))) {
+					throw new Error(
+						`Clipboard musl staleness guard could not inspect ${platform}: package metadata is missing`,
+					);
+				}
+				let nativeFiles: string[];
+				try {
+					nativeFiles = nativeBindingFiles(packageDirectory);
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					throw new Error(`Clipboard musl staleness guard could not inspect ${platform}: ${detail}`);
+				}
+				if (nativeFiles.length > 0) {
+					throw new Error(`${muslClipboardRemediation(platform)} Found: ${nativeFiles.join(", ")}`);
+				}
+			}
+		},
+		REAL_CLIPBOARD_STALENESS_GUARD_TIMEOUT_MS,
+	);
 
 	it("rejects a native package version that differs from the generic wrapper", () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-clipboard-version-"));
