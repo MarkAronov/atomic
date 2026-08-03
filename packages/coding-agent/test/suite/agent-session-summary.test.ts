@@ -102,6 +102,42 @@ describe("session summary generation", () => {
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
+	it("swallows a credential failure instead of rejecting", async () => {
+		// Regression: _getRequiredRequestAuth throws outright when no key is configured, and the
+		// caller is `void this._maybeGenerateSessionSummary()`. An escaping rejection became an
+		// unhandled rejection that took down a CLI child mid-run.
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+
+		// Build a branch directly: without credentials the session cannot run real turns.
+		harness.sessionManager.appendMessage({ role: "user", content: "add resume summaries", timestamp: 1 });
+		harness.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			timestamp: 2,
+			stopReason: "stop",
+			provider: "faux",
+			model: "faux",
+			api: "anthropic-messages",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+		});
+		harness.sessionManager.appendMessage({ role: "user", content: "and the picker", timestamp: 3 });
+		harness.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "done again" }],
+			timestamp: 4,
+			stopReason: "stop",
+			provider: "faux",
+			model: "faux",
+			api: "anthropic-messages",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+		});
+
+		await expect(harness.session._maybeGenerateSessionSummary()).resolves.toBeUndefined();
+		expect(summaryEntries(harness)).toHaveLength(0);
+	});
+
 	it("generates nothing in non-interactive modes", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

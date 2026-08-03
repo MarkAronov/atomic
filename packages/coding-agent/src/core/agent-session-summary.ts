@@ -68,6 +68,10 @@ export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<
 
 		this.sessionManager.appendSessionSummary(result.summary, throughId, result.usage);
 		this._lastSummarizedMessageId = throughId;
+	} catch {
+		// Nothing awaits this call, so an escaping rejection would surface as an unhandled
+		// rejection and can take the process down. Credential resolution throws outright when
+		// no key is configured, which is an ordinary state for a session that never prompts.
 	} finally {
 		if (this._sessionSummaryToken === sessionSummaryToken) {
 			this._sessionSummaryAbortController = undefined;
