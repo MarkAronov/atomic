@@ -13,6 +13,7 @@ import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
+import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowResumeRefresh } from "../tui/workflow-resume-selector.js";
@@ -77,7 +78,7 @@ export function resumePickerLiveUpdateOptions(
 	runtime: ExtensionRuntime,
 ): ResumePickerLiveUpdateOptions {
 	return {
-		watch: (onChange) => runStore.subscribe(() => onChange()),
+		watch: (onChange) => subscribeStoreInvalidation(runStore, onChange),
 		refresh: async () => {
 			const current = collectResumePickerLiveRuns(runStore);
 			const catalog = await prepareWorkflowResumeCatalog(runtime, current.suppressedLiveIds);

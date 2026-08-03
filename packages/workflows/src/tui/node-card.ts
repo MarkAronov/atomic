@@ -141,7 +141,11 @@ function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {
 function workflowChildMetaText(stage: StageSnapshot): string | undefined {
 	const completed = stage.workflowChild;
 	if (completed !== undefined) {
-		const outputCount = Object.keys(completed.outputs).length;
+		// #2140 moved the child run id onto its own wrapped row, so the meta
+		// line carries only the output count. Prefer the payload-free
+		// `outputCount` the compact graph projection supplies; fall back to
+		// counting a full `outputs` map on the legacy snapshot path.
+		const outputCount = completed.outputCount ?? Object.keys(completed.outputs).length;
 		return outputCount === 1 ? "1 out" : `${outputCount} outs`;
 	}
 	if (stage.workflowChildRun !== undefined) return "live";

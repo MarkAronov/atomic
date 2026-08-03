@@ -9,6 +9,7 @@ import { coerceStageInputAnswer, hasStageInputAnswerContent, type StageInputAnsw
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
+import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
@@ -271,7 +272,7 @@ export async function workflowSendAction(
 		admitted = true;
 	};
 	const terminalPending = Promise.withResolvers<never>();
-	const unsubscribeTerminal = store.subscribe(() => {
+	const unsubscribeTerminal = subscribeStoreInvalidation(store, () => {
 		if (admitted) return;
 		const terminal = terminalWorkflowSendResultForRoot(rootRunId, args.stageId?.trim() ?? resolvedStageId);
 		if (terminal !== undefined) terminalPending.reject(new WorkflowSendAdmissionError(terminal));

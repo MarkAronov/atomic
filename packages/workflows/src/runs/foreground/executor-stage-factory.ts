@@ -290,6 +290,10 @@ export function createWorkflowStageFactory(input: {
 				input.tracker.onSettle(stageId);
 				return false;
 			}
+			if (state.skippedForParallelFailFast) {
+				stageSnapshot.status = "skipped";
+				stageSnapshot.skippedReason = "fail-fast";
+			}
 			state.stageFinalized = true;
 			runtime.unregisterWorkflowExitCleanup();
 			stageSnapshot.endedAt = Date.now();
@@ -340,9 +344,9 @@ export function createWorkflowStageFactory(input: {
 		};
 
 		const markSkippedForParallelFailFast = (): void => {
+			// Defer graph-visible fields until `finalizeStageSnapshot`, directly
+			// before its version-bumping `recordStageEnd` call.
 			state.skippedForParallelFailFast = true;
-			stageSnapshot.status = "skipped";
-			stageSnapshot.skippedReason = "fail-fast";
 		};
 		const parallelFailFastError = (): unknown =>
 			stageFailFastScope?.firstFailure ?? new Error("atomic-workflows: skipped after parallel fail-fast");

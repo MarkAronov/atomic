@@ -67,18 +67,20 @@ export function createSessionPickerResumeCandidateCache(
 ): (snapshot: StoreSnapshot) => ResumeCandidateLookup {
 	let cachedVersion: number | undefined;
 	let cachedRuns: readonly RunSnapshot[] | undefined;
+	let sourceRuns = new Map<string, RunSnapshot>();
 	let candidates = new Map<string, WorkflowRunResumeCandidate>();
 
 	return (snapshot: StoreSnapshot): ResumeCandidateLookup => {
 		if (cachedVersion !== snapshot.version || cachedRuns !== snapshot.runs) {
 			cachedVersion = snapshot.version;
 			cachedRuns = snapshot.runs;
+			sourceRuns = new Map(snapshot.runs.map((run) => [run.id, run]));
 			candidates = new Map();
 		}
 		return (run: RunSnapshot): WorkflowRunResumeCandidate => {
 			const cached = candidates.get(run.id);
 			if (cached !== undefined) return cached;
-			const candidate = probe(run);
+			const candidate = probe(sourceRuns.get(run.id) ?? run);
 			candidates.set(run.id, candidate);
 			return candidate;
 		};

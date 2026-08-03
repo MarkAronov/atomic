@@ -4,6 +4,7 @@ import {
 	type ExpandedWorkflowStage,
 	expandedStageLabel,
 	expandWorkflowGraph,
+	sameExpandedWorkflowTopology,
 } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type {
 	RunSnapshot,
@@ -359,5 +360,28 @@ describe("expanded nested workflow topology", () => {
 			],
 		);
 		assert.deepEqual([...graph.targets.keys()], ["last", "first", "middle", "parallel"]);
+	});
+
+	test("compares every render-affecting stage topology field", () => {
+		const base = snapshot([run("root", [stage("A"), stage("B"), stage("C", ["A"]), stage("join", ["A", "B"])])]);
+		const unchanged = snapshot([run("root", [stage("A"), stage("B"), stage("C", ["A"]), stage("join", ["A", "B"])])]);
+		const reparented = snapshot([
+			run("root", [stage("A"), stage("B"), stage("C", ["B"]), stage("join", ["A", "B"])]),
+		]);
+		const kindChanged = snapshot([
+			run("root", [stage("A"), stage("B"), stage("C", ["A"], { nodeKind: "tool" }), stage("join", ["A", "B"])]),
+		]);
+		const withAddedStage = snapshot([
+			run("root", [stage("A"), stage("B"), stage("C", ["A"]), stage("join", ["A", "B"]), stage("added", ["join"])]),
+		]);
+		const swappedParents = snapshot([
+			run("root", [stage("A"), stage("B"), stage("C", ["A"]), stage("join", ["B", "A"])]),
+		]);
+
+		assert.equal(sameExpandedWorkflowTopology(base, unchanged), true);
+		assert.equal(sameExpandedWorkflowTopology(base, reparented), false);
+		assert.equal(sameExpandedWorkflowTopology(base, kindChanged), false);
+		assert.equal(sameExpandedWorkflowTopology(base, withAddedStage), false);
+		assert.equal(sameExpandedWorkflowTopology(base, swappedParents), false);
 	});
 });

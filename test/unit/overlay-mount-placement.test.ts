@@ -17,7 +17,11 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
+import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.ts";
 import type { WorkflowInputEntry } from "../../packages/workflows/src/extension/render-result.ts";
 import type {
 	PiCustomComponent,
@@ -27,6 +31,10 @@ import type {
 } from "../../packages/workflows/src/extension/wiring.ts";
 import { createStore } from "../../packages/workflows/src/shared/store.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
+import {
+	ENV_WORKFLOW_ARTIFACT_DIR,
+	workflowRunResumeCandidate,
+} from "../../packages/workflows/src/shared/workflow-artifacts.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	type InputsPickerResult,
@@ -79,6 +87,7 @@ function makeRun(over: Partial<RunSnapshot> = {}): RunSnapshot {
 		durationMs: over.durationMs,
 		result: over.result,
 		error: over.error,
+		resumable: over.resumable,
 	};
 }
 
@@ -123,6 +132,46 @@ test("openSessionPicker renders at the picker's natural inline height", () => {
 	assert.notEqual(lines[0], "");
 });
 
+test("resume picker matches live eligibility when only a stage result references missing artifacts", async () => {
+	const root = await mkdtemp(join(tmpdir(), "overlay-resume-artifacts-"));
+	const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+	try {
+		process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
+		const { surface, calls } = buildCustomSurface();
+		const store = createStore();
+		const runId = "stage-artifact-only";
+		store.recordRunStart(
+			makeRun({
+				id: runId,
+				status: "paused",
+				resumable: true,
+				stages: [
+					{
+						id: "artifact-stage",
+						name: "artifact-stage",
+						status: "paused",
+						parentIds: [],
+						toolEvents: [],
+						result: `/runs/${runId}/missing/transcript.md`,
+					},
+				],
+			}),
+		);
+		const fullRun = store.runs()[0]!;
+		const projectedRun = store.graphSnapshot().runs[0]!;
+		assert.equal(projectedRun.stages[0]?.result, undefined);
+		const fullEligibility = isWorkflowRunResumable(workflowRunResumeCandidate(fullRun));
+		assert.equal(fullEligibility, false);
+
+		void openSessionPicker(surface as UiSurface, store, deriveGraphTheme({}), "resume");
+		const projectedPickerOffersRun = calls[0]!.component.render(80).join("\n").includes(runId);
+		assert.equal(projectedPickerOffersRun, fullEligibility);
+	} finally {
+		if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	}
+});
 test("openSessionPicker resolves close when ui.custom is absent (no mount)", async () => {
 	const surface: UiSurface = {};
 	const store = createStore();

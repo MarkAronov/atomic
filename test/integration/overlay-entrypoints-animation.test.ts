@@ -60,18 +60,30 @@ void [
 	waitForStagePendingPrompt,
 ];
 
+function setupAnimatingRun(store: ReturnType<typeof createStore>, runId: string): void {
+	store.recordRunStart({
+		id: runId,
+		name: "wf",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: Date.now(),
+	});
+	store.recordStageStart(runId, {
+		id: "running-stage",
+		name: "running-stage",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+		startedAt: Date.now(),
+	});
+}
+
 describe("buildGraphOverlayAdapter — animation tick visibility gating", () => {
 	test("requestRender from the view fires tui.requestRender while visible", async () => {
 		const runId = `tick-visible-${Date.now()}`;
 		const store = createStore();
-		store.recordRunStart({
-			id: runId,
-			name: "wf",
-			inputs: {},
-			status: "running",
-			stages: [],
-			startedAt: Date.now(),
-		});
+		setupAnimatingRun(store, runId);
 
 		let renderCalls = 0;
 		let component: PiCustomComponent | undefined;
@@ -106,14 +118,7 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
 	test("requestRender suppresses tui.requestRender while overlay is hidden", async () => {
 		const runId = `tick-hidden-${Date.now()}`;
 		const store = createStore();
-		store.recordRunStart({
-			id: runId,
-			name: "wf",
-			inputs: {},
-			status: "running",
-			stages: [],
-			startedAt: Date.now(),
-		});
+		setupAnimatingRun(store, runId);
 
 		let renderCalls = 0;
 		let component: PiCustomComponent | undefined;
@@ -143,7 +148,9 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
 
 		const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
 		adapter.open(runId);
-		// Flip to hidden before the first tick can fire.
+		assert.ok(component, "factory should return a component");
+		await waitForRenderCount(() => renderCalls, 2, 200, 25);
+		assert.ok(renderCalls >= 2, `expected a visible animation tick before hiding (got ${renderCalls})`);
 		overlayHandle.setHidden(true);
 		const before = renderCalls;
 		await new Promise((r) => setTimeout(r, 250));
@@ -159,14 +166,7 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
 	test("tick stops after the component is disposed", async () => {
 		const runId = `tick-dispose-${Date.now()}`;
 		const store = createStore();
-		store.recordRunStart({
-			id: runId,
-			name: "wf",
-			inputs: {},
-			status: "running",
-			stages: [],
-			startedAt: Date.now(),
-		});
+		setupAnimatingRun(store, runId);
 
 		let renderCalls = 0;
 		let component: PiCustomComponent | undefined;
@@ -186,7 +186,8 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
 
 		const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
 		adapter.open(runId);
-		await new Promise((r) => setTimeout(r, 150));
+		await waitForRenderCount(() => renderCalls, 2, 200, 25);
+		assert.ok(renderCalls >= 2, `expected a visible animation tick before disposal (got ${renderCalls})`);
 		component!.dispose?.();
 		const afterDispose = renderCalls;
 		await new Promise((r) => setTimeout(r, 250));

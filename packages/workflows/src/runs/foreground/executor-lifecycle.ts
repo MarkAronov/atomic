@@ -103,6 +103,10 @@ export interface RunFailureMetadata {
 	readonly retryAfterMs?: number;
 }
 
+/**
+ * Apply failure fields to a live stage. Executor callers invoke this next to
+ * a version-bumping stage store method, with no intervening asynchronous work.
+ */
 export function applyFailureToStage(stage: StageSnapshot, failure: WorkflowFailure): void {
 	stage.status = "failed";
 	stage.error = failure.userMessage;

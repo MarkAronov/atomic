@@ -52,6 +52,8 @@ export function createStageScheduler(input: {
 		input.runSnapshot.stages.find((stage) => stage.id === stageId);
 
 	const setStageParentIds = (stage: StageSnapshot, parentIds: readonly string[]): void => {
+		// The tracked-stage caller invokes this next to the version-bumping
+		// `recordStageStart` method, with no intervening asynchronous work.
 		stage.parentIds = Object.freeze([...parentIds]);
 	};
 

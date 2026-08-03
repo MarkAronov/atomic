@@ -25,6 +25,7 @@
 
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { GraphTheme } from "./graph-theme.js";
 import {
 	createSessionPickerResumeCandidateCache,
@@ -80,7 +81,7 @@ export function openSessionPicker(
 		const state = createSessionPickerState();
 		let settled = false;
 		let unsubscribe: (() => void) | null = null;
-		let currentSnapshot = store.snapshot();
+
 		const resumeCandidateCache = createSessionPickerResumeCandidateCache();
 
 		const factory = (
@@ -99,10 +100,16 @@ export function openSessionPicker(
 			};
 			// Re-render on store changes so newly-started runs appear and
 			// status icons refresh without the user having to press a key.
+			// Read one memoized payload-free projection per render rather than
+			// caching a snapshot from the subscription callback: the
+			// invalidation channel carries no snapshot, so a cached one would
+			// go stale and newly-started runs would never appear.
 			const selectRows = (): ReturnType<typeof selectRunsForPicker> => {
-				const resumeCandidateLookup = intent === "resume" ? resumeCandidateCache(currentSnapshot) : undefined;
+				const snapshot = readGraphStoreSnapshot(store);
+				const resumeCandidateLookup =
+					intent === "resume" ? resumeCandidateCache({ ...snapshot, runs: store.runs() }) : undefined;
 				return selectRunsForPicker(
-					currentSnapshot.runs,
+					snapshot.runs,
 					state.query,
 					state.includeAll,
 					Date.now(),
@@ -110,10 +117,7 @@ export function openSessionPicker(
 					resumeCandidateLookup,
 				);
 			};
-			unsubscribe = store.subscribe((snapshot) => {
-				currentSnapshot = snapshot;
-				tui.requestRender?.();
-			});
+			unsubscribe = subscribeStoreInvalidation(store, () => tui.requestRender?.());
 			return {
 				render: (width: number) => {
 					const rows = selectRows();
