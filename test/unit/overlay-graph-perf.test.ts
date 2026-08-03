@@ -203,12 +203,23 @@ function renderPairGraph(count: number): { composed: number; edges: number; card
 	}
 }
 
-function viewportReadBudgets(view: InstrumentedGraphView): {
-	bands: number;
-	displayStages: number;
-	edges: number;
-	layout: number;
-	paintedCards: number;
+/**
+ * Per-frame read budgets, in two kinds — the distinction matters.
+ *
+ * `viewportScoped` entries are this change's actual claim: they stay flat as the
+ * graph grows, because the band walk and card placement stop at the viewport.
+ * A 400-stage chain and a 100,000-stage chain both paint the same few cards.
+ *
+ * `graphScoped` entries deliberately scale with the graph and are NOT viewport
+ * bounds. The render examines every edge for a cheap four-comparison bounds test
+ * before plotting only the visible ones, and the header counts every stage once.
+ * These budgets pin the *shape* of that work — no duplicate walk, no per-card
+ * clone or slice — not its magnitude. A green run here is not evidence that a
+ * frame is viewport-bounded; only the `viewportScoped` entries say that.
+ */
+function perFrameReadBudgets(view: InstrumentedGraphView): {
+	viewportScoped: { bands: number; layout: number; paintedCards: number };
+	graphScoped: { displayStages: number; edges: number };
 } {
 	const geometry = view.renderGeometryForTest();
 	assert.ok(geometry.bands.length > 1, "fixture must contain more than one layout band");
@@ -237,16 +248,20 @@ function viewportReadBudgets(view: InstrumentedGraphView): {
 	}
 
 	return {
-		// Rendering and hit-target recording each perform the same binary search and band walk.
-		bands: 2 * (binarySearchReads + walkedBandReads),
-		// One empty-layout length check, two reads per painted card, and two focused-stage hint reads.
-		layout: 2 * paintedCards + 3,
-		// Display selection checks length once, then the header counts every stage once.
-		// Cards share the same collection and must not clone or scan it.
-		displayStages: 2 * view.layoutForTest().length + 2,
-		// Edge bounds are cheap to test, so one full O(E) edge walk is intentional even though few edges are plotted.
-		edges: 2 * geometry.edges.length + 1,
-		paintedCards,
+		viewportScoped: {
+			// Rendering and hit-target recording each perform the same binary search and band walk.
+			bands: 2 * (binarySearchReads + walkedBandReads),
+			// One empty-layout length check, two reads per painted card, and two focused-stage hint reads.
+			layout: 2 * paintedCards + 3,
+			paintedCards,
+		},
+		graphScoped: {
+			// Display selection checks length once, then the header counts every stage once.
+			// Cards share the same collection and must not clone or scan it.
+			displayStages: 2 * view.layoutForTest().length + 2,
+			// One full O(E) walk is intentional: each edge gets a cheap bounds test before plotting.
+			edges: 2 * geometry.edges.length + 1,
+		},
 	};
 }
 
@@ -272,7 +287,9 @@ describe("GraphView many-stage performance (#2100)", () => {
 				view.composeCalls <= view.bodyRowsForTest(),
 				`composed ${view.composeCalls} rows for a ${view.bodyRowsForTest()}-row body`,
 			);
-			const { paintedCards } = viewportReadBudgets(view);
+			const {
+				viewportScoped: { paintedCards },
+			} = perFrameReadBudgets(view);
 			assert.equal(
 				view.paintedCards,
 				paintedCards,
@@ -294,13 +311,17 @@ describe("GraphView many-stage performance (#2100)", () => {
 			initialFocusedStageId: "s0",
 		});
 		try {
-			const budget = viewportReadBudgets(view);
+			const { viewportScoped } = perFrameReadBudgets(view);
 			view.countRenderReadsForTest();
 			const text = visibleText(view.render(96));
 			const reads = view.renderReadCountsForTest();
 			assert.match(text, /s0\b/);
-			assert.ok(reads.bands.numeric <= budget.bands, `visited ${reads.bands.numeric} layout bands`);
-			assert.equal(view.paintedCards, budget.paintedCards, `painted ${view.paintedCards} cards below the viewport`);
+			assert.ok(reads.bands.numeric <= viewportScoped.bands, `visited ${reads.bands.numeric} layout bands`);
+			assert.equal(
+				view.paintedCards,
+				viewportScoped.paintedCards,
+				`painted ${view.paintedCards} cards below the viewport`,
+			);
 		} finally {
 			view.dispose();
 		}
@@ -499,20 +520,25 @@ describe("GraphView many-stage performance (#2100)", () => {
 		});
 		try {
 			view.render(96);
-			const budget = viewportReadBudgets(view);
+			const { viewportScoped, graphScoped } = perFrameReadBudgets(view);
 			view.countRenderReadsForTest();
 			view.render(96);
 			const reads = view.renderReadCountsForTest();
+			// Viewport-scoped: flat as the graph grows.
 			assert.ok(
-				totalArrayReads(reads.layout) <= budget.layout,
+				totalArrayReads(reads.layout) <= viewportScoped.layout,
 				`read layout ${totalArrayReads(reads.layout)} times`,
 			);
-			assert.ok(reads.bands.numeric <= budget.bands, `visited ${reads.bands.numeric} layout bands`);
+			assert.ok(reads.bands.numeric <= viewportScoped.bands, `visited ${reads.bands.numeric} layout bands`);
+			// Graph-scoped: one pass each, so a duplicate walk or a per-card clone fails.
 			assert.ok(
-				totalArrayReads(reads.displayStages) <= budget.displayStages,
+				totalArrayReads(reads.displayStages) <= graphScoped.displayStages,
 				`read display stages ${totalArrayReads(reads.displayStages)} times`,
 			);
-			assert.ok(totalArrayReads(reads.edges) <= budget.edges, `read edges ${totalArrayReads(reads.edges)} times`);
+			assert.ok(
+				totalArrayReads(reads.edges) <= graphScoped.edges,
+				`read edges ${totalArrayReads(reads.edges)} times`,
+			);
 		} finally {
 			view.dispose();
 		}
