@@ -25,6 +25,13 @@ interface ArrayReadCounts {
 	numeric: number;
 }
 
+interface RenderReadCounts {
+	layout: ArrayReadCounts;
+	bands: ArrayReadCounts;
+	displayStages: ArrayReadCounts;
+	edges: ArrayReadCounts;
+}
+
 function newArrayReadCounts(): ArrayReadCounts {
 	return { length: 0, numeric: 0 };
 }
@@ -111,16 +118,27 @@ class InstrumentedGraphView extends GraphView {
 		return this._overlayBodyRows(this._overlayPanelLineCount());
 	}
 
+	graphScrollOffsetForTest(): number {
+		return this.graphScrollOffset;
+	}
+
 	countRenderReadsForTest(): void {
 		this.cachedLayout = countArrayReads(this.cachedLayout, this.layoutReads);
+		this.cachedDisplayStages = countArrayReads(this.cachedDisplayStages, this.displayStageReads);
 		this.cachedRenderGeometry = {
 			...this.cachedRenderGeometry,
 			bands: countArrayReads(this.cachedRenderGeometry.bands, this.bandReads),
+			edges: countArrayReads(this.cachedRenderGeometry.edges, this.edgeReads),
 		};
 	}
 
-	renderReadCountsForTest(): { layout: ArrayReadCounts; bands: ArrayReadCounts } {
-		return { layout: { ...this.layoutReads }, bands: { ...this.bandReads } };
+	renderReadCountsForTest(): RenderReadCounts {
+		return {
+			layout: { ...this.layoutReads },
+			bands: { ...this.bandReads },
+			displayStages: { ...this.displayStageReads },
+			edges: { ...this.edgeReads },
+		};
 	}
 
 	countAnimationReadsForTest(): void {
@@ -185,18 +203,50 @@ function renderPairGraph(count: number): { composed: number; edges: number; card
 	}
 }
 
-function viewportReadBudgets(view: InstrumentedGraphView): { bands: number; layout: number; visibleBands: number } {
+function viewportReadBudgets(view: InstrumentedGraphView): {
+	bands: number;
+	displayStages: number;
+	edges: number;
+	layout: number;
+	paintedCards: number;
+} {
 	const geometry = view.renderGeometryForTest();
 	assert.ok(geometry.bands.length > 1, "fixture must contain more than one layout band");
 	const bandStride = geometry.bands[1]!.top - geometry.bands[0]!.top;
 	const rowGap = bandStride - NODE_H;
 	assert.ok(rowGap >= 0, "fixture must use non-overlapping layout bands");
-	const visibleBands = Math.ceil((view.bodyRowsForTest() + NODE_H - 1) / (NODE_H + rowGap));
-	const binarySearchReads = Math.ceil(Math.log2(geometry.bands.length)) + 1;
+
+	const viewportTop = view.graphScrollOffsetForTest();
+	const viewportBottom = Math.min(geometry.totalRows, viewportTop + view.bodyRowsForTest());
+	const visibleBands = geometry.bands.filter((band) => band.bottom > viewportTop && band.top < viewportBottom);
+	const paintedCards = visibleBands.reduce((count, band) => count + band.nodeIndices.length, 0);
+
+	let low = 0;
+	let high = geometry.bands.length;
+	let binarySearchReads = 0;
+	while (low < high) {
+		binarySearchReads++;
+		const middle = Math.floor((low + high) / 2);
+		if (geometry.bands[middle]!.bottom <= viewportTop) low = middle + 1;
+		else high = middle;
+	}
+	let walkedBandReads = 0;
+	for (let index = low; index < geometry.bands.length; index++) {
+		walkedBandReads++;
+		if (geometry.bands[index]!.top >= viewportBottom) break;
+	}
+
 	return {
-		bands: 2 * (binarySearchReads + visibleBands + 1),
-		layout: 2 * visibleBands + 8,
-		visibleBands,
+		// Rendering and hit-target recording each perform the same binary search and band walk.
+		bands: 2 * (binarySearchReads + walkedBandReads),
+		// One empty-layout length check, two reads per painted card, and two focused-stage hint reads.
+		layout: 2 * paintedCards + 3,
+		// Display selection checks length once, then the header counts every stage once.
+		// Cards share the same collection and must not clone or scan it.
+		displayStages: 2 * view.layoutForTest().length + 2,
+		// Edge bounds are cheap to test, so one full O(E) edge walk is intentional even though few edges are plotted.
+		edges: 2 * geometry.edges.length + 1,
+		paintedCards,
 	};
 }
 
@@ -222,10 +272,11 @@ describe("GraphView many-stage performance (#2100)", () => {
 				view.composeCalls <= view.bodyRowsForTest(),
 				`composed ${view.composeCalls} rows for a ${view.bodyRowsForTest()}-row body`,
 			);
-			const { visibleBands } = viewportReadBudgets(view);
-			assert.ok(
-				view.paintedCards <= visibleBands,
-				`painted ${view.paintedCards} cards outside the focused viewport`,
+			const { paintedCards } = viewportReadBudgets(view);
+			assert.equal(
+				view.paintedCards,
+				paintedCards,
+				`painted ${view.paintedCards} cards instead of the ${paintedCards} intersecting the viewport`,
 			);
 		} finally {
 			view.dispose();
@@ -249,7 +300,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			const reads = view.renderReadCountsForTest();
 			assert.match(text, /s0\b/);
 			assert.ok(reads.bands.numeric <= budget.bands, `visited ${reads.bands.numeric} layout bands`);
-			assert.ok(view.paintedCards <= budget.visibleBands, `painted ${view.paintedCards} cards below the viewport`);
+			assert.equal(view.paintedCards, budget.paintedCards, `painted ${view.paintedCards} cards below the viewport`);
 		} finally {
 			view.dispose();
 		}
@@ -457,6 +508,11 @@ describe("GraphView many-stage performance (#2100)", () => {
 				`read layout ${totalArrayReads(reads.layout)} times`,
 			);
 			assert.ok(reads.bands.numeric <= budget.bands, `visited ${reads.bands.numeric} layout bands`);
+			assert.ok(
+				totalArrayReads(reads.displayStages) <= budget.displayStages,
+				`read display stages ${totalArrayReads(reads.displayStages)} times`,
+			);
+			assert.ok(totalArrayReads(reads.edges) <= budget.edges, `read edges ${totalArrayReads(reads.edges)} times`);
 		} finally {
 			view.dispose();
 		}
@@ -469,6 +525,76 @@ describe("GraphView many-stage performance (#2100)", () => {
 			view.countAnimationReadsForTest();
 			assert.equal(view.animationEligible(), false);
 			assert.equal(view.animationReadCountForTest(), 0, "animation eligibility read per-node cached state");
+		} finally {
+			view.dispose();
+		}
+	});
+});
+
+/**
+ * The read budgets above bound how much work a frame does; they say nothing about
+ * what it paints. Both regressions below leave every budget satisfied and the whole
+ * overlay-graph suite green, so the painted output needs its own assertions.
+ */
+describe("overlay graph paints what the budgets do not constrain", () => {
+	/** One completed root and one running child, so the header counts are 1 and 1. */
+	function twoStageStore() {
+		return createGraphStore([
+			{ ...makeStage("a"), status: "completed" as const, startedAt: 1, endedAt: 2, durationMs: 1 },
+			{ ...makeStage("b", ["a"]), status: "running" as const, startedAt: 1 },
+		]);
+	}
+
+	it("paints the edge run connecting a parent card to its child", () => {
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: twoStageStore(),
+			graphTheme: defaultTheme,
+			getViewportRows: () => 24,
+		});
+		try {
+			const lines = visibleText(view.render(60)).split("\n");
+			// Anchor on the card boxes themselves. A card's own side borders are also
+			// "│", so only the rows strictly between the parent's closing border and
+			// the child's opening border are edge; with plotting removed they are blank.
+			const parentBody = lines.findIndex((line) => line.includes("✓ complete"));
+			assert.ok(parentBody !== -1, "fixture must paint the completed parent card");
+			const parentCardEnd = lines.findIndex((line, index) => index > parentBody && line.includes("╰"));
+			const childCardStart = lines.findIndex((line, index) => index > parentCardEnd && line.includes("╭"));
+			assert.ok(
+				parentCardEnd !== -1 && childCardStart > parentCardEnd + 1,
+				"fixture must leave a gap between cards",
+			);
+
+			const between = lines.slice(parentCardEnd + 1, childCardStart);
+			const edgeRows = between.filter((line) => line.includes("│"));
+			assert.equal(
+				edgeRows.length,
+				between.length,
+				`every row between the cards must carry the edge, got:\n${between.join("\n")}`,
+			);
+		} finally {
+			view.dispose();
+		}
+	});
+
+	it("paints stage counts in the header", () => {
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: twoStageStore(),
+			graphTheme: defaultTheme,
+			getViewportRows: () => 24,
+		});
+		try {
+			const header = visibleText(view.render(60))
+				.split("\n")
+				.find((line) => line.includes("ORCHESTRATOR"));
+			assert.ok(header !== undefined, "overlay must paint a header row");
+			// One completed stage and one running stage, straight off the fixture.
+			assert.match(header, /✓ 1/);
+			assert.match(header, /● 1/);
 		} finally {
 			view.dispose();
 		}

@@ -4,7 +4,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { ANIMATION_TICK_MS } from "../../packages/workflows/src/tui/graph-view-constants.js";
-import { createToastManager } from "../../packages/workflows/src/tui/toast.js";
+import { createToastManager, renderToasts } from "../../packages/workflows/src/tui/toast.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const {
@@ -19,12 +19,17 @@ const {
 } = h;
 
 class AnimationGateGraphView extends GraphView {
-	addToastForTest(dismissAfterMs?: number): void {
-		this.toastManager.add({ kind: "info", message: "still active", dismissAfterMs });
+	addToastForTest(dismissAfterMs?: number, message = "still active"): void {
+		this.toastManager.add({ kind: "info", message, dismissAfterMs });
+		this.requestRender?.();
 	}
 
 	activeToastCountForTest(): number {
 		return this.toastManager.active().length;
+	}
+
+	activeToastsForTest() {
+		return this.toastManager.active();
 	}
 
 	layoutForTest() {
@@ -148,6 +153,7 @@ describe("GraphView animation timer", () => {
 				});
 				views.push(view);
 				item.setup(view);
+				requestRender.mockClear();
 				vi.advanceTimersByTime(ANIMATION_TICK_MS);
 				assert.equal(requestRender.mock.calls.length, 1, `${item.name} did not keep the animation tick running`);
 				view.dispose();
@@ -211,7 +217,7 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
-	it("prunes expired toasts before the render path reads them", () => {
+	it("does not paint an expired toast for an extra frame", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(10_000);
 		const dismissAfterMs = 1_000;
@@ -222,14 +228,42 @@ describe("GraphView animation timer", () => {
 			graphTheme: defaultTheme,
 		});
 		try {
-			view.addToastForTest(dismissAfterMs);
+			const withoutToast = view.render(80);
+			view.addToastForTest(dismissAfterMs, "expired toast");
 			assert.equal(view.activeToastCountForTest(), 1);
 			vi.advanceTimersByTime(dismissAfterMs);
-			view.render(80);
+			const afterExpiration = view.render(80);
+
+			assert.deepEqual(afterExpiration, withoutToast, "an expired toast must be pruned before its render read");
 			assert.equal(view.activeToastCountForTest(), 0);
 		} finally {
 			view.dispose();
 			vi.useRealTimers();
+		}
+	});
+
+	it("retains one raw overlay row per live toast and renders visible content for each", () => {
+		const view = new AnimationGateGraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap([makeStage("A")])),
+			graphTheme: defaultTheme,
+		});
+		try {
+			const withoutToasts = view.render(80);
+			view.addToastForTest(undefined, "first live toast");
+			view.addToastForTest(undefined, "second live toast");
+
+			const withToasts = view.render(80);
+			const changedRows = withToasts.filter((line, index) => line !== withoutToasts[index]);
+			const visibleToastRows = renderToasts(view.activeToastsForTest(), { theme: defaultTheme }).map((line) =>
+				h.visibleText([line]),
+			);
+
+			assert.equal(changedRows.length, 2, "each live toast must retain its own raw overlay row");
+			assert.deepEqual(visibleToastRows, [" ℹ first live toast ", " ℹ second live toast "]);
+		} finally {
+			view.dispose();
 		}
 	});
 	it("does not start the timer in widget mode", async () => {
