@@ -564,3 +564,41 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
 	// ubuntu-latest is only ever acceptable on the OIDC publish job.
 	assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
 });
+
+/**
+ * Every suite CI runs must also gate a push.
+ *
+ * The hooks used to stop at `npm run test:unit`, so an integration or contract
+ * failure was invisible locally and reached CI by default. Two did: a
+ * Windows-only line-ending bug in a changelog check, and an integration fixture
+ * broken by a change in the same branch. Neither could fail the suite anyone was
+ * actually running.
+ *
+ * This asserts coverage, not spelling. A hook may run at every stage or only at
+ * `pre-push`; what it may not do is exclude the push, because that is the last
+ * point before CI. `test:all` and `test:scripts` are deliberately out of scope —
+ * the first is a convenience wrapper over suites already covered here, and the
+ * second is not part of the `test` workflow's required checks.
+ */
+test("every CI test suite also gates a push", async () => {
+	const prek = await readText(join(root, "prek.toml"));
+	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "package.json"));
+
+	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
+		assert.ok(manifest.scripts[script], `missing script: ${script}`);
+		const hook = new RegExp(String.raw`\{[^}]*entry\s*=\s*"npm run ${script}"[^}]*\}`, "u").exec(prek);
+		assert.ok(
+			hook,
+			`prek.toml declares no hook running \`npm run ${script}\`; a suite CI runs must not be able to fail only in CI`,
+		);
+
+		const stages = /stages\s*=\s*\[([^\]]*)\]/u.exec(hook[0]);
+		if (stages) {
+			assert.match(
+				stages[1] as string,
+				/"pre-push"/u,
+				`the \`${script}\` hook restricts itself to ${stages[1]} and so does not gate a push`,
+			);
+		}
+	}
+});
