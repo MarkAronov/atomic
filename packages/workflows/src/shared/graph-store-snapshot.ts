@@ -46,16 +46,17 @@ function compactRunResult(result: WorkflowOutputValues | undefined): WorkflowOut
 	return Object.keys(compact).length === 0 ? undefined : compact;
 }
 
-function clonePrompt(prompt: PendingPrompt | undefined): PendingPrompt | undefined {
-	if (prompt === undefined) return undefined;
+// Both cloners are called only from a `!== undefined` guard at their call sites,
+// so they take and return a concrete value; an internal undefined branch here
+// would be unreachable and would only weaken the type for every caller.
+function clonePrompt(prompt: PendingPrompt): PendingPrompt {
 	return {
 		...prompt,
 		...(prompt.choices !== undefined ? { choices: [...prompt.choices] } : {}),
 	};
 }
 
-function cloneInputRequest(request: StageInputRequest | undefined): StageInputRequest | undefined {
-	if (request === undefined) return undefined;
+function cloneInputRequest(request: StageInputRequest): StageInputRequest {
 	return {
 		...request,
 		questions: request.questions.map((question) => ({
