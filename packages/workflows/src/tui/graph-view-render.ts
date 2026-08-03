@@ -4,8 +4,6 @@ import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
 import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
-import { truncateToWidth } from "./text-helpers.js";
-import { renderToasts } from "./toast.js";
 
 /** Overlay/widget rendering orchestration for GraphView. */
 export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
@@ -68,7 +66,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 		this._renderSwitcherOverlay(lines, run, frameWidth, bodyTarget);
 		this._renderPromptOverlay(lines, frameWidth, bodyTarget);
-		this._renderToastOverlay(lines, frameWidth);
 
 		// 5. Three-row statusline pinned to the bottom.
 		lines.push(...this._renderStatusline(frameWidth));
@@ -167,21 +164,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			const lineIdx = slot + i;
 			const base = lines[lineIdx] ?? this._blankRow(frameWidth);
 			lines[lineIdx] = this._overlayCard(base, cardLines[i]!, leftPad, frameWidth);
-		}
-	}
-
-	private _renderToastOverlay(lines: string[], frameWidth: number): void {
-		// Toast overlay — top-right of header band.
-		this.toastManager.tick(Date.now());
-		const toastLines = renderToasts(this.toastManager.active(), {
-			theme: this.graphTheme,
-		});
-		if (toastLines.length === 0) return;
-
-		for (let i = 0; i < toastLines.length && i < lines.length; i++) {
-			const existing = lines[i] ?? "";
-			const merged = `${existing} ${toastLines[i]}`;
-			lines[i] = truncateToWidth(merged, frameWidth, "", true);
 		}
 	}
 }

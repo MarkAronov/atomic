@@ -37,9 +37,9 @@ export const OVERLAY_VERTICAL_MARGIN_ROWS = 1;
  * and the running-stage border lerps between `borderDim` and
  * `warning` without a key press. The host-supplied `requestRender`
  * gate prevents work while the overlay is hidden or unfocused.
- * GraphView also skips ticks when nothing is animating (no running /
- * awaiting_input stages, prompt caret, or toasts) so large idle graphs
- * do not burn ~10 full paints/sec (#2100).
+ * GraphView also skips ticks when nothing is animating — no running or
+ * awaiting_input stage and no prompt caret — so large idle graphs do not
+ * burn ~10 full paints/sec (#2100).
  */
 export const ANIMATION_TICK_MS = 100;
 

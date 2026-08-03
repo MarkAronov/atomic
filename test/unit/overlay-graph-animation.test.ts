@@ -4,7 +4,6 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { ANIMATION_TICK_MS } from "../../packages/workflows/src/tui/graph-view-constants.js";
-import { createToastManager, renderToasts } from "../../packages/workflows/src/tui/toast.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const {
@@ -19,19 +18,6 @@ const {
 } = h;
 
 class AnimationGateGraphView extends GraphView {
-	addToastForTest(dismissAfterMs?: number, message = "still active"): void {
-		this.toastManager.add({ kind: "info", message, dismissAfterMs });
-		this.requestRender?.();
-	}
-
-	activeToastCountForTest(): number {
-		return this.toastManager.active().length;
-	}
-
-	activeToastsForTest() {
-		return this.toastManager.active();
-	}
-
 	layoutForTest() {
 		return this.cachedLayout;
 	}
@@ -120,7 +106,7 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
-	it("ticks for a prompt, toast, and rebuilt awaiting-input stage independently", () => {
+	it("ticks for a prompt and a rebuilt awaiting-input stage independently", () => {
 		vi.useFakeTimers();
 		const views: AnimationGateGraphView[] = [];
 		try {
@@ -129,11 +115,6 @@ describe("GraphView animation timer", () => {
 					name: "prompt",
 					store: makeStore(makeRunPromptSnap([makeStage("A")], makePendingPrompt())),
 					setup: (_view: AnimationGateGraphView) => {},
-				},
-				{
-					name: "toast",
-					store: makeStore(makeSnap([makeStage("A")])),
-					setup: (view: AnimationGateGraphView) => view.addToastForTest(),
 				},
 				{
 					name: "awaiting_input",
@@ -196,76 +177,6 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
-	it("expires toast activity without an explicit tick", () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(10_000);
-		try {
-			const manager = createToastManager();
-			const persistentId = manager.add({ kind: "info", message: "persistent" });
-			assert.equal(manager.hasActive(), true);
-			manager.dismiss(persistentId);
-			assert.equal(manager.hasActive(), false);
-
-			const dismissAfterMs = 1_000;
-			manager.add({ kind: "success", message: "timed", dismissAfterMs });
-			assert.equal(manager.hasActive(), true);
-			vi.advanceTimersByTime(dismissAfterMs);
-			assert.equal(manager.hasActive(), false);
-			assert.deepEqual(manager.active(), []);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("does not paint an expired toast for an extra frame", () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(10_000);
-		const dismissAfterMs = 1_000;
-		const view = new AnimationGateGraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store: makeStore(makeSnap([makeStage("A")])),
-			graphTheme: defaultTheme,
-		});
-		try {
-			const withoutToast = view.render(80);
-			view.addToastForTest(dismissAfterMs, "expired toast");
-			assert.equal(view.activeToastCountForTest(), 1);
-			vi.advanceTimersByTime(dismissAfterMs);
-			const afterExpiration = view.render(80);
-
-			assert.deepEqual(afterExpiration, withoutToast, "an expired toast must be pruned before its render read");
-			assert.equal(view.activeToastCountForTest(), 0);
-		} finally {
-			view.dispose();
-			vi.useRealTimers();
-		}
-	});
-
-	it("retains one raw overlay row per live toast and renders visible content for each", () => {
-		const view = new AnimationGateGraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store: makeStore(makeSnap([makeStage("A")])),
-			graphTheme: defaultTheme,
-		});
-		try {
-			const withoutToasts = view.render(80);
-			view.addToastForTest(undefined, "first live toast");
-			view.addToastForTest(undefined, "second live toast");
-
-			const withToasts = view.render(80);
-			const changedRows = withToasts.filter((line, index) => line !== withoutToasts[index]);
-			const visibleToastRows = renderToasts(view.activeToastsForTest(), { theme: defaultTheme }).map((line) =>
-				h.visibleText([line]),
-			);
-
-			assert.equal(changedRows.length, 2, "each live toast must retain its own raw overlay row");
-			assert.deepEqual(visibleToastRows, [" ℹ first live toast ", " ℹ second live toast "]);
-		} finally {
-			view.dispose();
-		}
-	});
 	it("does not start the timer in widget mode", async () => {
 		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);

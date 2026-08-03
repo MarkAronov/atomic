@@ -17,7 +17,6 @@ import type { GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { createPromptCardState, type PromptCardState } from "./prompt-card.js";
 import type { SwitcherState } from "./switcher.js";
-import { createToastManager } from "./toast.js";
 
 export interface GraphStageCounts {
 	pending: number;
@@ -92,7 +91,6 @@ export abstract class GraphViewState {
 	protected focusedIndex = 0;
 	protected switcherOpen = false;
 	protected switcherState: SwitcherState = { query: "", selectedIndex: 0 };
-	protected toastManager = createToastManager();
 	protected detailsExpanded = true;
 	protected cachedLayout: LayoutNode[] = [];
 	/** Stages mirrored from `cachedLayout` — shared across card renders. */
@@ -171,7 +169,7 @@ export abstract class GraphViewState {
 	}
 
 	protected _needsAnimationTick(): boolean {
-		return this.promptState !== null || this.toastManager.hasActive() || this.hasAnimatingStages;
+		return this.promptState !== null || this.hasAnimatingStages;
 	}
 
 	protected _rebuildLayout(): void {
