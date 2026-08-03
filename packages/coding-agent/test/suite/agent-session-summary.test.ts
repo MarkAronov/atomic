@@ -89,6 +89,48 @@ describe("session summary generation", () => {
 		expect(summaryEntries(harness)).toHaveLength(1);
 	});
 
+	it("does not persist a summary once tree navigation has left the branch", async () => {
+		// A branch_summary is not a conversation message, and navigating to an existing assistant
+		// message leaves the last message id unchanged, so the anchor check alone cannot catch this.
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("a summary of the abandoned branch"),
+		]);
+
+		const requestStarted = Promise.withResolvers<void>();
+		const releaseRequest = Promise.withResolvers<void>();
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			// Hold the summary request open so the navigation lands while it is in flight.
+			async () => {
+				requestStarted.resolve();
+				await releaseRequest.promise;
+				return fauxAssistantMessage("a summary of the abandoned branch");
+			},
+		]);
+
+		await runTwoTurns(harness);
+		await requestStarted.promise;
+
+		// Push the leaf past the last assistant with a non-message entry, so navigating back to
+		// that message moves the branch while leaving the anchor untouched.
+		harness.session.setSessionName("pinned");
+		const assistants = harness.sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+		await harness.session.navigateTree(assistants[assistants.length - 1]!.id);
+
+		releaseRequest.resolve();
+		await settle();
+
+		expect(summaryEntries(harness)).toHaveLength(0);
+	});
+
 	it("generates nothing when the setting is disabled", async () => {
 		const harness = await createHarness({ settings: { sessionSummary: { enabled: false } } });
 		harnesses.push(harness);
