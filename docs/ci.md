@@ -10,7 +10,7 @@ Pull request / selected branch push
    ├─ suites (Linux, Windows): build package -> unit -> integration
    ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node, then Bun)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
-   ├─ static-checks (Linux): typecheck, docs, Mintlify, contracts
+   ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (2 legs): result gate carrying both required contexts
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
@@ -58,7 +58,7 @@ Its work runs as four independent jobs so the wall clock is one job's longest de
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
 | `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
 | `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s warm / 4m04s healthy p100 |
-| `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
+| `static-checks` | Linux only | typecheck, docs links, Mintlify, Alpine/Debian installer smoke, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
 
 The release-archive Windows samples above are warm-toolchain measurements. A cold
@@ -183,6 +183,8 @@ that stays a deliberate decision.
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
 Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
+
+The static job also runs `scripts/test-installers-containers.sh`. It executes `install.sh` with a restricted PATH and local release fixture inside `alpine:3.22` BusyBox `sh` and `debian:bookworm-slim`, checks the full payload and launcher, and gives the installer no JavaScript runtime or package manager.
 
 ## Direct release trigger and recovery
 
