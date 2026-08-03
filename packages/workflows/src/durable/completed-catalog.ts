@@ -1,3 +1,4 @@
+import { flattenTruncatedString } from "../shared/flat-string.js";
 import { isReopenableSessionTranscript } from "../shared/session-transcript.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
@@ -208,10 +209,15 @@ function completedToolNodes(
 	});
 }
 
+/**
+ * Catalog rows are held for the lifetime of a completed-run listing, so this
+ * truncation must release the payload it summarizes rather than point into it.
+ * See `flattenTruncatedString`.
+ */
 function summarizeCompletedToolResult(value: WorkflowSerializableValue): string {
 	const serialized = JSON.stringify(value);
-	if (serialized === undefined) return String(value).slice(0, 240);
-	return serialized.length <= 240 ? serialized : `${serialized.slice(0, 237)}...`;
+	if (serialized === undefined) return flattenTruncatedString(String(value).slice(0, 240));
+	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(serialized.slice(0, 237))}...`;
 }
 
 function runSnapshotsFromCheckpoints(
