@@ -6,6 +6,13 @@
 
 - Added generated session summaries to the resume picker, so `/resume` and `atomic -r` show what a conversation was about instead of a truncated first message. Atomic writes a one-line summary once the agent goes idle, reusing the session's existing model, credentials, stream function, and retry policy with a dedicated one-line prompt and no reasoning request; the stored line has its whitespace collapsed and length clamped so a long response cannot break picker layout. Each summary is persisted as a `session_summary` session entry anchored to the last user/assistant message it describes, and the picker shows it only while that message is still the newest one — a later message, or a later branch summary, retires it and the display falls back to the session name or first message, exactly as it does when a summary has not been generated, has failed, or is still in flight. Summaries are matched by picker search, and their token usage is counted toward session usage totals and the footer. Generation is best-effort and invisible: it is skipped for very short sessions, workflow stage sessions, and `--print`/JSON modes, it never blocks or delays a turn, it is cancelled when the next prompt starts or the session shuts down, and a slow request that outlives the conversation discards its own result rather than persisting a stale summary. Set `sessionSummary.enabled` to `false` to disable it ([#1033](https://github.com/bastani-inc/atomic/issues/1033)).
 
+## [0.9.11-alpha.12] - 2026-08-03
+
+### Fixed
+
+- Fixed PDF extraction dropping text and streaming `TypeError: Math.sumPrecise is not a function` warnings on Node runtimes that do not implement `Math.sumPrecise`. The `unpdf` dependency was declared as the floating range `^1.6.2`, which resolves to 1.8.0 in a published or global install; that release's bundled PDF.js v6.1 dropped the guarded fallback and calls the builtin unconditionally, so extraction threw per glyph, emitted font-substitution warnings, and silently returned fewer text items. `unpdf` is now exact-pinned to `1.7.0`, the newest release that still ships the fallback, so no install can float to 1.8.0 ([#2141](https://github.com/bastani-inc/atomic/issues/2141)).
+- Upgraded the pinned `unpdf` from 1.6.2 to 1.7.0, which adds `cMapUrl` CJK font support under Node, destroys internally created document proxies and canvas resources, and preserves line breaks in `extractText` with `mergePages`.
+
 ## [0.9.11-alpha.11] - 2026-08-03
 
 ### Breaking Changes
