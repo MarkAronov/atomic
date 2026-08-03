@@ -70,14 +70,27 @@ function glyphForDirs(dirs: Set<Dir>): string {
 	return " ";
 }
 
+export interface GraphCanvasBounds {
+	top: number;
+	bottom: number;
+	left: number;
+	right: number;
+}
+
 export class GraphCanvas {
-	/** rowIdx → colIdx → Cell. Sparse — empty cells render as a single space. */
 	private rows: Map<number, Map<number, Cell>> = new Map();
 	private maxRow = -1;
 	private maxCol = -1;
 
+	constructor(private readonly bounds?: GraphCanvasBounds) {}
 	setCell(row: number, col: number, ch: string, fg: string | null): void {
 		if (row < 0 || col < 0) return;
+		if (
+			this.bounds &&
+			(row < this.bounds.top || row >= this.bounds.bottom || col < this.bounds.left || col >= this.bounds.right)
+		) {
+			return;
+		}
 		let cols = this.rows.get(row);
 		if (!cols) {
 			cols = new Map();
@@ -116,34 +129,38 @@ export class GraphCanvas {
 	 * different glyph at the final column (e.g. `>`-style arrowhead).
 	 */
 	hline(row: number, fromCol: number, toCol: number, fg: string | null): void {
-		const lo = Math.min(fromCol, toCol);
-		const hi = Math.max(fromCol, toCol);
+		if (this.bounds && (row < this.bounds.top || row >= this.bounds.bottom)) return;
+		const lo = Math.max(Math.min(fromCol, toCol), this.bounds?.left ?? 0);
+		const hi = Math.min(Math.max(fromCol, toCol), (this.bounds?.right ?? Number.POSITIVE_INFINITY) - 1);
 		for (let c = lo; c <= hi; c++) this.mergeCell(row, c, ["l", "r"], fg);
 	}
 
 	vline(col: number, fromRow: number, toRow: number, fg: string | null): void {
-		const lo = Math.min(fromRow, toRow);
-		const hi = Math.max(fromRow, toRow);
+		if (this.bounds && (col < this.bounds.left || col >= this.bounds.right)) return;
+		const lo = Math.max(Math.min(fromRow, toRow), this.bounds?.top ?? 0);
+		const hi = Math.min(Math.max(fromRow, toRow), (this.bounds?.bottom ?? Number.POSITIVE_INFINITY) - 1);
 		for (let r = lo; r <= hi; r++) this.mergeCell(r, col, ["u", "d"], fg);
 	}
 
 	/** Materialise the canvas as one ANSI-styled string per row. */
 	toLines(): string[] {
-		if (this.maxRow < 0) return [];
+		const top = this.bounds?.top ?? 0;
+		const bottom = this.bounds?.bottom ?? this.maxRow + 1;
+		const left = this.bounds?.left ?? 0;
+		if (bottom <= top) return [];
 		const lines: string[] = [];
-		for (let r = 0; r <= this.maxRow; r++) {
+		for (let r = top; r < bottom; r++) {
 			const cols = this.rows.get(r);
 			if (!cols || cols.size === 0) {
 				lines.push("");
 				continue;
 			}
 			let buf = "";
-			let cursorCol = 0;
+			let cursorCol = left;
 			let activeFg: string | null = null;
 			const sortedCols = Array.from(cols.keys()).sort((a, b) => a - b);
 			for (const c of sortedCols) {
 				if (c > cursorCol) {
-					// Reset before emitting the gap so trailing styles don't bleed.
 					if (activeFg !== null) {
 						buf += RESET;
 						activeFg = null;

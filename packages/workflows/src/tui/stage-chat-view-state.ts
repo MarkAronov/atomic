@@ -1,6 +1,7 @@
 import { type AgentSessionEvent, ChatSessionHost } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { createPromptCardState } from "./prompt-card.js";
@@ -66,6 +67,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.promptEditorSubmitFromEnter = false;
 	ctx.promptScrollOffset = 0;
 	ctx.promptMaxScroll = 0;
+	ctx.promptVisibleRows = 0;
 	ctx.localPaused = false;
 	ctx.mouseScrollCaptureEnabled = true;
 	ctx.lastObservedStageStatus = undefined;
@@ -101,9 +103,10 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	snapshotMessagesFromSessionFile(ctx, initialStage);
 	absorbStageNotices(ctx, initialStage);
 	syncPromptState(ctx, initialStage?.pendingPrompt);
-	if (isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status))
-		ctx.chatHost.clearBusyForTerminalWorkflowStage();
-	ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
+	const initialChatIsTerminal =
+		isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status);
+	if (initialChatIsTerminal) ctx.chatHost.clearBusyForTerminalWorkflowStage();
+	ctx._unsubscribeStore = subscribeStoreInvalidation(ctx.store, () => handleStoreUpdate(ctx));
 	ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
 	if (ctx.handle) {
@@ -112,9 +115,45 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
 		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
+		if (!initialChatIsTerminal) rehydrateCompactionStatusAfterAttach(ctx);
 		rehydrateQueuedMessages(ctx);
 	}
 	ctx.chatHost.syncAnimationTick();
+}
+
+/**
+ * Restore the factual compaction indicator into a freshly mounted host.
+ *
+ * Compaction start is an event, but the active reason lives on the session so
+ * a host rebuilt after detach can render the same label even when it missed
+ * that event. An absent reason explicitly clears the fresh host's status.
+ */
+function rehydrateCompactionStatus(ctx: StageChatViewContext): void {
+	const session = liveHandle(ctx)?.agentSession;
+	ctx.chatHost.hydrateCompactionStatus(session?.isCompacting === true ? session.compactionReason : undefined);
+}
+
+/**
+ * The live stage handle may create its session lazily. Re-read compaction state
+ * after that async attach so a host mounted while the session is already
+ * compacting does not stay on the generic Working row forever.
+ */
+function rehydrateCompactionStatusAfterAttach(ctx: StageChatViewContext): void {
+	const handle = liveHandle(ctx);
+	if (!handle) return;
+	rehydrateCompactionStatus(ctx);
+	void handle.ensureAttached().then(
+		() => {
+			if (ctx._unsubscribeHandle === null || liveHandle(ctx) === undefined) return;
+			if (isTerminalStageChatState(currentRun(ctx)?.status) || isTerminalStageChatState(currentStage(ctx)?.status)) {
+				return;
+			}
+			rehydrateCompactionStatus(ctx);
+			ctx.chatHost.syncAnimationTick();
+			ctx.requestRender?.();
+		},
+		() => {},
+	);
 }
 
 /**
@@ -308,7 +347,7 @@ function absorbStageNotices(ctx: StageChatViewContext, stage: StageSnapshot | un
 }
 
 export function currentRun(ctx: StageChatViewContext): RunSnapshot | undefined {
-	return ctx.store.snapshot().runs.find((r) => r.id === ctx.runId);
+	return readGraphStoreSnapshot(ctx.store).runs.find((r) => r.id === ctx.runId);
 }
 
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {
@@ -337,6 +376,7 @@ export function syncPromptState(ctx: StageChatViewContext, prompt: PendingPrompt
 function resetPromptScroll(ctx: StageChatViewContext): void {
 	ctx.promptScrollOffset = 0;
 	ctx.promptMaxScroll = 0;
+	ctx.promptVisibleRows = 0;
 }
 
 function promptSeedText(ctx: StageChatViewContext, prompt: PendingPrompt): string {

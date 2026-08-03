@@ -5,6 +5,7 @@ import { getLoadableDurableWorkflow } from "../durable/workflow-status-transitio
 import { type JobTracker, jobTracker } from "../runs/background/job-tracker.js";
 import { type StageControlRegistry, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
+import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { Store } from "../shared/store-public-types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 
@@ -28,7 +29,7 @@ export function classifyDurableResumeShadow(
 	const jobs = deps.jobs ?? jobTracker;
 	if (jobs.has(run.id)) return "not_shadow";
 	const controls = deps.stageControls ?? stageControlRegistry;
-	const graph = expandWorkflowGraph(store.snapshot(), run.id);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), run.id);
 	const controlRunIds = new Set<string>([run.id]);
 	for (const stage of graph.stages) controlRunIds.add(stage.workflowGraphTarget.runId);
 	if ([...controlRunIds].some((runId) => controls.run(runId).stages().length > 0)) return "not_shadow";

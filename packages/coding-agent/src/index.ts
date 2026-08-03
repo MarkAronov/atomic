@@ -42,6 +42,7 @@ export {
 	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type CompactionReason,
 	type ModelCycleResult,
 	type ParsedSkillBlock,
 	type PromptOptions,

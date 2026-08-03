@@ -134,6 +134,7 @@ export function createTrackedStageCaller(input: {
 		}
 
 		const trackStageLifecycle = !runtime.state.stageFinalized;
+		let refreshedParentIds: readonly string[] | undefined;
 		if (
 			trackStageLifecycle &&
 			!input.hasContinuation &&
@@ -146,13 +147,11 @@ export function createTrackedStageCaller(input: {
 				actualParentIds.every((value) => runtime.stageSnapshot.parentIds.includes(value));
 			if (!sameParents) {
 				runtime.scheduler.tracker.replaceParents(runtime.stageId, actualParentIds);
-				runtime.scheduler.setStageParentIds(runtime.stageSnapshot, actualParentIds);
+				refreshedParentIds = actualParentIds;
 			}
 		}
 		if (trackStageLifecycle) {
 			const now = Date.now();
-			runtime.stageSnapshot.status = "running";
-			runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
 			const hasNoExplicitModelConfig =
 				input.options?.model === undefined && input.options?.fallbackModels === undefined;
 			const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
@@ -173,7 +172,13 @@ export function createTrackedStageCaller(input: {
 					if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) throw err;
 				}
 			}
+			if (refreshedParentIds !== undefined) {
+				runtime.scheduler.setStageParentIds(runtime.stageSnapshot, refreshedParentIds);
+			}
+			runtime.stageSnapshot.status = "running";
+			runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
+			// Publish every graph-visible live write before this task can yield.
 			runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
 			runtime.appendStageStartOnce();
 		} else {
@@ -182,6 +187,7 @@ export function createTrackedStageCaller(input: {
 
 		runtime.mcpScope.apply();
 
+		let applyTerminalStageState: (() => void) | undefined;
 		try {
 			const abortSession = (): void => {
 				void runtime.innerCtx.abort().catch(() => {});
@@ -260,9 +266,11 @@ export function createTrackedStageCaller(input: {
 			}
 			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
 			if (trackStageLifecycle) {
-				runtime.stageSnapshot.status = "completed";
 				const assistantText = runtime.innerCtx.__getLastAssistantText();
-				if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+				applyTerminalStageState = () => {
+					runtime.stageSnapshot.status = "completed";
+					if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+				};
 			}
 			return result;
 		} catch (err) {
@@ -270,11 +278,15 @@ export function createTrackedStageCaller(input: {
 			if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
 				runtime.state.stageClosedByWorkflowExit = true;
 				if (trackStageLifecycle && !isTerminalStage(runtime.stageSnapshot)) {
-					runtime.stageSnapshot.status = "skipped";
-					runtime.stageSnapshot.skippedReason = runtime.exit.workflowExitSkippedReason(workflowExitAbort.reason);
+					const skippedReason = runtime.exit.workflowExitSkippedReason(workflowExitAbort.reason);
+					applyTerminalStageState = () => {
+						runtime.stageSnapshot.status = "skipped";
+						runtime.stageSnapshot.skippedReason = skippedReason;
+					};
 				}
 			} else if (trackStageLifecycle && !runtime.signal.aborted && !runtime.state.skippedForParallelFailFast) {
-				applyFailureToStage(runtime.stageSnapshot, runtime.classifyExecutorFailure(err));
+				const failure = runtime.classifyExecutorFailure(err);
+				applyTerminalStageState = () => applyFailureToStage(runtime.stageSnapshot, failure);
 			}
 			throw err;
 		} finally {
@@ -291,6 +303,9 @@ export function createTrackedStageCaller(input: {
 				finalizationError = { thrown: true, error: err };
 			}
 			if (trackStageLifecycle) {
+				if (!runtime.state.stageFinalized) applyTerminalStageState?.();
+				// `finalizeStageSnapshot` calls the version-bumping `recordStageEnd`
+				// before its first yield, so the live write cannot outpace the cache.
 				try {
 					await runtime.finalizeStageSnapshot();
 				} catch (err) {

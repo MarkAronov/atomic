@@ -19,7 +19,9 @@ const nativePackageNames = [
 	"@bastani/atomic-natives-darwin-arm64",
 	"@bastani/atomic-natives-darwin-x64",
 	"@bastani/atomic-natives-linux-arm64-gnu",
+	"@bastani/atomic-natives-linux-arm64-musl",
 	"@bastani/atomic-natives-linux-x64-gnu",
+	"@bastani/atomic-natives-linux-x64-musl",
 	"@bastani/atomic-natives-win32-arm64-msvc",
 	"@bastani/atomic-natives-win32-x64-msvc",
 ] as const;
@@ -28,12 +30,14 @@ const nativeBinaryNames = [
 	"atomic_natives.darwin-arm64.node",
 	"atomic_natives.darwin-x64.node",
 	"atomic_natives.linux-arm64-gnu.node",
+	"atomic_natives.linux-arm64-musl.node",
 	"atomic_natives.linux-x64-gnu.node",
+	"atomic_natives.linux-x64-musl.node",
 	"atomic_natives.win32-arm64-msvc.node",
 	"atomic_natives.win32-x64-msvc.node",
 ] as const;
 
-test("prepared native root tarball contains all six exact-version optional dependencies", async () => {
+test("prepared native root tarball contains all eight exact-version optional dependencies", async () => {
 	const stage = mkdtempSync(join(tmpdir(), "atomic-native-release-contract-"));
 	const nativeDir = join(stage, "native");
 	const outputDir = join(stage, "packed");
@@ -102,7 +106,8 @@ test("publish pipeline prepares exact native package set and publishes in depend
 	const workflow = await readText(`${root}/.github/workflows/publish.yml`);
 	const expectedOrder = [...nativePackageNames, "@bastani/atomic-natives", "@bastani/atomic"].join(" ");
 	assert.match(workflow, /prepublish:native -- --skip-optional-publish/u);
-	assert.match(workflow, /Expected exactly eight npm packages/u);
+	assert.match(workflow, /Expected exactly ten npm packages/u);
+	assert.match(workflow, /atomic-linux-x64-musl\.tar\.gz.*atomic-linux-arm64-musl\.tar\.gz/u);
 	assert.ok(
 		workflow.includes(`packages=(${expectedOrder})`),
 		"npm packages must publish native leaves, native root, then coding agent",

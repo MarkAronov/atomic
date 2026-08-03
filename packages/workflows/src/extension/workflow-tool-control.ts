@@ -1,4 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
@@ -7,6 +8,7 @@ import { workflowHasPausedStages, workflowHasPausedState } from "../runs/backgro
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -16,7 +18,6 @@ import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./work
 import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 import {
 	allStageConflictMessage,
-	ambiguousRunMessage,
 	reloadFailureMessage,
 	resolveControlNodeTarget,
 	resolveToolRunTarget,
@@ -81,14 +82,8 @@ export async function workflowPauseAction(args: WorkflowToolArgs): Promise<Workf
 			return controlFailure(action, "--all", error);
 		}
 	}
-	if (target.kind === "ambiguous")
-		return {
-			action,
-			runId: target.target,
-			status: "noop",
-			message: ambiguousRunMessage(target.target, target.matches),
-		};
-	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	if (target.kind === "malformed" || target.kind === "not_found")
+		return { action, runId: target.target, status: "noop", message: target.message };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
 	// Tool nodes have no turn boundary to stop at, so pause rejects them loudly
 	// instead of silently resolving to nothing.
@@ -111,7 +106,7 @@ export async function workflowPauseAction(args: WorkflowToolArgs): Promise<Workf
 					action,
 					runId: result.runId,
 					status: "paused",
-					message: `Paused ${result.paused.length} stage(s) on run ${result.runId.slice(0, 8)}.`,
+					message: `Paused ${result.paused.length} stage(s) on run ${result.runId}.`,
 				}
 			: {
 					action,
@@ -214,7 +209,7 @@ async function quitToolNodeAction(
 			action,
 			runId,
 			status: "noop",
-			message: `Tool node ${nodeId} is not running on run ${runId.slice(0, 8)}.`,
+			message: `Tool node ${nodeId} is not running on run ${runId}.`,
 		};
 	}
 	// Let the rejected tool promise reach workflow code before the run status is
@@ -232,7 +227,7 @@ async function quitToolNodeAction(
 		workflowStatus,
 		abandoned: aborted.abandoned,
 		message:
-			`Cancelled ctx.tool ${aborted.name} (${nodeId}) on run ${runId.slice(0, 8)}.${abandonedNote}` +
+			`Cancelled ctx.tool ${aborted.name} (${nodeId}) on run ${runId}.${abandonedNote}` +
 			` Sibling work was not aborted. Current workflow status: ${workflowStatus}.` +
 			" If workflow code awaited this call without catching cancellation, the workflow may fail." +
 			" A later resume re-runs this call.",
@@ -262,15 +257,9 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 						: "No in-flight runs to quit.",
 		};
 	}
-	if (target.kind === "ambiguous") {
-		return {
-			action,
-			runId: target.target,
-			status: "noop",
-			message: ambiguousRunMessage(target.target, target.matches),
-		};
+	if (target.kind === "malformed" || target.kind === "not_found") {
+		return { action, runId: target.target, status: "noop", message: target.message };
 	}
-	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action);
@@ -290,9 +279,9 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 			status: "noop",
 			message:
 				result.reason === "already_ended"
-					? `Run ${target.runId.slice(0, 8)} already ended.`
+					? `Run ${target.runId} already ended.`
 					: result.reason === "no_active_stages"
-						? `No controllable stages on run ${target.runId.slice(0, 8)}; the run remains active.`
+						? `No controllable stages on run ${target.runId}; the run remains active.`
 						: `Run not found: ${target.runId}`,
 		};
 	} catch (error) {
@@ -320,14 +309,8 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 			return controlFailure(action, "--all", error);
 		}
 	}
-	if (target.kind === "ambiguous")
-		return {
-			action,
-			runId: target.target,
-			status: "noop",
-			message: ambiguousRunMessage(target.target, target.matches),
-		};
-	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	if (target.kind === "malformed" || target.kind === "not_found")
+		return { action, runId: target.target, status: "noop", message: target.message };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action);
@@ -412,14 +395,8 @@ async function resolveExplicitDurableTarget(
 		return controlFailure("resume", target, error);
 	}
 	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, []);
-	if (resolved.kind === "ambiguous") {
-		const matches = resolved.matches.map((match) => match.workflowId);
-		return {
-			action: "resume",
-			runId: target,
-			status: "noop",
-			message: `Ambiguous run prefix "${target}" matches: ${matches.join(", ")}`,
-		};
+	if (resolved.kind === "malformed") {
+		return { action: "resume", runId: target, status: "noop", message: resolved.message };
 	}
 	if (resolved.kind === "durable") return resumePreparedDurableTarget(resolved.workflowId, deps);
 	if (resolved.kind === "live") {
@@ -458,9 +435,8 @@ export async function workflowResumeAction(
 	const target = resolveToolRunTarget(args, "No active run to resume.");
 	if (target.kind === "all")
 		return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
-	if (target.kind === "ambiguous") {
-		const liveMatches = store.runs().filter((run) => target.matches.includes(run.id));
-		return resolveExplicitDurableTarget(target.target, args, deps, liveMatches);
+	if (target.kind === "malformed") {
+		return { action: "resume", runId: target.target, status: "noop", message: target.message };
 	}
 	if (target.kind === "not_found") {
 		const explicitTarget = args.runId?.trim();
@@ -469,11 +445,8 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message };
 	}
-	const explicitTarget = args.runId?.trim();
-	if (explicitTarget !== undefined && explicitTarget.length > 0 && explicitTarget !== target.runId) {
-		const liveMatches = store.runs().filter((run) => run.id.startsWith(explicitTarget));
-		return resolveExplicitDurableTarget(explicitTarget, args, deps, liveMatches);
-	}
+	// An explicit target now resolves only by exact id, so it can never disagree
+	// with the resolved run; the old re-resolution branch here is unreachable.
 	const backend = getDurableBackend();
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow = exact === undefined ? "not_shadow" : classifyDurableResumeShadow(exact, store, { backend });
@@ -512,8 +485,8 @@ export async function workflowResumeAction(
 	const isResumableContinuation =
 		run !== undefined &&
 		!isPaused &&
-		((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
-			(run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+		run.exitReason !== "quit" &&
+		isWorkflowRunResumable(workflowRunResumeCandidate(run));
 	if (isResumableContinuation) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();
@@ -544,9 +517,9 @@ export async function workflowResumeAction(
 				(isPaused
 					? result.resumed.length === 0
 						? runLevelResumed
-							? `Resumed run ${result.runId.slice(0, 8)}.`
-							: `No paused stages on run ${result.runId.slice(0, 8)}.`
-						: `Resumed ${result.resumed.length} stage(s) on run ${result.runId.slice(0, 8)}${args.message ? ` with message: "${args.message}"` : ""}.`
+							? `Resumed run ${result.runId}.`
+							: `No paused stages on run ${result.runId}.`
+						: `Resumed ${result.resumed.length} stage(s) on run ${result.runId}${args.message ? ` with message: "${args.message}"` : ""}.`
 					: `Snapshot available: run ${result.runId} (${result.snapshot.name}) — status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`);
 			const status = result.mode === "partial" ? "partial" : noPausedProgress ? "noop" : "ok";
 			return { action: "resume", runId: result.runId, status, message };

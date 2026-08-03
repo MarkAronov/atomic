@@ -299,6 +299,7 @@ export class SessionManager {
 		details?: T,
 		excludeFromContext?: boolean,
 		protectedReconciliation?: { delivery: "steer" | "followUp" },
+		stageAdmissionKey?: string,
 	): string {
 		const entry = createCustomMessageEntry(
 			customType,
@@ -309,6 +310,7 @@ export class SessionManager {
 			protectedReconciliation,
 			this.byId,
 			this.leafId,
+			stageAdmissionKey,
 		);
 		this._appendEntry(entry);
 		return entry.id;

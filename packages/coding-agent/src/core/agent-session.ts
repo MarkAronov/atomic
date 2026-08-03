@@ -61,6 +61,7 @@ export type {
 	AgentSessionConfig,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	CompactionReason,
 	ExtensionBindings,
 	ModelCycleResult,
 	PromptOptions,
@@ -94,6 +95,7 @@ class AgentSessionBase {
 		phase: "queued" | "consumed-unpersisted" | "persistence-failed";
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
+	protected _compactionReason: import("./agent-session-types.ts").CompactionReason | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;

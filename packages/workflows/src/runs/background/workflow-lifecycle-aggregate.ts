@@ -1,10 +1,11 @@
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
+import { readGraphStoreSnapshot } from "../../shared/store-observation.js";
 import type { Store } from "../../shared/store-public-types.js";
 import { reciprocalWorkflowRootRunId } from "../../shared/workflow-run-ownership.js";
 
 /** Control-run ids visible below one workflow boundary, in graph order. */
 export function expandedControlRunIds(store: Store, runId: string): string[] {
-	const graph = expandWorkflowGraph(store.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), runId);
 	const ids = new Set<string>([runId]);
 	for (const stage of graph.stages) ids.add(stage.workflowGraphTarget.runId);
 	// Tool-only nested runs own no stage, yet their in-flight ctx.tool nodes are

@@ -15,7 +15,8 @@ import type { PromptCardState } from "./prompt-card.js";
 
 export const VIEW_LINE_COUNT = 32;
 export const PROMPT_SCROLL_STEP_ROWS = 4;
-export const HEADER_ROWS = 1;
+/** Header rows reserved by prompt paging for the normal UUID continuation shape. */
+export const HEADER_ROWS = 2;
 export const SEP_ROWS = 1;
 export const STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL = "ctrl+t";
 
@@ -148,6 +149,7 @@ export interface StageChatViewContext {
 	promptEditorSubmitFromEnter: boolean;
 	promptScrollOffset: number;
 	promptMaxScroll: number;
+	promptVisibleRows: number;
 	localPaused: boolean;
 	mouseScrollCaptureEnabled: boolean;
 	lastObservedStageStatus: StageStatus | undefined;

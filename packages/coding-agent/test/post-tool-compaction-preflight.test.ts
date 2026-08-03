@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { convertToLlm } from "../src/core/messages.ts";
 import { createHarnessWithExtensions, type Harness } from "./test-harness.ts";
@@ -28,6 +29,25 @@ const terminatingLargeResultTool: AgentTool = {
 const compactOffline: ExtensionFactory = (pi) => {
 	pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
 };
+function createPostToolCompactionGate() {
+	let signalStarted!: () => void;
+	let release!: () => void;
+	const started = new Promise<void>((resolve) => {
+		signalStarted = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const factory: ExtensionFactory = (pi) => {
+		pi.on("session_before_compact", async (event) => {
+			assert.equal(event.reason, "threshold");
+			signalStarted();
+			await released;
+			return { compactedText: "[User]: retained" };
+		});
+	};
+	return { factory, started, release: () => release() };
+}
 
 const longPrompt = Array.from({ length: 24 }, (_, index) => `context line ${index + 1}`).join("\n");
 
@@ -87,6 +107,85 @@ describe("post-tool compaction preflight", () => {
 		});
 		expect(continueSpy).not.toHaveBeenCalled();
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
+	});
+	test("records and clears the active reason for mid-turn post-tool compaction", async () => {
+		const gate = createPostToolCompactionGate();
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-post-tool-reason", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [gate.factory],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const prompt = harness.session.prompt(longPrompt);
+		await gate.started;
+		assert.equal(harness.session.compactionReason, "threshold");
+		gate.release();
+		await prompt;
+		assert.equal(harness.session.compactionReason, undefined);
+	});
+
+	// Regression (greptile P1 on PR #2136): ownership was published and
+	// `compaction_start` emitted BEFORE the `try`, so a synchronous subscriber
+	// that threw skipped the `finally` entirely. `_autoCompactionAbortController`
+	// and `_compactionReason` stayed set, wedging every later threshold
+	// compaction behind "another automatic compaction is already active" and
+	// pinning the compaction label on attached clients forever.
+	test("clears compaction ownership when a compaction_start listener throws", async () => {
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-post-tool-throw", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [compactOffline],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		// Drive the production preflight directly: the agent loop absorbs a throwing
+		// listener into its own error handling, which would mask whether ownership
+		// was released. Greptile's harness reproduced it at this level too.
+		const unsubscribe = harness.session.subscribe((event) => {
+			if (event.type === "compaction_start") throw new Error("listener exploded");
+		});
+
+		const oversized = Array.from({ length: 400 }, (_, index) => ({
+			role: "user" as const,
+			content: [{ type: "text" as const, text: `filler line ${index} ${longPrompt}` }],
+		}));
+
+		await assert.rejects(
+			harness.session._preflightPostToolContext(oversized),
+			/listener exploded/,
+			"the throwing compaction_start listener must propagate",
+		);
+		unsubscribe();
+
+		// The throw must not leave the session owning a compaction that never ran.
+		assert.equal(harness.session.compactionReason, undefined);
+		assert.equal(harness.session.isCompacting, false);
+
+		// And the next threshold compaction must not be rejected as already active.
+		await assert.doesNotReject(harness.session._preflightPostToolContext(oversized));
 	});
 
 	// Regression: the compaction preflight used to return `agent.state.messages`, whose

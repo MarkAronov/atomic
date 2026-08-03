@@ -15,6 +15,7 @@ import { effectiveRunStatus } from "../../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
+import { readGraphStoreSnapshot } from "../../shared/store-observation.js";
 import type { RunSnapshot, RunStatus, StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../../shared/types.js";
 import type { StageControlRegistry } from "../foreground/stage-control-registry.js";
@@ -89,7 +90,7 @@ export { type InspectRunResult, inspectRun, type RunDetail } from "./run-inspect
 export function statusRuns(opts?: { all?: boolean; store?: Store }): RunStatusEntry[] {
 	const activeStore = opts?.store ?? defaultStore;
 
-	const snapshot = activeStore.snapshot();
+	const snapshot = readGraphStoreSnapshot(activeStore);
 	return topLevelWorkflowRuns(snapshot.runs).map((run) => {
 		const graph = expandWorkflowGraph(snapshot, run.id);
 		return {

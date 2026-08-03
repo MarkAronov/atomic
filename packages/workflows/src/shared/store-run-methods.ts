@@ -27,7 +27,9 @@ type RunStoreMethods = Pick<
 	| "recordRunResumed"
 	| "clear"
 	| "snapshot"
+	| "graphSnapshot"
 	| "subscribe"
+	| "subscribeInvalidation"
 >;
 
 export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
@@ -179,6 +181,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const wasPaused = run.status === "paused";
+			const enteringQuit = metadata?.exitReason === "quit" && run.exitReason !== "quit";
 			if (!wasPaused) {
 				run.status = "paused";
 				run.pausedAt = pausedAt ?? Date.now();
@@ -186,6 +189,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			}
 			if (metadata?.resumable !== undefined) run.resumable = metadata.resumable;
 			if (metadata?.exitReason !== undefined) run.exitReason = metadata.exitReason;
+			if (enteringQuit) run.quitAt = Date.now();
 			if (wasPaused && metadata === undefined) return false;
 			context.bumpAndNotify();
 			return true;
@@ -201,6 +205,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, resumedTs);
 			run.resumedAt = resumedTs;
 			run.pausedAt = undefined;
+			delete run.quitAt;
 			delete run.exitReason;
 			context.bumpAndNotify();
 			return true;
@@ -230,11 +235,20 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			return context.snapshot();
 		},
 
+		graphSnapshot(): StoreSnapshot {
+			return context.graphSnapshot();
+		},
+
 		subscribe(fn: (snap: StoreSnapshot) => void): () => void {
 			state.listeners.add(fn);
 			return () => {
 				state.listeners.delete(fn);
 			};
+		},
+
+		subscribeInvalidation(fn: () => void): () => void {
+			state.invalidationListeners.add(fn);
+			return () => state.invalidationListeners.delete(fn);
 		},
 	};
 }

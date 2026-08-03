@@ -198,8 +198,8 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 
 		const taskInfo =
 			result.taskIndex !== undefined && result.totalTasks !== undefined
-				? ` (${result.taskIndex + 1}/${result.totalTasks})`
-				: "";
+				? `(${result.taskIndex + 1}/${result.totalTasks})`
+				: undefined;
 
 		const sessionLine = result.shareUrl
 			? `Session: ${result.shareUrl}`
@@ -214,8 +214,23 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			typeof result.noticeLabel === "string" && result.noticeLabel.trim()
 				? result.noticeLabel.trim()
 				: "Background task";
+		let sessionLabel: string | undefined;
+		let sessionValue: string | undefined;
+		if (sessionLine) {
+			const separator = sessionLine.indexOf(":");
+			sessionLabel = sessionLine.slice(0, separator).toLowerCase();
+			sessionValue = sessionLine.slice(separator + 1).trim();
+		}
+		const details: SubagentNotifyDetails = {
+			agent,
+			status,
+			...(taskInfo ? { taskInfo } : {}),
+			resultPreview: displaySummary,
+			...(result.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+			...(sessionLabel && sessionValue ? { sessionLabel, sessionValue } : {}),
+		};
 		const content = [
-			`${noticeLabel} ${status}: **${agent}**${taskInfo}`,
+			`${noticeLabel} ${status}: **${agent}**${taskInfo ? ` ${taskInfo}` : ""}`,
 			"",
 			displaySummary,
 			sessionLine ? "" : undefined,
@@ -224,10 +239,11 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			.filter((line) => line !== undefined)
 			.join("\n");
 
-		const terminalMessage = {
+		const terminalMessage: TerminalPreludeMessage = {
 			customType: "subagent-notify",
 			content,
 			display: true,
+			details,
 		};
 		const deliveryOptions = { triggerTurn: true, stageAdmissionKey: `subagent:${key}` } as const;
 		const succeed = (): void => {

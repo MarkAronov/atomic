@@ -1,15 +1,31 @@
-// @ts-nocheck
-
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { ANIMATION_TICK_MS } from "../../packages/workflows/src/tui/graph-view-constants.js";
 import * as h from "./overlay-graph-helpers.js";
 
-const { makeStage, makeSnap, makeStore, defaultTheme, waitForRenderCount } = h;
+const {
+	makeAwaitingInputStage,
+	makePendingPrompt,
+	makeRunPromptSnap,
+	makeStage,
+	makeSnap,
+	makeStore,
+	defaultTheme,
+	waitForRenderCount,
+} = h;
+
+class AnimationGateGraphView extends GraphView {
+	layoutForTest() {
+		return this.cachedLayout;
+	}
+}
 
 describe("GraphView animation timer", () => {
-	it("fires requestRender on a steady cadence in overlay mode", async () => {
-		const stages = [makeStage("A")];
+	it("fires requestRender on a steady cadence while stages are animating", async () => {
+		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
@@ -31,8 +47,138 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
-	it("does not start the timer in widget mode", async () => {
+	it("skips animation ticks when no stage needs wall-clock paint", async () => {
 		const stages = [makeStage("A")];
+		const snap = makeSnap(stages);
+		const store = makeStore(snap);
+		const requestRender = vi.fn(() => {});
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			requestRender,
+		});
+		try {
+			await new Promise((r) => setTimeout(r, 250));
+			assert.equal(requestRender.mock.calls.length, 0, "pending-only graphs must not burn animation frames");
+		} finally {
+			view.dispose();
+		}
+	});
+
+	it("stops timer-driven render requests after a real-store running stage completes", () => {
+		vi.useFakeTimers();
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-1",
+			name: "animation transition",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordStageStart("run-1", { ...makeStage("A"), status: "running", startedAt: 1 });
+		const requestRender = vi.fn(() => {});
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			requestRender,
+		});
+		try {
+			vi.advanceTimersByTime(300);
+			assert.equal(requestRender.mock.calls.length, 3);
+			store.recordStageEnd("run-1", {
+				...makeStage("A"),
+				status: "completed",
+				startedAt: 1,
+				endedAt: 2,
+				durationMs: 1,
+			});
+			requestRender.mockClear();
+			vi.advanceTimersByTime(500);
+			assert.equal(requestRender.mock.calls.length, 0);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("ticks for a prompt and a rebuilt awaiting-input stage independently", () => {
+		vi.useFakeTimers();
+		const views: AnimationGateGraphView[] = [];
+		try {
+			const cases = [
+				{
+					name: "prompt",
+					store: makeStore(makeRunPromptSnap([makeStage("A")], makePendingPrompt())),
+					setup: (_view: AnimationGateGraphView) => {},
+				},
+				{
+					name: "awaiting_input",
+					store: makeStore(makeSnap([makeAwaitingInputStage("A")])),
+					setup: (_view: AnimationGateGraphView) => {},
+				},
+			];
+
+			for (const item of cases) {
+				const requestRender = vi.fn(() => {});
+				const view = new AnimationGateGraphView({
+					mode: "overlay",
+					runId: "run-1",
+					store: item.store,
+					graphTheme: defaultTheme,
+					requestRender,
+				});
+				views.push(view);
+				item.setup(view);
+				requestRender.mockClear();
+				vi.advanceTimersByTime(ANIMATION_TICK_MS);
+				assert.equal(requestRender.mock.calls.length, 1, `${item.name} did not keep the animation tick running`);
+				view.dispose();
+			}
+		} finally {
+			for (const view of views) view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps ticking when a retained running stage becomes awaiting input", () => {
+		vi.useFakeTimers();
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-1",
+			name: "retained awaiting input",
+			inputs: {},
+			status: "running",
+			stages: [{ ...makeStage("A"), status: "running", startedAt: 1 }],
+			startedAt: 1,
+		});
+		const requestRender = vi.fn(() => {});
+		const view = new AnimationGateGraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			requestRender,
+		});
+		try {
+			const retainedLayout = view.layoutForTest();
+			assert.equal(store.recordStageAwaitingInput("run-1", "A", true, 2), true);
+			assert.strictEqual(view.layoutForTest(), retainedLayout);
+			requestRender.mockClear();
+			vi.advanceTimersByTime(ANIMATION_TICK_MS);
+			assert.equal(requestRender.mock.calls.length, 1);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not start the timer in widget mode", async () => {
+		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
@@ -66,7 +212,7 @@ describe("GraphView animation timer", () => {
 	});
 
 	it("stops firing renders after dispose", async () => {
-		const stages = [makeStage("A")];
+		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});

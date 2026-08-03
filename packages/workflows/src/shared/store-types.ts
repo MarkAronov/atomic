@@ -153,6 +153,8 @@ export interface WorkflowChildReplaySnapshot {
 	/** True when the child reached this terminal status through ctx.exit(). */
 	readonly exited?: boolean;
 	readonly outputs: WorkflowOutputValues;
+	/** Payload-free output count used by compact graph projections. */
+	readonly outputCount?: number;
 	readonly exitReason?: string;
 }
 
@@ -282,6 +284,8 @@ export interface RunSnapshot {
 	pausedDurationMs?: number;
 	/** Timestamp set when a controlled pause begins; cleared on resume. */
 	pausedAt?: number;
+	/** Timestamp when the run entered resumable quit state; display-only expiry marker. */
+	quitAt?: number;
 	/** Timestamp recorded on the most recent resume from a paused state. */
 	resumedAt?: number;
 	result?: WorkflowOutputValues;

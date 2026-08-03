@@ -129,11 +129,17 @@ export function computeLayout(stages: readonly StageSnapshot[], opts: LayoutOpts
 		centreShift.set(depth, Math.round(widestCentre - centre));
 	}
 
+	const rowIndex = new Map<string, number>();
+	for (const ids of colGroups.values()) {
+		for (let i = 0; i < ids.length; i++) {
+			rowIndex.set(ids[i]!, i);
+		}
+	}
+
 	const nodes: LayoutNode[] = [];
 	for (const s of stages) {
 		const col = colMap.get(s.id) ?? 0;
-		const group = colGroups.get(col) ?? [];
-		const row = group.indexOf(s.id);
+		const row = rowIndex.get(s.id) ?? 0;
 		const x =
 			orientation === "vertical" ? row * (NODE_W + colGap) + (centreShift.get(col) ?? 0) : col * (NODE_W + colGap);
 		const y = orientation === "vertical" ? col * (NODE_H + rowGap) : row * (NODE_H + rowGap);

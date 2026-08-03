@@ -9,10 +9,11 @@ import { coerceStageInputAnswer, hasStageInputAnswerContent, type StageInputAnsw
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
+import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
-import { ambiguousRunMessage, resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
+import { resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
 
 /**
  * Optional dependencies enabling `workflow send` to revive an eligible
@@ -120,16 +121,7 @@ export async function workflowSendAction(
 	if (target.kind === "all") {
 		return workflowSendResult("--all", "", requestedDelivery, "noop", "Send requires a single run.");
 	}
-	if (target.kind === "ambiguous") {
-		return workflowSendResult(
-			target.target,
-			"",
-			requestedDelivery,
-			"noop",
-			ambiguousRunMessage(target.target, target.matches),
-		);
-	}
-	if (target.kind === "not_found") {
+	if (target.kind === "malformed" || target.kind === "not_found") {
 		return workflowSendResult(target.target, "", requestedDelivery, "noop", target.message);
 	}
 	const runs = store.runs();
@@ -146,7 +138,7 @@ export async function workflowSendAction(
 			"",
 			requestedDelivery,
 			"noop",
-			stage.ok ? "Stage id, prefix, or name is required." : stage.message,
+			stage.ok ? "Stage id or name is required." : stage.message,
 		);
 	}
 	const resolvedStageId = stage.stageId;
@@ -280,7 +272,7 @@ export async function workflowSendAction(
 		admitted = true;
 	};
 	const terminalPending = Promise.withResolvers<never>();
-	const unsubscribeTerminal = store.subscribe(() => {
+	const unsubscribeTerminal = subscribeStoreInvalidation(store, () => {
 		if (admitted) return;
 		const terminal = terminalWorkflowSendResultForRoot(rootRunId, args.stageId?.trim() ?? resolvedStageId);
 		if (terminal !== undefined) terminalPending.reject(new WorkflowSendAdmissionError(terminal));

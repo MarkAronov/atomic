@@ -25,8 +25,10 @@
 
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { GraphTheme } from "./graph-theme.js";
 import {
+	createSessionPickerResumeCandidateCache,
 	createSessionPickerState,
 	handleSessionPickerInput,
 	renderSessionPicker,
@@ -80,6 +82,8 @@ export function openSessionPicker(
 		let settled = false;
 		let unsubscribe: (() => void) | null = null;
 
+		const resumeCandidateCache = createSessionPickerResumeCandidateCache();
+
 		const factory = (
 			tui: PiCustomOverlayFactoryTui,
 			_theme: unknown,
@@ -96,14 +100,31 @@ export function openSessionPicker(
 			};
 			// Re-render on store changes so newly-started runs appear and
 			// status icons refresh without the user having to press a key.
-			unsubscribe = store.subscribe(() => tui.requestRender?.());
+			// Read one memoized payload-free projection per render rather than
+			// caching a snapshot from the subscription callback: the
+			// invalidation channel carries no snapshot, so a cached one would
+			// go stale and newly-started runs would never appear.
+			const selectRows = (): ReturnType<typeof selectRunsForPicker> => {
+				const snapshot = readGraphStoreSnapshot(store);
+				const resumeCandidateLookup =
+					intent === "resume" ? resumeCandidateCache({ ...snapshot, runs: store.runs() }) : undefined;
+				return selectRunsForPicker(
+					snapshot.runs,
+					state.query,
+					state.includeAll,
+					Date.now(),
+					intent,
+					resumeCandidateLookup,
+				);
+			};
+			unsubscribe = subscribeStoreInvalidation(store, () => tui.requestRender?.());
 			return {
 				render: (width: number) => {
-					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll);
+					const rows = selectRows();
 					return renderSessionPicker({ width, theme, rows, state });
 				},
 				handleInput: (data: string) => {
-					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll);
+					const rows = selectRows();
 					const action = handleSessionPickerInput(data, state, rows);
 					if (action.kind === "noop") {
 						tui.requestRender?.();

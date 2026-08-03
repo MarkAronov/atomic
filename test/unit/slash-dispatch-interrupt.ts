@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { PiCommandContext } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
@@ -26,7 +27,12 @@ describe("/workflow run-control chat commands", () => {
 	test.sequential.each([["completed"], ["failed"], ["killed"]] as const)(
 		"top-level /workflow quit <id> leaves %s terminal runs unchanged",
 		async (status) => {
-			const runId = `slash-quit-${status}-${Date.now()}`;
+			const runId =
+				status === "completed"
+					? "a1b2c3d4-3333-4333-8333-333333333333"
+					: status === "failed"
+						? "a1b2c3d4-4444-4444-8444-444444444444"
+						: "a1b2c3d4-5555-4555-8555-555555555555";
 			recordTerminalRun(runId, status);
 
 			const { workflowCmd } = await registerWorkflowCommand();
@@ -42,7 +48,7 @@ describe("/workflow run-control chat commands", () => {
 			await workflowCmd.options.handler(`quit ${runId}`, ctx);
 
 			const joined = msgs.join("\n");
-			assert.match(joined, /already ended/i);
+			assert.ok(joined.includes(`Run ${runId} already ended.`));
 			assert.doesNotMatch(joined, /Run not found/);
 			assert.equal(store.runs().find((r) => r.id === runId)?.status, status);
 		},
@@ -85,7 +91,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("top-level /workflow quit <id> pauses and preserves resumability without confirmation", async () => {
-		const runId = `quit-chat-${Date.now()}`;
+		const runId = testRunId(`quit-chat-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		registerTestStageHandle(runId, "quit-stage");
 		const controller = new AbortController();
@@ -132,7 +138,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("top-level /workflow quit without a controllable stage reports that the run remains active", async () => {
-		const runId = `quit-no-control-${Date.now()}`;
+		const runId = testRunId(`quit-no-control-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		const { workflowCmd } = await registerWorkflowCommand();
 		const { ctx, messages } = buildCtx();
@@ -186,7 +192,7 @@ describe("/workflow run-control chat commands", () => {
 	])(
 		"top-level /workflow quit %s rejects yes compatibility as an ordinary unsupported target",
 		async (argsTemplate, unsupportedToken) => {
-			const runId = `quit-unsupported-confirmation-${unsupportedToken}-${Date.now()}`;
+			const runId = testRunId(`quit-unsupported-confirmation-${unsupportedToken}-${Date.now()}`);
 			store.recordRunStart(makeInflightRun(runId));
 			registerTestStageHandle(runId, "quit-stage");
 			const { workflowCmd } = await registerWorkflowCommand();
@@ -197,12 +203,12 @@ describe("/workflow run-control chat commands", () => {
 			const run = store.runs().find((candidate) => candidate.id === runId);
 			assert.equal(run?.status, "running");
 			assert.equal(run?.exitReason, undefined);
-			assert.match(messages.join("\n"), new RegExp(`Run not found: ${unsupportedToken}`));
+			assert.match(messages.join("\n"), /Run id must be a full 36-character UUID/);
 		},
 	);
 
 	test.sequential("top-level /workflow quit without an id defaults to the active run", async () => {
-		const runId = `quit-active-${Date.now()}`;
+		const runId = testRunId(`quit-active-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		registerTestStageHandle(runId, "quit-stage");
 		const { workflowCmd } = await registerWorkflowCommand();
@@ -221,7 +227,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("removed /workflow kill is not a compatibility alias for quit", async () => {
-		const runId = `removed-kill-${Date.now()}`;
+		const runId = testRunId(`removed-kill-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		const { workflowCmd } = await registerWorkflowCommand();
 		const { ctx, messages } = buildCtx();
@@ -239,7 +245,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("top-level /workflow interrupt defaults to the active run", async () => {
-		const runId = `interrupt-active-${Date.now()}`;
+		const runId = testRunId(`interrupt-active-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const { pi, commands } = buildMockPi();
@@ -270,7 +276,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("top-level /workflow interrupt <id> reports no active stages without confirmation", async () => {
-		const runId = `interrupt-chat-${Date.now()}`;
+		const runId = testRunId(`interrupt-chat-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const { pi, commands } = buildMockPi();
@@ -306,7 +312,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("top-level /workflow reload stays available while workflows are in flight", async () => {
-		const runId = `reload-slash-inflight-${Date.now()}`;
+		const runId = testRunId(`reload-slash-inflight-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const { pi, commands } = buildMockPi();

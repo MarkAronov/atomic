@@ -1,4 +1,5 @@
 import type { AgentSession, AgentSessionEvent } from "../../../core/agent-session.ts";
+import type { CompactionReason } from "../../../core/agent-session-types.ts";
 import {
 	type CompactionRung,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -28,9 +29,9 @@ import {
 } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 
-type CompactionReason = "manual" | "threshold" | "overflow";
+export type { CompactionReason } from "../../../core/agent-session-types.ts";
 
-function compactionStatusMessage(reason: CompactionReason): string {
+export function compactionStatusMessage(reason: CompactionReason): string {
 	switch (reason) {
 		case "manual":
 			return "Compacting context...";
@@ -38,6 +39,8 @@ function compactionStatusMessage(reason: CompactionReason): string {
 			return "Auto-compacting...";
 		case "overflow":
 			return "Context overflow detected. Auto-compacting...";
+		case "branchSummary":
+			return "summarizing branch…";
 	}
 }
 
@@ -267,13 +270,14 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "summarization_retry_attempt_start": {
 			const retry = event as Extract<AgentSessionEvent, { type: "summarization_retry_attempt_start" }>;
 			state.sdkBusy = true;
-			state.statusMessage =
-				retry.source === "branchSummary" ? "summarizing branch…" : compactionStatusMessage(retry.reason);
+			state.statusMessage = compactionStatusMessage(
+				retry.source === "branchSummary" ? "branchSummary" : retry.reason,
+			);
 			changed = true;
 			break;
 		}
 		case "summarization_retry_finished":
-			state.statusMessage = state.compacting ? "Compacting context..." : "";
+			state.statusMessage = state.compacting ? compactionStatusMessage("manual") : "";
 			changed = true;
 			break;
 		case "auto_retry_start":

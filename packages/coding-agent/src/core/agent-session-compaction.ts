@@ -291,6 +291,7 @@ export function compact(
 	const controller = new AbortController();
 	this._disconnectFromAgent();
 	this._compactionAbortController = controller;
+	this._compactionReason = "manual";
 	let flight!: Promise<VerbatimCompactionResult>;
 	// Start the owned run in a microtask so both single-flight fields are
 	// published before any joiner can observe a partially claimed compaction.
@@ -299,6 +300,7 @@ export function compact(
 		.finally(() => {
 			if (this._compactionAbortController === controller) {
 				this._compactionAbortController = undefined;
+				if (this._compactionReason === "manual") this._compactionReason = undefined;
 				this._reconnectToAgent();
 			}
 			if (this._manualCompactionPromise === flight) this._manualCompactionPromise = undefined;

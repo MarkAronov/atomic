@@ -24,7 +24,9 @@ const expectedNativeOptionalPackages = [
 	"@bastani/atomic-natives-darwin-arm64",
 	"@bastani/atomic-natives-darwin-x64",
 	"@bastani/atomic-natives-linux-arm64-gnu",
+	"@bastani/atomic-natives-linux-arm64-musl",
 	"@bastani/atomic-natives-linux-x64-gnu",
+	"@bastani/atomic-natives-linux-x64-musl",
 	"@bastani/atomic-natives-win32-arm64-msvc",
 	"@bastani/atomic-natives-win32-x64-msvc",
 ];
@@ -59,7 +61,11 @@ function assertDeterministicNativeEntries(shrinkwrap: Shrinkwrap, expectedVersio
 		assert.ok(entry.os?.length, `${packageName} should declare supported OS`);
 		assert.ok(entry.cpu?.length, `${packageName} should declare supported CPU`);
 		if (packageName.includes("linux")) {
-			assert.deepEqual(entry.libc, ["glibc"], `${packageName} should constrain the GNU build to glibc`);
+			assert.deepEqual(
+				entry.libc,
+				[packageName.includes("-musl") ? "musl" : "glibc"],
+				`${packageName} should constrain its libc ABI`,
+			);
 		}
 	}
 }

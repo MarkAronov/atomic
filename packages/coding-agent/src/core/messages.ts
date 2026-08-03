@@ -35,6 +35,7 @@ export interface BashExecutionMessage {
  * Message type for extension-injected messages via sendMessage().
  * These are custom messages that extensions can inject into the conversation.
  */
+
 export interface CustomMessage<T = unknown> {
 	role: "custom";
 	customType: string;
@@ -43,6 +44,12 @@ export interface CustomMessage<T = unknown> {
 	details?: T;
 	timestamp: number;
 }
+
+export type StageAdmittedCustomMessage<T = unknown> = CustomMessage<T> & {
+	/** Stable producer identity used for exactly-once workflow-stage admission. */
+	stageAdmissionKey?: string;
+	/** Whether this admission joined active stage work or started after the assistant had settled. */
+};
 
 export interface BranchSummaryMessage {
 	role: "branchSummary";
@@ -219,13 +226,15 @@ export function createCustomMessage(
 	details: unknown | undefined,
 	timestamp: string,
 	excludeFromContext?: boolean,
-): CustomMessage {
-	const message: CustomMessage & { excludeFromContext?: boolean } = {
+	stageAdmissionKey?: string,
+): StageAdmittedCustomMessage {
+	const message: StageAdmittedCustomMessage & { excludeFromContext?: boolean } = {
 		role: "custom",
 		customType,
 		content: content ?? [],
 		display,
 		details,
+		...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
 		timestamp: new Date(timestamp).getTime(),
 	};
 	if (excludeFromContext === true) message.excludeFromContext = true;

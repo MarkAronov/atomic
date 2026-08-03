@@ -229,8 +229,10 @@ const store: Store = {
 	recordRunPaused: () => false,
 	recordRunResumed: () => false,
 	snapshot: () => snap,
+	graphSnapshot: () => snap,
 	clear: () => {},
 	subscribe: () => () => {},
+	subscribeInvalidation: () => () => {},
 };
 
 const view = new GraphView({

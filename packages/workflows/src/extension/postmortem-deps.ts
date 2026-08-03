@@ -22,6 +22,7 @@ import {
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { store } from "../shared/store.js";
+import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 
 export interface PostMortemResolverDeps {
 	readonly adapters: StageAdapters;
@@ -33,7 +34,7 @@ function resolveStageCwd(runId: string): string | undefined {
 	try {
 		const backend = getDurableBackend();
 		const owningHandle = backend.getWorkflow(runId);
-		const run = store.snapshot().runs.find((candidate) => candidate.id === runId);
+		const run = readGraphStoreSnapshot(store).runs.find((candidate) => candidate.id === runId);
 		const rootRunId = run?.rootRunId ?? owningHandle?.rootWorkflowId;
 		const cwdHandle = rootRunId === undefined ? owningHandle : (backend.getWorkflow(rootRunId) ?? owningHandle);
 		return cwdHandle?.workflowCwd ?? cwdHandle?.invocationCwd ?? undefined;
@@ -61,7 +62,7 @@ export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
 ): (runId: string, stageId: string) => EnsurePostMortemStageHandleResult | undefined {
 	return (runId, stageId) => {
-		const run = store.snapshot().runs.find((candidate) => candidate.id === runId);
+		const run = readGraphStoreSnapshot(store).runs.find((candidate) => candidate.id === runId);
 		const stage = run?.stages.find((candidate) => candidate.id === stageId);
 		if (stage === undefined) return undefined;
 		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));

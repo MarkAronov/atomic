@@ -348,12 +348,14 @@ export async function _runAutoCompaction(
 	// `compact()` must already observe this controller and be rejected rather than
 	// racing the run that was just announced.
 	this._autoCompactionAbortController = new AbortController();
+	this._compactionReason = reason;
 	try {
 		this._emit({ type: "compaction_start", reason });
 	} catch (error) {
 		// A throwing start listener still propagates, matching current behavior,
 		// but must not leave ownership published with no owner running.
 		this._autoCompactionAbortController = undefined;
+		if (this._compactionReason === reason) this._compactionReason = undefined;
 		throw error;
 	}
 
@@ -426,6 +428,7 @@ export async function _runAutoCompaction(
 		});
 	} finally {
 		this._autoCompactionAbortController = undefined;
+		if (this._compactionReason === reason) this._compactionReason = undefined;
 	}
 }
 

@@ -55,6 +55,37 @@ unixTest("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare
 	}
 });
 
+unixTest("musl targets use NAPI-RS cross compilation without a glibc floor suffix", () => {
+	const stage = mkdtempSync(join(tmpdir(), "atomic-musl-cross-contract-"));
+	const bin = join(stage, "bin");
+	const args = join(stage, "bunx-args.txt");
+
+	try {
+		mkdirSync(bin);
+		const bunx = join(bin, "bunx");
+		writeFileSync(bunx, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > "$BUNX_ARGS_FILE"\n`);
+		chmodSync(bunx, 0o755);
+		const result = spawnSyncCollect([bunExecutable(), script], {
+			cwd: root,
+			env: {
+				...process.env,
+				PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+				CROSS_TARGET: "x86_64-unknown-linux-musl",
+				BUNX_ARGS_FILE: args,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		const invoked = readFileSync(args, "utf8");
+		assert.match(invoked, /napi build .*--target x86_64-unknown-linux-musl --cross-compile/u);
+		assert.doesNotMatch(invoked, /x86_64-unknown-linux-musl\.2\.17/u);
+	} finally {
+		rmSync(stage, { recursive: true, force: true });
+	}
+});
+
 unixTest("explicit Darwin targets stay native and do not request cross compilation", () => {
 	const stage = mkdtempSync(join(tmpdir(), "atomic-darwin-native-contract-"));
 	const bin = join(stage, "bin");

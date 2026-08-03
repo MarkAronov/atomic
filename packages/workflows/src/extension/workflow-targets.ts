@@ -5,15 +5,17 @@ import {
 	expandWorkflowGraph,
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
+import { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store } from "../shared/store.js";
+import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunStatus } from "../shared/store-types.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { PiUISurface } from "./wiring.js";
 
 export function formatAlreadyEndedRetainedMessage(runId: string): string {
-	return `Run ${runId.slice(0, 8)} already ended; retained for inspection.`;
+	return `Run ${runId} already ended; retained for inspection.`;
 }
 
 export function stageFailureMessage(runId: string, resultReason: string, action: "pause" | "interrupt"): string {
@@ -78,25 +80,24 @@ export function isRunStatus(value: string): value is RunStatus {
 	}
 }
 
+export { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH };
+
 export type RunIdResolution =
 	| { kind: "exact"; runId: string }
-	| { kind: "ambiguous"; matches: string[] }
+	| { kind: "malformed"; message: string }
 	| { kind: "not_found" };
 
-export function resolveRunIdPrefix(target: string): RunIdResolution {
-	const runs = store.runs();
-	const exact = runs.find((r) => r.id === target);
+export function resolveRunId(target: string): RunIdResolution {
+	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
+	const exact = store.runs().find((r) => r.id === target);
 	if (exact) return { kind: "exact", runId: exact.id };
-	const prefixed = runs.filter((r) => r.id.startsWith(target));
-	if (prefixed.length === 0) return { kind: "not_found" };
-	if (prefixed.length === 1) return { kind: "exact", runId: prefixed[0]!.id };
-	return { kind: "ambiguous", matches: prefixed.map((r) => r.id) };
+	return { kind: "not_found" };
 }
 
 export type ToolRunTarget =
 	| { kind: "all" }
 	| { kind: "run"; runId: string }
-	| { kind: "ambiguous"; target: string; matches: string[] }
+	| { kind: "malformed"; target: string; message: string }
 	| { kind: "not_found"; target: string; message: string };
 
 export function resolveToolRunTarget(args: WorkflowToolArgs, emptyMessage: string): ToolRunTarget {
@@ -104,9 +105,9 @@ export function resolveToolRunTarget(args: WorkflowToolArgs, emptyMessage: strin
 	if (args.all === true || rawTarget === "--all") return { kind: "all" };
 	const target = rawTarget || store.activeRunId() || "";
 	if (!target) return { kind: "not_found", target: rawTarget, message: emptyMessage };
-	const resolved = resolveRunIdPrefix(target);
+	const resolved = resolveRunId(target);
 	if (resolved.kind === "exact") return { kind: "run", runId: resolved.runId };
-	if (resolved.kind === "ambiguous") return { kind: "ambiguous", target, matches: resolved.matches };
+	if (resolved.kind === "malformed") return { kind: "malformed", target, message: resolved.message };
 	return { kind: "not_found", target, message: `Run not found: ${target}` };
 }
 
@@ -115,7 +116,7 @@ export type ToolStageTarget = { ok: true; runId?: string; stageId?: string } | {
 export function resolveStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, runId };
-	const graph = expandWorkflowGraph(store.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), runId);
 	const exactVirtualIds = graph.stages.filter((stage) => stage.id === target);
 	if (exactVirtualIds.length === 1) return resolvedStageTarget(exactVirtualIds[0]!);
 	if (exactVirtualIds.length > 1) return ambiguousStageTarget(target, exactVirtualIds);
@@ -126,7 +127,7 @@ export function resolveStageTarget(runId: string, stageTarget?: string): ToolSta
 	if (exactNames.length === 1) return resolvedStageTarget(exactNames[0]!);
 	if (exactNames.length > 1) return ambiguousStageTarget(target, exactNames);
 	const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
-	if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
+	if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
 	if (matches.length > 1) return ambiguousStageTarget(target, matches);
 	return resolvedStageTarget(matches[0]!);
 }
@@ -166,7 +167,7 @@ export type ControlNodeTarget =
 export function resolveControlNodeTarget(runId: string, stageTarget?: string): ControlNodeTarget {
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, kind: "run" };
-	const graph = expandWorkflowGraph(store.snapshot(), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), runId);
 	const nodes = graph.renderStages;
 	const candidates: Array<readonly ExpandedWorkflowStage[]> = [
 		nodes.filter((node) => node.id === target),
@@ -182,7 +183,7 @@ export function resolveControlNodeTarget(runId: string, stageTarget?: string): C
 				message: `Ambiguous stage identifier "${target}" matches: ${matches.map(expandedStageLabel).join(", ")}`,
 			};
 	}
-	return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
+	return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
 }
 
 function resolvedControlNodeTarget(node: ExpandedWorkflowStage): ControlNodeTarget {
@@ -194,10 +195,6 @@ function resolvedControlNodeTarget(node: ExpandedWorkflowStage): ControlNodeTarg
 
 export function toolNodePauseRejectionMessage(name: string, nodeId: string): string {
 	return `Tool nodes cannot be paused; ctx.tool ${name} (${nodeId}) has no turn boundary. Use interrupt or quit to abort it.`;
-}
-
-export function ambiguousRunMessage(target: string, matches: readonly string[]): string {
-	return `Ambiguous run prefix "${target}" matches: ${matches.map((id) => id.slice(0, 12)).join(", ")}`;
 }
 
 export function overlaySurfaceFromContext(ctx?: { ui?: PiUISurface }): OverlayPiSurface | undefined {

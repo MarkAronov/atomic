@@ -15,7 +15,7 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.t
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import type { RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { sleep } from "../helpers/runtime.js";
 
@@ -474,4 +474,56 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 	assert.equal(await runtime.session.resumeQueuedMessages(), true);
 	assert.deepEqual(calls, ["pause_queued_messages", "abort", "resume_queued_messages"]);
 	assert.equal(runtime.session.queuedMessagesPaused, false);
+});
+
+test("isolated runtime applies the RPC compaction reason during resync", async () => {
+	const model = await kimiModel();
+	const state: Awaited<ReturnType<RpcClient["getState"]>> = {
+		model,
+		thinkingLevel: "off",
+		isStreaming: false,
+		isCompacting: true,
+		compactionReason: "overflow",
+		steeringMode: "all",
+		followUpMode: "all",
+		sessionId: "test-session",
+		autoCompactionEnabled: true,
+		messageCount: 0,
+		pendingMessageCount: 0,
+		queuedMessagesPaused: false,
+	};
+	const client = Object.assign(Object.create(RpcClient.prototype) as RpcClient, {
+		onEvent: () => () => {},
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
+		getState: async () => state,
+		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
+		getCommands: async () => [],
+	});
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
+	const session = Object.assign({} as AgentSession, {
+		modelRuntime,
+		sessionManager: SessionManager.inMemory(process.cwd()),
+		scopedModels: [],
+		sessionFile: undefined,
+		agent: {
+			state: { model, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
+	});
+	const createRuntime: CreateAgentSessionRuntimeFactory = async () => {
+		throw new Error("unused");
+	};
+	const localRuntime = new AgentSessionRuntime(
+		session,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+	);
+	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
+
+	await runtime.initializeFromEngine();
+
+	assert.equal(runtime.session.isCompacting, true);
+	assert.equal(runtime.session.compactionReason, "overflow");
 });

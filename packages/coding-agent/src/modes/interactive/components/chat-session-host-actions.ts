@@ -30,6 +30,7 @@ function supportsQueuedMessagePause(
 
 export function interruptChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	options?: { restoreQueuedMessages?: boolean },
 ): Promise<void> {
 	const active = state.interruptSettlement;
 	if (active !== undefined) return active;
@@ -38,6 +39,12 @@ export function interruptChatSession<TExtraEntry extends ChatTranscriptEntryLike
 		try {
 			const session = state.getAgentSession?.();
 			if (supportsQueuedMessagePause(session)) session.pauseQueuedMessages();
+			if (options?.restoreQueuedMessages) {
+				restoreQueuedMessagesToEditor(state, {
+					suppressEmptyNotice: true,
+					preserveUnprotectedCustomMessages: true,
+				});
+			}
 			state.sdkBusy = false;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state, false);
@@ -257,6 +264,7 @@ export async function flushChatSessionCompactionQueue<TExtraEntry extends ChatTr
 
 export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	options?: { suppressEmptyNotice?: boolean; preserveUnprotectedCustomMessages?: boolean },
 ): boolean {
 	const queuedMessages = [
 		...state.pendingSteeringMessages,
@@ -264,7 +272,7 @@ export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscript
 		...state.compactionQueuedMessages,
 	];
 	if (queuedMessages.length === 0) {
-		notifyChatSessionStatus(state, "No queued messages to restore");
+		if (!options?.suppressEmptyNotice) notifyChatSessionStatus(state, "No queued messages to restore");
 		return false;
 	}
 	const restoredText = combineQueuedMessagesForEditor(queuedMessages, state.inputBuffer);
@@ -272,7 +280,11 @@ export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscript
 	state.pendingFollowUpMessages = [];
 	state.compactionQueuedMessages = [];
 	setChatSessionEditorText(state, restoredText);
-	state.getAgentSession?.()?.clearQueue();
+	state
+		.getAgentSession?.()
+		?.clearQueue(
+			options?.preserveUnprotectedCustomMessages ? { preserveUnprotectedCustomMessages: true } : undefined,
+		);
 	state.requestRender?.();
 	return true;
 }

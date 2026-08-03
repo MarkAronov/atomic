@@ -4,10 +4,8 @@
  * Visual contract:
  *   - One transparent rounded `BACKGROUND` panel with `N runs` subtitle and
  *     status-icon count badges in the title.
- *   - Two-line entry per run (status glyph + short id + bold name on
- *     line 1; dim mode · progress · duration on line 2).
- *   - Blank line between entries, no trailing blank.
- *   - Collapsed single-line form below 80 cells.
+ *   - Two-line entry per run (status glyph + full id on line 1; workflow name
+ *     and dim mode · progress · duration on line 2).
  *   - Hides entirely (returns []) when no active or recently-ended runs.
  *
  * cross-ref: src/tui/widget.ts · orchestrator-panel-ui.png · DESIGN.md §5
@@ -15,9 +13,12 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { statusRuns } from "../../packages/workflows/src/runs/background/status.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
 	buildThemedWidgetLines,
@@ -118,15 +119,16 @@ describe("renderWidgetLines — hidden states", () => {
 
 describe("renderWidgetLines — standard form", () => {
 	test("single active run → rounded panel + 2-line entry (4 lines total)", () => {
-		const snap = makeSnap([makeRun("abc123uuid", "my-wf", "running")]);
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const snap = makeSnap([makeRun(runId, "my-wf", "running")]);
 		const lines = renderWidgetLines(snap, 120).map(stripAnsi);
 		// top border + 2 content rows + bottom border = 4 total
 		assert.equal(lines.length, 4);
 		assert.ok(lines[0]!.includes("BACKGROUND"), "header should include BACKGROUND label");
 		assert.ok(lines[0]!.includes("1 run"), "header should include 1 run subtitle");
-		assert.ok(lines[1]!.includes("abc123"), "line 1 should include short id");
-		assert.ok(lines[1]!.includes("my-wf"), "line 1 should include workflow name");
-		assert.ok(lines[2]!.includes("single"), "line 2 should describe mode");
+		assert.ok(lines[1]!.includes(runId), "line 1 should include the complete run id");
+		assert.ok(!lines[1]!.includes("my-wf"), "line 1 should contain only status and id");
+		assert.ok(lines[2]!.includes("my-wf · single"), "line 2 should join the workflow name and meta");
 	});
 
 	test("quit run renders resumable quit badge and note", () => {
@@ -139,6 +141,48 @@ describe("renderWidgetLines — standard form", () => {
 		const joined = lines.join("\n");
 		assert.ok(lines[0]!.includes("BACKGROUND  1 run  1 quit"));
 		assert.ok(joined.includes("quit · resumable via /workflow resume"));
+	});
+	test("quit card expires from the widget after the recent window while status stays resumable", () => {
+		const originalNow = Date.now;
+		let now = 1_000_000;
+		Date.now = () => now;
+		try {
+			const store = createStore();
+			const runId = "quit-after-pause";
+			store.recordRunStart(makeRun(runId, "resume-me-later", "running", [], now - RECENT_ENDED_WINDOW_MS * 3));
+			const pausedAt = now - RECENT_ENDED_WINDOW_MS * 2;
+			assert.equal(store.recordRunPaused(runId, pausedAt), true);
+
+			now += RECENT_ENDED_WINDOW_MS / 6;
+			const quitAt = now;
+			assert.equal(store.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true }), true);
+
+			const quitRun = store.snapshot().runs[0]!;
+			assert.equal(quitRun.status, "paused");
+			assert.equal(quitRun.endedAt, undefined);
+			assert.equal(quitRun.pausedAt, pausedAt, "quitting must not repurpose pausedAt");
+			assert.equal(quitRun.quitAt, quitAt, "expiry must start when the run is quit");
+			assert.equal(quitRun.resumable, true);
+			assert.ok(
+				renderWidgetLines(store.snapshot(), 120)
+					.map(stripAnsi)
+					.join("\n")
+					.includes("quit · resumable via /workflow resume"),
+				"a newly quit run should render immediately",
+			);
+
+			now = quitAt + RECENT_ENDED_WINDOW_MS + 1;
+			assert.deepEqual(renderWidgetLines(store.snapshot(), 120), [], "expired quit card should disappear");
+
+			const status = statusRuns({ store });
+			assert.deepEqual(
+				status.map((entry) => [entry.runId, entry.status]),
+				[[runId, "paused"]],
+			);
+			assert.equal(store.snapshot().runs[0]!.resumable, true, "expiry must not change resumability");
+		} finally {
+			Date.now = originalNow;
+		}
 	});
 
 	test("running run shows chain mode when multi-stage", () => {
@@ -169,7 +213,7 @@ describe("renderWidgetLines — standard form", () => {
 
 		assert.match(lines[0] ?? "", /↑ 1 blocked/u);
 		assert.doesNotMatch(lines[0] ?? "", /running/u);
-		assert.match(text, /↑ {2}blocke {2}recoverable-auth/u);
+		assert.match(text, /recoverable-auth · blocked · resumable via \/workflow resume/u);
 		assert.match(text, /blocked · resumable via \/workflow resume/u);
 		assert.equal(nextWidgetRefreshDelayMs(snapshot), undefined);
 	});
@@ -187,6 +231,20 @@ describe("renderWidgetLines — standard form", () => {
 		const wfTwoIdx = lines.findIndex((l) => l.includes("wf-two"));
 		const wfOneIdx = lines.findIndex((l) => l.includes("wf-one"));
 		assert.ok(wfTwoIdx < wfOneIdx, "most recently started run renders first");
+	});
+	test("more than four concurrent runs all render without truncation", () => {
+		const now = Date.now();
+		const runs = Array.from({ length: 6 }, (_, index) =>
+			makeRun(`run-${index}-abcdef`, `wf-${index}`, "running", [], now - (6 - index) * 100),
+		);
+		const lines = renderWidgetLines(makeSnap(runs), 120).map(stripAnsi);
+		const joined = lines.join("\n");
+
+		assert.ok(lines[0]!.includes("6 runs"));
+		for (let index = 0; index < runs.length; index++) {
+			assert.ok(joined.includes(`wf-${index}`), `workflow ${index} should render`);
+		}
+		assert.equal(lines.filter((line) => line.includes("single")).length, 6);
 	});
 
 	test("hides nested child workflow runs, showing only the top-level run", () => {
@@ -269,6 +327,25 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(header.includes("❚❚ 1 paused"), "paused badge");
 		assert.ok(header.includes("✓ 1 complete"), "completed badge");
 		assert.ok(header.includes("✗ 1 failed"), "failed badge");
+	});
+	test("expired quit runs do not contribute counts after their cards disappear", () => {
+		const now = 1_000_000;
+		const active = makeRun("active-run", "still-running", "running", [], now - 1_000);
+		const expiredQuit = makeRun("expired-quit", "already-quit", "paused", [], now - RECENT_ENDED_WINDOW_MS * 2);
+		expiredQuit.pausedAt = now - RECENT_ENDED_WINDOW_MS * 2;
+		expiredQuit.quitAt = now - RECENT_ENDED_WINDOW_MS - 1;
+		expiredQuit.exitReason = "quit";
+		expiredQuit.resumable = true;
+		const snap = makeSnap([active, expiredQuit]);
+
+		const wide = renderWidgetLines(snap, 120).map(stripAnsi);
+		assert.ok(wide.join("\n").includes("still-running"));
+		assert.ok(wide[0]!.includes("BACKGROUND  1 run"), "wide header total must match its single rendered card");
+		assert.ok(!wide[0]!.includes("quit"), "wide quit badge must match rendered cards");
+
+		const collapsed = renderWidgetLines(snap, 60).map(stripAnsi);
+		assert.ok(collapsed[0]!.includes("1 background"));
+		assert.ok(!collapsed[0]!.includes("quit"), "collapsed quit badge must match rendered cards");
 	});
 
 	test("ctx.exit blocked remains distinct from completed exit statuses", () => {
@@ -360,6 +437,20 @@ describe("renderWidgetLines — standard form", () => {
 		const ended = makeRun("r2xxxxxx", "wf-d", "completed", [], now - 20_000, now - 10_000);
 		assert.equal(nextWidgetRefreshDelayMs(makeSnap([offsetActive, ended]), now), 750);
 	});
+	test("quit runs schedule the expiry repaint from quitAt", () => {
+		const now = 1_000_000;
+		const quitAt = now - RECENT_ENDED_WINDOW_MS / 6;
+		const quit = makeRun("quit-refresh", "wf-quit", "paused", [], now - RECENT_ENDED_WINDOW_MS * 2);
+		quit.pausedAt = now - RECENT_ENDED_WINDOW_MS * 2;
+		quit.quitAt = quitAt;
+		quit.exitReason = "quit";
+		quit.resumable = true;
+
+		assert.equal(
+			nextWidgetRefreshDelayMs(makeSnap([quit]), now),
+			RECENT_ENDED_WINDOW_MS - RECENT_ENDED_WINDOW_MS / 6 + 1,
+		);
+	});
 
 	test("standard panel scales to the provided terminal width", () => {
 		const width = 120;
@@ -438,5 +529,72 @@ describe("buildThemedWidgetLines — themed path", () => {
 			stripAnsi(joined).includes("？ ↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
 			"awaiting-input badge should keep the status/question mark and attach copy",
 		);
+	});
+});
+
+describe("run identity rows", () => {
+	test("keep complete ids and two-line identity for running, awaiting, quit, and terminal states", () => {
+		const theme = deriveGraphTheme({});
+		const now = Date.now();
+		const ids = {
+			running: "339e05a4-2289-408e-9076-d1a348f582ae",
+			awaiting: "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f",
+			quit: "aa11bb22-33cc-44dd-55ee-66ff77889900",
+			completed: "bb22cc33-44dd-55ee-66ff-778899001122",
+			failed: "cc33dd44-55ee-66ff-7788-990011223344",
+		};
+		const awaiting = makeRun(ids.awaiting, "build-check", "running", [makeStage("s1", "ask", "awaiting_input")]);
+		const quit: RunSnapshot = { ...makeRun(ids.quit, "release-docs", "paused"), exitReason: "quit" };
+		const completed = makeRun(ids.completed, "publish-release", "completed", [], now - 10_000, now);
+		const failed = makeRun(ids.failed, "verify-release", "failed", [], now - 10_000, now);
+		const running = makeRun(ids.running, "stage-output-transcript", "running", [], now - 10_000);
+		const lines = renderWidgetLines(makeSnap([running, awaiting, quit, completed, failed]), 120).map(stripAnsi);
+		const joined = lines.join("\n");
+
+		const cases = [
+			{ id: ids.running, name: "stage-output-transcript", glyph: statusIcon("running") },
+			// Provisional pin: today's card keeps the running glyph; the objective example shows `？`,
+			// but changing awaiting-input attribution belongs to PR #2135.
+			{ id: ids.awaiting, name: "build-check", glyph: statusIcon("running") },
+			{ id: ids.quit, name: "release-docs", glyph: statusIcon("pending") },
+			{ id: ids.completed, name: "publish-release", glyph: statusIcon("completed") },
+			{ id: ids.failed, name: "verify-release", glyph: statusIcon("failed") },
+		] as const;
+		for (const entry of cases) {
+			assert.ok(joined.includes(entry.id), `full id ${entry.id} is rendered`);
+			const idLine = lines.find((line) => line.includes(entry.id));
+			assert.ok(idLine?.includes(entry.glyph), `${entry.name} uses ${entry.glyph}`);
+		}
+		for (const name of [
+			"stage-output-transcript",
+			"build-check",
+			"release-docs",
+			"publish-release",
+			"verify-release",
+		]) {
+			assert.ok(
+				lines.some((line) => line.includes(`${name} ·`)),
+				`${name} has a name/meta identity row`,
+			);
+		}
+
+		const themed = buildThemedWidgetLines(makeSnap([running]), NULL_PI_THEME, 120);
+		assert.ok(themed[1]?.includes(hexToAnsi(statusColor("running", theme))));
+		assert.ok(themed[1]?.includes(statusIcon("running")));
+	});
+
+	test("keeps every widget border line at the collapsed breakpoint", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const snap = makeSnap([makeRun(runId, "narrow-run", "running")]);
+		for (const width of [80, 79, 60, 40, 30, 20]) {
+			const lines = renderWidgetLines(snap, width).map(stripAnsi);
+			if (width >= 80) {
+				for (const line of lines) assert.equal(visibleWidth(line), width);
+				assert.ok(lines.join("\n").includes(runId));
+			} else {
+				assert.equal(lines.length, 1, `width ${width} uses collapsed count-only form`);
+				assert.ok(!lines.join("\n").includes("339e05a4"), "collapsed widget intentionally omits ids");
+			}
+		}
 	});
 });

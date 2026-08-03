@@ -45,6 +45,7 @@ import {
 	type ReactiveWidgetTimerHandle,
 } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
 import { buildThemedWidgetLines, nextWidgetRefreshDelayMs } from "./widget.js";
 
@@ -106,8 +107,8 @@ export function installStoreWidget(
 		key: WIDGET_KEY,
 		placement: "belowEditor",
 		timers,
-		getSnapshot: () => storeInstance.snapshot(),
-		subscribe: (listener) => storeInstance.subscribe(() => listener()),
+		getSnapshot: () => readGraphStoreSnapshot(storeInstance),
+		subscribe: (listener) => subscribeStoreInvalidation(storeInstance, listener),
 		getPreviewLines: (snap, now) => buildThemedWidgetLines(snap, undefined, 120, now),
 		render: (snap, { theme, width, now }) => buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now),
 		getNextRefreshDelayMs: (snap, now) => nextWidgetRefreshDelayMs(snap, now),
@@ -206,12 +207,12 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
 		return call ? { key, call } : null;
 	}
 
-	storeInstance.subscribe(pruneActiveToolCalls);
+	subscribeStoreInvalidation(storeInstance, () => pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance)));
 
 	function recordToolStart(payload: unknown): void {
 		if (!isToolExecutionPayload(payload)) return;
 
-		const snap = storeInstance.snapshot();
+		const snap = readGraphStoreSnapshot(storeInstance);
 		pruneActiveToolCalls(snap);
 
 		const scope = resolveExplicitStageScope(payload);
@@ -234,7 +235,7 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
 	function recordToolUpdate(payload: unknown): void {
 		if (!isToolExecutionPayload(payload)) return;
 
-		pruneActiveToolCalls(storeInstance.snapshot());
+		pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance));
 
 		if (!activeToolCallForPayload(payload)) return;
 		// Updates are attach-only until the store has an explicit update API.
@@ -243,7 +244,7 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
 	function recordToolEnd(payload: unknown): void {
 		if (!isToolExecutionPayload(payload)) return;
 
-		pruneActiveToolCalls(storeInstance.snapshot());
+		pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance));
 
 		const active = activeToolCallForPayload(payload);
 		if (!active) return;

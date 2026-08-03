@@ -16,6 +16,7 @@
  */
 
 import { runCallback } from "@bastani/atomic";
+import { flattenTruncatedString } from "../shared/flat-string.js";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
 import type {
 	WorkflowSerializableValue,
@@ -609,10 +610,17 @@ async function recordReplayedToolTopology(
 	});
 	input.throwIfCancelled();
 }
+/**
+ * Summaries are written into durable checkpoints and read back by status and
+ * graph inspection, so they outlive the value they came from. Flatten the
+ * truncation: a bare `slice` leaves a SlicedString pointing at the whole
+ * serialized payload, and the 240-character bound would cap what you can read
+ * without capping what is retained.
+ */
 function summarizeToolResult(value: WorkflowSerializableValue): string {
 	const serialized = JSON.stringify(value);
-	if (serialized === undefined) return String(value).slice(0, 240);
-	return serialized.length <= 240 ? serialized : `${serialized.slice(0, 237)}...`;
+	if (serialized === undefined) return flattenTruncatedString(String(value).slice(0, 240));
+	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(serialized.slice(0, 237))}...`;
 }
 
 export async function recordCheckpointDurably(

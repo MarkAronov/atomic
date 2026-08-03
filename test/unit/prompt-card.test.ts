@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.ts";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	createPromptCardState,
@@ -18,6 +19,8 @@ import {
 	handlePromptCardInput,
 	renderPromptCard,
 } from "../../packages/workflows/src/tui/prompt-card.ts";
+import { renderPromptCardLayout } from "../../packages/workflows/src/tui/prompt-card-render.ts";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
 
@@ -244,11 +247,157 @@ describe("renderPromptCard", () => {
 		}
 	});
 
+	test("never emits more complete rows than the caller's budget for any prompt kind", () => {
+		const kinds: PendingPrompt["kind"][] = ["input", "confirm", "select", "editor"];
+		for (const kind of kinds) {
+			for (const choiceCount of [2, 3, 5, 8]) {
+				const choices = Array.from({ length: choiceCount }, (_, index) => `choice-${index + 1}`);
+				const state = createPromptCardState(
+					makePrompt({
+						kind,
+						choices: kind === "select" ? choices : undefined,
+						initial: kind === "editor" ? "first\nsecond\nthird" : undefined,
+					}),
+				);
+				for (let width = 40; width <= 100; width += 2) {
+					for (let maxRows = 1; maxRows <= 30; maxRows++) {
+						const lines = renderPromptCard({ state, theme, width, cursorOn: false, maxRows });
+						assert.ok(
+							lines.length <= maxRows,
+							`kind=${kind} choices=${choiceCount} width=${width} maxRows=${maxRows} emitted=${lines.length}`,
+						);
+					}
+				}
+			}
+		}
+	});
+
 	test("includes the prompt message in the rendered text", () => {
 		const state = createPromptCardState(makePrompt({ message: "UNIQUE-MARKER-XYZ" }));
 		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: false });
 		const joined = lines.join("\n");
 		assert.ok(joined.includes("UNIQUE-MARKER-XYZ"), "message text must appear in output");
+	});
+
+	test("renders an identity-only awaiting-input attribution banner", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const question = "Ship this change?";
+		const state = createPromptCardState(makePrompt({ message: question }));
+		const lines = renderPromptCard({
+			state,
+			theme,
+			width: 80,
+			cursorOn: false,
+			identity: { runId, name: "build-check" },
+		});
+		const plain = lines.map(stripAnsi);
+		const bannerEnd = plain.findIndex((line) => line.startsWith("╰"));
+		assert.ok(bannerEnd >= 0, "attribution banner has a bottom border");
+		const banner = plain.slice(0, bannerEnd + 1).join("\n");
+
+		assert.match(banner, /^╭ AWAITING INPUT /);
+		assert.ok(banner.includes(runId), "banner keeps the complete run id");
+		assert.ok(banner.includes("build-check"), "banner keeps the workflow name");
+		assert.doesNotMatch(banner, /Ship this change\?/);
+		assert.equal(plain.filter((line) => line.startsWith("╭ AWAITING INPUT ")).length, 1);
+		assert.ok(
+			lines[1]?.includes(`${hexToAnsi(statusColor("awaiting_input", theme))}${statusIcon("awaiting_input")}`),
+		);
+		assert.ok(plain.join("\n").includes(question), "the existing prompt UI still renders the question below");
+	});
+
+	test("keeps select questions visible as budgets grow and attribution appears", () => {
+		const questionMarkers = Array.from({ length: 4 }, (_, index) => `MONOTONIC-QUESTION-${index + 1}`);
+		const state = createPromptCardState(
+			makePrompt({ kind: "select", message: questionMarkers.join("\n"), choices: ["stable", "beta", "nightly"] }),
+		);
+		let previousVisibleMarkers = new Set<string>();
+		for (let maxRows = 8; maxRows <= 24; maxRows += 1) {
+			const rendered = renderPromptCard({
+				state,
+				theme,
+				width: 72,
+				cursorOn: false,
+				identity: { runId: "339e05a4-2289-408e-9076-d1a348f582ae", name: "build-check" },
+				maxRows,
+			})
+				.map(stripAnsi)
+				.join("\n");
+			const visibleMarkers = new Set(questionMarkers.filter((marker) => rendered.includes(marker)));
+			const bannerIsVisible = rendered.includes("339e05a4-2289-408e-9076-d1a348f582ae");
+			if (bannerIsVisible) {
+				assert.ok(visibleMarkers.size > 0, `maxRows=${maxRows} lets attribution starve the question`);
+			}
+			for (const marker of previousVisibleMarkers) {
+				assert.ok(visibleMarkers.has(marker), `increasing maxRows to ${maxRows} removes ${marker}`);
+			}
+			previousVisibleMarkers = visibleMarkers;
+		}
+	});
+
+	test("keeps attributed select and confirm question content visible and monotonic from 8 through 24 rows", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const workflowName = "middle-rung-workflow";
+		const questionMarkers = Array.from({ length: 4 }, (_, index) => `LADDER-QUESTION-${index + 1}`);
+		const middleRungKinds = new Set<PendingPrompt["kind"]>();
+		for (const kind of ["confirm", "select"] as const) {
+			const state = createPromptCardState(
+				makePrompt({
+					kind,
+					message: questionMarkers.join("\n"),
+					choices: kind === "select" ? ["stable", "beta", "nightly"] : undefined,
+				}),
+			);
+			let previousVisibleMarkers = new Set<string>();
+			for (let maxRows = 8; maxRows <= 24; maxRows += 1) {
+				const layout = renderPromptCardLayout({
+					state,
+					theme,
+					width: 72,
+					cursorOn: false,
+					identity: { runId, name: workflowName },
+					maxRows,
+				});
+				const rendered = layout.lines.map(stripAnsi).join("\n");
+				const visibleMarkers = new Set(questionMarkers.filter((marker) => rendered.includes(marker)));
+				const bannerIsVisible = rendered.includes(runId);
+				if (bannerIsVisible) {
+					assert.ok(layout.visibleQuestionRows >= 1, `${kind} maxRows=${maxRows} renders a zero-row question`);
+					if (!rendered.includes(workflowName)) middleRungKinds.add(kind);
+				}
+				for (const marker of previousVisibleMarkers) {
+					assert.ok(visibleMarkers.has(marker), `${kind} increasing maxRows to ${maxRows} removes ${marker}`);
+				}
+				previousVisibleMarkers = visibleMarkers;
+			}
+		}
+		assert.deepEqual([...middleRungKinds], ["confirm", "select"], "both prompt kinds must use the one-row rung");
+	});
+
+	test("wraps the attribution id without breaking borders at narrow widths", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const state = createPromptCardState(makePrompt({ message: "UNIQUE-PROMPT" }));
+		for (const width of [80, 40, 30, 20]) {
+			const lines = renderPromptCard({
+				state,
+				theme,
+				width,
+				cursorOn: false,
+				identity: { runId, name: "build-check" },
+			});
+			const plain = lines.map(stripAnsi);
+			const expectedWidth = Math.max(22, width);
+			for (const line of plain) assert.equal(visibleWidth(line), expectedWidth);
+			const banner = plain.slice(0, plain.findIndex((line) => line.startsWith("╰")) + 1);
+			const idStart = banner.findIndex((line) => line.includes(runId.slice(0, 8)));
+			const nameRow = banner.findIndex((line, index) => index > idStart && line.includes("build-check"));
+			const renderedId = banner
+				.slice(idStart, nameRow)
+				.join("")
+				.replace(/[^0-9a-f-]/gi, "");
+			assert.equal(renderedId, runId, `full id is retained at width ${width}`);
+			assert.ok(plain.every((line) => line.startsWith("╭") || line.startsWith("╰") || line.startsWith("│")));
+		}
 	});
 
 	test("response field uses rounded border chrome", () => {
