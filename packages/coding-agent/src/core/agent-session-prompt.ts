@@ -45,6 +45,9 @@ export async function tryExecuteSessionSlashCommand(
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
+	// A summary of the conversation up to the previous turn is about to be stale; stop paying
+	// for it. The generation itself is discarded by its own token/anchor checks either way.
+	this.abortSessionSummary();
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	const preflightResult = options?.preflightResult;
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;

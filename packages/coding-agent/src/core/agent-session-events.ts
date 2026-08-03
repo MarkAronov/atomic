@@ -473,6 +473,8 @@ export function _reconnectToAgent(this: AgentSession): void {
  */
 
 export function dispose(this: AgentSession): void {
+	// A background summary must never keep the process alive past shutdown.
+	this.abortSessionSummary();
 	// Fail closed while protected input remains queued, or flush a consumed
 	// reconciliation before invalidation can discard its recovery state.
 	prepareProtectedStreamingCustomMessagesForDisposal(this);

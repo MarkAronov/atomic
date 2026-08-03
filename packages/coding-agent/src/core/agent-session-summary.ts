@@ -7,7 +7,7 @@
 
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { generateSessionSummary } from "./compaction/index.ts";
-import { getLastConversationMessageId } from "./session-manager-entries.ts";
+import { getLastConversationMessageId, getLatestSessionSummary } from "./session-manager-entries.ts";
 
 /** Sessions shorter than this are already legible from their first message. */
 const MIN_ENTRIES_FOR_SUMMARY = 4;
@@ -31,7 +31,14 @@ export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<
 	if (branch.length < MIN_ENTRIES_FOR_SUMMARY) return;
 
 	const throughId = getLastConversationMessageId(branch);
-	if (!throughId || throughId === this._lastSummarizedMessageId) return;
+	if (!throughId) return;
+
+	// On a resumed session the in-memory anchor starts empty, so fall back to the persisted
+	// summary. Without this the first idle after every resume regenerates a summary that is
+	// already current.
+	const lastSummarized =
+		this._lastSummarizedMessageId ?? getLatestSessionSummary(this.sessionManager.getEntries())?.summarizedThroughId;
+	if (throughId === lastSummarized) return;
 
 	// Claim the run. The token answers "is this still the current attempt, and is this state
 	// still mine to touch?" after the awaits below; the controller lives on the session so
