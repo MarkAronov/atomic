@@ -3,9 +3,34 @@ import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { ANIMATION_TICK_MS } from "../../packages/workflows/src/tui/graph-view-constants.js";
+import { createToastManager } from "../../packages/workflows/src/tui/toast.js";
 import * as h from "./overlay-graph-helpers.js";
 
-const { makeStage, makeSnap, makeStore, defaultTheme, waitForRenderCount } = h;
+const {
+	makeAwaitingInputStage,
+	makePendingPrompt,
+	makeRunPromptSnap,
+	makeStage,
+	makeSnap,
+	makeStore,
+	defaultTheme,
+	waitForRenderCount,
+} = h;
+
+class AnimationGateGraphView extends GraphView {
+	addToastForTest(dismissAfterMs?: number): void {
+		this.toastManager.add({ kind: "info", message: "still active", dismissAfterMs });
+	}
+
+	activeToastCountForTest(): number {
+		return this.toastManager.active().length;
+	}
+
+	layoutForTest() {
+		return this.cachedLayout;
+	}
+}
 
 describe("GraphView animation timer", () => {
 	it("fires requestRender on a steady cadence while stages are animating", async () => {
@@ -90,6 +115,123 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
+	it("ticks for a prompt, toast, and rebuilt awaiting-input stage independently", () => {
+		vi.useFakeTimers();
+		const views: AnimationGateGraphView[] = [];
+		try {
+			const cases = [
+				{
+					name: "prompt",
+					store: makeStore(makeRunPromptSnap([makeStage("A")], makePendingPrompt())),
+					setup: (_view: AnimationGateGraphView) => {},
+				},
+				{
+					name: "toast",
+					store: makeStore(makeSnap([makeStage("A")])),
+					setup: (view: AnimationGateGraphView) => view.addToastForTest(),
+				},
+				{
+					name: "awaiting_input",
+					store: makeStore(makeSnap([makeAwaitingInputStage("A")])),
+					setup: (_view: AnimationGateGraphView) => {},
+				},
+			];
+
+			for (const item of cases) {
+				const requestRender = vi.fn(() => {});
+				const view = new AnimationGateGraphView({
+					mode: "overlay",
+					runId: "run-1",
+					store: item.store,
+					graphTheme: defaultTheme,
+					requestRender,
+				});
+				views.push(view);
+				item.setup(view);
+				vi.advanceTimersByTime(ANIMATION_TICK_MS);
+				assert.equal(requestRender.mock.calls.length, 1, `${item.name} did not keep the animation tick running`);
+				view.dispose();
+			}
+		} finally {
+			for (const view of views) view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps ticking when a retained running stage becomes awaiting input", () => {
+		vi.useFakeTimers();
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-1",
+			name: "retained awaiting input",
+			inputs: {},
+			status: "running",
+			stages: [{ ...makeStage("A"), status: "running", startedAt: 1 }],
+			startedAt: 1,
+		});
+		const requestRender = vi.fn(() => {});
+		const view = new AnimationGateGraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			requestRender,
+		});
+		try {
+			const retainedLayout = view.layoutForTest();
+			assert.equal(store.recordStageAwaitingInput("run-1", "A", true, 2), true);
+			assert.strictEqual(view.layoutForTest(), retainedLayout);
+			requestRender.mockClear();
+			vi.advanceTimersByTime(ANIMATION_TICK_MS);
+			assert.equal(requestRender.mock.calls.length, 1);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("expires toast activity without an explicit tick", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10_000);
+		try {
+			const manager = createToastManager();
+			const persistentId = manager.add({ kind: "info", message: "persistent" });
+			assert.equal(manager.hasActive(), true);
+			manager.dismiss(persistentId);
+			assert.equal(manager.hasActive(), false);
+
+			const dismissAfterMs = 1_000;
+			manager.add({ kind: "success", message: "timed", dismissAfterMs });
+			assert.equal(manager.hasActive(), true);
+			vi.advanceTimersByTime(dismissAfterMs);
+			assert.equal(manager.hasActive(), false);
+			assert.deepEqual(manager.active(), []);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("prunes expired toasts before the render path reads them", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10_000);
+		const dismissAfterMs = 1_000;
+		const view = new AnimationGateGraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap([makeStage("A")])),
+			graphTheme: defaultTheme,
+		});
+		try {
+			view.addToastForTest(dismissAfterMs);
+			assert.equal(view.activeToastCountForTest(), 1);
+			vi.advanceTimersByTime(dismissAfterMs);
+			view.render(80);
+			assert.equal(view.activeToastCountForTest(), 0);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
 	it("does not start the timer in widget mode", async () => {
 		const stages = [{ ...makeStage("A"), status: "running" as const, startedAt: Date.now() }];
 		const snap = makeSnap(stages);

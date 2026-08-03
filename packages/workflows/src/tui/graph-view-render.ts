@@ -172,6 +172,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 	private _renderToastOverlay(lines: string[], frameWidth: number): void {
 		// Toast overlay — top-right of header band.
+		this.toastManager.tick(Date.now());
 		const toastLines = renderToasts(this.toastManager.active(), {
 			theme: this.graphTheme,
 		});

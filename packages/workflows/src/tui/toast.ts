@@ -32,9 +32,18 @@ export function createToastManager(): {
 	dismiss(id: string): void;
 	tick(now: number): void;
 	active(): Toast[];
-	hasActive(): boolean;
+	hasActive(now?: number): boolean;
 } {
 	const toasts: Toast[] = [];
+	const pruneExpired = (now: number): void => {
+		let index = toasts.length;
+		while (index--) {
+			const toast = toasts[index]!;
+			if (toast.dismissAfterMs != null && now - toast.createdAt >= toast.dismissAfterMs) {
+				toasts.splice(index, 1);
+			}
+		}
+	};
 
 	return {
 		add(toast) {
@@ -47,18 +56,13 @@ export function createToastManager(): {
 			if (idx !== -1) toasts.splice(idx, 1);
 		},
 		tick(now) {
-			let i = toasts.length;
-			while (i--) {
-				const t = toasts[i]!;
-				if (t.dismissAfterMs != null && now - t.createdAt >= t.dismissAfterMs) {
-					toasts.splice(i, 1);
-				}
-			}
+			pruneExpired(now);
 		},
 		active() {
 			return [...toasts];
 		},
-		hasActive() {
+		hasActive(now = Date.now()) {
+			pruneExpired(now);
 			return toasts.length > 0;
 		},
 	};

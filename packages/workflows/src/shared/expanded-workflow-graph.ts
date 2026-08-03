@@ -263,10 +263,6 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
 	return true;
 }
 
-function topologyStatus(status: StageSnapshot["status"]): "terminal-boundary" | "other" {
-	return status === "failed" || status === "skipped" ? "terminal-boundary" : "other";
-}
-
 interface RefreshRunSources {
 	readonly run: RunSnapshot;
 	readonly stages: ReadonlyMap<string, StageSnapshot>;
@@ -309,8 +305,9 @@ export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSn
 				x.id !== y.id ||
 				x.executionOrder !== y.executionOrder ||
 				x.nodeKind !== y.nodeKind ||
+				// The authoritative id becomes undefined at failed/skipped boundaries,
+				// so this comparison also catches a terminal-boundary flip.
 				xChildRunId !== yChildRunId ||
-				(xChildRunId !== undefined && topologyStatus(x.status) !== topologyStatus(y.status)) ||
 				!sameIds(x.parentIds, y.parentIds)
 			)
 				return false;
