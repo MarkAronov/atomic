@@ -3746,6 +3746,8 @@ interface Store {
 
 This is the stable core exposed by the standalone authoring declaration. Atomic's runtime store also has graph, prompt, session, pause/resume, snapshot, and subscription methods used by embedded integrations; those richer runtime controls are not part of the lean workflow-package `Store` contract shown here.
 
+The embedded runtime's `graphSnapshot()` returns one deeply frozen, payload-free projection for each store version; repeated reads at the same version return the same object. Runtime code must change graph-visible state through a version-bumping store method before another task can observe it. `subscribeInvalidation()` reports those changes synchronously without creating a full snapshot. Legacy `subscribe(snapshot)` consumers still receive a full cloned snapshot; this includes status-file output when `statusFile: true`, while the default `statusFile: false` path avoids that payload traversal.
+
 ### `createCancellationRegistry()` / `cancellationRegistry`
 
 ```typescript

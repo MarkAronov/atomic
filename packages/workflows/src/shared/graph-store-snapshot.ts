@@ -9,7 +9,7 @@ import type {
 	WorkflowChildReplaySnapshot,
 	WorkflowNotice,
 } from "./store-types.js";
-import type { WorkflowOutputValues } from "./types.js";
+import type { WorkflowOutputValues, WorkflowSerializableValue } from "./types.js";
 
 export const COMPACT_RESULT_FIELD_LIMIT = 1024;
 
@@ -25,7 +25,7 @@ function flattenTruncatedField(value: string): string {
 	return value.split("").join("");
 }
 
-function compactResultField(value: unknown): string | undefined {
+function compactResultField(value: WorkflowSerializableValue | undefined): string | undefined {
 	if (typeof value !== "string") return undefined;
 	if (value.length <= COMPACT_RESULT_FIELD_LIMIT) return value;
 	return flattenTruncatedField(value.slice(0, COMPACT_RESULT_FIELD_LIMIT));

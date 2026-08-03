@@ -137,8 +137,10 @@ export function makeStore(snap: StoreSnapshot): Store {
 		recordRunPaused: () => false,
 		recordRunResumed: () => false,
 		snapshot: () => snap,
+		graphSnapshot: () => snap,
 		clear: () => {},
 		subscribe: () => () => {},
+		subscribeInvalidation: () => () => {},
 	};
 }
 

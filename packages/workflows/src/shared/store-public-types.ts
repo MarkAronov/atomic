@@ -228,9 +228,13 @@ export interface Store {
 	/** Drop every run and notice. */
 	clear(): void;
 	snapshot(): StoreSnapshot;
-	/** Return one immutable payload-free graph projection per store version. */
-	graphSnapshot?(): StoreSnapshot;
+	/**
+	 * Return one immutable payload-free graph projection per store version.
+	 * Graph-visible state may change only through a version-bumping store method;
+	 * direct mutation of values returned by `runs()` would leave this cache stale.
+	 */
+	graphSnapshot(): StoreSnapshot;
 	subscribe(fn: (snap: StoreSnapshot) => void): () => void;
 	/** Subscribe synchronously to store invalidation without constructing a full snapshot. */
-	subscribeInvalidation?(fn: () => void): () => void;
+	subscribeInvalidation(fn: () => void): () => void;
 }

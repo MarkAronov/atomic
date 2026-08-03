@@ -22,7 +22,7 @@ function heavyInput(reads: { count: number }): WorkflowInputValues {
 	return { evidence };
 }
 
-function countFullSnapshots(store: ReturnType<typeof createStore>): { count: number } {
+function countPublicSnapshotCalls(store: ReturnType<typeof createStore>): { count: number } {
 	const counter = { count: 0 };
 	const snapshot = store.snapshot.bind(store);
 	store.snapshot = () => {
@@ -30,6 +30,22 @@ function countFullSnapshots(store: ReturnType<typeof createStore>): { count: num
 		return snapshot();
 	};
 	return counter;
+}
+
+function countLegacySnapshotDeliveries(store: ReturnType<typeof createStore>): {
+	count: number;
+	unsubscribe: () => void;
+} {
+	const counter = { count: 0 };
+	const unsubscribe = store.subscribe(() => {
+		counter.count++;
+	});
+	return {
+		get count() {
+			return counter.count;
+		},
+		unsubscribe,
+	};
 }
 
 function mousePressForText(lines: readonly string[], text: string): string {
@@ -84,7 +100,7 @@ describe("large workflow interaction isolation", () => {
 			startedAt: Date.now(),
 		});
 		payloadReads.count = 0;
-		const fullSnapshots = countFullSnapshots(store);
+		const publicSnapshotCalls = countPublicSnapshotCalls(store);
 		const attached: string[] = [];
 		const view = new GraphView({
 			mode: "overlay",
@@ -97,12 +113,12 @@ describe("large workflow interaction isolation", () => {
 		const lines = view.render(96);
 		assert.equal(view.handleInput(mousePressForText(lines, "target-stage")), true);
 		assert.deepEqual(attached, ["target-stage"]);
-		assert.equal(fullSnapshots.count, 0);
+		assert.equal(publicSnapshotCalls.count, 0);
 		assert.equal(payloadReads.count, 0);
 		view.dispose();
 	});
 
-	test("question preview, input, and submission avoid full snapshots and payload traversal", async () => {
+	test("question interaction uses projections until a legacy subscriber requests a full snapshot", async () => {
 		const payloadReads = { count: 0 };
 		const store = createStore();
 		store.recordRunStart({
@@ -133,7 +149,7 @@ describe("large workflow interaction isolation", () => {
 		);
 		const pending = store.awaitStagePendingPrompt("run-large", "question-stage", "prompt-1");
 		payloadReads.count = 0;
-		const fullSnapshots = countFullSnapshots(store);
+		const publicSnapshotCalls = countPublicSnapshotCalls(store);
 		const registry = createStageControlRegistry();
 		registry.register(handle("run-large", "question-stage"));
 		let now = 1_000;
@@ -151,11 +167,16 @@ describe("large workflow interaction isolation", () => {
 		assert.match(preview, /What should the workflow use\?/);
 		for (const character of "answer") pane.handleInput(character);
 		now += 201;
+		assert.equal(publicSnapshotCalls.count, 0);
+		assert.equal(payloadReads.count, 0);
+		const legacySnapshots = countLegacySnapshotDeliveries(store);
 		pane.handleInput("\r");
 
 		assert.equal(await pending, "answer");
-		assert.equal(fullSnapshots.count, 0);
-		assert.equal(payloadReads.count, 0);
+		assert.equal(publicSnapshotCalls.count, 0);
+		assert.ok(legacySnapshots.count > 0, "a legacy subscriber must receive the mutation snapshot");
+		assert.equal(payloadReads.count, legacySnapshots.count);
+		legacySnapshots.unsubscribe();
 		pane.dispose();
 	});
 });

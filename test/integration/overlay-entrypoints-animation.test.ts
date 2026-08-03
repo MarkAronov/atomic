@@ -148,7 +148,9 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
 
 		const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
 		adapter.open(runId);
-		// Flip to hidden before the first tick can fire.
+		assert.ok(component, "factory should return a component");
+		await waitForRenderCount(() => renderCalls, 2, 200, 25);
+		assert.ok(renderCalls >= 2, `expected a visible animation tick before hiding (got ${renderCalls})`);
 		overlayHandle.setHidden(true);
 		const before = renderCalls;
 		await new Promise((r) => setTimeout(r, 250));
@@ -184,7 +186,8 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
 
 		const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
 		adapter.open(runId);
-		await new Promise((r) => setTimeout(r, 150));
+		await waitForRenderCount(() => renderCalls, 2, 200, 25);
+		assert.ok(renderCalls >= 2, `expected a visible animation tick before disposal (got ${renderCalls})`);
 		component!.dispose?.();
 		const afterDispose = renderCalls;
 		await new Promise((r) => setTimeout(r, 250));

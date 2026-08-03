@@ -158,10 +158,22 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	}
 
 	function notify(): void {
-		for (const fn of state.invalidationListeners) fn();
+		for (const fn of state.invalidationListeners) {
+			try {
+				fn();
+			} catch {
+				// One observer must not starve later observers or the snapshot channel.
+			}
+		}
 		if (state.listeners.size > 0) {
 			const snap = snapshot();
-			for (const fn of state.listeners) fn(snap);
+			for (const fn of state.listeners) {
+				try {
+					fn(snap);
+				} catch {
+					// Store mutations remain authoritative when a consumer fails.
+				}
+			}
 		}
 	}
 

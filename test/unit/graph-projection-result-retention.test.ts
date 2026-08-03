@@ -81,7 +81,7 @@ function seedEndedRun(store: Store, hold: Hold): SeededRun {
 	});
 	assert.equal(store.recordRunEnd(RUN_ID, "completed", { summary: summaryPayload, result: resultPayload }), true);
 	return {
-		projection: hold === "projection" ? store.graphSnapshot?.() : undefined,
+		projection: hold === "projection" ? store.graphSnapshot() : undefined,
 		payloads: hold === "payload" ? [summaryPayload, resultPayload] : [],
 	};
 }
@@ -112,7 +112,7 @@ function probeRetention(hold: Hold): RetentionProbe {
 			[PAYLOAD_BYTES, PAYLOAD_BYTES],
 		);
 	if (hold === "projection") assert.equal(seeded.projection?.runs[0]?.id, RUN_ID);
-	assert.equal(store.graphSnapshot?.().runs.length, 0);
+	assert.equal(store.graphSnapshot().runs.length, 0);
 	return { retainedBytes, ...compacted };
 }
 

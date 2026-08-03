@@ -106,7 +106,8 @@ export function openSessionPicker(
 			// go stale and newly-started runs would never appear.
 			const selectRows = (): ReturnType<typeof selectRunsForPicker> => {
 				const snapshot = readGraphStoreSnapshot(store);
-				const resumeCandidateLookup = intent === "resume" ? resumeCandidateCache(snapshot) : undefined;
+				const resumeCandidateLookup =
+					intent === "resume" ? resumeCandidateCache({ ...snapshot, runs: store.runs() }) : undefined;
 				return selectRunsForPicker(
 					snapshot.runs,
 					state.query,
