@@ -633,6 +633,60 @@ While implementing:
 
 At the end, report three things: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.
 
+### Protect the contract from compaction
+
+A long-running stage gets compacted, and compaction ranks lines individually rather than preserving whole instructions. That ranking has a bias worth knowing: an objective is verbose and restated, while the constraint that bounds it is usually one line. Rank them independently and the constraint is the cheaper deletion — so what survives is coherent, actionable, and missing its boundary conditions. A prohibition removed from context reads as permission.
+
+Wrap contract text in `keepContext` so it survives verbatim regardless of the compression ratio:
+
+```ts
+import { keepContext, workflow } from "@bastani/workflows";
+
+const prompt = [
+  keepContext("Research only. Do not implement code changes."),
+  `Investigate: ${ctx.inputs.question}`,
+].join("\n\n");
+```
+
+Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first. Tags must sit on their own line, and a span is scoped to one message. User and assistant messages may both protect — stage prompts, run inputs, and steering arrive as user messages, and a stage may pin its own core information — while tags inside tool results are inert, so file, page, or command output a stage reads cannot mark itself unreclaimable.
+
+`keepContext` is a pure string helper, not a `ctx.*` primitive: it creates no graph node and has no side effect, so call it anywhere a prompt is assembled. It is idempotent, so composing already-wrapped text will not nest.
+
+Tag:
+
+- role constraints that bound a stage to part of the work — "research only", "review and report, do not repair";
+- acceptance criteria and immutable contracts a later stage is judged against;
+- explicit prohibitions;
+- identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
+
+Do not tag bulk context. Protected lines count against the keep target rather than raising it, so a large protected span makes the surrounding transcript compress harder. Tag the constraint, not the material it applies to — pass that through files and `reads`.
+
+Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
+
+#### Tagging is not only for workflow authors
+
+The tags are plain text, so they work anywhere text becomes a stage prompt — you do not need to be writing a workflow definition to use them. Two cases matter in everyday use, and both apply to an agent driving the `workflow` tool on your behalf.
+
+**Run inputs.** Workflows inject their inputs into stage prompts, so anything you tag in an input is inherited by the stages that receive it:
+
+```
+workflow({ action: "run", workflow: "ralph", inputs: {
+  prompt: "<keepContext>\nResearch and implement issue #2170. Do not touch the release pipeline.\n</keepContext>\n\n" + issueBody,
+  acceptance_criteria: "<keepContext>\n1. ...\n2. ...\n</keepContext>",
+}})
+```
+
+Note what is tagged and what is not: the constraint and the criteria are protected, the quoted issue body is not. A launch prompt is usually mostly reference material, and protecting all of it would raise the keep target so far that stages lose the transcript evidence they need.
+
+**Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session, competing against the entire transcript for retention. Tagging it keeps it alive until the stage acts on it:
+
+```
+workflow({ action: "send", runId, text:
+  "<keepContext>\nNew requirement: the fix must not change the public API.\n</keepContext>" })
+```
+
+An agent launching or steering a run should make this call per message rather than tagging by habit — protect the clause that must hold, and leave the surrounding explanation to be compacted normally.
+
 ### Practical consequences
 
 - **Steer freely — it is the supported amendment channel.** You do not need to restart a run to add a requirement.
@@ -927,6 +981,8 @@ Also document the context that stages pass to one another:
 - Prefer a clean context window for reviewer stages so earlier implementation stages do not bias the reviewer. Reviewers should evaluate the supplied artifacts, changed files, tests, and explicit criteria as independently as possible.
 
 See [Context Engineering](#context-engineering) for details.
+
+Protect a stage's role constraints, acceptance criteria, and prohibitions with `keepContext` so compaction cannot delete them out from under a long-running stage — see [Protect the contract from compaction](#protect-the-contract-from-compaction).
 
 ### Inputs
 
