@@ -24,6 +24,7 @@ import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
+import { agentSessionSummaryMethods } from "./agent-session-summary.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
@@ -104,6 +105,9 @@ class AgentSessionBase {
 	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
 	protected _terminatingToolCallIds = new Set<string>();
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
+	protected _sessionSummaryAbortController: AbortController | undefined = undefined;
+	protected _sessionSummaryToken = 0;
+	protected _lastSummarizedMessageId: string | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
@@ -218,4 +222,5 @@ Object.assign(
 	agentSessionBashMethods,
 	agentSessionTreeMethods,
 	agentSessionExportMethods,
+	agentSessionSummaryMethods,
 );

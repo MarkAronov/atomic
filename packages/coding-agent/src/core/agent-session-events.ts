@@ -260,6 +260,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 
 		this._resolveRetry();
 		await this._checkCompaction(msg);
+		if (event.type === "agent_end") void this._maybeGenerateSessionSummary();
 	}
 }
 

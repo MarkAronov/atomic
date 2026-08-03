@@ -227,6 +227,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
 	abortCompaction(): void;
 	abortBranchSummary(): void;
+	abortSessionSummary(): void;
+	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
@@ -324,6 +326,7 @@ export interface AgentSessionPublicSurface
 		| "autoCompactionEnabled"
 		| "isRetrying"
 		| "autoRetryEnabled"
+		| "abortSessionSummary"
 		| "isBashRunning"
 		| "hasPendingBashMessages"
 		| "extensionRunner"
@@ -438,6 +441,9 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_orchestrationContext?: OrchestrationContext;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionMode: ExtensionMode;
+	_sessionSummaryAbortController: AbortController | undefined;
+	_sessionSummaryToken: number;
+	_lastSummarizedMessageId: string | undefined;
 	_extensionCommandContextActions?: ExtensionCommandContextActions;
 	_extensionShutdownHandler?: () => void;
 	_extensionErrorListener?: ExtensionErrorListener;
