@@ -59,6 +59,17 @@ function parseChangelogAtTag(tag: string, repoRelativePath: string): ChangelogEn
 	}
 }
 
+/**
+ * Compare content, not the checkout's line-ending convention. On Windows a
+ * working-tree file may hold CRLF (git `core.autocrlf`), while
+ * `git show <tag>:<path>` writes the blob verbatim with LF — so splitting both
+ * on "\n" leaves a trailing "\r" on every working-tree line and reports every
+ * released section as modified.
+ */
+function contentLines(entry: ChangelogEntry): string[] {
+	return entry.content.split(/\r?\n/);
+}
+
 function packageChangelogPaths(): string[] {
 	return readdirSync(join(repoRoot, "packages"), { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
@@ -234,8 +245,8 @@ describe("released changelog sections", () => {
 			for (const [offset, taggedEntry] of taggedTail.entries()) {
 				const currentEntry = currentTail[offset] as ChangelogEntry;
 				assert.deepEqual(
-					currentEntry.content.split("\n"),
-					taggedEntry.content.split("\n"),
+					contentLines(currentEntry),
+					contentLines(taggedEntry),
 					`${relativePath}: released section [${taggedEntry.version}] differs from its content at tag ${anchor.tag}. Released sections are immutable — new entries belong under ## [Unreleased].`,
 				);
 			}
