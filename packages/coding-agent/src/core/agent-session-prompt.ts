@@ -45,9 +45,6 @@ export async function tryExecuteSessionSlashCommand(
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
-	// A summary of the conversation up to the previous turn is about to be stale; stop paying
-	// for it. The generation itself is discarded by its own token/anchor checks either way.
-	this.abortSessionSummary();
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	const preflightResult = options?.preflightResult;
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
@@ -64,6 +61,11 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			preflightResult?.(true);
 			return;
 		}
+		// Real user input is on its way in, so a summary describing the previous turn is about
+		// to be stale; stop paying for it. Deliberately after the authorization boundary and
+		// the slash-command path, both of which must observe an untouched session. The
+		// generation discards itself via its token/anchor checks either way.
+		this.abortSessionSummary();
 		// A controlled pause is an admission gate, including the idle gap after
 		// abort settles. Preserve the raw user payload without running input hooks,
 		// compaction, or a provider turn; explicit resume makes it eligible again.
