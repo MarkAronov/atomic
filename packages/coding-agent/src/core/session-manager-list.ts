@@ -7,7 +7,7 @@ import { getSessionsDir } from "../config.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
-import { getLastConversationMessageId } from "./session-manager-entries.ts";
+import { getLastConversationMessageId, getLatestSessionSummary } from "./session-manager-entries.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { isInternalHeader, readSessionHeader, sessionCwdMatches } from "./session-manager-storage.ts";
@@ -19,7 +19,6 @@ import type {
 	SessionInfoEntry,
 	SessionListProgress,
 	SessionMessageEntry,
-	SessionSummaryEntry,
 } from "./session-manager-types.ts";
 
 function isMessageWithContent(message: AgentMessage): message is Message {
@@ -157,21 +156,12 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let name: string | undefined;
-		let summaryEntry: SessionSummaryEntry | undefined;
 
 		for (const entry of entries) {
 			// Extract session name (use latest, including explicit clears)
 			if (entry.type === "session_info") {
 				const infoEntry = entry as SessionInfoEntry;
 				name = infoEntry.name?.trim() || undefined;
-			}
-
-			// Latest generated resume summary. A branch summary written afterwards retires it:
-			// the branch it described was abandoned, so it no longer describes this session.
-			if (entry.type === "session_summary") {
-				summaryEntry = entry;
-			} else if (entry.type === "branch_summary") {
-				summaryEntry = undefined;
 			}
 
 			if (entry.type !== "message") continue;
@@ -198,10 +188,13 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
 
 		// A summary describes the conversation up to one specific message. Anything newer makes it
-		// stale, and the picker falls back to the session name or the first message.
+		// stale, and the picker falls back to the session name or the first message. Retirement by
+		// a later branch summary is handled inside getLatestSessionSummary, so the generation guard
+		// applies exactly the same rule.
+		const summaryEntry = getLatestSessionSummary(entries);
 		const summary =
-			summaryEntry && summaryEntry.summarizedThroughId === getLastConversationMessageId(entries)
-				? summaryEntry.summary
+			summaryEntry?.summarizedThroughId === getLastConversationMessageId(entries)
+				? summaryEntry?.summary
 				: undefined;
 
 		return {

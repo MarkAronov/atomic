@@ -180,14 +180,20 @@ export function getLastConversationMessageId(entries: FileEntry[]): string | und
 }
 
 /**
- * Latest generated resume summary, entry and all.
+ * Latest generated resume summary that has not been retired, entry and all.
  *
  * Returns the entry rather than its text: callers need `summarizedThroughId` alongside the
  * summary to decide whether it still describes the conversation.
+ *
+ * A `branch_summary` written afterwards retires it, because the branch it described was
+ * abandoned. Both the picker and the generation guard call this, so a retired summary is hidden
+ * from the picker *and* lets a replacement be generated; splitting the two rules leaves such a
+ * session showing fallback text forever.
  */
-export function getLatestSessionSummary(entries: SessionEntry[]): SessionSummaryEntry | undefined {
+export function getLatestSessionSummary(entries: FileEntry[]): SessionSummaryEntry | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
+		if (entry.type === "branch_summary") return undefined;
 		if (entry.type === "session_summary") return entry;
 	}
 	return undefined;

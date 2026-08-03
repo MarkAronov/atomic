@@ -62,7 +62,10 @@ export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<
 		// Failures stay silent: nothing awaits this, and the picker falls back on its own.
 		if (result.aborted || result.error || !result.summary) return;
 
-		// A newer run, or a newer message, means this summary no longer describes the session.
+		// Cancellation, a newer run, or a newer message all mean this summary no longer describes
+		// the session. The signal is checked directly because abortSessionSummary() does not bump
+		// the token, and a provider that ignores the signal still returns an ordinary result.
+		if (signal.aborted) return;
 		if (this._sessionSummaryToken !== sessionSummaryToken) return;
 		if (getLastConversationMessageId(this.sessionManager.getBranch()) !== throughId) return;
 

@@ -132,6 +132,20 @@ describe("resume listing surfaces session summaries", () => {
 		expect(sessions[0]?.summary).toBe("Added resume summaries to the session picker");
 	});
 
+	it("keeps a summary written after a branch summary", async () => {
+		// Retirement is positional, not permanent: a summary generated after the branch summary
+		// describes the current branch and must survive.
+		writeSessionFile(dir, "rebranched", cwd, [
+			userMessage("m1", null, "add a resume summary"),
+			assistantMessage("m2", "m1", "done"),
+			branchSummary("b1", "m2"),
+			sessionSummary("s1", "b1", "Reworked the resume picker after a rewind", "m2"),
+		]);
+
+		const sessions = await SessionManager.list(cwd, dir);
+		expect(sessions[0]?.summary).toBe("Reworked the resume picker after a rewind");
+	});
+
 	it("leaves the summary absent when the session never generated one", async () => {
 		writeSessionFile(dir, "none", cwd, [
 			userMessage("m1", null, "add a resume summary"),
