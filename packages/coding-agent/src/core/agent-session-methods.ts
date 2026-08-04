@@ -445,6 +445,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_orchestrationContext?: OrchestrationContext;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionMode: ExtensionMode;
+	_disposed: boolean;
 	_sessionSummaryAbortController: AbortController | undefined;
 	_sessionSummaryToken: number;
 	_lastSummarizedMessageId: string | undefined;

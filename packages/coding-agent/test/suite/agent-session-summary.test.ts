@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionSummaryEntry } from "../../src/core/session-manager.ts";
@@ -215,6 +216,189 @@ describe("session summary generation", () => {
 				.getEntries()
 				.filter((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));
 			expect(entry.summarizedThroughId).toBe(conversation[conversation.length - 1]?.id);
+		}
+	});
+
+	it("still generates when the launch happens while the agent reports streaming", async () => {
+		// `agent_end` fires with isStreaming still true, and the flag survives the whole microtask
+		// queue — it only clears a macrotask later. Generation used to depend on _checkCompaction
+		// happening to cross that boundary before the guard was read: true in this harness, false
+		// in the real TUI, where the feature silently produced nothing and nothing retried it.
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("a summary generated after idle"),
+		]);
+
+		const launches: Promise<void>[] = [];
+		let streamingAtLaunch = false;
+		harness.session.agent.subscribe((event: AgentEvent) => {
+			if (event.type !== "agent_end") return;
+			if (harness.session.isStreaming) streamingAtLaunch = true;
+			launches.push(harness.session._maybeGenerateSessionSummary());
+		});
+
+		await runTwoTurns(harness);
+		await Promise.all(launches);
+
+		// Guards the regression itself: if this ever goes false the test has stopped reproducing
+		// the condition and would pass for the wrong reason.
+		expect(streamingAtLaunch).toBe(true);
+
+		const summary = await waitForSummary(harness);
+		expect(summary.summary).toBe("a summary generated after idle");
+	});
+
+	it("runs no summary work once the session has been disposed", async () => {
+		// Work queued before the AbortController exists cannot be reached by abortSessionSummary(),
+		// so disposal has to be recorded as state and re-checked at every async boundary.
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("must never be requested"),
+		]);
+
+		await runTwoTurns(harness);
+
+		harness.session.dispose();
+		// Release the launch that was queued before disposal.
+		await harness.session._maybeGenerateSessionSummary();
+		await settle();
+
+		expect(summaryEntries(harness)).toHaveLength(0);
+		// The third response is still unconsumed, so the provider was never contacted.
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("does not persist a summary when disposal lands mid-request", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+
+		const requestStarted = Promise.withResolvers<void>();
+		const releaseRequest = Promise.withResolvers<void>();
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			async () => {
+				requestStarted.resolve();
+				await releaseRequest.promise;
+				return fauxAssistantMessage("summary for a disposed session");
+			},
+		]);
+
+		await runTwoTurns(harness);
+		const pending = harness.session._maybeGenerateSessionSummary();
+		await requestStarted.promise;
+
+		harness.session.dispose();
+		releaseRequest.resolve();
+		await pending;
+		await settle();
+
+		expect(summaryEntries(harness)).toHaveLength(0);
+	});
+
+	it("collapses concurrent launches into a single request", async () => {
+		// The token is claimed before waitForIdle(), so two launches can now be parked at once —
+		// a state that could not exist when the claim happened after the guards.
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("the only summary"),
+		]);
+
+		await runTwoTurns(harness);
+		await Promise.all([
+			harness.session._maybeGenerateSessionSummary(),
+			harness.session._maybeGenerateSessionSummary(),
+		]);
+		await settle();
+
+		expect(summaryEntries(harness)).toHaveLength(1);
+		// One summary response consumed, not two.
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("lets a new prompt supersede a launch that is still parked", async () => {
+		// A parked launch holds no AbortController, so abortSessionSummary() has to bump the token
+		// to reach it. Without that, prompt() cancels nothing and the stale launch runs anyway.
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("third turn"),
+			fauxAssistantMessage("the surviving summary"),
+		]);
+
+		await runTwoTurns(harness);
+		const parked = harness.session._maybeGenerateSessionSummary();
+		await harness.session.prompt("and one more thing");
+		await parked;
+		await settle();
+
+		// Exactly one summary, and every response accounted for: the parked launch never spent a
+		// request of its own.
+		expect(summaryEntries(harness)).toHaveLength(1);
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("never escapes as an unhandled rejection", async () => {
+		// Production calls this as `void this._maybeGenerateSessionSummary()`, so anything that
+		// throws — including the guards ahead of the first await — surfaces as an unhandled
+		// rejection rather than a caught error. One of those took down a CLI child mid-run.
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown): void => {
+			rejections.push(reason);
+		};
+		process.on("unhandledRejection", onRejection);
+		try {
+			const harness = await createHarness({ withConfiguredAuth: false });
+			harnesses.push(harness);
+			await harness.session.bindExtensions({ mode: "tui" });
+
+			harness.sessionManager.appendMessage({ role: "user", content: "add resume summaries", timestamp: 1 });
+			harness.sessionManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				timestamp: 2,
+				stopReason: "stop",
+				provider: "faux",
+				model: "faux",
+				api: "anthropic-messages",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+			});
+			harness.sessionManager.appendMessage({ role: "user", content: "and the picker", timestamp: 3 });
+			harness.sessionManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: "done again" }],
+				timestamp: 4,
+				stopReason: "stop",
+				provider: "faux",
+				model: "faux",
+				api: "anthropic-messages",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+			});
+
+			// Deliberately not awaited: this is the production call shape.
+			void harness.session._maybeGenerateSessionSummary();
+			await settle();
+
+			expect(rejections).toEqual([]);
+			expect(summaryEntries(harness)).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", onRejection);
 		}
 	});
 });

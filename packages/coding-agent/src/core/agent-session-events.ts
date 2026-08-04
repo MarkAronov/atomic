@@ -477,6 +477,12 @@ export function _reconnectToAgent(this: AgentSession): void {
  */
 
 export function dispose(this: AgentSession): void {
+	// Terminal and idempotent: callers legitimately dispose more than once (an explicit dispose
+	// followed by a harness teardown), and the steps below are not all safe to repeat.
+	if (this._disposed) return;
+	// Summary work queued before its AbortController exists cannot be reached by
+	// abortSessionSummary(), so disposal is recorded as state that every checkpoint consults.
+	this._disposed = true;
 	// A background summary must never keep the process alive past shutdown.
 	this.abortSessionSummary();
 	// Fail closed while protected input remains queued, or flush a consumed
