@@ -18,7 +18,6 @@ export { errorMessage, isRetryableModelFailure, modelFailureMessage, normalizeMo
 interface ModelAttemptSummary {
 	model: string;
 	success: boolean;
-	exitCode?: number | null;
 	error?: string;
 	usage?: Usage;
 }
@@ -27,6 +26,11 @@ function applyFallbackThinkingLevel(model: string, thinkingLevel: string | undef
 	if (!thinkingLevel || !THINKING_LEVELS.some((level) => level === thinkingLevel)) return model;
 	const { thinkingSuffix } = splitKnownThinkingSuffix(model);
 	return thinkingSuffix ? model : `${model}:${thinkingLevel}`;
+}
+
+export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
+	if (!model || !thinking || thinking === "off") return model;
+	return applyFallbackThinkingLevel(model, thinking);
 }
 
 export function resolveModelCandidate(
@@ -77,7 +81,7 @@ export function currentModelFullId(model: { provider: string; id: string } | und
 }
 
 export function formatModelAttemptNote(attempt: ModelAttemptSummary, nextModel?: string): string {
-	const failure = attempt.error?.trim() || `exit ${attempt.exitCode ?? 1}`;
+	const failure = attempt.error?.trim() || "model failure";
 	return nextModel
 		? `[fallback] ${attempt.model} failed: ${failure}. Retrying with ${nextModel}.`
 		: `[fallback] ${attempt.model} failed: ${failure}.`;

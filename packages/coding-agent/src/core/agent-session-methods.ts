@@ -451,6 +451,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;
 	_orchestrationContext?: OrchestrationContext;
+	_subagentPolicy?: import("./extensions/index.ts").SubagentChildPolicy;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionMode: ExtensionMode;
 	_extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -464,6 +465,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_toolPromptGuidelines: Map<string, string[]>;
 	_baseSystemPrompt: string;
 	_baseSystemPromptOptions: BuildSystemPromptOptions;
+	_systemPromptTransform?: (prompt: string) => string;
 	_systemPromptOverride?: string;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_asyncJobManager: AsyncJobManager;
