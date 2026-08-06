@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `heartbeatIntervalMinutes` to the workflow authoring surface: an optional cadence in minutes that resolves to the `15`-minute default when omitted, treats `0` as an explicit disable, and rejects negative and non-finite values with a `TypeError` while the definition is authored, so a bad cadence fails at authoring rather than at schedule time. Every compiled definition carries the resolved value, and a distinct `workflows:workflow-heartbeat` event contract is declared alongside it — run id, workflow name, start time, scheduled time, and interval, with heartbeat identity keyed by run id plus scheduled time. The default interval constant, heartbeat custom type, and heartbeat event types are exported from the `@bastani/workflows` package root. Scheduling and parent delivery are not part of this change, so a positive interval does not yet emit heartbeats ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+
 ## [0.9.13] - 2026-08-13
 
 Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
