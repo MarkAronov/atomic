@@ -273,11 +273,45 @@ function renderInputsSegment(
 	};
 }
 
+/**
+ * Anything that would break a value out of its single card row.
+ *
+ * Card rows are spliced into a bordered box by `renderRoundedBox`, which pads
+ * each row to the interior width. A value carrying a literal newline emits a
+ * second physical line that no border ever wraps, destroying the box from that
+ * row down. `truncateToWidth` cannot save us: it measures *visible width*, and
+ * a control character has none, so a `\n` survives truncation intact.
+ *
+ * This is reachable from ordinary use — any multi-line workflow input (a
+ * `prompt`, an `acceptance_criteria` block) contains newlines by nature.
+ *
+ * Scoped to `\p{Cc}` (C0/C1 controls, so `\n`, `\r`, `\t`, and a stray ESC that
+ * would otherwise inject styling) plus the two separators `JSON.stringify` does
+ * *not* escape, which some terminals still break lines on. It deliberately does
+ * NOT cover all of `\p{Cf}`: that class includes U+200D ZERO WIDTH JOINER, and
+ * stripping it splits emoji sequences such as a family glyph into their
+ * components. A format character that occupies no cell cannot break a row, so
+ * removing it only corrupts the value the user asked to see.
+ */
+const ROW_BREAKING_RE = /[\p{Cc}\u2028\u2029]+/gu;
+
+/**
+ * Replace runs of row-breaking characters with a single space.
+ *
+ * Only the replaced runs collapse. Pre-existing spacing is left alone and the
+ * result is not trimmed, because a value's own leading, trailing, or repeated
+ * spaces are content: the card renders inside quotes, so `"  alpha   beta  "`
+ * should still read as what was passed rather than as `"alpha beta"`.
+ */
+function toSingleLine(value: string): string {
+	return value.replace(ROW_BREAKING_RE, " ");
+}
+
 function renderInputValue(value: unknown, budget: number): string {
 	if (typeof value === "string") {
 		// Reserve 2 cells for the surrounding quotes; truncate the interior.
 		const interior = Math.max(0, budget - 2);
-		const trimmed = truncateToWidth(value, interior, ELLIPSIS);
+		const trimmed = truncateToWidth(toSingleLine(value), interior, ELLIPSIS);
 		return `"${trimmed}"`;
 	}
 	if (typeof value === "number" || typeof value === "boolean") {
@@ -285,8 +319,9 @@ function renderInputValue(value: unknown, budget: number): string {
 	}
 	if (value === null) return "null";
 	// Objects / arrays — show a compact JSON projection within budget.
+	// JSON.stringify escapes \n as literal backslash-n, but not U+2028/U+2029.
 	const json = JSON.stringify(value);
-	return truncateToWidth(json ?? "", budget, ELLIPSIS);
+	return truncateToWidth(toSingleLine(json ?? ""), budget, ELLIPSIS);
 }
 
 /**
