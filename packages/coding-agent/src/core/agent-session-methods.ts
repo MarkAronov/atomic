@@ -460,6 +460,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_disposed: boolean;
 	_sessionSummaryAbortController: AbortController | undefined;
 	_sessionSummaryToken: number;
+	_sessionSummaryRun: import("./agent-session-summary.ts").SessionSummaryRun | undefined;
 	_lastSummarizedMessageId: string | undefined;
 	_extensionCommandContextActions?: ExtensionCommandContextActions;
 	_extensionShutdownHandler?: () => void;

@@ -261,6 +261,10 @@ describe("session summary generation", () => {
 		harness.setResponses([
 			fauxAssistantMessage("first turn"),
 			fauxAssistantMessage("second turn"),
+			// Turn 2's own launch reaches the provider before dispose() lands, and is cancelled
+			// mid-request. Budgeting it keeps the response below as the one thing the disposal
+			// guard has to protect.
+			fauxAssistantMessage("cancelled by disposal"),
 			fauxAssistantMessage("must never be requested"),
 		]);
 
@@ -338,6 +342,9 @@ describe("session summary generation", () => {
 		harness.setResponses([
 			fauxAssistantMessage("first turn"),
 			fauxAssistantMessage("second turn"),
+			// Turn 2's own launch is already in flight when the next prompt arrives, so it spends
+			// a request that prompt() then cancels. The parked launch under test spends none.
+			fauxAssistantMessage("summary the next prompt cancels"),
 			fauxAssistantMessage("third turn"),
 			fauxAssistantMessage("the surviving summary"),
 		]);

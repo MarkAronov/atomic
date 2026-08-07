@@ -307,8 +307,10 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		}
 		// Launched last so the fallback lifecycle wins: a switch above returns before this line, and
 		// the restore has already put `this.model` back to the user's selection, which the launch
-		// reads synchronously before it parks on waitForIdle().
-		if (event.type === "agent_end") void this._maybeGenerateSessionSummary();
+		// reads synchronously before it parks on waitForIdle(). Guarded like the fallback methods
+		// above because the fallback suites drive this function on a synthetic session.
+		if (event.type === "agent_end" && typeof this._maybeGenerateSessionSummary === "function")
+			void this._maybeGenerateSessionSummary();
 	}
 }
 

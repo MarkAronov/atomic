@@ -12,10 +12,20 @@ import { getLastConversationMessageId, getLatestSessionSummary } from "./session
 /** Sessions shorter than this are already legible from their first message. */
 const MIN_ENTRIES_FOR_SUMMARY = 4;
 
+/** A summary request in flight, published so a launch describing the same state can join it. */
+export type SessionSummaryRun = {
+	/** The conversation state this request describes. */
+	readonly throughId: string;
+	/** Settles when the request finishes, whatever the outcome. */
+	readonly done: Promise<void>;
+};
+
 export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<void> {
 	// Held rather than read from the session in `finally`, so an early return can never clear a
-	// controller belonging to a different run.
+	// controller or run belonging to a different launch.
 	let controller: AbortController | undefined;
+	let run: SessionSummaryRun | undefined;
+	let finish: (() => void) | undefined;
 	try {
 		// --- Bail-outs that cannot change while we wait ---------------------------------
 		if (this._disposed) return;
@@ -60,21 +70,43 @@ export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<
 			getLatestSessionSummary(this.sessionManager.getEntries())?.summarizedThroughId;
 		if (throughId === lastSummarized) return;
 
-		// Retire a request still in flight from an earlier turn, then take the controller. Abort
-		// the previous one directly rather than via abortSessionSummary(), which bumps the token
-		// and would invalidate the claim made above. The controller lives on the session so the
-		// prompt, tree-navigation, and shutdown paths can reach it.
+		// A request already covering this exact conversation state will store the line this launch
+		// would ask for, so wait for it instead of aborting it and paying for a second one.
+		// Overlap is routine rather than exceptional: every turn schedules a launch, and the
+		// previous turn's can still be in flight when the next one wakes.
+		const inFlight = this._sessionSummaryRun;
+		if (inFlight !== undefined && inFlight.throughId === throughId) {
+			await inFlight.done;
+			return;
+		}
+
+		// Anything still running describes an older conversation state, so retire it and take the
+		// controller. Abort the previous one directly rather than via abortSessionSummary(), which
+		// bumps the token and would invalidate the claim made above. The controller lives on the
+		// session so the prompt, tree-navigation, and shutdown paths can reach it.
 		this._sessionSummaryAbortController?.abort();
 		controller = new AbortController();
 		this._sessionSummaryAbortController = controller;
 		const signal = controller.signal;
+
+		// Publish this run before the first await that another launch can overlap. From here on
+		// ownership of the slot, not the token, is what licenses a write: a joiner bumps the token
+		// on its way in, and must not invalidate the very run it is waiting for.
+		// Hand-rolled deferred rather than Promise.withResolvers: coding-agent is the one compiled
+		// package and its lib target predates ES2024, the same reason `_retryPromise` is built this
+		// way. The executor runs synchronously, so `finish` is assigned before the constructor returns.
+		const done = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		run = { throughId, done };
+		this._sessionSummaryRun = run;
 
 		const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);
 
 		// Disposal or a newer turn can land while credentials resolve; nothing past this point
 		// should reach the provider.
 		if (this._disposed || signal.aborted) return;
-		if (this._sessionSummaryToken !== sessionSummaryToken) return;
+		if (this._sessionSummaryRun !== run) return;
 
 		const result = await generateSessionSummary(branch, {
 			model,
@@ -93,7 +125,7 @@ export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<
 		// provider that ignores the signal still returns an ordinary result.
 		if (this._disposed) return;
 		if (signal.aborted) return;
-		if (this._sessionSummaryToken !== sessionSummaryToken) return;
+		if (this._sessionSummaryRun !== run) return;
 		if (getLastConversationMessageId(this.sessionManager.getBranch()) !== throughId) return;
 
 		this.sessionManager.appendSessionSummary(result.summary, throughId, result.usage);
@@ -106,6 +138,12 @@ export async function _maybeGenerateSessionSummary(this: AgentSession): Promise<
 		if (controller !== undefined && this._sessionSummaryAbortController === controller) {
 			this._sessionSummaryAbortController = undefined;
 		}
+		if (run !== undefined && this._sessionSummaryRun === run) {
+			this._sessionSummaryRun = undefined;
+		}
+		// Settled on every path, including a throw and every early return above: a joiner parked
+		// on `done` has no other way out.
+		finish?.();
 	}
 }
 
@@ -115,6 +153,10 @@ export function abortSessionSummary(this: AgentSession): void {
 	this._sessionSummaryToken++;
 	this._sessionSummaryAbortController?.abort();
 	this._sessionSummaryAbortController = undefined;
+	// Retire the published run too. It is what licenses a write once a request is in flight, so a
+	// provider that ignores its signal must still fail the ownership check, and a later launch
+	// must not join a run that has just been cancelled.
+	this._sessionSummaryRun = undefined;
 }
 
 export const agentSessionSummaryMethods = { _maybeGenerateSessionSummary, abortSessionSummary };
