@@ -133,6 +133,11 @@ export function findLatestSessionFile(sessionDir: string): string | null {
 // Message Parsing Utilities
 // ============================================================================
 
+/**
+ * A child may end its turn by calling a terminating tool named `structured_output`.
+ * Atomic no longer registers such a tool itself, but an extension can still provide
+ * one, so this generic parser keeps surfacing its result as the final output.
+ */
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
 type TextContentCandidate = {
