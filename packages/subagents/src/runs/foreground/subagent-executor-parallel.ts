@@ -20,9 +20,9 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
@@ -226,6 +226,7 @@ export async function runParallelPath(
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
 			maxSubagentDepths,
+			parentDepth: data.parentDepth,
 			liveResults,
 			liveProgress,
 			onUpdate,
@@ -234,7 +235,7 @@ export async function runParallelPath(
 		});
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
-			recordRun(run.agent, taskTexts[i]!, run.exitCode, run.progressSummary?.durationMs ?? 0);
+			recordRun(run.agent, taskTexts[i]!, run.status, run.progressSummary?.durationMs ?? 0);
 		}
 
 		for (const result of results) {
@@ -250,7 +251,13 @@ export async function runParallelPath(
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
-		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
+		rememberForegroundRun(deps.state, {
+			runId,
+			mode: "parallel",
+			cwd: effectiveCwd,
+			results: details.results,
+			maxSubagentDepths,
+		});
 		if (interrupted) {
 			return {
 				content: [
@@ -296,12 +303,12 @@ export async function runParallelPath(
 		}
 
 		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
-		const ok = results.filter((result) => result.exitCode === 0).length;
+		const ok = results.filter((result) => result.status === "ok").length;
 		const aggregatedOutput = aggregateParallelOutputs(
 			results.map((result) => ({
 				agent: result.agent,
 				output: result.truncation?.text || getSingleResultOutput(result),
-				exitCode: result.exitCode,
+				status: result.status,
 				error: result.error,
 			})),
 			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,

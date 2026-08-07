@@ -134,6 +134,7 @@ async function createWorkflowStageSession(options: {
 		...(options.noTools === undefined ? {} : { noTools: options.noTools }),
 		excludedTools,
 		orchestrationContext,
+		subagentPolicy: sessionOptions.subagentPolicy,
 		sessionManager: SessionManager.inMemory(options.cwd),
 		model: model!,
 	});
@@ -183,15 +184,41 @@ describe("workflow stage bundled resources", () => {
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		try {
-			process.env.ATOMIC_SUBAGENT_CHILD = "1";
-			process.env.ATOMIC_SUBAGENT_FANOUT_CHILD = "0";
-
 			const { session } = await createWorkflowStageSession({ cwd, agentDir });
 			try {
 				const allToolNames = session.getAllTools().map((tool) => tool.name);
 				const activeToolNames = session.getActiveToolNames();
 				assert.ok(allToolNames.includes("subagent"), "expected subagent in all workflow stage tools");
 				assert.ok(activeToolNames.includes("subagent"), "expected subagent to be active by default");
+			} finally {
+				session.dispose();
+			}
+		} finally {
+			restoreEnv(snapshot);
+		}
+	});
+
+	test("delegates through the registered subagent tool from a workflow stage", async () => {
+		const snapshot = snapshotEnv();
+		const cwd = tempDir("atomic-workflow-stage-delegation-cwd-");
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		try {
+			const { session } = await createWorkflowStageSession({ cwd, agentDir });
+			try {
+				const tool = session.getToolDefinition("subagent");
+				assert.ok(tool, "workflow stages must register the subagent tool");
+				const result = await tool.execute(
+					"stage-delegation",
+					{ agent: "worker", task: "complete this test task", context: "fresh" } as never,
+					undefined,
+					undefined,
+					session.extensionRunner.createContext(),
+				);
+				assert.ok(
+					result.content.some((part) => part.type === "text" && part.text.includes("done")),
+					"the stage tool must return the in-process child result",
+				);
 			} finally {
 				session.dispose();
 			}
@@ -268,9 +295,6 @@ describe("workflow stage bundled resources", () => {
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		try {
-			process.env.ATOMIC_SUBAGENT_CHILD = "1";
-			process.env.ATOMIC_SUBAGENT_FANOUT_CHILD = "0";
-
 			const { session } = await createWorkflowStageSession({
 				cwd,
 				agentDir,

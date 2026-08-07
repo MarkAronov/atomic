@@ -1,3 +1,6 @@
+// MUST stay first: ESM evaluates static dependencies before the importer's body, so this is the
+// only position from which the stderr cap covers the other modules' own initialization.
+import "./bounded-stderr-install.js";
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
@@ -314,4 +317,5 @@ class IntercomBroker {
   }
 }
 
+// The stderr cap is already in place: `./bounded-stderr-install.js` is this file's first import.
 new IntercomBroker().start();

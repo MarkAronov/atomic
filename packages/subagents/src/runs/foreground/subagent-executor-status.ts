@@ -21,8 +21,8 @@ import {
 } from "../../shared/types.ts";
 import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
 import { deliverLocalCompletionNotification } from "../background/completion-notification.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
-import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
+import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.ts";
 import {
 	formatControlIntercomMessage,
 	formatControlNoticeMessage,
@@ -127,7 +127,14 @@ function takeEarlyDetachedResult(state: SubagentState, runId: string, index: num
 
 export function rememberForegroundRun(
 	state: SubagentState,
-	input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] },
+	input: {
+		runId: string;
+		mode: "single" | "parallel" | "chain";
+		cwd: string;
+		results: SingleResult[];
+		/** Effective delegation limit per child, aligned with `results` by index. */
+		maxSubagentDepths?: readonly (number | undefined)[];
+	},
 ): void {
 	state.foregroundRuns ??= new Map();
 	state.foregroundRuns.set(input.runId, {
@@ -137,15 +144,17 @@ export function rememberForegroundRun(
 		updatedAt: Date.now(),
 		children: input.results.map((originalResult, index) => {
 			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
+			const maxSubagentDepth = input.maxSubagentDepths?.[index];
 			return {
 				agent: result.agent,
 				index,
 				status: resolveSubagentResultStatus({
-					exitCode: result.exitCode,
+					status: result.status,
 					interrupted: result.interrupted,
 					detached: result.detached,
 				}),
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
+				...(maxSubagentDepth === undefined ? {} : { maxSubagentDepth }),
 				result,
 			};
 		}),
@@ -192,7 +201,7 @@ export function replaceForegroundRunChild(
 	const child = run.children.find((entry) => entry.index === index);
 	if (child?.status !== "detached") return;
 	child.status = resolveSubagentResultStatus({
-		exitCode: retainedResult.exitCode,
+		status: retainedResult.status,
 		interrupted: retainedResult.interrupted,
 		detached: retainedResult.detached,
 	});
@@ -249,7 +258,7 @@ export function createForegroundControlNotifier(
 
 function resultSummaryForIntercom(result: SingleResult): string {
 	const output = getSingleResultOutput(result);
-	if (result.exitCode !== 0 && result.error) {
+	if (result.status === "error" && result.error) {
 		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
 	}
 	return output || result.error || "(no output)";
@@ -278,9 +287,8 @@ export function notifyDetachedForegroundChildExit(input: {
 			id: runId,
 			runId,
 			agent: result.agent,
-			success: result.exitCode === 0 && !result.interrupted && !result.error,
+			status: result.status,
 			summary: resultSummaryForIntercom(result),
-			exitCode: result.exitCode,
 			...(result.interrupted ? { state: "paused" } : {}),
 			timestamp: Date.now(),
 			...(result.progressSummary?.durationMs !== undefined ? { durationMs: result.progressSummary.durationMs } : {}),
@@ -311,7 +319,7 @@ async function emitForegroundResultIntercom(input: {
 					{
 						agent: result.agent,
 						status: resolveSubagentResultStatus({
-							exitCode: result.exitCode,
+							status: result.status,
 							interrupted: result.interrupted,
 							detached: result.detached,
 						}),

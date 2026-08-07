@@ -38,6 +38,7 @@ interface ForegroundParallelRunInput {
 	maxOutput?: MaxOutputConfig;
 	paramsCwd: string;
 	maxSubagentDepths: number[];
+	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
 	knownModelProviders: string[];
@@ -67,7 +68,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			return {
 				agent: task.agent,
 				task: input.taskTexts[index] ?? task.task,
-				exitCode: -1,
+				status: "skipped",
 				messages: [],
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 				error: "Skipped after foreground group detached for intercom coordination",
@@ -124,6 +125,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				outputPath,
 				outputMode: behavior?.outputMode,
 				maxSubagentDepth: input.maxSubagentDepths[index],
+				parentDepth: input.parentDepth,
 				workflowStageSubagentGuard: input.workflowStageSubagentGuard,
 				workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 				controlConfig: input.controlConfig,

@@ -19,9 +19,9 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
 	finalizeSingleOutput,
@@ -196,6 +196,7 @@ export async function runSinglePath(
 			outputPath,
 			outputMode: effectiveOutputMode,
 			maxSubagentDepth,
+			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard,
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 			onUpdate: forwardSingleUpdate,
@@ -238,7 +239,7 @@ export async function runSinglePath(
 		foregroundControl.toolCount = r.progress?.toolCount;
 		foregroundControl.updatedAt = Date.now();
 	}
-	recordRun(params.agent!, cleanTask, r.exitCode, r.progressSummary?.durationMs ?? 0);
+	recordRun(params.agent!, cleanTask, r.status, r.progressSummary?.durationMs ?? 0);
 
 	if (r.progress) allProgress.push(r.progress);
 	if (r.artifactPaths) allArtifactPaths.push(r.artifactPaths);
@@ -249,7 +250,7 @@ export async function runSinglePath(
 		truncatedOutput: r.truncation?.text,
 		outputPath,
 		outputMode: r.outputMode,
-		exitCode: r.exitCode,
+		status: r.status,
 		savedPath: r.savedOutputPath,
 		outputReference: r.outputReference,
 		saveError: r.outputSaveError,
@@ -262,7 +263,13 @@ export async function runSinglePath(
 		artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		truncation: r.truncation,
 	});
-	rememberForegroundRun(deps.state, { runId, mode: "single", cwd: effectiveCwd, results: details.results });
+	rememberForegroundRun(deps.state, {
+		runId,
+		mode: "single",
+		cwd: effectiveCwd,
+		results: details.results,
+		maxSubagentDepths: [maxSubagentDepth],
+	});
 
 	if (!r.detached && !r.interrupted) {
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
@@ -278,7 +285,7 @@ export async function runSinglePath(
 			return {
 				content: [{ type: "text", text: intercomReceipt.text }],
 				details: intercomReceipt.details,
-				...(r.exitCode !== 0 ? { isError: true } : {}),
+				...(r.status === "error" ? { isError: true } : {}),
 			};
 		}
 	}
@@ -304,7 +311,7 @@ export async function runSinglePath(
 		};
 	}
 
-	if (r.exitCode !== 0)
+	if (r.status === "error")
 		return {
 			content: [{ type: "text", text: formatFailedSingleRunOutput(r, finalizedOutput.displayOutput) }],
 			details,

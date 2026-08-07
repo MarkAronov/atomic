@@ -51,6 +51,58 @@ test("the test job is a fail-closed result gate carrying both required contexts"
 	assert.match(gate, /^[ \t]+runs-on: blacksmith-4vcpu-ubuntu-2404$/mu);
 });
 
+/**
+ * `push: branches: [main, "release/**", "prerelease/**"]` sitting next to an
+ * unfiltered `pull_request:` made every release and prerelease pull request run
+ * this workflow twice for one SHA. Both runs publish the same two required
+ * context names, GitHub keeps the latest result per name, and the duplicate load
+ * doubles contention on the shared runner pool. On sha 772a373 the push run
+ * 31047506585 lost its Linux `suites` leg to its own cap and published FAILURE
+ * for both contexts, while the pull_request run 31047542976 for the identical
+ * SHA was green throughout: the pull request stayed blocked with nothing wrong
+ * in it.
+ *
+ * A `concurrency` group is not the remedy. Cancelling an in-flight run that has
+ * already published `test (...)` strands a cancelled required context on a SHA
+ * with no superseding successful run, which is the exact state being fixed.
+ */
+test("one SHA runs this workflow once, and no group can cancel a run mid-flight", async () => {
+	const workflow = await readText(testPath);
+	const onIndex = workflow.indexOf("\non:\n");
+	const jobsIndex = workflow.indexOf("\njobs:\n");
+	assert.ok(onIndex >= 0 && jobsIndex > onIndex, "test.yml must declare `on:` above `jobs:`");
+	const triggers = workflow.slice(onIndex + 1, jobsIndex + 1);
+
+	// Scoped to the `push` mapping rather than the whole trigger block. A bare
+	// four-space `branches:` search can be satisfied by a filter belonging to some
+	// other trigger, which would leave "only main runs on push" asserted by
+	// nothing at all -- including in the case this test exists to catch, where
+	// `push:` is dropped or re-widened while another trigger carries `[main]`.
+	const pushIndex = triggers.indexOf("  push:");
+	assert.ok(pushIndex >= 0, "the workflow must still run on pushes to main");
+	const afterPush = triggers.slice(pushIndex);
+	const pushBodyStart = afterPush.indexOf("\n") + 1;
+	const pushBodyEnd = afterPush.slice(pushBodyStart).search(/^ {0,2}\S/mu);
+	const push = pushBodyEnd >= 0 ? afterPush.slice(0, pushBodyStart + pushBodyEnd) : afterPush;
+
+	const branches = /^ {4}branches: \[([^\]]*)\]$/mu.exec(push);
+	assert.ok(branches, "the push trigger must carry an explicit branch filter");
+	assert.deepEqual(
+		(branches[1] as string).split(",").map((branch) => branch.trim().replace(/^"|"$/gu, "")),
+		["main"],
+		"only main runs on push; every other branch reaches CI through its pull request",
+	);
+
+	const pullRequestIndex = triggers.indexOf("  pull_request:");
+	assert.ok(pullRequestIndex >= 0, "pull requests must keep producing the two required contexts");
+	const pullRequest = triggers.slice(pullRequestIndex);
+	assert.match(pullRequest, /^ {2}pull_request:[ \t]*$/mu);
+	assert.doesNotMatch(pullRequest, /^ {4}\S/mu, "the pull_request trigger stays unfiltered");
+
+	assert.doesNotMatch(workflow, /^[ \t]*concurrency:/mu, "a cancelled run can strand a failing required context");
+	assert.doesNotMatch(workflow, /cancel-in-progress/u);
+});
+
 test("every work job the gate names exists and is otherwise independent", async () => {
 	const blocks = await jobs();
 	assert.deepEqual([...blocks.keys()], [...WORK_JOBS, "test"]);
@@ -62,17 +114,43 @@ test("every work job the gate names exists and is otherwise independent", async 
 
 /**
  * Per-job wall-clock caps replace the blanket 10/15 minute pair. A cap is a hang
- * detector at roughly 2x measured p100 and must leave room for the one bounded
- * flake retry the job owns: the first split run fired that retry on both
- * platforms and took 230 s / 348 s in `suites` alone.
+ * detector, and it decays into a false-failure generator as the suites grow: the
+ * 8-minute `suites` Linux cap was sized against a 230 s measurement, the job now
+ * measures 400 s, and it cancelled a healthy run at 497 s on 31047506585 while
+ * the same SHA passed on the pull_request event.
+ *
+ * A cap must cover the retries its job owns, because a retry replays only the
+ * retryable steps: the budget is `setup + 2 x (retryable steps)`, not 2x the
+ * whole job. `suites` owns TWO retryable steps (unit and integration), so its
+ * worst legitimate run is roughly double its test time.
+ *
+ * Worst observed per step across runs 31085190975 and 31088323060:
+ *   suites  Linux   setup  86 s, unit 355 s, integration 31 s ->  858 s (14.3 min)
+ *   suites  Windows setup 232 s, unit 324 s, integration 44 s ->  968 s (16.1 min)
+ *   agent-suite Linux   setup  72 s, suite 105 s             ->  282 s ( 4.7 min)
+ *   agent-suite Windows setup 125 s, suite 208 s             ->  541 s ( 9.0 min)
+ *
+ * The former `suites` 13/14 pair sat BELOW both retry-inclusive figures, so a
+ * genuine failure that triggered the retry was cancelled at the cap instead of
+ * reporting a failure -- and GitHub withholds job logs until the whole run
+ * completes, so the cancellation carried no test names. Both `suites` legs now
+ * take a single 20-minute cap (1.40x Linux, 1.24x Windows): the per-platform
+ * split encoded precision these shared 4-vCPU runners do not support, given
+ * setup alone varied 73 s to 232 s across two samples of the same job.
+ *
+ * `agent-suite` and `release-archive` keep their pairs: agent-suite already
+ * clears its retry-inclusive worst case at 1.70x/1.33x, and release-archive
+ * runs no retryable step at all. The Windows `release-archive` cap is 9 minutes
+ * because cold setup observed 152 s for `rust-toolchain` and 71 s for checkout,
+ * followed by roughly 110 s native build and 40 s archive smoke.
  */
 test("each split job declares its own measured timeout", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	const caps: Record<string, [number, number]> = {
-		suites: [8, 12],
-		"agent-suite": [6, 12],
-		"release-archive": [5, 6],
+		suites: [20, 20],
+		"agent-suite": [8, 12],
+		"release-archive": [5, 9],
 	};
 	for (const [job, [linux, windows]] of Object.entries(caps)) {
 		const block = blocks.get(job) as string;
@@ -94,12 +172,14 @@ test("each split job declares its own measured timeout", async () => {
 	}
 	assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 6$/mu);
 	assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 5$/mu);
-	// The blanket per-platform pair covered fourteen sequential steps and detected
-	// nothing about the step that actually hung. Every cap must also stay under
-	// the 15-minute Windows blanket it replaced.
-	assert.doesNotMatch(workflow, /timeout_minutes: (10|15)\b/u);
+	// A cap is still a hang detector: it must bound a stuck job to minutes rather
+	// than GitHub's six-hour default. The former assertion was `< 15`, inherited
+	// from the blanket pair these caps replaced rather than from any measurement,
+	// and it is what forced Windows `suites` to 14 minutes -- below the 16.1 min
+	// a legitimate retried run needs. The bound is now the largest cap the
+	// measurements justify, so raising one further has to come with new numbers.
 	for (const [, value] of workflow.matchAll(/^\s+timeout_minutes: (\d+)$/gmu)) {
-		assert.ok(Number(value) < 15, `cap ${value} is no tighter than the blanket it replaced`);
+		assert.ok(Number(value) <= 20, `cap ${value} is too loose to detect a hang`);
 	}
 });
 
@@ -116,7 +196,11 @@ test("build-consuming steps stay in the job that produced the build", async () =
 	assert.ok(stepIndex(suites, "Unit tests") < stepIndex(suites, "Integration tests"));
 	assert.match(namedStep(suites, "Integration tests"), /ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"/u);
 	assert.match(blocks.get("suites") as string, /uses: actions\/setup-node@/u);
-	assert.doesNotMatch(blocks.get("suites") as string, /rust-toolchain/u);
+	// The bundled subagent extension loads the Rust control plane at import, so
+	// both root suites are build-consuming steps for the native binding too.
+	assert.ok(stepIndex(suites, "Build native bindings for the root suites") < stepIndex(suites, "Unit tests"));
+	assert.ok(stepIndex(suites, "Build native bindings for the root suites") < stepIndex(suites, "Integration tests"));
+	assert.match(blocks.get("suites") as string, /uses: dtolnay\/rust-toolchain@/u);
 
 	const agent = jobSteps(blocks.get("agent-suite") as string);
 	assert.ok(

@@ -153,7 +153,6 @@ export interface AsyncStatus {
 		startedAt?: number;
 		endedAt?: number;
 		durationMs?: number;
-		exitCode?: number | null;
 		tokens?: TokenUsage;
 		skills?: string[];
 		model?: string;
@@ -218,6 +217,12 @@ export interface ForegroundResumeChild {
 	sessionFile?: string;
 	status: SubagentResultStatus;
 	result?: SingleResult;
+	/**
+	 * Effective delegation limit this child ran under. Retained per child because
+	 * parallel and chain branches can carry different limits, and because a later
+	 * edit to the agent definition must not widen a resumed child's budget.
+	 */
+	maxSubagentDepth?: number;
 }
 
 export interface ForegroundResumeRun {

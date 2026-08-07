@@ -171,6 +171,7 @@ export async function runDynamicParallelChainStep(input: {
 		foregroundControl: context.foregroundControl,
 		nestedRoute: context.params.nestedRoute,
 		maxSubagentDepth: context.params.maxSubagentDepth,
+		parentDepth: context.params.parentDepth,
 		workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 		runSync: context.executeRunSync,
 		onDetachedExit: context.onDetachedExit,
@@ -222,7 +223,7 @@ export async function runDynamicParallelChainStep(input: {
 	}
 	const failures = parallelResults
 		.map((result, originalIndex) => ({ ...result, originalIndex }))
-		.filter((result) => result.exitCode !== 0 && result.exitCode !== -1);
+		.filter((result) => result.status === "error");
 	if (failures.length > 0) {
 		const failureSummary = failures
 			.map(
@@ -269,7 +270,7 @@ export async function runDynamicParallelChainStep(input: {
 		agent: result.agent,
 		taskIndex: index,
 		output: getSingleResultOutput(result),
-		exitCode: result.exitCode,
+		status: result.status,
 		error: result.error,
 	}));
 	state.prev = aggregateParallelOutputs(

@@ -154,6 +154,7 @@ export async function runStaticParallelChainStep(input: {
 			nestedRoute: context.params.nestedRoute,
 			worktreeSetup,
 			maxSubagentDepth: context.params.maxSubagentDepth,
+			parentDepth: context.params.parentDepth,
 			workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 			runSync: context.executeRunSync,
 			onDetachedExit: (index, result) => {
@@ -213,7 +214,7 @@ export async function runStaticParallelChainStep(input: {
 
 		const failures = parallelResults
 			.map((result, originalIndex) => ({ ...result, originalIndex }))
-			.filter((result) => result.exitCode !== 0 && result.exitCode !== -1);
+			.filter((result) => result.status === "error");
 		if (failures.length > 0) {
 			const failureSummary = failures
 				.map((failure) => `- Task ${failure.originalIndex + 1} (${failure.agent}): ${failure.error || "failed"}`)
@@ -251,7 +252,7 @@ export async function runStaticParallelChainStep(input: {
 				agent: result.agent,
 				taskIndex: index,
 				output: getSingleResultOutput(result),
-				exitCode: result.exitCode,
+				status: result.status,
 				error: result.error,
 				outputTargetPath,
 				outputTargetExists: outputTargetPath ? fs.existsSync(outputTargetPath) : undefined,

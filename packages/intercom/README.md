@@ -20,7 +20,7 @@ Sometimes you're running multiple Atomic/pi sessions — one researching, one ex
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Atomic's subagent bridge also obtains a broker capability that binds the child session to the exact supervisor; client-authored channel flags are never trusted as cross-group authority. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
+Intercom also integrates with delegated subagents: in-process children receive a typed admission-issued identity for `contact_supervisor`, including their canonical run/agent/index metadata and any supervisor capability. The child identity is bound to its `IntercomClient` when it connects, so each message uses the same client-owned source and a descendant cannot inherit a parent's capability through process environment. Atomic-prefixed bridge environment variables and legacy `PI_*` metadata remain compatible for older integrations only. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 
@@ -227,20 +227,13 @@ The planner typically uses `send`. If you prefer manual approval for outgoing no
 
 ## Workflow: Subagent-to-Supervisor Escalation
 
-This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagents) to be installed and to supply child bridge metadata. When `pi-subagents` spawns a delegated child with that metadata, the child session gets a subagent-only `contact_supervisor` tool in addition to the regular `intercom` tool. Normal sessions never see `contact_supervisor`.
+This workflow uses Atomic's in-process subagent admission. When the runtime admits a delegated child with supervisor coordination, the child session gets a subagent-only `contact_supervisor` tool in addition to the regular `intercom` tool. Normal sessions never see `contact_supervisor`.
 
 ### When the Tool Appears
 
-`contact_supervisor` only registers when `pi-subagents` sets all of these environment variables:
+`contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and broker-issued capability to the child session; these values are not inherited from environment variables. If the parent does not grant supervisor coordination, the session falls back to the regular `intercom` tool.
 
-- `PI_SUBAGENT_ORCHESTRATOR_TARGET` — the supervisor session name or ID
-- `PI_SUBAGENT_RUN_ID` — the run identifier
-- `PI_SUBAGENT_CHILD_AGENT` — the agent type
-- `PI_SUBAGENT_CHILD_INDEX` — the child index within the run
-
-Atomic's bundled subagent bridge additionally supplies internal `ATOMIC_SUBAGENT_SUPERVISOR_CAPABILITY` and `ATOMIC_SUBAGENT_SUPERVISOR_SESSION_ID` values issued by the broker. They are not user-configurable authentication flags: the broker accepts the capability only for the child scope and supervisor session that requested it, and the parent restores the same secret if the broker reconnects. Legacy `PI_*` aliases remain readable where applicable.
-
-If any are missing, the session falls back to the regular `intercom` tool.
+The child identity remains stable across foreground continuation, `async: true`, interruption, and cold resume. Intercom detach uses the same in-process continuation as async work, so the jobs widget and terminal envelope retain one canonical path.
 
 ### Three Reasons
 
@@ -254,7 +247,7 @@ Do not use `contact_supervisor` for routine completion handoffs. Return the fina
 
 Cross-group delivery uses a dedicated broker protocol. Ordinary raw `send` frames always remain group-isolated and are rejected if they include a forged `channel: "supervisor"` marker. A child can cross groups only after its broker-issued capability has bound its registered socket to the exact supervisor. The broker adds the `supervisor` channel marker to validated inbound traffic so parent relays can distinguish it. Replies cross back only when `replyTo` matches a recorded supervisor message in the exact reverse direction; fabricated thread IDs do not bypass isolation.
 
-During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. A busy workflow stage first reserves the message in its AgentSession generation boundary, then waits inside that admission for the same detach handshake before model-visible queue insertion. This prevents terminal stage close from overtaking the handshake while still preventing the active subagent tool from blocking the child request that would release it; unclaimed traffic and a still-current receiver whose owner disappears before commit fall back to ordinary queue insertion. One accepted commit releases foreground supervision for every active member of a parallel group while retaining each child process and eventual result. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched traffic for ordinary sessions keeps queued-until-idle behavior, and generation cancellation/replacement invalidates stale handshakes.
+During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. A busy workflow stage first reserves the message in its AgentSession generation boundary, then waits inside that admission for the same detach handshake before model-visible queue insertion. This prevents terminal stage close from overtaking the handshake while still preventing the active subagent tool from blocking the child request that would release it; unclaimed traffic and a still-current receiver whose owner disappears before commit fall back to ordinary queue insertion. One accepted commit releases foreground supervision for every active member of a parallel group while retaining each in-process session and eventual result. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched traffic for ordinary sessions keeps queued-until-idle behavior, and generation cancellation/replacement invalidates stale handshakes.
 
 ### Example: Blocked Subagent Asks for Guidance
 
@@ -391,7 +384,7 @@ Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible i
 }
 ```
 
-The default `npx --no-install tsx` pair is a compatibility sentinel: intercom recognizes it and starts the broker through the current Atomic/Pi runtime (`process.execPath`). Node-based installs use that runtime with a resolved `tsx` CLI, falling back to Atomic's bundled `jiti` loader when `tsx` is unavailable; Bun source-checkout runs use the current Bun executable directly; standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff. Default startup therefore does not rely on `npx`, `tsx`, or `bun` being on `PATH`.
+The default `npx --no-install tsx` pair is a compatibility sentinel: intercom recognizes it and starts the broker through the current Atomic/Pi runtime (`process.execPath`). It never resolves or executes `tsx` — Node-based installs run the broker with Atomic's bundled `jiti` loader, which is dependency-free pure JavaScript; Bun source-checkout runs use the current Bun executable directly; standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff. Default startup therefore does not rely on `npx`, `tsx`, or `bun` being on `PATH`.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -451,7 +444,12 @@ Runtime files live under the active agent directory. Atomic defaults to `~/.atom
 - `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
 - `broker.spawn.lock` — Short-lived lock used to avoid duplicate auto-spawns
+- `broker.log` — Broker stderr, truncated on every spawn and capped at 8 KiB by the broker itself
 - `config.json` — User configuration
+
+The broker is a detached subprocess and never inherits the host's extension-loader module aliases, so every module reachable from `broker/broker.ts` resolves to Node built-ins or Intercom's own files. Its stderr is captured to `broker.log` through an already-open file descriptor rather than a pipe, because a pipe to a process that outlives its parent breaks once the parent exits. Startup failures — both an early exit and a readiness timeout — quote the log path and a bounded tail of that output.
+
+The broker caps the file from the inside, since nothing on the parent side can bound a child that outlives it. `broker/bounded-stderr-install.ts` is the entrypoint's first import, so the cap is in place before any other broker module evaluates, and it applies an 8 KiB byte budget to `process.stderr.write`, to `console.error` / `console.warn` (Bun's console writes to the descriptor directly and would otherwise bypass the stream), and to the default fatal printing for an uncaught exception or an unhandled rejection. It cannot cover output emitted before that import evaluates, native writes to file descriptor 2, child processes, or hard termination.
 
 ## Design Decisions
 

@@ -3,11 +3,13 @@ import type {
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	PackageSource,
+	SubagentChildPolicy,
 } from "@bastani/atomic";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 
 export interface PiSdkSettingsManager {
 	getCodexFastModeSettings(): { readonly chat: boolean; readonly workflow: boolean };
+	getRetrySettings?(): { readonly enabled: boolean; readonly maxRetries: number; readonly baseDelayMs: number };
 }
 
 export interface PiSdkResourceLoader {
@@ -45,8 +47,20 @@ export type AtomicCreateAgentSessionOptions = Omit<
 
 export interface PrepareAtomicStageSessionOptions {
 	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+	onSettingsManager?: (settingsManager: PiSdkSettingsManager) => void;
 }
-
+/**
+ * Workflow stages are top-level sessions that carry a policy object; they are
+ * not subagent children. They keep full management and are authorized to
+ * delegate, as `packages/coding-agent/docs/workflows.md` documents. Nesting
+ * stays bounded by the depth guard in the subagent executor.
+ */
+const WORKFLOW_STAGE_SUBAGENT_POLICY: SubagentChildPolicy = {
+	managementActions: "full",
+	fanoutAuthorized: true,
+	inheritProjectContext: true,
+	inheritSkills: true,
+};
 function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined): string {
 	return options?.cwd ?? options?.sessionManager?.getCwd() ?? process.cwd();
 }
@@ -87,6 +101,7 @@ export async function prepareAtomicStageSessionOptions(
 				? undefined
 				: { projectTrusted: inheritanceSnapshot.projectTrusted },
 		);
+	prepareOptions.onSettingsManager?.(settingsManager);
 	const inheritedBuiltinPackagePaths = inheritanceSnapshot?.builtinPackagePaths;
 	const builtinPackagePaths =
 		inheritedBuiltinPackagePaths === undefined
@@ -107,6 +122,7 @@ export async function prepareAtomicStageSessionOptions(
 		...(hasAgentDirOverride ? { agentDir } : {}),
 		settingsManager,
 		resourceLoader,
+		subagentPolicy: WORKFLOW_STAGE_SUBAGENT_POLICY,
 	};
 }
 
@@ -143,47 +159,10 @@ function stageBuiltinPackagePaths(paths: readonly PackageSource[]): PackageSourc
 	});
 }
 
-const SUBAGENT_CHILD_EXTENSION_ENV_KEYS = [
-	"ATOMIC_SUBAGENT_CHILD",
-	"ATOMIC_SUBAGENT_FANOUT_CHILD",
-	"PI_SUBAGENT_CHILD",
-	"PI_SUBAGENT_FANOUT_CHILD",
-] as const;
-
 let workflowStageResourceReloadQueue: Promise<void> = Promise.resolve();
 
 async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader): Promise<void> {
-	const queuedReload = workflowStageResourceReloadQueue.then(() =>
-		reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader),
-	);
+	const queuedReload = workflowStageResourceReloadQueue.then(() => resourceLoader.reload());
 	workflowStageResourceReloadQueue = queuedReload.catch(() => undefined);
 	return queuedReload;
-}
-
-async function reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader: PiSdkResourceLoader): Promise<void> {
-	// Workflow stage sessions are already governed by an orchestration context
-	// that disables recursive workflow tools and caps nested subagent depth. When
-	// a workflow itself runs inside a subagent child process, inherited subagent
-	// child env flags would otherwise make the bundled subagents extension skip
-	// registering its `subagent` tool before the stage session exists. Isolate
-	// extension discovery from those parent-process flags so an explicit
-	// `tools: ["subagent"]` allowlist works the same in workflow stages everywhere.
-	// The isolation mutates process-global env, so serialize the full
-	// save/delete/reload/restore section. Without this queue, overlapping workflow
-	// stage session creation can snapshot an already-cleared env and restore that
-	// stale snapshot after another reload restores the real parent values.
-	const previousValues = new Map<string, string | undefined>();
-	for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
-		previousValues.set(key, process.env[key]);
-		delete process.env[key];
-	}
-	try {
-		await resourceLoader.reload();
-	} finally {
-		for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
-			const previousValue = previousValues.get(key);
-			if (previousValue === undefined) delete process.env[key];
-			else process.env[key] = previousValue;
-		}
-	}
 }
