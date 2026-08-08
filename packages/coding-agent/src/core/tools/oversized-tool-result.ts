@@ -1,10 +1,18 @@
 import { Buffer } from "node:buffer";
-import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { constants } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
-import { APP_NAME } from "../../config.ts";
+import { getErrnoCode } from "./errno.ts";
+import { capPersistedText } from "./persisted-output-file.ts";
+import {
+	ensureTempDir,
+	resolveSessionTempDirPath,
+	SESSION_TEMP_DIR_MODE,
+	SESSION_TEMP_FILE_MODE,
+} from "./session-temp-dir.ts";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_CLOSING_TAG,
@@ -154,25 +162,122 @@ function sanitizePathComponent(value: string, fallback: string): string {
 	return sanitized.length > 0 ? sanitized : fallback;
 }
 
-/** Session-scoped directory for persisted tool results: `<sessionDir>/tool-results`. */
-function getToolResultsDir(input: { sessionDir?: string; sessionId: string }): string {
+/**
+ * Session-scoped directory for persisted tool results.
+ *
+ * A disk-backed session owns `<sessionDir>/tool-results`. It is created here and
+ * then chmodded, because `mode` on mkdir is only a request the process umask
+ * narrows — a umask of 0o777 otherwise leaves a directory at 000 that nothing,
+ * this process included, can write into.
+ *
+ * An in-memory session falls back to the owner- and session-scoped temp tree, so
+ * the sweeper can reap it once the session is gone — and that path goes through
+ * {@link ensureTempDir}, which validates every component below the system temp
+ * directory instead of letting `mkdir -p` follow a planted link.
+ */
+async function ensureToolResultsDir(input: { sessionDir?: string; sessionId: string }): Promise<string> {
 	if (input.sessionDir?.trim()) {
-		return join(input.sessionDir, TOOL_RESULTS_SUBDIR);
+		const dir = join(input.sessionDir, TOOL_RESULTS_SUBDIR);
+		await mkdir(dir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		if (process.platform !== "win32") {
+			await chmod(dir, SESSION_TEMP_DIR_MODE);
+		}
+		return dir;
 	}
-	// Fall back to a stable session-scoped temp directory for in-memory sessions.
-	const safeApp = sanitizePathComponent(APP_NAME || "atomic", "atomic");
-	const safeSessionId = sanitizePathComponent(input.sessionId || "session", "session");
-	return join(tmpdir(), `${safeApp}-${TOOL_RESULTS_SUBDIR}`, safeSessionId);
+	return ensureTempDir(join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR));
 }
 
-function getErrnoCode(error: unknown): string | undefined {
-	if (error && typeof error === "object" && "code" in error) {
-		const code = (error as { code?: unknown }).code;
-		return typeof code === "string" ? code : undefined;
+function isOwnedByCurrentUser(uid: number | bigint): boolean {
+	const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+	if (typeof currentUid !== "number") {
+		return true;
 	}
-	return undefined;
+	return typeof uid === "bigint" ? uid === BigInt(currentUid) : uid === currentUid;
 }
 
+function sameFileIdentity(left: { dev: bigint; ino: bigint }, right: { dev: bigint; ino: bigint }): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+/**
+ * Force an open persisted file to owner-only and prove it.
+ *
+ * `mode` on open is a request the process umask narrows, so a hostile or merely
+ * odd umask can leave the file at 000 — advertised but unreadable. Throws when
+ * the mode cannot be reached or the file belongs to another account.
+ */
+async function enforceOwnerOnlyMode(handle: FileHandle, filepath: string): Promise<void> {
+	if (process.platform === "win32") {
+		return;
+	}
+	const before = await handle.stat();
+	if (!isOwnedByCurrentUser(before.uid)) {
+		throw new Error(`persisted tool result ${filepath} is owned by another account`);
+	}
+	await handle.chmod(SESSION_TEMP_FILE_MODE);
+	const after = await handle.stat();
+	if ((after.mode & 0o777) !== SESSION_TEMP_FILE_MODE) {
+		throw new Error(`persisted tool result ${filepath} could not be restricted to 0600`);
+	}
+	if (!isOwnedByCurrentUser(after.uid)) {
+		throw new Error(`persisted tool result ${filepath} is owned by another account`);
+	}
+}
+
+/**
+ * Validate a file left by a previous turn before advertising it again.
+ *
+ * The replay path is what makes repeated calls idempotent, but a file that is no
+ * longer ours, or is no longer owner-only, must not be handed back. It is never
+ * deleted either: refusing costs a preview, deleting could destroy someone
+ * else's data.
+ */
+async function adoptExistingResultFile(filepath: string): Promise<boolean> {
+	try {
+		const initialPathStat = await lstat(filepath, { bigint: true });
+		if (initialPathStat.isSymbolicLink() || !initialPathStat.isFile() || !isOwnedByCurrentUser(initialPathStat.uid)) {
+			return false;
+		}
+		const noFollow =
+			process.platform !== "win32" && typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+		const handle = await open(filepath, constants.O_RDONLY | noFollow);
+		try {
+			const handleStat = await handle.stat({ bigint: true });
+			if (!handleStat.isFile() || !sameFileIdentity(initialPathStat, handleStat)) {
+				return false;
+			}
+			const pathBeforeChmod = await lstat(filepath, { bigint: true });
+			if (
+				pathBeforeChmod.isSymbolicLink() ||
+				!pathBeforeChmod.isFile() ||
+				!sameFileIdentity(initialPathStat, pathBeforeChmod) ||
+				!sameFileIdentity(handleStat, pathBeforeChmod) ||
+				!isOwnedByCurrentUser(pathBeforeChmod.uid)
+			) {
+				return false;
+			}
+			await enforceOwnerOnlyMode(handle, filepath);
+
+			// Do not advertise a path replaced while the descriptor was open.
+			const [finalPathStat, finalHandleStat] = await Promise.all([
+				lstat(filepath, { bigint: true }),
+				handle.stat({ bigint: true }),
+			]);
+			return (
+				!finalPathStat.isSymbolicLink() &&
+				finalPathStat.isFile() &&
+				finalHandleStat.isFile() &&
+				sameFileIdentity(finalPathStat, finalHandleStat) &&
+				isOwnedByCurrentUser(finalPathStat.uid) &&
+				isOwnedByCurrentUser(finalHandleStat.uid)
+			);
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return false;
+	}
+}
 /**
  * Persist the full tool output to a session-scoped file and return its path.
  *
@@ -188,16 +293,28 @@ async function persistToolOutput(input: {
 	sessionId: string;
 	toolCallId: string;
 }): Promise<string | undefined> {
-	const dir = getToolResultsDir({ sessionDir: input.sessionDir, sessionId: input.sessionId });
-	const fileName = `${sanitizePathComponent(input.toolCallId, "tool-result")}.txt`;
-	const filepath = join(dir, fileName);
+	let dir: string;
 	try {
-		await mkdir(dir, { recursive: true, mode: 0o700 });
-		await writeFile(filepath, input.text, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		dir = await ensureToolResultsDir({ sessionDir: input.sessionDir, sessionId: input.sessionId });
+	} catch {
+		// Refused (see TempDirRefusedError) or unwritable: leave the result unchanged
+		// rather than pointing the model at a directory we do not own.
+		return undefined;
+	}
+	const filepath = join(dir, `${sanitizePathComponent(input.toolCallId, "tool-result")}.txt`);
+	try {
+		const handle = await open(filepath, "wx", SESSION_TEMP_FILE_MODE);
+		try {
+			await handle.writeFile(capPersistedText(input.text), "utf8");
+			await enforceOwnerOnlyMode(handle, filepath);
+		} finally {
+			await handle.close();
+		}
 	} catch (error) {
 		if (getErrnoCode(error) === "EEXIST") {
-			// Already persisted on a prior turn — reuse the existing file.
-			return filepath;
+			// Already persisted on a prior turn — reuse the existing file, but only
+			// after confirming it is still ours and still owner-only.
+			return (await adoptExistingResultFile(filepath)) ? filepath : undefined;
 		}
 		return undefined;
 	}

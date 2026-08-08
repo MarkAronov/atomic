@@ -1,14 +1,19 @@
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.ts";
+import { PersistedOutputFile } from "./persisted-output-file.ts";
+import { ensureSessionTempDir } from "./session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
 	maxLines?: number;
 	maxBytes?: number;
 	tempFilePrefix?: string;
+	/**
+	 * Session-scoped directory for the spill file. Defaults to the active
+	 * session's temp directory so spill files are reapable per session.
+	 */
+	tempDir?: string;
 }
 
 export interface OutputSnapshot {
@@ -17,9 +22,9 @@ export interface OutputSnapshot {
 	fullOutputPath?: string;
 }
 
-function defaultTempFilePath(prefix: string): string {
+function defaultTempFilePath(prefix: string, tempDir: string | undefined): string {
 	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `${prefix}-${id}.log`);
+	return join(ensureSessionTempDir(tempDir), `${prefix}-${id}.log`);
 }
 
 function byteLength(text: string): number {
@@ -38,6 +43,7 @@ export class OutputAccumulator {
 	private readonly maxBytes: number;
 	private readonly maxRollingBytes: number;
 	private readonly tempFilePrefix: string;
+	private readonly tempDir: string | undefined;
 	private readonly decoder = new TextDecoder();
 
 	private rawChunks: Buffer[] = [];
@@ -53,13 +59,15 @@ export class OutputAccumulator {
 	private finished = false;
 
 	private tempFilePath: string | undefined;
-	private tempFileStream: WriteStream | undefined;
+	private tempFile: PersistedOutputFile | undefined;
+	private tempFileUnavailable = false;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 		this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1);
 		this.tempFilePrefix = options.tempFilePrefix ?? `${APP_NAME}-output`;
+		this.tempDir = options.tempDir;
 	}
 
 	append(data: Buffer): void {
@@ -70,9 +78,9 @@ export class OutputAccumulator {
 		this.totalRawBytes += data.length;
 		this.appendDecodedText(this.decoder.decode(data, { stream: true }));
 
-		if (this.tempFileStream || this.shouldUseTempFile()) {
+		if (this.tempFile || this.shouldUseTempFile()) {
 			this.ensureTempFile();
-			this.tempFileStream?.write(data);
+			this.tempFile?.write(data);
 		} else if (data.length > 0) {
 			this.rawChunks.push(data);
 		}
@@ -120,26 +128,20 @@ export class OutputAccumulator {
 	}
 
 	async closeTempFile(): Promise<void> {
-		if (!this.tempFileStream) {
+		const file = this.tempFile;
+		if (!file) {
 			return;
 		}
-
-		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
-
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
-				stream.off("finish", onFinish);
-				reject(error);
-			};
-			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
-			};
-			stream.once("error", onError);
-			stream.once("finish", onFinish);
-			stream.end();
-		});
+		this.tempFile = undefined;
+		try {
+			await file.close();
+		} catch (error) {
+			// A spill file that failed to flush must not be advertised: a later
+			// snapshot reports no path rather than one pointing at a broken file.
+			this.tempFilePath = undefined;
+			this.tempFileUnavailable = true;
+			throw error;
+		}
 	}
 
 	getLastLineBytes(): number {
@@ -210,14 +212,35 @@ export class OutputAccumulator {
 	}
 
 	private ensureTempFile(): void {
-		if (this.tempFilePath) {
+		if (this.tempFilePath || this.tempFileUnavailable) {
 			return;
 		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix);
-		this.tempFileStream = createWriteStream(this.tempFilePath);
-		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
+		let file: PersistedOutputFile | undefined;
+		try {
+			const path = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
+			file = new PersistedOutputFile(path);
+			for (const chunk of this.rawChunks) {
+				file.write(chunk);
+			}
+			// Publish the pair only after creation and replay both succeed. Callers
+			// must never observe a path for a writer that did not open or could not
+			// accept the output buffered before the spill threshold.
+			this.tempFile = file;
+			this.tempFilePath = path;
+			this.rawChunks = [];
+		} catch {
+			// Persistence is a convenience. Refusal by the directory helper, EMFILE,
+			// ENOSPC, EACCES, or a replay failure must leave bounded output available
+			// without a dangling path, retained raw chunks, or retries on later appends.
+			this.tempFileUnavailable = true;
+			this.tempFilePath = undefined;
+			this.tempFile = undefined;
+			this.rawChunks = [];
+			try {
+				file?.end();
+			} catch {
+				// Best effort: there is no path to advertise and no writer to reuse.
+			}
 		}
-		this.rawChunks = [];
 	}
 }

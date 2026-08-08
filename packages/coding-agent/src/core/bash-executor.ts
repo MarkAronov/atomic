@@ -7,13 +7,13 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../config.ts";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations, BashOutputChannel } from "./tools/bash.ts";
+import { PersistedOutputFile } from "./tools/persisted-output-file.ts";
+import { ensureSessionTempDir } from "./tools/session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -29,6 +29,11 @@ export interface BashExecutorOptions {
 	env?: NodeJS.ProcessEnv;
 	/** Run with PTY handling when supported by the operations backend */
 	pty?: boolean;
+	/**
+	 * Session-scoped directory for the overflow log. Defaults to the active
+	 * session's temp directory so the log is reaped with that session.
+	 */
+	sessionTempDir?: string;
 }
 
 export interface BashResult {
@@ -63,18 +68,48 @@ export async function executeBashWithOperations(
 	const maxOutputBytes = DEFAULT_MAX_BYTES * 2;
 
 	let tempFilePath: string | undefined;
-	let tempFileStream: WriteStream | undefined;
+	let tempFile: PersistedOutputFile | undefined;
 	let totalBytes = 0;
 
+	let tempFileUnavailable = false;
+
 	const ensureTempFile = () => {
-		if (tempFilePath) {
+		if (tempFilePath || tempFileUnavailable) {
 			return;
 		}
-		const id = randomBytes(8).toString("hex");
-		tempFilePath = join(tmpdir(), `${APP_NAME}-bash-${id}.log`);
-		tempFileStream = createWriteStream(tempFilePath);
+		try {
+			const dir = ensureSessionTempDir(options?.sessionTempDir);
+			const id = randomBytes(8).toString("hex");
+			tempFilePath = join(dir, `${APP_NAME}-bash-${id}.log`);
+			tempFile = new PersistedOutputFile(tempFilePath);
+		} catch {
+			// The session temp directory was refused (see ensureTempDir). Run without
+			// an overflow log rather than advertising a path outside the owned tree.
+			tempFileUnavailable = true;
+			tempFilePath = undefined;
+			tempFile = undefined;
+			return;
+		}
 		for (const chunk of outputChunks) {
-			tempFileStream.write(chunk);
+			tempFile.write(chunk);
+		}
+	};
+
+	/**
+	 * Close the overflow log and confirm it landed. A spill file that failed to
+	 * write must not be advertised: `fullOutputPath` is dropped instead, so the
+	 * `Full output:` contract never points at a file that is not there.
+	 */
+	const finishTempFile = async () => {
+		const file = tempFile;
+		if (!file) {
+			return;
+		}
+		tempFile = undefined;
+		try {
+			await file.close();
+		} catch {
+			tempFilePath = undefined;
 		}
 	};
 
@@ -90,8 +125,8 @@ export async function executeBashWithOperations(
 			ensureTempFile();
 		}
 
-		if (tempFileStream) {
-			tempFileStream.write(text);
+		if (tempFile) {
+			tempFile.write(text);
 		}
 
 		// Keep rolling buffer
@@ -121,9 +156,7 @@ export async function executeBashWithOperations(
 		if (truncationResult.truncated) {
 			ensureTempFile();
 		}
-		if (tempFileStream) {
-			tempFileStream.end();
-		}
+		await finishTempFile();
 		const cancelled = options?.signal?.aborted ?? false;
 
 		return {
@@ -141,9 +174,7 @@ export async function executeBashWithOperations(
 			if (truncationResult.truncated) {
 				ensureTempFile();
 			}
-			if (tempFileStream) {
-				tempFileStream.end();
-			}
+			await finishTempFile();
 			return {
 				output: truncationResult.truncated ? truncationResult.content : fullOutput,
 				exitCode: undefined,
@@ -153,9 +184,7 @@ export async function executeBashWithOperations(
 			};
 		}
 
-		if (tempFileStream) {
-			tempFileStream.end();
-		}
+		await finishTempFile();
 
 		throw err;
 	}
