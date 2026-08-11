@@ -1,8 +1,16 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 
 export type GraphViewMode = "overlay" | "widget";
+/**
+ * Terminal geometry exposed to GraphView. The renderer reads only `rows`;
+ * the attach shell may pass its full host TUI because it satisfies this slice.
+ */
+export type GraphViewHost = {
+	readonly terminal: Pick<TUI["terminal"], "rows">;
+};
 
 export interface GraphViewOpts {
 	mode: GraphViewMode;
@@ -42,11 +50,12 @@ export interface GraphViewOpts {
 	initialFocusedStageId?: string;
 	initialFocusedRunId?: string;
 	/**
-	 * Optional terminal row accessor used by the custom-overlay bridge. The
-	 * graph layout root consumes the current height on every render so a resize
-	 * changes the ScrollView viewport instead of a fixed rectangle.
+	 * Host terminal geometry for the fullscreen frame. GraphView consumes only
+	 * `terminal.rows`; the attach shell passes the same host object to GraphView
+	 * and the attached stage chat. StageChatView retains the full TUI because its
+	 * editor and chat session host use it as well.
 	 */
-	getViewportRows?: () => number | undefined;
+	piTui?: GraphViewHost;
 	/**
 	 * Invoked on each animation tick (~10 FPS) so the host can call
 	 * `tui.requestRender()`. Only wired in `overlay` mode; supplying it

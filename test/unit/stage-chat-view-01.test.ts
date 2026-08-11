@@ -8,10 +8,10 @@ import {
 	makeFakeKeybindings,
 	makeHandle,
 	makePendingPrompt,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 	stripAnsi,
-	type TUI,
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
@@ -287,10 +287,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			piTui: {
-				requestRender: () => {},
-				terminal: { rows: 32, columns: 80 },
-			} as unknown as TUI,
+			piTui: makeTestTui(32),
 			piTheme: {},
 			piKeybindings: makeFakeKeybindings(),
 			piEditorFactory: () => {
@@ -357,7 +354,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("structured editor prompt navigation, scroll, and Escape stay pending", async () => {
+	test("structured editor prompt navigation, tab, scroll, and Escape stay pending", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const prompt = makePendingPrompt({
@@ -385,11 +382,13 @@ describe("StageChatView", () => {
 			},
 			onClose: () => {},
 			piKeybindings: makeFakeKeybindings(),
-			getViewportRows: () => 12,
+			piTui: makeTestTui(12),
+			// Use the production Editor path; the viewport host now supplies the
+			// terminal geometry that the editor also uses for paging.
 		});
 
 		view.render(80);
-		for (const key of ["\x1b[A", "\x1b[B", "pageUp", "pageDown", "\x1b"]) {
+		for (const key of ["\x1b[A", "\x1b[B", "\x1b[5~", "\x1b[6~", "\t", "\x1b"]) {
 			assert.equal(view.handleInput(key), true, JSON.stringify(key));
 		}
 		await flush();
@@ -397,7 +396,6 @@ describe("StageChatView", () => {
 		assert.equal(detached, 0);
 		assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
 
-		view.handleInput("\t");
 		view.handleInput("\r");
 		assert.equal(await pending, "line one\nline two");
 		assert.equal(detached, 1);

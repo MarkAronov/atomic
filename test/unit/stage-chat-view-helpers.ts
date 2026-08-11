@@ -30,6 +30,9 @@ import type { PendingPrompt } from "../../packages/workflows/src/shared/store-ty
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { makeTestTui } from "../support/fake-tui.js";
+
+export { makeTestTui };
 
 beforeAll(() => {
 	initTheme("dark", false);
@@ -311,7 +314,7 @@ export function makeCompletedPromptArchiveView(message: string, response: string
 		handle: undefined,
 		onDetach: () => {},
 		onClose: () => {},
-		getViewportRows: () => 10,
+		piTui: makeTestTui(10),
 	});
 }
 
