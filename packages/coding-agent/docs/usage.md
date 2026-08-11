@@ -177,17 +177,26 @@ See [Atomic Packages](/packages) for package sources and security notes.
 ### Credential Commands
 
 ```bash
+atomic auth check [--provider <p>] [--model <model>] [--json] [--credentials] [--no-refresh]
 atomic auth print-api-key --model <model> [--provider <p>]
 atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
 ```
 
-Print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+`atomic auth check` verifies the effective credential a provider or model would use before a session starts. It requires at least one of `--provider` or `--model`, prints `ready`, `not_ready`, or `invalid` to stdout, and exits `0`, `1`, or `2` for those states. `--json` adds the resolved provider when one is found, credential kind, and any reason. By default, a check never emits credential material.
 
-`--model` is required. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one. `--provider` and `--model` are the only options either subcommand accepts: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+`--credentials` is an explicit export opt-in. It requires `--provider` or an exact `--model` target; a fuzzy model match on an otherwise-ready provider is refused as `invalid` (exit `2`) rather than exporting a credential for a provider you did not name. If that provider is not ready, the check remains `not_ready` (exit `1`). On a ready check, plain stdout becomes the resolved credential alone and JSON adds it only in the `credentials` field. A non-ready raw export leaves stdout empty and reports its status on stderr; a JSON export returns the status object without a credential. Credential writes can also exit `8` (nothing written) or `9` (only a fragment written). Treat the stream like `print-api-key` or `print-bearer-token` output.
 
-`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. Any other subcommand exits `1` and names the two valid ones. Help never uses stdout, so stdout from this command family is a credential or empty.
+Checks refresh expired OAuth credentials by default, using Atomic's normal locked `auth.json` update path. Pass `--no-refresh` to read credentials without creating, locking, or mutating `auth.json`; this is useful when a probe must not change stored auth state. It still reads Atomic's primary and legacy credential paths and resolves configured API-key values, including `!command`, through the normal provider configuration. In this read-only mode, malformed `auth.json` is `invalid` (exit `2`) rather than an unavailable credential. An OAuth credential export requires at least 30 minutes of life: the normal path can refresh it, while `--no-refresh` refuses a shorter-lived token.
 
-`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — an API key has no expiry. A failed refresh leaves your stored credential untouched.
+The credential commands print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+
+`--model` is required for the two `print-*` exports. An exporting auth check needs `--provider` or an exact `--model` target. When several configured providers offer a model, pass `--provider` to choose one. The two `print-*` subcommands accept only `--provider` and `--model`: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+
+`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. `atomic auth check --help` (or `-h`) does the same until a `--` terminator; after it, the flag is not help. Any other subcommand exits `1` and names all three valid commands. Help never uses stdout, so raw credential export stdout is a credential or empty; a JSON export writes an object that carries a credential only in its `credentials` field.
+
+`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — even after a `--` terminator — because an API key has no expiry. A failed refresh leaves your stored credential untouched.
+
+Credential-export exits (`print-api-key`, `print-bearer-token`, and the `--credentials` write itself):
 
 | Exit | Meaning |
 |------|---------|
@@ -202,9 +211,19 @@ Print one configured credential for an external client — a proxy, a script, or
 | `8` | The credential could not be written; nothing was emitted |
 | `9` | Only part of the credential was written; discard the output |
 
+Auth-check exits:
+
+| Exit | `atomic auth check` |
+|------|---------------------|
+| `0` | `ready` |
+| `1` | `not_ready`, including a fuzzy `--model` with `--credentials` when its resolved provider is not ready |
+| `2` | `invalid`, including check usage errors (unknown option, neither `--provider` nor `--model`, and a fuzzy `--model` with `--credentials` when its resolved provider is otherwise ready) |
+| `8` | With `--credentials`, the credential could not be written; nothing was emitted |
+| `9` | With `--credentials`, only part of the credential was written; discard the output |
+
 Exit `5` is reported only for a refresh that itself failed, which happens before anything is persisted; that is the only exit that promises your stored credential is untouched. Any other OAuth failure exits `7` and makes no such promise.
 
-Stdout is empty on every non-zero exit but one. Once the credential reaches stdout the command has succeeded: if the stream then fails to drain — a reader that closed the pipe, for example — that is reported on stderr and the exit code stays `0`, because a non-zero exit here would contradict the bytes the caller already holds. The exception is exit `9`, which reports that only part of the credential was written before the stream failed; those bytes cannot be recalled, so stdout is not empty, and the output is a fragment to discard rather than a credential to use. See [Security](/security#credential-export) before wiring this into a script.
+For raw credential exports, stdout is empty on every non-zero exit but one. Once the credential reaches stdout the command has succeeded: if the stream then fails to drain — a reader that closed the pipe, for example — that is reported on stderr and the exit code stays `0`, because a non-zero exit here would contradict the bytes the caller already holds. The exception is exit `9`, which reports that only part of the credential was written before the stream failed; those bytes cannot be recalled, so stdout is not empty, and the output is a fragment to discard rather than a credential to use. `auth check --credentials --json` may instead write a credential-free JSON status object on a non-zero check result. See [Security](/security#credential-export) before wiring this into a script.
 
 ### Modes
 
