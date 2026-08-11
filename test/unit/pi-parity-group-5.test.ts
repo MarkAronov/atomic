@@ -168,6 +168,8 @@ describe("Group 5 parity", () => {
 				doubleEscapeAction: "tree",
 				treeFilterMode: "default",
 				showHardwareCursor: false,
+				tuiMode: "regular",
+				fullscreenScrollbar: "auto",
 				editorPaddingX: 0,
 				outputPad: 1,
 				showCacheMissNotices: false,

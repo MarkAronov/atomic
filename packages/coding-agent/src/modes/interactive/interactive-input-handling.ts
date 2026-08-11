@@ -17,11 +17,12 @@ import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.t
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
+
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
-	mode.ui.addInputListener(() =>
+	mode.addTuiInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
 	);
-	mode.ui.addInputListener((data) =>
+	mode.addTuiInputListener((data) =>
 		routeGlobalClearInput(data, {
 			// Physical identity first: safety routing must survive an `app.clear` remap.
 			matchesCtrlC: isPhysicalCtrlC,
@@ -117,7 +118,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 	this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 	this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 	this.defaultEditor.onAction("app.message.copy", () => {
-		void this.handleCopyCommand();
+		void this.handleCopyCommand({ flashConfirmation: true });
 	});
 	this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 	this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());

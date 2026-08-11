@@ -80,7 +80,8 @@ InteractiveModeBase.prototype.showFastModeSelector = function (this: Interactive
 
 InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		const selector = new SettingsSelectorComponent(
+		let selector: SettingsSelectorComponent | undefined;
+		const component = new SettingsSelectorComponent(
 			{
 				autoCompact: this.session.autoCompactionEnabled,
 				showImages: this.settingsManager.getShowImages(),
@@ -104,6 +105,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 				treeFilterMode: this.settingsManager.getTreeFilterMode(),
 				showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
+				tuiMode: this.ui.mode,
+				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 				editorPaddingX: this.settingsManager.getEditorPaddingX(),
 				outputPad: this.settingsManager.getOutputPad(),
 				showCacheMissNotices: this.settingsManager.getShowCacheMissNotices(),
@@ -205,6 +208,20 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.settingsManager.setShowHardwareCursor(enabled);
 					this.ui.setShowHardwareCursor(enabled);
 				},
+				onTuiModeChange: (mode) => {
+					if (!this.switchTuiMode(mode)) {
+						selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
+						this.showStatus("Close active overlays before changing TUI mode");
+						return;
+					}
+					this.settingsManager.setTuiMode(mode);
+					this.showStatus(`TUI mode: ${mode}`);
+				},
+				onFullscreenScrollbarChange: (mode) => {
+					this.settingsManager.setFullscreenScrollbar(mode);
+					this.transcriptScrollView?.setScrollbar(mode);
+					this.ui.requestRender();
+				},
 				onEditorPaddingXChange: (padding) => {
 					this.settingsManager.setEditorPaddingX(padding);
 					this.defaultEditor.setPaddingX(padding);
@@ -243,6 +260,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 			},
 		);
-		return { component: selector, focus: selector.getSettingsList() };
+		selector = component;
+		return { component, focus: component.getSettingsList() };
 	});
 };

@@ -61,6 +61,20 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 		values: ["true", "false"],
 	});
 	insertAfter(items, "show-hardware-cursor", {
+		id: "tui-mode",
+		label: "TUI mode",
+		description: "Interface layout; fullscreen mode is experimental",
+		currentValue: config.tuiMode,
+		values: ["regular", "fullscreen"],
+	});
+	insertAfter(items, "tui-mode", {
+		id: "fullscreen-scrollbar",
+		label: "Fullscreen scrollbar",
+		description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+		currentValue: config.fullscreenScrollbar,
+		values: ["auto", "always", "hidden"],
+	});
+	insertAfter(items, "fullscreen-scrollbar", {
 		id: "editor-padding",
 		label: "Editor padding",
 		description: "Horizontal padding for input editor (0-3)",

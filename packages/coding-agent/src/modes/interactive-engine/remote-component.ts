@@ -15,14 +15,27 @@ interface MountedRemoteComponent {
 	widgetKey?: string;
 }
 
+/**
+ * A stalled engine must not make fullscreen input wait forever. A timed-out
+ * reply is treated as unhandled and lets the viewport process the key.
+ */
+export const REMOTE_INPUT_REPLY_TIMEOUT_MS = 250;
+
+interface PendingInput {
+	resolve: (handled: boolean | undefined) => void;
+	timer: ReturnType<typeof setTimeout>;
+}
+
 class RemoteComponent implements Component {
 	wantsKeyRelease = true;
 	private lines = ["Loading remote component…"];
 	private width = 0;
 	private requestId = 0;
+	private inputRequestId = 0;
 	private appliedRequestId = 0;
 	private dirty = true;
 	private disposed = false;
+	private readonly pendingInputs = new Map<number, PendingInput>();
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
@@ -61,9 +74,24 @@ class RemoteComponent implements Component {
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
-	handleInput(data: string): void {
-		if (this.disposed) return;
-		this.runtime.sendEngineCommand({ type: "engine_custom_input", componentId: this.componentId, data });
+	handleInput(data: string): Promise<boolean | undefined> {
+		if (this.disposed) return Promise.resolve(undefined);
+		const requestId = ++this.inputRequestId;
+		const result = new Promise<boolean | undefined>((resolve) => {
+			const timer = setTimeout(() => this.resolveInput(requestId, false), REMOTE_INPUT_REPLY_TIMEOUT_MS);
+			timer.unref?.();
+			this.pendingInputs.set(requestId, { resolve, timer });
+		});
+		try {
+			this.runtime.sendEngineCommand({
+				type: "engine_custom_input",
+				componentId: this.componentId,
+				requestId,
+				data,
+			});
+		} catch {
+			this.resolveInput(requestId, false);
+		}
 		// Engine commands are delivered in order, so a frame requested now is
 		// rendered by the child only AFTER it has applied this input. Pipelining
 		// the request keeps keypress latency at a single round trip and repaints
@@ -71,6 +99,15 @@ class RemoteComponent implements Component {
 		// child-side invalidate (or an unrelated refresh) to trigger a frame.
 		this.dirty = true;
 		this.requestRender();
+		return result;
+	}
+
+	resolveInput(requestId: number, handled: boolean | undefined): void {
+		const pending = this.pendingInputs.get(requestId);
+		if (!pending) return;
+		this.pendingInputs.delete(requestId);
+		clearTimeout(pending.timer);
+		pending.resolve(handled);
 	}
 
 	invalidate(): void {
@@ -99,6 +136,7 @@ class RemoteComponent implements Component {
 	dispose(notifyEngine = true): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		if (notifyEngine)
 			this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
 	}
@@ -118,18 +156,32 @@ function hostTerminal(tui: TUI): { write(data: string): void } {
 	return typeof terminal?.write === "function" ? (terminal as { write(data: string): void }) : { write: () => {} };
 }
 
+export interface TuiRendererLifecycle {
+	isFullscreen(): boolean;
+	onRendererReplaced(listener: () => void): () => void;
+}
+
 export class RemoteComponentController {
 	private readonly mounted = new Map<string, MountedRemoteComponent>();
 	private readonly unsubscribe: () => void;
 	private readonly unsubscribeGenerationEnded: () => void;
-	private readonly terminalModes = new TerminalModeController();
+	private readonly terminalModes: TerminalModeController;
+	private readonly unsubscribeTuiRendererReplaced: () => void;
 
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
 
-	constructor(runtime: IsolatedInteractiveRuntime, ui: ExtensionUIContext) {
+	constructor(
+		runtime: IsolatedInteractiveRuntime,
+		ui: ExtensionUIContext,
+		tuiRendererLifecycle: TuiRendererLifecycle,
+	) {
 		this.runtime = runtime;
 		this.ui = ui;
+		this.terminalModes = new TerminalModeController(() => tuiRendererLifecycle.isFullscreen());
+		this.unsubscribeTuiRendererReplaced = tuiRendererLifecycle.onRendererReplaced(() =>
+			this.terminalModes.rebindTui(),
+		);
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
 		// Teardown is driven by engine death rather than the NEXT generation's
 		// `engine_ready`, so a crash with no restart, or a hung/failed restart,
@@ -138,6 +190,7 @@ export class RemoteComponentController {
 	}
 
 	dispose(): void {
+		this.unsubscribeTuiRendererReplaced();
 		this.unsubscribe();
 		this.unsubscribeGenerationEnded();
 		this.disposeAll("host-shutdown");
@@ -246,6 +299,9 @@ export class RemoteComponentController {
 			case "engine_custom_frame":
 				this.mounted.get(message.componentId)?.component.applyFrame(message.requestId, message.lines);
 				break;
+			case "engine_custom_input_result":
+				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);
+				break;
 			case "engine_custom_invalidate":
 				this.mounted.get(message.componentId)?.component.requestRemoteRender();
 				break;
@@ -328,7 +384,8 @@ export class RemoteComponentController {
 				const record = this.mounted.get(componentId);
 				if (!record) return;
 				this.mounted.delete(componentId);
-				if (!record.engineDone) record.component.dispose();
+				if (record.engineDone) record.component.dispose(false);
+				else record.component.dispose();
 			});
 	}
 

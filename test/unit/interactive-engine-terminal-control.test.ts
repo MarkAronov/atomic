@@ -43,6 +43,7 @@ import {
 import { sleep } from "../helpers/runtime.js";
 
 const WHEEL_UP = "\x1b[<64;10;10M";
+const isRegularTui = (): boolean => false;
 
 /** The child's RemoteTerminal augments pi-tui's Terminal with these setters. */
 interface RemoteTerm {
@@ -71,12 +72,13 @@ interface Bridge {
 	readonly closeOrder: string[];
 	readonly mounts: HostMount[];
 	focus: "editor" | "inline" | "overlay";
+	replaceTuiMode(fullscreen: boolean): void;
 	emitEngineReady(pid: number): void;
 	/** Publish the host-local generation-death event (see engine-generation.ts). */
 	emitGenerationEnded(generation: number): void;
 }
 
-function makeBridge(): Bridge {
+function makeBridge(options: { fullscreen?: boolean } = {}): Bridge {
 	const engineListeners: Array<(m: InteractiveEngineMessage) => void> = [];
 	const hostWrites: string[] = [];
 	const hostMessages: InteractiveEngineMessage[] = [];
@@ -85,6 +87,8 @@ function makeBridge(): Bridge {
 	const closeOrder: string[] = [];
 	const generationEndedListeners: Array<(event: InteractiveEngineGenerationEnded) => void> = [];
 	const bridge = { focus: "editor" } as Bridge;
+	let fullscreen = options.fullscreen === true;
+	const tuiRendererListeners = new Set<() => void>();
 
 	const hostTerminal = { rows: 40, columns: 100, write: (data: string) => hostWrites.push(data) };
 
@@ -171,7 +175,13 @@ function makeBridge(): Bridge {
 			}),
 	} as unknown as ExtensionUIContext;
 
-	const controller = new RemoteComponentController(runtime, ui);
+	const controller = new RemoteComponentController(runtime, ui, {
+		isFullscreen: () => fullscreen,
+		onRendererReplaced: (listener) => {
+			tuiRendererListeners.add(listener);
+			return () => tuiRendererListeners.delete(listener);
+		},
+	});
 	bridge.emitEngineReady = (pid: number) => {
 		for (const listener of [...engineListeners]) {
 			listener({ type: "engine_ready", protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid });
@@ -186,6 +196,10 @@ function makeBridge(): Bridge {
 				expected: false,
 			});
 		}
+	};
+	bridge.replaceTuiMode = (nextFullscreen: boolean) => {
+		fullscreen = nextFullscreen;
+		for (const listener of tuiRendererListeners) listener();
 	};
 	return Object.assign(bridge, { child, controller, hostWrites, hostMessages, mounts, childCommands, closeOrder });
 }
@@ -247,7 +261,7 @@ describe("engine_custom_terminal protocol", () => {
 
 describe("TerminalModeController", () => {
 	test("buffers controls received before mount and flushes on mount", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
 		assert.equal(writes.length, 0);
@@ -260,7 +274,7 @@ describe("TerminalModeController", () => {
 	});
 
 	test("resets only the modes a component turned on when it unmounts", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		controller.onMount("c1", {
 			write: (d: string) => {
@@ -278,8 +292,47 @@ describe("TerminalModeController", () => {
 		]);
 	});
 
+	test("holds remote controls while fullscreen owns terminal modes, then reapplies them in regular mode", () => {
+		let fullscreen = true;
+		const controller = new TerminalModeController(() => fullscreen);
+		const writes: string[] = [];
+		controller.onMount("c1", {
+			write: (data: string) => {
+				writes.push(data);
+			},
+		});
+		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.applyControl("c1", { kind: "autowrap", enabled: false });
+		assert.deepEqual(writes, []);
+
+		fullscreen = false;
+		controller.rebindTui();
+		controller.onUnmount("c1");
+
+		assert.deepEqual(writes, [
+			HOST_MOUSE_SCROLL_TRACKING_ON,
+			HOST_TERMINAL_AUTOWRAP_OFF,
+			HOST_MOUSE_SCROLL_TRACKING_OFF,
+			HOST_TERMINAL_AUTOWRAP_ON,
+		]);
+	});
+
+	test("writes a shared mode only when its regular-owner aggregate changes", () => {
+		const controller = new TerminalModeController(isRegularTui);
+		const writes: string[] = [];
+		const terminal = { write: (data: string) => writes.push(data) };
+		controller.onMount("first", terminal);
+		controller.onMount("second", terminal);
+		controller.applyControl("first", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.applyControl("second", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.onUnmount("first");
+		controller.onUnmount("second");
+
+		assert.deepEqual(writes, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
+	});
+
 	test("ignores default-restoring controls from unmounted/stale components", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		// No state yet; a stray "disable" must not create or apply anything.
 		controller.applyControl("stale", { kind: "mouse-scroll-tracking", enabled: false });
@@ -293,7 +346,7 @@ describe("TerminalModeController", () => {
 	});
 
 	test("resetAll restores every active mode and clears state", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		controller.onMount("c1", {
 			write: (d: string) => {
@@ -345,15 +398,46 @@ describe("isolated overlay mouse bridge (source-path)", () => {
 		const openIndex = bridge.hostMessages.indexOf(overlayOpen);
 		assert.ok(doneIndex !== -1 && doneIndex < openIndex, "picker done must precede overlay open");
 
-		// Host focused the fullscreen overlay and enabled mouse reporting on the TTY.
+		// Host focused the overlay and enabled mouse reporting on the TTY.
 		assert.equal(bridge.focus, "overlay");
 		assert.equal(overlayMount(bridge).focused, true);
 		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
 
 		// 4. A mouse wheel gesture reaches the child graph's handleInput.
 		overlayMount(bridge).component.handleInput?.(WHEEL_UP);
+
 		await sleep(0);
 		assert.deepEqual(graphInputs, [WHEEL_UP]);
+
+		bridge.controller.dispose();
+	});
+
+	test("fullscreen keeps remote terminal controls quiet and reapplies them after a renderer switch", async () => {
+		const bridge = makeBridge({ fullscreen: true });
+		let done!: (result: unknown) => void;
+		void bridge.child.custom(
+			(_tui, _t, _k, complete) => {
+				done = complete as (result: unknown) => void;
+				remoteTerm(_tui).setMouseScrollTracking?.(true);
+				remoteTerm(_tui).setAutowrap?.(false);
+				return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
+			},
+			{ overlay: true },
+		);
+		await sleep(0);
+		assert.deepEqual(bridge.hostWrites, []);
+
+		bridge.replaceTuiMode(false);
+		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_TERMINAL_AUTOWRAP_OFF]);
+
+		done(undefined);
+		await sleep(0);
+		assert.deepEqual(bridge.hostWrites, [
+			HOST_MOUSE_SCROLL_TRACKING_ON,
+			HOST_TERMINAL_AUTOWRAP_OFF,
+			HOST_MOUSE_SCROLL_TRACKING_OFF,
+			HOST_TERMINAL_AUTOWRAP_ON,
+		]);
 
 		bridge.controller.dispose();
 	});

@@ -230,10 +230,13 @@ For raw credential exports, stdout is empty on every non-zero exit but one. Once
 | Flag | Description |
 |------|-------------|
 | default | Interactive mode |
+| `--tui-mode <mode>` | Experimental interactive layout: `regular` (default) or `fullscreen`; `/settings` can switch it while Atomic runs |
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines; see [JSON mode](/json) |
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
+
+In `fullscreen` mode, the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Use `regular` to scroll those overlays with a mouse or trackpad.
 
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 
