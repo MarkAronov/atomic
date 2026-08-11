@@ -37,6 +37,14 @@
 - Fixed a stale automatic post-compaction retry resuming after a manual `/compact` finished during the continuation grace period.
 - Fixed a short transcript with repeated below-cap truncations retrying compaction more than once when no compaction boundary could be made, while preserving load-bearing recovery for a later actual context overflow.
 - Fixed `ChatSessionHost` leaving queued prompts stuck when compaction was cancelled or failed; queues now drain after every non-mid-turn compaction completion.
+- Fixed malformed package-manifest resource fields that could block valid resources or crash startup ([#7187](https://github.com/earendil-works/pi/issues/7187)).
+- Fixed Git package updates left incomplete after `git clean` fails, repairing missing dependencies and retrying cleanup on the next update ([#7570](https://github.com/earendil-works/pi/issues/7570)).
+- Retried transient management requests for explicit version checks, remote catalogs, managed-tool downloads, and self updates without multiplying the overall timeout budget ([#7632](https://github.com/earendil-works/pi/issues/7632)).
+- Fixed Windows fallback `find` glob patterns with paths returning no results when `fd` uses native separators ([#6817](https://github.com/earendil-works/pi/issues/6817)).
+- Fixed `find` results at filesystem roots, including POSIX `/` and Windows drive roots, so paths keep their first segment, directory matches use one trailing slash, and POSIX filenames ending in a backslash remain literal ([#6104](https://github.com/earendil-works/pi/issues/6104), [#7569](https://github.com/earendil-works/pi/pull/7569)).
+- Fixed Git Bash, MSYS, Cygwin, and WSL drive paths resolving against the current Windows drive instead of their native drive ([#7064](https://github.com/earendil-works/pi/issues/7064), [#7547](https://github.com/earendil-works/pi/issues/7547)).
+- Fixed linked project session directories being omitted from the session picker ([#7552](https://github.com/earendil-works/pi/issues/7552)).
+- Fixed standalone x64 binaries failing to start on pre-Haswell CPUs that lack AVX2/BMI2 by using Bun's baseline target, including musl archives ([#7390](https://github.com/earendil-works/pi/issues/7390)).
 
 ### Removed
 
