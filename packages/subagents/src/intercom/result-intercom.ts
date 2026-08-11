@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import {
 	type Details,
 	type IntercomEventBus,
@@ -326,15 +327,26 @@ export async function deliverSubagentIntercomMessageEvent(
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
-			unsubscribe?.();
+			try {
+				unsubscribe?.();
+			} catch (error) {
+				if (!isStaleExtensionContextError(error)) throw error;
+				// Stale event-bus cleanup must not change the delivery result.
+			}
 			resolve(delivered);
 		};
-		unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
-			if (!data || typeof data !== "object") return;
-			const delivery = data as { requestId?: unknown; delivered?: unknown };
-			if (delivery.requestId !== requestId) return;
-			finish(delivery.delivered === true);
-		});
+		try {
+			unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
+				if (!data || typeof data !== "object") return;
+				const delivery = data as { requestId?: unknown; delivered?: unknown };
+				if (delivery.requestId !== requestId) return;
+				finish(delivery.delivered === true);
+			});
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			finish(false);
+			return;
+		}
 		if (timeoutMs !== false) timer = setTimeout(() => finish(false), timeoutMs);
 		try {
 			events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { ...extra, to, message, requestId });

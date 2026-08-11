@@ -7,6 +7,7 @@
  * cross-ref: spec §5.10, RFC §8.1 Phase G
  */
 
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type { NoticeLevel } from "../shared/store-types.js";
 import type { IntercomControlCallbacks, IntercomControlPayload } from "./result-intercom.js";
@@ -90,12 +91,17 @@ export function buildIntercomCallbacks(deps: IntercomRoutingDeps): IntercomContr
 					? await confirm("Subagent needs decision", payload.message).catch(() => false)
 					: false;
 
-			emit?.("subagent:control-intercom:response", {
-				requestId: payload.requestId ?? "",
-				runId: payload.runId ?? "",
-				stageId: payload.stageId ?? "",
-				accepted,
-			});
+			try {
+				emit?.("subagent:control-intercom:response", {
+					requestId: payload.requestId ?? "",
+					runId: payload.runId ?? "",
+					stageId: payload.stageId ?? "",
+					accepted,
+				});
+			} catch (error) {
+				if (!isStaleExtensionContextError(error)) throw error;
+				// The decision can finish after the workflow extension reloads.
+			}
 
 			store.ackNotice(noticeId);
 		},

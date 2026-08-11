@@ -14,9 +14,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Updated the Ralph research stage model configuration. The primary model moves from `openai-codex/gpt-5.6-luna:max` to `anthropic/claude-opus-5:high`, and the fallback chain is rebuilt around high/xhigh thinking levels: GPT-5.6 Sol at `xhigh` replaces the Luna variants, Claude Fable 5 and Claude Opus 4.8 step up from `low`/`medium` to `high`, GPT-5.5 and GLM-5.2 step up to `xhigh`, and Kimi K3 (`kimi-coding`, `moonshotai`, `moonshotai-cn`, and OpenRouter) plus `openrouter/sakana/fugu-ultra:high` join the chain.
 
+- Rebuilt the workflow graph overlay on pi-tui 0.84.1's `VStack` and `ScrollView` layout primitives. The graph body now adapts to terminal height and resize, supports vertical wheel scrolling and a draggable scrollbar, and keeps wide-graph horizontal panning and existing prompt/navigation key handling ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
+
+- Workflow command, worktree Git/setup-hook, and Playwright CLI subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
+
 ### Fixed
 
+- Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
+
+- Fixed switcher wheel input scrolling an obscured graph and the scrollbar covering the final graph column; overflow now reserves its scrollbar column and the switcher owns wheel selection ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
+- Restored natural graph geometry for unhosted overlays by removing the fixed-height fallback and kept pi-tui's layout metadata aligned with sparse, deeply scrolled content, so large graphs track their natural geometry without corrupting OSC-8 rows ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
+
 - Fixed the inline workflow form editor not inheriting the host's `autocompleteMaxVisible` setting when Atomic installs it as a custom editor.
+- Fixed late workflow messages and MCP scope cleanup that finish after an extension reload. Stale event-bus calls now no-op instead of throwing, while active routes keep their normal fallback behavior.
+- Fixed workflow stale-context guards by consuming the host's exported predicate instead of copying its error-message marker.
 
 - Fixed the `DISPATCHED` confirmation panel being torn apart by any workflow input containing a newline. Input values were truncated by visible width, which a control character does not have, so an embedded newline survived truncation and emitted extra physical lines that no border ever wrapped — the box was destroyed from that row down. Multi-line inputs are ordinary, so this fired for most real launches: a `prompt` or an `acceptance_criteria` block reliably reproduced it. String values and the object/array JSON projection now collapse control characters, `U+2028`, and `U+2029` to single spaces before truncation, so a run card stays one row per value. `U+2028`/`U+2029` are included because `JSON.stringify` does not escape them and some terminals still break lines on them. As a side effect, escape sequences in an input value can no longer inject ANSI styling into the chat surface.
 - Fixed workflow stages being unable to use the `subagent` tool at all. The stage policy set `managementActions: "full"` and `fanoutAuthorized: false` together, which contradict: stages could neither delegate nor, because of the companion subagents defect, run read-only management such as `subagent list`. Workflow stages are top-level sessions rather than subagent children, so the policy now sets `fanoutAuthorized: true`, restoring the delegation the workflow docs already describe. Nesting remains bounded by the typed in-process depth policy and Rust admission’s five-level ceiling ([#2220](https://github.com/bastani-inc/atomic/pull/2220), regression from [#2205](https://github.com/bastani-inc/atomic/pull/2205)).

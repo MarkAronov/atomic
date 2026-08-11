@@ -2,7 +2,7 @@
  * Subagent completion notifications.
  */
 
-import type { ExtensionAPI } from "@bastani/atomic";
+import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -134,13 +134,6 @@ async function dispatchFallback(
 export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const registry = getNotifyRegistry();
 	const previous = registry.get(pi);
-	if (previous) {
-		try {
-			previous.unsubscribe();
-		} catch {
-			// Best effort cleanup for stale handlers from an older reload.
-		}
-	}
 	const seen = getNotifySeen(pi);
 	const ttlMs = 10 * 60 * 1000;
 
@@ -166,24 +159,35 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		const terminalId = result.notificationId?.startsWith("completion-notify-")
 			? result.notificationId.slice("completion-notify-".length)
 			: result.notificationId;
+		let dispatchStarted = false;
+		const barrierDispatch = dispatch
+			? (prefix: TerminalPreludeMessage[]) => {
+					dispatchStarted = true;
+					return dispatch(prefix);
+				}
+			: undefined;
 		const payload = {
 			runId,
 			...(terminalId ? { terminalId } : {}),
 			terminalAt: Number.isFinite(result.timestamp) ? result.timestamp : Date.now(),
 			source: "background-notify" as const,
 			sourceSessionTargets,
-			...(dispatch ? { dispatch } : {}),
+			...(barrierDispatch ? { dispatch: barrierDispatch } : {}),
 		};
 		Object.defineProperty(payload, "terminalOwner", { value: pi });
-		pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+		try {
+			pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+		} catch (error) {
+			if (!isStaleExtensionContextError(error) || dispatchStarted) throw error;
+		}
 		const globalHandler = (globalThis as Record<string, unknown>).__atomicTerminalOrderingBarrierHandler;
 		if (typeof globalHandler === "function") (globalHandler as (value: unknown) => void)(payload);
 		return (payload as typeof payload & { completion?: Promise<void> }).completion;
 	};
 	const inFlight = new Map<string, Promise<void>>();
-	let registration: NotifyRegistration;
+	let registration: NotifyRegistration | undefined;
 	const handleComplete = (data: unknown): void => {
-		if (registry.get(pi) !== registration) return;
+		if (!registration || registry.get(pi) !== registration) return;
 		const result = data as SubagentResult & Partial<CompletionNotificationEnvelope>;
 		const now = Date.now();
 		const key = result.notificationId
@@ -308,13 +312,32 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			fail(error);
 		}
 	};
-
-	const unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	let unsubscribe: () => void;
+	try {
+		unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// A stale API cannot accept a new subscription; keep the prior one usable.
+		return () => {};
+	}
 	registration = { unsubscribe };
 	registry.set(pi, registration);
+	if (previous) {
+		try {
+			previous.unsubscribe();
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			// The old handler is inert because the registry now belongs to this registration.
+		}
+	}
 	return () => {
-		if (registry.get(pi) !== registration) return;
+		if (!registration || registry.get(pi) !== registration) return;
 		registry.delete(pi);
-		unsubscribe();
+		try {
+			unsubscribe();
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			// Stale event-bus cleanup is best effort.
+		}
 	};
 }

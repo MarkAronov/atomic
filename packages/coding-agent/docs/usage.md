@@ -108,11 +108,13 @@ See [Sessions](/sessions) and [Compaction](/compaction) for details.
 
 ## Context Files
 
-Atomic loads `AGENTS.md` or `CLAUDE.md` at startup from:
+Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` at startup from:
 
-- `~/.atomic/agent/AGENTS.md` for global instructions
+- `~/.atomic/agent/` for global instructions (legacy `~/.pi/agent/` also works)
 - parent directories, walking up from the current working directory
 - the current directory
+
+If a directory contains `AGENTS.override.md`, Atomic uses it instead of that directory's `AGENTS.md` or `CLAUDE.md`. Context files from other directories still layer normally.
 
 Use context files for project conventions, commands, safety rules, and preferences. Disable loading with `--no-context-files` or `-nc`.
 
@@ -295,14 +297,14 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load an extension from path, npm, or git; repeatable |
-| `--no-extensions` | Disable extension discovery |
+| `--no-extensions`, `-ne` | Disable extension discovery |
 | `--skill <path>` | Load a skill; repeatable |
-| `--no-skills` | Disable skill discovery |
+| `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load a prompt template; repeatable |
-| `--no-prompt-templates` | Disable prompt template discovery |
+| `--no-prompt-templates`, `-np` | Disable prompt template discovery |
 | `--theme <path>` | Load a theme; repeatable |
 | `--no-themes` | Disable theme discovery |
-| `--no-context-files`, `-nc` | Disable `AGENTS.md` and `CLAUDE.md` discovery |
+| `--no-context-files`, `-nc` | Disable context-file discovery and loading |
 
 Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings. Example:
 
@@ -316,6 +318,7 @@ atomic --no-extensions -e ./my-extension.ts
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
 | `--append-system-prompt <text>` | Append to system prompt |
+| `--offline` | Disable startup network operations, including update checks, package updates, and telemetry |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
@@ -362,6 +365,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 
 | Variable | Description |
 |----------|-------------|
+| `AI_AGENT` | Set to `atomic` by the CLI, RPC, and compiled binary entry points and in every Atomic-owned child-process environment so generic tooling can identify Atomic processes; child environments override caller-supplied values without mutating the caller's environment object |
 | `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
@@ -371,6 +375,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_TELEMETRY` | Override install/update telemetry: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks |
 | `NODE_COMPILE_CACHE` | Override the directory for Node's persistent compile cache, which Atomic enables automatically on Node >= 22.8 to speed up startup (most noticeable on Windows). Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported |
+| `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
 Every foreground or background bash execution receives one execution-time snapshot of the active session:

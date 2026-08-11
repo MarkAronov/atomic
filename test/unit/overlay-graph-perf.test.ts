@@ -8,6 +8,7 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphCanvas } from "../../packages/workflows/src/tui/graph-canvas.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { NODE_H } from "../../packages/workflows/src/tui/layout.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
 
@@ -115,11 +116,11 @@ class InstrumentedGraphView extends GraphView {
 	}
 
 	bodyRowsForTest(): number {
-		return this._overlayBodyRows(this._overlayPanelLineCount());
+		return graphLayoutBodyRows(this._overlayFrameHeight());
 	}
 
 	graphScrollOffsetForTest(): number {
-		return this.graphScrollOffset;
+		return this._graphScrollTop();
 	}
 
 	countRenderReadsForTest(): void {

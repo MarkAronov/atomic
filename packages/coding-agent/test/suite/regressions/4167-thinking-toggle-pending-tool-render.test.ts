@@ -43,7 +43,10 @@ type RenderSessionContextThis = {
 		getImageWidthCells(): number;
 	};
 	sessionManager: { getCwd(): string };
-	session: { retryAttempt: number; extensionRunner: { getMessageRenderer(customType: string): undefined } };
+	session: {
+		retryAttempt: number;
+		extensionRunner: { getMarkdownTransformers(): []; getMessageRenderer(customType: string): undefined };
+	};
 	hideThinkingBlock: boolean;
 	hiddenThinkingLabel: string;
 	toolOutputExpanded: boolean;
@@ -51,6 +54,9 @@ type RenderSessionContextThis = {
 	editor: { addToHistory(text: string): void };
 	updateEditorBorderColor(): void;
 	getMarkdownThemeWithSettings(): ReturnType<typeof getMarkdownTheme>;
+	mermaidMarkdownTransformer: (markdown: string) => string;
+	mermaidMarkdownTransformerMode: "streaming";
+	getMarkdownTransformers(): readonly ((markdown: string) => string)[];
 	getRegisteredToolDefinition(toolName: string): undefined;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	chatMessageRenderOptions(): ChatMessageRenderOptions;
@@ -69,6 +75,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const chatContainer = new Container();
 	const proto = InteractiveMode.prototype as {
 		chatMessageRenderOptions: () => ChatMessageRenderOptions;
+		getMarkdownTransformers: () => readonly ((markdown: string) => string)[];
 		addRenderedChatEntry: (entry: ChatMessageEntry) => Component;
 	};
 	return {
@@ -81,9 +88,14 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		settingsManager: {
 			getShowImages: () => false,
 			getImageWidthCells: () => 60,
+			getMermaidRenderingMode: () => "streaming",
+			getLatexRenderingEnabled: () => true,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
-		session: { retryAttempt: 0, extensionRunner: { getMessageRenderer: () => undefined } },
+		session: {
+			retryAttempt: 0,
+			extensionRunner: { getMarkdownTransformers: () => [], getMessageRenderer: () => undefined },
+		},
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		toolOutputExpanded: false,
@@ -91,6 +103,9 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		editor: { addToHistory: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+		mermaidMarkdownTransformer: (markdown: string) => markdown,
+		mermaidMarkdownTransformerMode: "streaming",
+		getMarkdownTransformers: proto.getMarkdownTransformers,
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
 		chatMessageRenderOptions: proto.chatMessageRenderOptions,
 		addRenderedChatEntry: proto.addRenderedChatEntry,

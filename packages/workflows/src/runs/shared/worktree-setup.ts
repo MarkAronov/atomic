@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 import { runGit, runGitChecked } from "./worktree-git.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -219,6 +220,7 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 		cwd: input.worktreePath,
 		encoding: "utf-8",
 		input: JSON.stringify(input),
+		env: createChildProcessEnvironment(),
 		timeout: hook.timeoutMs,
 		shell: false,
 	});

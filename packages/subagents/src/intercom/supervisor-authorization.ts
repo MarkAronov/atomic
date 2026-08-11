@@ -1,3 +1,4 @@
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { IntercomEventBus } from "../shared/types.ts";
 
 export const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-authorization";
@@ -18,6 +19,12 @@ export async function requestSupervisorAuthorization(
 	const request: { childName: string; completion?: Promise<SupervisorAuthorization> } = {
 		childName: normalizedChildName,
 	};
-	events.emit(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, request);
-	return request.completion ? await request.completion : undefined;
+	try {
+		events.emit(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, request);
+		return request.completion ? await request.completion : undefined;
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// Authorization is advisory when a child outlives its parent runtime.
+		return undefined;
+	}
 }

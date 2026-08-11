@@ -202,6 +202,8 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 			showImages: this.settingsManager.getShowImages(),
 			imageWidthCells: this.settingsManager.getImageWidthCells(),
 			outputPad: this.outputPad,
+			renderLatex: this.settingsManager.getLatexRenderingEnabled(),
+			markdownTransformers: this.getMarkdownTransformers(),
 			getToolDefinition: (toolName: string) => this.getRegisteredToolDefinition(toolName),
 			getCustomMessageRenderer: (customType: string) => this.session.extensionRunner.getMessageRenderer(customType),
 		}),

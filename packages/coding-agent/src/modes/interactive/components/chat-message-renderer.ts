@@ -3,7 +3,7 @@ import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
-import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
+import type { MarkdownTransformer, MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
@@ -51,6 +51,9 @@ export interface ChatMessageRenderOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
+	isStreaming?: boolean;
+	markdownTransformers?: readonly MarkdownTransformer[];
+	renderLatex?: boolean;
 	getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
@@ -220,6 +223,11 @@ export class LiveChatEntriesController {
 	clearPendingTools(): void {
 		this.pendingToolIndexes.clear();
 	}
+
+	isStreamingAssistantEntry(entry: ChatMessageEntry): boolean {
+		return this.streamingAssistantIndex !== undefined && this.entries[this.streamingAssistantIndex] === entry;
+	}
+
 	private handleMessageStart(message: unknown): boolean {
 		if (!isAgentMessageLike(message)) return false;
 		if (message.role === "assistant") {
@@ -415,6 +423,9 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				markdownTheme,
 				options.hiddenThinkingLabel ?? "Thinking...",
 				options.outputPad ?? 1,
+				options.markdownTransformers,
+				options.isStreaming,
+				options.renderLatex,
 			);
 		case "tool": {
 			if (options.createToolComponent) return options.createToolComponent(messageEntry);
@@ -459,6 +470,8 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				markdownTheme,
 				options.toolOutputExpanded ?? false,
 				options.outputPad ?? 1,
+				options.markdownTransformers,
+				options.renderLatex,
 			);
 		case "custom": {
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
@@ -470,12 +483,13 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.getCustomMessageRenderer?.(messageEntry.message.customType),
 				markdownTheme,
 				options.outputPad ?? 1,
+				options.renderLatex,
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
 		case "branchSummary": {
-			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme);
+			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme, options.renderLatex);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
@@ -483,15 +497,24 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 			return new Text(theme.fg("dim", messageEntry.text), 1, 0);
 	}
 }
-function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expanded: boolean, outputPad = 1): Component {
+function userMessageComponent(
+	text: string,
+	markdownTheme: MarkdownTheme,
+	expanded: boolean,
+	outputPad = 1,
+	markdownTransformers: readonly MarkdownTransformer[] = [],
+	renderLatex = true,
+): Component {
 	const skillBlock = parseSkillBlock(text);
-	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad);
+	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad, markdownTransformers, renderLatex);
 	const container = new Container();
-	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme);
+	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex);
 	skillComponent.setExpanded(expanded);
 	container.addChild(skillComponent);
 	if (skillBlock.userMessage) {
-		container.addChild(new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad));
+		container.addChild(
+			new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad, markdownTransformers, renderLatex),
+		);
 	}
 	return container;
 }

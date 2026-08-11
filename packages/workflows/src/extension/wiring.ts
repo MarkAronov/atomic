@@ -21,7 +21,11 @@
  *            pi docs/sdk.md createAgentSession
  */
 
-import type { CreateAgentSessionOptions, DefaultResourceLoaderInheritanceSnapshot } from "@bastani/atomic";
+import {
+	type CreateAgentSessionOptions,
+	type DefaultResourceLoaderInheritanceSnapshot,
+	isStaleExtensionContextError,
+} from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
@@ -285,7 +289,13 @@ function emitLateIntercomRoute(
 		workflowStageId: meta.stageId,
 		workflowStageName: meta.stageName,
 	};
-	pi.events.emit(LATE_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
+	try {
+		pi.events.emit(LATE_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// The captured runtime is gone; do not retry through its stale sendMessage API.
+		return Promise.resolve();
+	}
 	if (!event.handled) return undefined;
 	return event.completion ?? Promise.resolve();
 }
