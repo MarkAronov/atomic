@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createGitEnvironment } from "@bastani/atomic";
+import { createChildProcessEnvironment, createGitEnvironment } from "@bastani/atomic";
 import type { GitResult } from "./worktree-types.js";
 
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -27,7 +27,10 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 	const result = spawnSync("git", plain ? args : gitCommandArgs(args), {
 		cwd,
 		encoding: "utf-8",
-		env: createGitEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" }),
+		env: createGitEnvironment(
+			{ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+			createChildProcessEnvironment(),
+		),
 		timeout: GIT_COMMAND_TIMEOUT_MS,
 	});
 	return {

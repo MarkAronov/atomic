@@ -23,6 +23,7 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, StopReason } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { test } from "vitest";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/branch-summarization.js";
 import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import {
@@ -47,6 +48,7 @@ const STOP_REASON_COVERAGE = {
 	toolUse: true,
 	error: true,
 	aborted: true,
+	deferred: true,
 } satisfies Record<StopReason, true>;
 
 const ALL_STOP_REASONS = Object.keys(STOP_REASON_COVERAGE) as StopReason[];
@@ -76,7 +78,9 @@ test("every streaming partial that crosses a session surface carries the pending
 
 		const assistantReasons = harness.events
 			.filter(
-				(event): event is Extract<RpcEvent, { type: "message_start" | "message_update" | "message_end" }> =>
+				(
+					event,
+				): event is Extract<AgentSessionEvent, { type: "message_start" | "message_update" | "message_end" }> =>
 					(event.type === "message_start" || event.type === "message_update" || event.type === "message_end") &&
 					event.message.role === "assistant",
 			)
@@ -127,8 +131,8 @@ test("a whole pending-carrying turn survives the RPC projection unchanged", asyn
 	}
 });
 
-test("the isolated engine protocol carries a pending message frame at protocol version 2", () => {
-	assert.equal(INTERACTIVE_ENGINE_PROTOCOL_VERSION, 2);
+test("the isolated engine protocol carries a pending message frame at protocol version 3", () => {
+	assert.equal(INTERACTIVE_ENGINE_PROTOCOL_VERSION, 3);
 
 	for (const stopReason of ALL_STOP_REASONS) {
 		const message = JSON.parse(JSON.stringify(assistantWith(stopReason))) as Record<string, unknown>;

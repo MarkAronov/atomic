@@ -10,7 +10,7 @@ import type {
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
-import type { MessageRenderer } from "./message-types.ts";
+import type { MarkdownTransformer, MessageRenderer } from "./message-types.ts";
 import type { ToolDefinition } from "./tool-types.ts";
 
 /** Options for extension UI dialogs. */
@@ -44,6 +44,11 @@ export interface WorkingIndicatorOptions {
 /** Wrap the current autocomplete provider with additional behavior. */
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
+/** Component returned by `ctx.ui.custom()`. Input handlers must report whether they consumed the key. */
+export type ExtensionCustomComponent = Omit<Component, "handleInput"> & {
+	handleInput?: (data: string) => boolean | undefined | Promise<boolean | undefined>;
+	dispose?(): void;
+};
 
 export interface ChatRenderSettings {
 	hideThinkingBlock: boolean;
@@ -51,6 +56,8 @@ export interface ChatRenderSettings {
 	toolOutputExpanded: boolean;
 	showImages: boolean;
 	imageWidthCells: number;
+	markdownTransformers: readonly MarkdownTransformer[];
+	renderLatex?: boolean;
 	getToolDefinition(toolName: string): ToolDefinition | undefined;
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
 }
@@ -237,7 +244,7 @@ export interface ExtensionUIContext {
 			theme: Theme,
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
-		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+		) => ExtensionCustomComponent | Promise<ExtensionCustomComponent>,
 		options?: {
 			overlay?: boolean;
 			/** Keep host inline custom UI pending in the background while this overlay is visible. */

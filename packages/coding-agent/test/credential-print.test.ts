@@ -12,20 +12,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
 import { ModelsError } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
-import type { Args } from "../src/cli/args.ts";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { type Args, parseArgs } from "../src/cli/args.ts";
 import {
+	AuthCommandError,
+	isAuthCommandHelp,
+	parseAuthCommand,
+	printAuthCommandHelp,
+} from "../src/cli/auth-command.ts";
+import {
+	type CredentialJsonFields,
 	CredentialPrintError,
 	type CredentialPrintErrorCode,
 	classifyOAuthFailure,
 	DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS,
 	EXIT_CODES,
 	emitCredential,
-	isCredentialPrintHelp,
 	OAUTH_EXPIRES_TOO_SOON_PHRASE,
 	OAUTH_REFRESH_FAILED_PHRASE,
-	parseCredentialPrintCommand,
-	printCredentialPrintHelp,
 	resolveCredentialForPrint,
 	Secret,
 	STDOUT_EMPTY_ON_EXIT,
@@ -43,11 +47,13 @@ import { bunExecutable, cliPath, removeTempDirs, runCliProcess } from "./cli-tes
  */
 const REAL_CLI_SUITE_TIMEOUT_MS = 120_000;
 
+const tempRoot = mkdtempSync(join(tmpdir(), "atomic-credential-print-suite-"));
 const tempDirs: string[] = [];
 afterEach(() => removeTempDirs(tempDirs));
+afterAll(() => removeTempDirs([tempRoot]));
 
 function agentDirWith(credentials: Record<string, unknown>): string {
-	const root = mkdtempSync(join(tmpdir(), "atomic-credential-print-"));
+	const root = mkdtempSync(join(tempRoot, "case-"));
 	tempDirs.push(root);
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir, { recursive: true });
@@ -183,7 +189,7 @@ interface SecretRuntimeProbe {
  * probe is a real child rather than a shim.
  */
 function runSecretProbeUnderBun(value: string): SecretRuntimeProbe {
-	const root = mkdtempSync(join(tmpdir(), "atomic-secret-probe-"));
+	const root = mkdtempSync(join(tempRoot, "secret-probe-"));
 	tempDirs.push(root);
 	const modulePath = resolve(import.meta.dirname, "..", "src", "cli", "credential-print.ts");
 	const probePath = join(root, "secret-probe.ts");
@@ -320,6 +326,43 @@ describe("emitCredential", () => {
 		});
 	}
 
+	it("allows only readiness fields in a credential JSON envelope", async () => {
+		await withStubbedStdout(
+			() => undefined,
+			async (written) => {
+				const fields = {
+					status: "ready",
+					provider: "anthropic",
+					authType: "api_key",
+					diagnostic: "must-not-reach-stdout",
+				};
+				await emitCredential(new Secret("credential-value"), fields);
+
+				expect(JSON.parse(written.join(""))).toEqual({
+					status: "ready",
+					provider: "anthropic",
+					authType: "api_key",
+					credentials: "credential-value",
+				});
+			},
+		);
+	});
+
+	it("validates a JSON envelope before consuming its credential", async () => {
+		await withStubbedStdout(
+			() => undefined,
+			async (written) => {
+				const secret = new Secret("credential-value");
+				await expect(
+					emitCredential(secret, { status: undefined, provider: "anthropic" } as unknown as CredentialJsonFields),
+				).rejects.toThrow("Invalid credential JSON fields");
+
+				await emitCredential(secret, undefined);
+				expect(written.join("")).toBe("credential-value\n");
+			},
+		);
+	});
+
 	it("a post-write drain failure still exits zero with the credential on stdout", async () => {
 		const reported: string[] = [];
 		const originalConsoleError = console.error;
@@ -336,7 +379,7 @@ describe("emitCredential", () => {
 				// exposes.
 				(text) => (text.length === 0 ? new Error("EPIPE on the trailing flush") : undefined),
 				async (written) => {
-					await expect(emitCredential(new Secret("sk-x"))).resolves.toBeUndefined();
+					await expect(emitCredential(new Secret("sk-x"), undefined)).resolves.toBeUndefined();
 
 					expect(written).toEqual(["sk-x\n"]);
 					// Once those bytes are on stdout the command has succeeded. A
@@ -379,7 +422,7 @@ describe("emitCredential", () => {
 		}> = [
 			{
 				code: "Usage",
-				run: async () => parseCredentialPrintCommand(["auth", "print-everything"]),
+				run: async () => validateCredentialPrintArgs(args()),
 			},
 			{
 				code: "NoCredentialConfigured",
@@ -449,7 +492,7 @@ describe("emitCredential", () => {
 				// happens before a byte can leave. A callback error after the stream
 				// took the chunk is not this, and is covered separately below.
 				onSubmit: (text) => (text.length > 0 ? new Error("stdout destroyed before the write") : undefined),
-				run: () => emitCredential(new Secret("sk-not-emitted")),
+				run: () => emitCredential(new Secret("sk-not-emitted"), undefined),
 			},
 			{
 				code: "CredentialTruncated",
@@ -457,7 +500,7 @@ describe("emitCredential", () => {
 				// recalled, so this is the one code whose stdout is not empty.
 				onWrite: (text) => (text.length > 0 ? new Error("EPIPE after a partial flush") : undefined),
 				flushedOnCallbackError: 3,
-				run: () => emitCredential(new Secret("sk-truncated-value")),
+				run: () => emitCredential(new Secret("sk-truncated-value"), undefined),
 			},
 		];
 
@@ -529,7 +572,7 @@ describe("emitCredential", () => {
 			lines.push(text);
 		};
 		try {
-			printCredentialPrintHelp();
+			printAuthCommandHelp();
 		} finally {
 			console.error = originalError;
 		}
@@ -550,7 +593,7 @@ describe("emitCredential", () => {
 		await withStubbedStdout(
 			() => undefined,
 			async (written) => {
-				const failure = await emitCredential(new Secret("sk-y")).then(
+				const failure = await emitCredential(new Secret("sk-y"), undefined).then(
 					() => undefined,
 					(error: unknown) => error as CredentialPrintError,
 				);
@@ -579,7 +622,7 @@ describe("emitCredential", () => {
 			await withStubbedStdout(
 				(text) => (text.length > 0 ? new Error("EPIPE after the payload was flushed") : undefined),
 				async (written) => {
-					await expect(emitCredential(new Secret("sk-flushed"))).resolves.toBeUndefined();
+					await expect(emitCredential(new Secret("sk-flushed"), undefined)).resolves.toBeUndefined();
 
 					expect(written).toEqual(["sk-flushed\n"]);
 					expect(process.exitCode ?? 0).toBe(0);
@@ -604,7 +647,7 @@ describe("emitCredential", () => {
 		await withStubbedStdout(
 			(text) => (text.length > 0 ? new Error("EPIPE before any byte was flushed") : undefined),
 			async (written) => {
-				const failure = await emitCredential(new Secret("sk-buffered")).then(
+				const failure = await emitCredential(new Secret("sk-buffered"), undefined).then(
 					() => undefined,
 					(error: unknown) => error as CredentialPrintError,
 				);
@@ -620,45 +663,68 @@ describe("emitCredential", () => {
 describe("auth command parsing", () => {
 	it("treats bare auth and its help flags as help", () => {
 		for (const argv of [["auth"], ["auth", "help"], ["auth", "--help"], ["auth", "-h"]]) {
-			expect(isCredentialPrintHelp(argv)).toBe(true);
+			expect(isAuthCommandHelp(argv)).toBe(true);
 		}
-		expect(isCredentialPrintHelp(["auth", "print-api-key"])).toBe(false);
-		expect(isCredentialPrintHelp(["config"])).toBe(false);
+		expect(isAuthCommandHelp(["auth", "check", "--help"])).toBe(true);
+		expect(isAuthCommandHelp(["auth", "check", "--", "--help"])).toBe(false);
+		expect(isAuthCommandHelp(["auth", "print-api-key"])).toBe(false);
+		expect(isAuthCommandHelp(["auth", "print-api-key", "--help"])).toBe(false);
+		expect(isAuthCommandHelp(["config"])).toBe(false);
 	});
 
 	it("ignores argv it does not own", () => {
-		expect(parseCredentialPrintCommand(["--model", "gpt-5.5"])).toBeUndefined();
-		expect(parseCredentialPrintCommand([])).toBeUndefined();
+		expect(parseAuthCommand(["--model", "gpt-5.5"])).toBeUndefined();
+		expect(parseAuthCommand([])).toBeUndefined();
 	});
 
-	it("names both subcommands when the auth subcommand is unknown", () => {
+	it("names every auth subcommand when the command is unknown", () => {
 		try {
-			parseCredentialPrintCommand(["auth", "print-everything"]);
+			parseAuthCommand(["auth", "print-everything"]);
 			expect.unreachable("expected a usage error");
 		} catch (error) {
-			expect(error).toBeInstanceOf(CredentialPrintError);
-			const failure = error as CredentialPrintError;
+			expect(error).toBeInstanceOf(AuthCommandError);
+			const failure = error as AuthCommandError;
 			expect(failure.exitCode).toBe(1);
 			expect(failure.message).toContain("atomic auth print-api-key");
 			expect(failure.message).toContain("atomic auth print-bearer-token");
+			expect(failure.message).toContain("atomic auth check");
 			// Branding seam: upstream's help says `pi`.
 			expect(failure.message).not.toContain("pi auth");
 		}
 	});
 
-	it("rejects --min-expiry for print-api-key rather than ignoring it", () => {
+	it("keeps parse-time exit codes with their auth subcommand", () => {
 		try {
-			parseCredentialPrintCommand(["auth", "print-api-key", "--model", "gpt-5.5", "--min-expiry", "30m"]);
+			parseAuthCommand(["auth", "check", "--min-expiry", "30m"]);
 			expect.unreachable("expected a usage error");
 		} catch (error) {
-			expect((error as CredentialPrintError).exitCode).toBe(1);
-			expect((error as Error).message).toContain("only supported by print-bearer-token");
+			expect(error).toBeInstanceOf(AuthCommandError);
+			expect((error as AuthCommandError).exitCode).toBe(2);
+		}
+	});
+
+	it("rejects --min-expiry for print-api-key in every position", () => {
+		for (const spelling of [
+			["--min-expiry", "30m"],
+			["--min-expiry=30m"],
+			["--", "--min-expiry", "30m"],
+			["--", "--min-expiry=30m"],
+		]) {
+			try {
+				parseAuthCommand(["auth", "print-api-key", "--model", "gpt-5.5", ...spelling]);
+				expect.unreachable("expected a usage error");
+			} catch (error) {
+				expect(error).toBeInstanceOf(AuthCommandError);
+				const failure = error as AuthCommandError;
+				expect(failure.exitCode).toBe(1);
+				expect(failure.message).toContain("only supported by print-bearer-token");
+			}
 		}
 	});
 
 	it("accepts ms, s, m, and h durations and rejects anything else", () => {
 		const parse = (value: string) =>
-			parseCredentialPrintCommand(["auth", "print-bearer-token", "--min-expiry", value])?.minExpiryMs;
+			parseAuthCommand(["auth", "print-bearer-token", "--min-expiry", value])?.minExpiryMs;
 
 		expect(parse("500ms")).toBe(500);
 		expect(parse("45s")).toBe(45_000);
@@ -668,11 +734,11 @@ describe("auth command parsing", () => {
 		for (const bad of ["30", "m", "-5m", "30 minutes", "1d"]) {
 			expect(() => parse(bad)).toThrow("duration such as 30m or 1h");
 		}
-		expect(() => parseCredentialPrintCommand(["auth", "print-bearer-token", "--min-expiry"])).toThrow();
+		expect(() => parseAuthCommand(["auth", "print-bearer-token", "--min-expiry"])).toThrow();
 	});
 
 	it("keeps the remaining flags for the ordinary parser", () => {
-		const command = parseCredentialPrintCommand([
+		const command = parseAuthCommand([
 			"auth",
 			"print-bearer-token",
 			"--model",
@@ -686,6 +752,9 @@ describe("auth command parsing", () => {
 		expect(command).toEqual({
 			kind: "bearer_token",
 			args: ["--model", "gpt-5.5", "--provider", "openai-codex"],
+			json: false,
+			credentials: false,
+			noRefresh: false,
 			minExpiryMs: 3_600_000,
 		});
 	});
@@ -707,9 +776,18 @@ describe("credential print argument validation", () => {
 		expect(() => validateCredentialPrintArgs(args({ model: "m", fileArgs: ["@a.md"] }))).toThrow(
 			"only accepts --provider and --model",
 		);
-		expect(() =>
-			validateCredentialPrintArgs(args({ model: "m", unknownFlags: new Map([["--output", "keys.txt"]]) })),
-		).toThrow("only accepts --provider and --model");
+		const parsed = parseArgs(["--model", "m", "--bogus"]);
+		try {
+			validateCredentialPrintArgs(parsed);
+			expect.unreachable("expected a usage error");
+		} catch (error) {
+			expect(error).toBeInstanceOf(CredentialPrintError);
+			const failure = error as CredentialPrintError;
+			expect(failure.exitCode).toBe(1);
+			expect(failure.message).toBe(
+				"Credential printing only accepts --provider and --model (refused: unknownFlags)",
+			);
+		}
 	});
 
 	it("refuses every flag other than --provider and --model", () => {
@@ -1156,8 +1234,243 @@ describe("atomic auth on the wire", () => {
 			);
 
 			expect(result.code).toBe(0);
+
 			expect(result.stdout).toBe("sk-ant-print-me\n");
 			expect(result.stderr).toBe("");
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"reports readiness without exposing a configured credential",
+		async () => {
+			const key = "command-backed-auth-key";
+			const configuredKey = `!echo ${key}`;
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: configuredKey } });
+
+			const result = await runCliProcess(["auth", "check", "--provider", "anthropic"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("ready\n");
+			expect(result.stdout).not.toContain(key);
+			expect(result.stderr).not.toContain(key);
+
+			const json = await runCliProcess(["auth", "check", "--provider", "anthropic", "--json"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+			expect(json.code).toBe(0);
+			expect(JSON.parse(json.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
+			expect(json.stdout).not.toContain(key);
+			expect(json.stderr).not.toContain(key);
+
+			const model = await runCliProcess(["auth", "check", "--model", "claude-opus-4-5", "--no-refresh", "--json"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+			expect(model.code).toBe(0);
+			expect(JSON.parse(model.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
+			expect(model.stdout).not.toContain(key);
+			expect(model.stderr).not.toContain(key);
+
+			const exported = await runCliProcess(
+				["auth", "check", "--provider", "anthropic", "--no-refresh", "--credentials"],
+				{
+					cwd: agentDir,
+					env: cliEnv(agentDir),
+				},
+			);
+			expect(exported.code).toBe(0);
+			expect(exported.stdout).toBe(`${key}\n`);
+			expect(exported.stdout).not.toContain(configuredKey);
+			expect(exported.stderr).not.toContain(key);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"emits a resolved auth-check credential only when explicitly requested",
+		async () => {
+			const key = "opaque-auth-check-credential-value";
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const defaultCheck = await run(["auth", "check", "--provider", "anthropic", "--json"]);
+			expect(defaultCheck.code).toBe(0);
+			expect(JSON.parse(defaultCheck.stdout)).toEqual({
+				status: "ready",
+				provider: "anthropic",
+				authType: "api_key",
+			});
+			expect(defaultCheck.stdout).not.toContain(key);
+			expect(defaultCheck.stderr).not.toContain(key);
+
+			const exported = await run(["auth", "check", "--provider", "anthropic", "--credentials"]);
+			expect(exported.code).toBe(0);
+			expect(exported.stdout).toBe(`${key}\n`);
+			expect(exported.stderr).not.toContain(key);
+
+			const json = await run(["auth", "check", "--provider", "anthropic", "--credentials", "--json"]);
+			expect(json.code).toBe(0);
+			expect(JSON.parse(json.stdout)).toEqual({
+				status: "ready",
+				provider: "anthropic",
+				authType: "api_key",
+				credentials: key,
+			});
+			expect(json.stderr).not.toContain(key);
+
+			const exactModel = await run(["auth", "check", "--model", "anthropic/claude-opus-4-5", "--credentials"]);
+			expect(exactModel.code).toBe(0);
+			expect(exactModel.stdout).toBe(`${key}\n`);
+			expect(exactModel.stderr).not.toContain(key);
+
+			const notReady = await run(["auth", "check", "--provider", "not-installed", "--credentials"]);
+			expect(notReady.code).toBe(1);
+			expect(notReady.stdout).toBe("");
+			expect(notReady.stderr).toContain("not_ready");
+			expect(notReady.stderr).not.toContain(key);
+
+			const afterTerminator = await run(["auth", "check", "--provider", "anthropic", "--", "--credentials"]);
+			expect(afterTerminator.code).toBe(2);
+			expect(afterTerminator.stdout).toBe("");
+			expect(afterTerminator.stderr).not.toContain(key);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"refuses fuzzy model credential export without exposing any configured key",
+		async () => {
+			const googleKey = "google-fuzzy-export-key";
+			const openRouterKey = "openrouter-fuzzy-export-key";
+			const agentDir = agentDirWith({
+				google: { type: "api_key", key: googleKey },
+				openrouter: { type: "api_key", key: openRouterKey },
+			});
+
+			const result = await runCliProcess(["auth", "check", "--model", "gemini", "--credentials", "--json"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+
+			expect(result.code).toBe(2);
+			expect(JSON.parse(result.stdout)).toMatchObject({ status: "invalid" });
+			for (const stream of [result.stdout, result.stderr]) {
+				expect(stream).not.toContain(googleKey);
+				expect(stream).not.toContain(openRouterKey);
+			}
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"reports expired OAuth credentials as not ready without emitting or rewriting them",
+		async () => {
+			const access = "expired-auth-check-access";
+			const refresh = "expired-auth-check-refresh";
+			const agentDir = agentDirWith({
+				anthropic: { type: "oauth", access, refresh, expires: 1 },
+			});
+			const authPath = join(agentDir, "auth.json");
+			const before = readFileSync(authPath, "utf8");
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const noRefresh = await run(["auth", "check", "--provider", "anthropic", "--no-refresh", "--json"]);
+			expect(noRefresh.code).toBe(1);
+			expect(JSON.parse(noRefresh.stdout)).toEqual({
+				status: "not_ready",
+				provider: "anthropic",
+				reason: "credential_expired",
+			});
+
+			const refreshed = await run(["auth", "check", "--provider", "anthropic", "--json"]);
+			expect(refreshed.code).toBe(1);
+			expect(JSON.parse(refreshed.stdout)).toEqual({
+				status: "not_ready",
+				provider: "anthropic",
+				reason: "credential_not_available",
+			});
+			for (const result of [noRefresh, refreshed]) {
+				expect(result.stdout).not.toContain(access);
+				expect(result.stdout).not.toContain(refresh);
+				expect(result.stderr).not.toContain(access);
+				expect(result.stderr).not.toContain(refresh);
+			}
+			expect(readFileSync(authPath, "utf8")).toBe(before);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"does not export an OAuth credential that cannot meet the no-refresh safety window",
+		async () => {
+			const access = "short-lived-auth-check-access";
+			const refresh = "short-lived-auth-check-refresh";
+			const agentDir = agentDirWith({
+				anthropic: { type: "oauth", access, refresh, expires: Date.now() + 10 * 60_000 },
+			});
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const raw = await run(["auth", "check", "--provider", "anthropic", "--credentials", "--no-refresh"]);
+			expect(raw.code).toBe(1);
+			expect(raw.stdout).toBe("");
+			expect(raw.stderr).toContain("not_ready");
+
+			const json = await run([
+				"auth",
+				"check",
+				"--provider",
+				"anthropic",
+				"--credentials",
+				"--no-refresh",
+				"--json",
+			]);
+			expect(json.code).toBe(1);
+			expect(JSON.parse(json.stdout)).toEqual({
+				status: "not_ready",
+				provider: "anthropic",
+				reason: "credential_not_available",
+			});
+			for (const stream of [raw.stdout, raw.stderr, json.stdout, json.stderr]) {
+				expect(stream).not.toContain(access);
+				expect(stream).not.toContain(refresh);
+			}
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"distinguishes unavailable providers from invalid readiness commands",
+		async () => {
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-auth-check-status" } });
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const missingTarget = await run(["auth", "check"]);
+			expect(missingTarget.code).toBe(2);
+			expect(missingTarget.stdout).toBe("");
+			expect(missingTarget.stderr).toContain("Auth checks require --provider <provider> or --model <model>");
+
+			const unavailable = await run(["auth", "check", "--provider", "not-installed"]);
+			expect(unavailable.code).toBe(1);
+			expect(unavailable.stdout).toBe("not_ready\n");
+
+			const unknownModel = await run(["auth", "check", "--model", "does-not-exist-auth-check"]);
+			expect(unknownModel.stderr).toContain('Model "does-not-exist-auth-check" not found.');
+			expect(unknownModel.code).toBe(2);
+			expect(unknownModel.stdout).toBe("invalid\n");
+
+			const unknownModelJson = await run(["auth", "check", "--model", "does-not-exist-auth-check", "--json"]);
+			expect(unknownModelJson.code).toBe(2);
+			expect(JSON.parse(unknownModelJson.stdout)).toEqual({ status: "invalid", reason: "invalid_state" });
+
+			const unknownOption = await run(["auth", "check", "--provider", "anthropic", "--bogus"]);
+			expect(unknownOption.code).toBe(2);
+			expect(unknownOption.stdout).toBe("");
+			expect(unknownOption.stderr).toContain('Unknown option --bogus for "auth check".');
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
@@ -1176,6 +1489,37 @@ describe("atomic auth on the wire", () => {
 					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic"],
 					{ cwd: agentDir, env: cliEnv(agentDir) },
 				);
+
+				// Bytes on stdout mean the command succeeded.
+				if (result.stdout.length > 0) expect(result.code).toBe(0);
+
+				// And the other direction: a non-zero exit carries no part of the
+				// configured key, not even its first character.
+				if (result.code !== 0) {
+					expect(result.stdout).toBe("");
+					for (let length = 1; length <= key.length; length++) {
+						expect(result.stdout).not.toContain(key.slice(0, length));
+					}
+				}
+			}
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"a failed auth-check credential write never falls back to readiness output",
+		async () => {
+			const key = "sk-ant-print-me";
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+
+			// A genuine race, so run it more than once: the child can lose the
+			// pipe before its write, during it, or after the bytes are already
+			// buffered, and the invariant has to hold on every outcome.
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const result = await runCliWithClosedStdout(["auth", "check", "--provider", "anthropic", "--credentials"], {
+					cwd: agentDir,
+					env: cliEnv(agentDir),
+				});
 
 				// Bytes on stdout mean the command succeeded.
 				if (result.stdout.length > 0) expect(result.code).toBe(0);
@@ -1215,6 +1559,9 @@ describe("atomic auth on the wire", () => {
 			]);
 			expect(minExpiryOnApiKey.code).toBe(1);
 
+			const helpFlag = await run(["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"]);
+			expect(helpFlag.code).toBe(1);
+
 			const noCredential = await run(["auth", "print-api-key", "--model", "not-a-real-model"]);
 			expect(noCredential.code).toBe(2);
 
@@ -1228,7 +1575,7 @@ describe("atomic auth on the wire", () => {
 			]);
 			expect(wrongKind.code).toBe(4);
 
-			for (const result of [unknownSubcommand, missingModel, minExpiryOnApiKey, noCredential, wrongKind]) {
+			for (const result of [unknownSubcommand, missingModel, minExpiryOnApiKey, helpFlag, noCredential, wrongKind]) {
 				expect(result.stdout).toBe("");
 				expect(result.stderr).not.toContain("sk-ant-print-me");
 			}
@@ -1265,12 +1612,15 @@ describe("atomic auth on the wire", () => {
 		async () => {
 			const agentDir = agentDirWith({});
 
-			for (const argv of [["auth"], ["auth", "--help"]]) {
+			for (const argv of [["auth"], ["auth", "--help"], ["auth", "check", "--help"]]) {
 				const result = await runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
 
 				expect(result.code).toBe(0);
 				expect(result.stderr).toContain("atomic auth print-api-key");
 				expect(result.stderr).toContain("atomic auth print-bearer-token");
+				expect(result.stderr).toContain("atomic auth check");
+				expect(result.stderr).toContain("Auth checks require");
+				expect(result.stderr).toContain("--credentials");
 				expect(result.stderr).not.toContain("pi auth");
 				// stdout for this command family is a credential or nothing.
 				expect(result.stdout).toBe("");
@@ -1299,11 +1649,16 @@ describe("atomic auth on the wire", () => {
 	);
 
 	it(
-		"--min-expiry is a usage error for print-api-key in every spelling",
+		"--min-expiry is a usage error for print-api-key in every spelling, including after --",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
 
-			for (const spelling of [["--min-expiry", "30m"], ["--min-expiry=30m"]]) {
+			for (const spelling of [
+				["--min-expiry", "30m"],
+				["--min-expiry=30m"],
+				// It remains an auth option after -- rather than becoming a prompt.
+				["--", "--min-expiry=30m"],
+			]) {
 				const result = await runCliProcess(
 					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic", ...spelling],
 					{ cwd: agentDir, env: cliEnv(agentDir) },
@@ -1311,6 +1666,7 @@ describe("atomic auth on the wire", () => {
 
 				expect(result.code).toBe(1);
 				expect(result.stdout).toBe("");
+				expect(result.stderr).toContain("--min-expiry is only supported by print-bearer-token");
 			}
 
 			// The same two spellings must actually reach the provider on the
@@ -1325,7 +1681,7 @@ describe("atomic auth on the wire", () => {
 				},
 			});
 			for (const spelling of [["--min-expiry", "30m"], ["--min-expiry=30m"]]) {
-				const command = parseCredentialPrintCommand(["auth", "print-bearer-token", ...spelling]);
+				const command = parseAuthCommand(["auth", "print-bearer-token", ...spelling]);
 				await resolveCredentialForPrint(
 					args({ model: "claude-sonnet-4-5", provider: "anthropic" }),
 					runtime,
@@ -1474,6 +1830,18 @@ describe("credential egress chokepoint", () => {
 	/** Names a credential in code, not a word that appears in help text. */
 	const CREDENTIAL_MATERIAL = /secret|credential|api[-_]?key|bearer|access[-_]?token|refresh[-_]?token|\.take\(\)/iu;
 
+	/** Direct and optional property calls that can open a Secret. */
+	const DIRECT_SECRET_TAKE = /(?:\?\.|\.)\s*take\s*\(\s*\)/gu;
+
+	/** Literal computed property calls that can open a Secret. */
+	const COMPUTED_SECRET_TAKE = /\[\s*(?:"take"|'take')\s*\]\s*\(\s*\)/gu;
+
+	/** The only source locations allowed to open a Secret. */
+	const SECRET_TAKE_SITES = [
+		`${EGRESS_MODULE}: credentialPayload: .take()`,
+		`${EGRESS_MODULE}: credentialPayload: .take()`,
+	];
+
 	function callsTo(writer: RegExp, source: string): string[] {
 		const calls: string[] = [];
 		writer.lastIndex = 0;
@@ -1513,10 +1881,11 @@ describe("credential egress chokepoint", () => {
 	 */
 	const RAW_STDOUT_EGRESS = [
 		`cli/credential-print.ts: writeRawStdoutOnce(payload)`,
+		`main.ts: writeRawStdout(\`\${output}\\n\`)`,
 		`modes/interactive-engine/engine-child-liveness.ts: writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity }))`,
 		`modes/interactive/external-editor.ts: process.stdout.write( \`Launching external editor: \${request.command}\\n\${APP_NAME} will resume when the editor exits.\\n\`, )`,
 		`modes/interactive/interactive-process-lifecycle.ts: process.stdout.write(\`\${chalk.dim("To resume this session:")} \${resumeCommand}\\n\`)`,
-		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(event)}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(toJsonEvent(event))}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(header)}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${content.text}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${text}\\n\`)`,
@@ -1544,6 +1913,34 @@ describe("credential egress chokepoint", () => {
 			.sort();
 	}
 
+	function sourceFunctionName(source: string, index: number): string {
+		const declarations = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/gu;
+		let name = "<module>";
+		for (
+			let match = declarations.exec(source.slice(0, index));
+			match;
+			match = declarations.exec(source.slice(0, index))
+		) {
+			name = match[1] ?? name;
+		}
+		return name;
+	}
+	function secretTakeCalls(candidates: ReadonlyArray<{ path: string; source: string }>): string[] {
+		const calls: string[] = [];
+		for (const { path, source } of candidates) {
+			const code = codeOnly(source);
+			DIRECT_SECRET_TAKE.lastIndex = 0;
+			for (let match = DIRECT_SECRET_TAKE.exec(code); match; match = DIRECT_SECRET_TAKE.exec(code)) {
+				calls.push(`${path}: ${sourceFunctionName(code, match.index)}: ${match[0].replace(/\s+/gu, "")}`);
+			}
+			COMPUTED_SECRET_TAKE.lastIndex = 0;
+			for (let match = COMPUTED_SECRET_TAKE.exec(source); match; match = COMPUTED_SECRET_TAKE.exec(source)) {
+				calls.push(`${path}: ${sourceFunctionName(source, match.index)}: ${match[0].replace(/\s+/gu, "")}`);
+			}
+		}
+		return calls.sort();
+	}
+
 	it("finds the door it is guarding", () => {
 		expect(modules.length).toBeGreaterThan(100);
 		expect(modules.map(({ path }) => path)).toContain(EGRESS_MODULE);
@@ -1552,6 +1949,32 @@ describe("credential egress chokepoint", () => {
 
 	it("writes nothing to the real stdout beyond the enumerated set", () => {
 		expect(scan(modules)).toEqual([...RAW_STDOUT_EGRESS].sort());
+	});
+
+	it("opens a Secret only at the enumerated source sites", () => {
+		expect(secretTakeCalls(modules)).toEqual([...SECRET_TAKE_SITES].sort());
+	});
+
+	it("the Secret-opening scan reports direct, optional, and computed third calls", () => {
+		const planted = secretTakeCalls([
+			{
+				path: EGRESS_MODULE,
+				source: `
+					function credentialPayload(secret: Secret) {
+						secret.take();
+						secret?.take();
+						secret["take"]();
+					}
+				`,
+			},
+		]);
+
+		expect(planted).toEqual([
+			`${EGRESS_MODULE}: credentialPayload: .take()`,
+			`${EGRESS_MODULE}: credentialPayload: ?.take()`,
+			`${EGRESS_MODULE}: credentialPayload: ["take"]()`,
+		]);
+		expect(planted).not.toEqual([...SECRET_TAKE_SITES].sort());
 	});
 
 	it("the scan reports a planted second egress", () => {

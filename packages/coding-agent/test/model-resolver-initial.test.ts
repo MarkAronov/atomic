@@ -1,10 +1,16 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { defaultModelPerProvider, findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
+const COPILOT_ENV_KEYS = [
+	"COPILOT_API_TARGET",
+	"GITHUB_COPILOT_BASE_URL",
+	"COPILOT_GITHUB_TOKEN",
+	"GITHUB_SERVER_URL",
+] as const;
 const allModels: Model<"anthropic-messages">[] = [
 	{
 		id: "claude-sonnet-4-5",
@@ -83,6 +89,10 @@ describe("default model selection", () => {
 	});
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
+	});
+	test("Baseten and Qwen Token Plan Individual defaults track current models", () => {
+		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.2");
+		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
 	});
 	test("findInitialModel accepts explicit provider custom model ids", async () => {
 		const registry = {
@@ -262,6 +272,104 @@ describe("default model selection", () => {
 		expect(result.model?.provider).toBe("github-copilot");
 		expect(result.model?.id).toBe("future-copilot-model");
 		expect(result.model?.contextWindow).toBe(400000);
+	});
+	test("keeps missing Copilot account-policy model IDs eligible for session restoration", async () => {
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+
+		expect(getModelRuntime(registry).canRestoreUnknownModel("github-copilot")).toBe(true);
+	});
+	test("restores Individual account policy-fallback Copilot model IDs after runtime refresh", async () => {
+		const previousEnvironment = new Map(COPILOT_ENV_KEYS.map((key) => [key, process.env[key]]));
+		for (const key of COPILOT_ENV_KEYS) delete process.env[key];
+		const policyModelId = "copilot-policy-restoration-probe";
+		const storage = AuthStorage.inMemory({
+			"github-copilot": { type: "oauth", access: "expired-access", refresh: "refresh-token", expires: 0 },
+		});
+		try {
+			const registry = await createInMemoryModelRegistry(storage);
+			const modelRuntime = getModelRuntime(registry);
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+				const url = input.toString();
+				if (url === "https://api.github.com/copilot_internal/v2/token") {
+					return Response.json({
+						token: "tid=test;exp=1;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom",
+						expires_at: Math.floor(Date.now() / 1_000) + 3_600,
+					});
+				}
+				if (url === "https://api.individual.githubcopilot.com/models") {
+					// Individual accounts can report every picker flag as false while their
+					// policies stay enabled, so this catalog is only selectable through the
+					// Individual-host policy fallback.
+					return Response.json({
+						data: [
+							{
+								id: "gpt-5.4",
+								model_picker_enabled: false,
+								policy: { state: "enabled" },
+								capabilities: { supports: { tool_calls: true } },
+							},
+							{
+								id: policyModelId,
+								model_picker_enabled: false,
+								policy: { state: "enabled" },
+								capabilities: { supports: { tool_calls: true } },
+							},
+							{
+								id: "policy-disabled",
+								model_picker_enabled: false,
+								policy: { state: "disabled" },
+								capabilities: { supports: { tool_calls: true } },
+							},
+							{
+								id: "embeddings-only",
+								model_picker_enabled: false,
+								policy: { state: "enabled" },
+								capabilities: { supports: { tool_calls: false } },
+							},
+						],
+					});
+				}
+				if (url.includes("/api/models/providers/")) return new Response("not found", { status: 404 });
+				throw new Error(`Unexpected fetch: ${url}`);
+			});
+
+			const refreshed = await modelRuntime.refresh({ providers: ["github-copilot"], allowNetwork: true });
+			expect(refreshed.errors.size).toBe(0);
+			expect(await storage.read("github-copilot")).toMatchObject({
+				type: "oauth",
+				availableModelIds: ["gpt-5.4", policyModelId],
+			});
+			expect(
+				modelRuntime
+					.getAvailableSnapshot()
+					.filter((model) => model.provider === "github-copilot")
+					.map((model) => model.id),
+			).toEqual(["gpt-5.4"]);
+			expect(modelRuntime.getModel("github-copilot", policyModelId)).toBeUndefined();
+
+			const restored = await restoreModelFromSession(
+				"github-copilot",
+				policyModelId,
+				undefined,
+				false,
+				modelRuntime,
+			);
+			const template = modelRuntime.getModel("github-copilot", "gpt-5.4");
+			expect(restored.fallbackMessage).toBeUndefined();
+			expect(restored.model).toMatchObject({
+				provider: "github-copilot",
+				id: policyModelId,
+				name: policyModelId,
+				contextWindow: template?.contextWindow,
+			});
+		} finally {
+			vi.restoreAllMocks();
+			for (const key of COPILOT_ENV_KEYS) {
+				const value = previousEnvironment.get(key);
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
 	});
 	test("findInitialModel selects ai-gateway default when available", async () => {
 		const aiGatewayModel: Model<"anthropic-messages"> = {

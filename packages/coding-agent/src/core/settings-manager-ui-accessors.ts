@@ -1,7 +1,8 @@
+import type { ScrollViewScrollbar, TuiMode } from "@earendil-works/pi-tui";
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import type { WarningSettings } from "./settings-types.ts";
+import type { MermaidRenderingMode, WarningSettings } from "./settings-types.ts";
 
 interface SettingsManagerUiAccessors {
 	getShowImages(): boolean;
@@ -31,10 +32,18 @@ interface SettingsManagerUiAccessors {
 	getAutocompleteMaxVisible(): number;
 	setAutocompleteMaxVisible(maxVisible: number): void;
 	getCodeBlockIndent(): string;
+	getMermaidRenderingMode(): MermaidRenderingMode;
+	setMermaidRenderingMode(mode: MermaidRenderingMode): void;
+	getLatexRenderingEnabled(): boolean;
+	setLatexRenderingEnabled(enabled: boolean): void;
 	getWarnings(): WarningSettings;
 	setWarnings(warnings: WarningSettings): void;
 	getCodexFastModeSettings(): { chat: boolean; workflow: boolean };
 	setCodexFastModeSettings(settings: Partial<{ chat: boolean; workflow: boolean }>): void;
+	getTuiMode(): TuiMode;
+	setTuiMode(mode: TuiMode): void;
+	getFullscreenScrollbar(): ScrollViewScrollbar;
+	setFullscreenScrollbar(mode: ScrollViewScrollbar): void;
 }
 
 declare module "./settings-manager-core.ts" {
@@ -181,6 +190,29 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		state.save();
 	},
 
+	getTuiMode() {
+		return settingsInternals(this).settings.tuiMode === "fullscreen" ? "fullscreen" : "regular";
+	},
+
+	setTuiMode(mode) {
+		const state = settingsInternals(this);
+		state.globalSettings.tuiMode = mode;
+		state.markModified("tuiMode");
+		state.save();
+	},
+
+	getFullscreenScrollbar() {
+		const mode = settingsInternals(this).settings.fullscreenScrollbar;
+		return mode === "always" || mode === "hidden" ? mode : "auto";
+	},
+
+	setFullscreenScrollbar(mode) {
+		const state = settingsInternals(this);
+		state.globalSettings.fullscreenScrollbar = mode;
+		state.markModified("fullscreenScrollbar");
+		state.save();
+	},
+
 	getEditorPaddingX() {
 		return settingsInternals(this).settings.editorPaddingX ?? 0;
 	},
@@ -216,6 +248,31 @@ const uiAccessors: SettingsManagerUiAccessors = {
 
 	getCodeBlockIndent() {
 		return settingsInternals(this).settings.markdown?.codeBlockIndent ?? "  ";
+	},
+
+	getMermaidRenderingMode() {
+		const mode = settingsInternals(this).settings.markdown?.mermaid;
+		return mode === "off" || mode === "final" ? mode : "streaming";
+	},
+
+	setMermaidRenderingMode(mode) {
+		const state = settingsInternals(this);
+		state.globalSettings.markdown ??= {};
+		state.globalSettings.markdown.mermaid = mode;
+		state.markModified("markdown", "mermaid");
+		state.save();
+	},
+
+	getLatexRenderingEnabled() {
+		return settingsInternals(this).settings.markdown?.latex !== false;
+	},
+
+	setLatexRenderingEnabled(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.markdown ??= {};
+		state.globalSettings.markdown.latex = enabled;
+		state.markModified("markdown", "latex");
+		state.save();
 	},
 
 	getWarnings() {

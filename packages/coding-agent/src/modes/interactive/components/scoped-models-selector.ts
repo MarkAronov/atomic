@@ -72,8 +72,9 @@ interface ModelItem {
 }
 
 export interface ModelsConfig {
-	allModels: Model<Api>[];
+	allModels: readonly Model<Api>[];
 	enabledModelIds: string[] | null;
+	refreshStatus?: string;
 }
 
 export interface ModelsCallbacks {
@@ -110,7 +111,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 	private callbacks: ModelsCallbacks;
 	private maxVisible = 8;
 	private isDirty = false;
-
+	private refreshStatusText?: Text;
 	constructor(config: ModelsConfig, callbacks: ModelsCallbacks) {
 		super();
 		this.callbacks = callbacks;
@@ -142,11 +143,37 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 
 		// Footer hint
 		this.addChild(new Spacer(1));
+		if (config.refreshStatus) {
+			this.refreshStatusText = new Text(theme.fg("muted", `  ${config.refreshStatus}`), 0, 0);
+			this.addChild(this.refreshStatusText);
+		}
 		this.footerText = new Text(this.getFooterText(), 0, 0);
 		this.addChild(this.footerText);
 
 		this.addChild(new DynamicBorder());
 		this.updateList();
+	}
+
+	updateModels(models: readonly Model<Api>[], enabledModelIds?: string[] | null): void {
+		const selectedId = this.filteredItems[this.selectedIndex]?.fullId;
+		if (enabledModelIds !== undefined) this.enabledIds = enabledModelIds === null ? null : [...enabledModelIds];
+		this.modelsById.clear();
+		this.allIds = [];
+		for (const model of models) {
+			const fullId = `${model.provider}/${model.id}`;
+			this.modelsById.set(fullId, model);
+			this.allIds.push(fullId);
+		}
+		this.refresh();
+		const refreshedIndex = selectedId ? this.filteredItems.findIndex((item) => item.fullId === selectedId) : -1;
+		if (refreshedIndex >= 0) {
+			this.selectedIndex = refreshedIndex;
+			this.updateList();
+		}
+	}
+
+	setRefreshStatus(message: string, kind: "muted" | "success" | "warning"): void {
+		this.refreshStatusText?.setText(theme.fg(kind, `  ${message}`));
 	}
 
 	private buildItems(): ModelItem[] {
@@ -249,28 +276,28 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		}
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		const kb = getKeybindings();
 
 		// Navigation
 		if (kb.matches(data, "tui.select.up")) {
-			if (this.filteredItems.length === 0) return;
+			if (this.filteredItems.length === 0) return true;
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
 			this.updateList();
-			return;
+			return true;
 		}
 		if (kb.matches(data, "tui.select.down")) {
-			if (this.filteredItems.length === 0) return;
+			if (this.filteredItems.length === 0) return true;
 			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
-			return;
+			return true;
 		}
 
 		// Reorder enabled models
 		const reorderUp = kb.matches(data, "app.models.reorderUp");
 		const reorderDown = kb.matches(data, "app.models.reorderDown");
 		if (reorderUp || reorderDown) {
-			if (this.enabledIds === null) return;
+			if (this.enabledIds === null) return true;
 			const item = this.filteredItems[this.selectedIndex];
 			if (item && isEnabled(this.enabledIds, item.fullId)) {
 				const delta = reorderUp ? -1 : 1;
@@ -285,7 +312,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 					this.notifyChange();
 				}
 			}
-			return;
+			return true;
 		}
 
 		// Toggle on Enter
@@ -297,7 +324,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				this.refresh();
 				this.notifyChange();
 			}
-			return;
+			return true;
 		}
 
 		// Enable all (filtered if search active, otherwise all)
@@ -307,7 +334,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			this.isDirty = true;
 			this.refresh();
 			this.notifyChange();
-			return;
+			return true;
 		}
 
 		// Clear all (filtered if search active, otherwise all)
@@ -317,7 +344,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			this.isDirty = true;
 			this.refresh();
 			this.notifyChange();
-			return;
+			return true;
 		}
 
 		// Toggle provider of current item
@@ -334,7 +361,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				this.refresh();
 				this.notifyChange();
 			}
-			return;
+			return true;
 		}
 
 		// Save/persist to settings
@@ -342,7 +369,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			this.callbacks.onPersist(this.enabledIds === null ? null : [...this.enabledIds]);
 			this.isDirty = false;
 			this.footerText.setText(this.getFooterText());
-			return;
+			return true;
 		}
 
 		// Ctrl+C - clear search or cancel if empty
@@ -353,18 +380,19 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			} else {
 				this.callbacks.onCancel();
 			}
-			return;
+			return true;
 		}
 
 		// Escape - cancel
 		if (matchesKey(data, Key.escape)) {
 			this.callbacks.onCancel();
-			return;
+			return true;
 		}
 
 		// Pass everything else to search input
 		this.searchInput.handleInput(data);
 		this.refresh();
+		return true;
 	}
 
 	getSearchInput(): Input {

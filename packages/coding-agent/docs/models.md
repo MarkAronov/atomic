@@ -2,7 +2,7 @@
 
 Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via the single `models.json` in the active Atomic agent directory, normally `~/.atomic/agent/models.json`, or the directory selected by `ATOMIC_CODING_AGENT_DIR`/`PI_CODING_AGENT_DIR`. Atomic reads only that file: it does not read project-scoped `.atomic/models.json`, fall back to `~/.pi/agent/models.json`, or merge `.pi` and `.atomic` model configuration files. The legacy `.pi` read fallback remains available for configuration surfaces that explicitly use layered config paths, such as `auth.json`; it does not apply to `models.json`.
 
-The interactive `/model` selector renders the current authenticated snapshot immediately and refreshes network-backed catalogs in the background for up to 15 seconds. The direct `/model <model_name>` route searches under the same deadline and falls back to cached models when refresh stalls or fails. The terminal owns that deadline: it stops waiting and replaces `Refreshing model catalogs…` with a cached-model timeout or error status even when lower-level work rejects or ignores cancellation. In isolated-engine sessions the same deadline covers both credential reload and catalog work inside the engine, and model selection does not queue behind the refresh. Login and logout publish credential changes independently of catalog refresh, and a refresh that started against an older credential generation is discarded instead of restoring stale provider availability. A slow catalog therefore falls back to cached models without requiring an `auth.json` or `~/.atomic` reset.
+The interactive `/model` selector and `/scoped-models` render the current authenticated snapshot immediately and refresh network-backed catalogs in the background for up to 15 seconds. A direct `/model <model_name>` checks an exact cached match first; only a miss waits for the same bounded refresh, then falls back to the current cache when refresh stalls or fails. Closing either selector cancels its background refresh. The terminal owns that deadline: it stops waiting and replaces `Refreshing model catalogs…` with a cached-model timeout or error status even when lower-level work rejects or ignores cancellation. In isolated-engine sessions the same deadline covers both credential reload and catalog work inside the engine, and model selection does not queue behind the refresh. Login and logout publish credential changes independently of catalog refresh, and a refresh that started against an older credential generation is discarded instead of restoring stale provider availability. A slow catalog therefore falls back to cached models without requiring an `auth.json` or `~/.atomic` reset.
 
 A complete `defaultProvider`/`defaultModel` pair in `settings.json` is resolved after built-in, configured, and extension providers register. If the provider remains unsupported, interactive mode reports a generic saved-configuration warning and leaves model selection open instead of routing the session to a different provider. Print and JSON modes write that diagnostic to stderr and exit nonzero before prompting, keeping JSON stdout JSONL-clean. RPC rejects `prompt` with the same correlated diagnostic until an explicit successful `set_model` selects an available model or an explicit model cycle returns a different available model. A null or unchanged cycle result does not clear the condition. If the provider is supported but the model is unknown or lacks authentication, normal automatic selection of an available authenticated model continues. Valid custom- and extension-provider defaults resolve once their provider registration is available. See [Settings](/settings#model--thinking).
 
@@ -196,6 +196,8 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 }
 ```
 
+In `models.json`, `headers` values must be strings. A `null` suppression marker is supplied only by provider/catalog auth or a `before_provider_headers` extension hook; when present there, `null` suppresses the provider's default header with the same name.
+
 ## Model Configuration
 
 | Field              | Required | Default           | Description                                                                                                |
@@ -208,6 +210,7 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `input`            | No       | `["text"]`        | Input types: `["text"]` or `["text", "image"]`                                                             |
 | `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
+| `samplingParams`   | No       | omitted           | Sampling parameters merged verbatim into every request body for OpenAI-compatible APIs (see below) |
 | `cost`             | No       | all zeros         | Complete base rates per million tokens plus optional request-wide `tiers` (see below)                    |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
 | `deferredToolsMode` | No | omitted | Deferred tool-loading protocol; set to `"kimi"` for Kimi-compatible deferred tools |
@@ -216,6 +219,26 @@ Current behavior:
 - `/model`, `--list-models`, and the interactive footer display entries by model `id`.
 - The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 
+
+### Sampling Parameters
+
+`samplingParams` is a free-form object merged into every request body for an OpenAI-compatible model after the fields Atomic sets, so its keys win. Use it to send parameters that Atomic does not model, including server-specific values such as llama.cpp's `min_p` or vLLM's `top_k`:
+
+```json
+{
+  "id": "deepseek-v4-flash",
+  "samplingParams": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 0,
+    "min_p": 0
+  }
+}
+```
+
+Only OpenAI-compatible APIs apply these values (`openai-completions`, `openai-responses`, and `azure-openai-responses`); other APIs ignore them. Per-request keys override model defaults and named request fields. In `modelOverrides`, `samplingParams` merges per key with the base model's values. Keys are provider-defined and remain unchanged; malformed `samplingParams` values are rejected while loading `models.json`.
+
+For vLLM OpenAI-compatible models that share the reasoning and answer budgets, set `compat.supportsThinkingTokenBudget` to `true`. Atomic sends the opt-in `thinking_token_budget` value for an enabled thinking level and always leaves 1024 tokens for the final answer. Pi's defaults are 1024, 2048, 8192, and 16384 tokens for `minimal`, `low`, `medium`, and `high`; the `thinkingBudgets` settings override them. `xhigh` and `max` use the `high` budget, and Atomic omits the field when no positive budget remains after reserving answer space.
 
 Model references resolve the complete, unmodified ID before Atomic interprets thinking suffixes or glob syntax. For example, if the catalog contains the literal ID `provider/literal[free]:high`, that complete model wins and `:high` remains part of its ID; it does not become a thinking-level suffix and `[free]` is not treated as a character class. Only when the complete ID is absent does Atomic parse a valid thinking suffix, try the stripped exact ID, then apply glob/fuzzy matching. This preserves literal provider IDs without changing ordinary `*`, `?`, bracket-glob, ambiguity, ordering, or deduplication behavior.
 ### Request-wide Cost Tiers
@@ -416,7 +439,7 @@ Use `modelOverrides` to customize specific models without replacing the provider
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `samplingParams` (merged per key), `headers`, `compat`.
 
 Atomic reads one `models.json` from the active agent directory. It does not layer model overrides from `.pi` and `.atomic` files.
 
@@ -494,6 +517,8 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `supportsDeveloperRole`                       | Use `developer` vs `system` role                                                                                                                                                                                                     |
 | `supportsReasoningEffort`                     | Support for `reasoning_effort` parameter                                                                                                                                                                                             |
 | `supportsUsageInStreaming`                    | Supports `stream_options: { include_usage: true }` (default: `true`)                                                                                                                                                                 |
+| `supportsFinishReason`                       | Whether streamed responses include `finish_reason`. When `false`, Atomic infers `stop` or `toolUse` when the stream ends. Default: `true`. |
+| `supportsThinkingTokenBudget`                | Whether the endpoint accepts top-level vLLM `thinking_token_budget`; use it with reasoning models that share the response budget. Default: `false`. |
 | `maxTokensField`                              | Use `max_completion_tokens` or `max_tokens`                                                                                                                                                                                          |
 | `requiresToolResultName`                      | Include `name` on tool result messages                                                                                                                                                                                               |
 | `requiresAssistantAfterToolResult`            | Insert an assistant message before a user message after tool results                                                                                                                                                                 |
@@ -518,7 +543,7 @@ Strict JSON-schema support currently includes OpenAI, Anthropic, capable Bedrock
 
 ### Catalog freshness and precedence
 
-Authenticated remote catalogs are cached in `models-store.json`. Atomic revalidates pi.dev catalogs with the stored ETag through `If-None-Match`; an empty `304 Not Modified` is success and retains the cached body while updating its check time. A newer bundled catalog wins over an older persisted overlay even when package file mtimes are misleading. Final visibility is built-ins, persisted/remote data subject to freshness, configured `.pi` then `.atomic` layers, and live provider catalogs/overrides. Provider failures retain the last usable provider-specific snapshot.
+Authenticated remote catalogs are cached in `models-store.json`. Atomic revalidates pi.dev catalogs with the stored ETag through `If-None-Match`; an empty `304 Not Modified` is success and retains the cached body while updating its check time. A newer bundled catalog wins over an older persisted overlay even when package file mtimes are misleading. Final visibility is built-ins, persisted/remote data subject to freshness, the single active-agent `models.json` configuration, and live provider catalogs/overrides; Atomic does not merge project `.atomic`/`.pi` model files or a legacy agent-directory fallback. Provider failures retain the last usable provider-specific snapshot.
 
 Claude Opus 5 is present in the generated Anthropic and Amazon Bedrock catalogs. Its metadata enables adaptive thinking, including `xhigh` where advertised. Bedrock uses its generated inference-profile ID, prompt-caching and strict-tool metadata, and preserves provider/AWS validation errors. Custom entries must reproduce those capabilities honestly rather than copying a display name alone.
 `openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking` and `preserve_thinking`. Use `chat-template` for vLLM/Hugging Face chat templates that need configurable `chat_template_kwargs`, such as `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }` for DeepSeek V3.x templates.

@@ -7,6 +7,7 @@ import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
@@ -35,6 +36,10 @@ const findSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+export const findToolSystemPromptContribution = Object.freeze({
+	snippet: "Find filesystem paths by glob.",
+	guidelines: Object.freeze([] as const),
+} as const);
 export type FindToolInput = Static<typeof findSchema>;
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 200;
@@ -157,16 +162,20 @@ function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined, cus
 			exactPathInput: parsed.glob === undefined,
 			inputPath: searchPath,
 		};
-		if (path.parse(target.searchPath).root === target.searchPath)
-			throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
 		return target;
 	});
 }
-function relativizeFoundPath(foundPath: string, searchPath: string): string {
-	const hadTrailingSlash = foundPath.endsWith("/") || foundPath.endsWith("\\");
-	const relativePath = path.relative(searchPath, foundPath) || path.basename(foundPath);
-	const outputPath = hadTrailingSlash && !relativePath.endsWith("/") ? `${relativePath}/` : relativePath;
-	return toPosixPath(outputPath);
+/** Relativize a find result against the search root and normalize it to POSIX separators. */
+export function relativizeFindResultPath(
+	resultPath: string,
+	searchPath: string,
+	pathModule: path.PlatformPath = path,
+): string {
+	const hadTrailingSeparator =
+		resultPath.endsWith(pathModule.sep) || (pathModule.sep === "\\" && resultPath.endsWith("/"));
+	const relativePath = pathModule.isAbsolute(resultPath) ? pathModule.relative(searchPath, resultPath) : resultPath;
+	const posixPath = relativePath.split(pathModule.sep).join("/");
+	return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
 function formatExactFoundPath(foundPath: string, cwd: string): string {
 	return toPosixPath(path.relative(cwd, foundPath) || path.basename(foundPath));
@@ -180,9 +189,7 @@ function findTargetMentionsNodeModules(target: FindTarget): boolean {
 	return target.pattern.includes("node_modules") || toPosixPath(target.searchPath).split("/").includes("node_modules");
 }
 function formatFoundPath(foundPath: string, searchPath: string, searchPaths: string[], cwd: string): string {
-	let absoluteFoundPath = path.isAbsolute(foundPath) ? foundPath : path.resolve(searchPath, foundPath);
-	if (foundPath.endsWith("/") && !absoluteFoundPath.endsWith("/")) absoluteFoundPath += "/";
-	const relative = relativizeFoundPath(absoluteFoundPath, searchPath);
+	const relative = relativizeFindResultPath(foundPath, searchPath);
 	if (searchPaths.length <= 1) return relative;
 	const rootLabel = toPosixPath(path.relative(cwd, searchPath) || path.basename(searchPath) || ".");
 	return `${rootLabel}/${relative}`;
@@ -298,7 +305,10 @@ function buildFindResult(
 export interface FindOperations {
 	stat?: (
 		path: string,
-	) => Promise<{ isFile: boolean; isDirectory: boolean }> | { isFile: boolean; isDirectory: boolean } | undefined;
+	) =>
+		| Promise<{ isFile: boolean; isDirectory: boolean } | undefined>
+		| { isFile: boolean; isDirectory: boolean }
+		| undefined;
 	exists: (path: string) => Promise<boolean> | boolean;
 	glob: (
 		pattern: string,
@@ -376,7 +386,7 @@ export function createFindToolDefinition(
 		name: "find",
 		label: "find",
 		description: "Find filesystem paths by glob; use search when you need content matches instead of path matches.",
-		promptSnippet: "Find filesystem paths by glob.",
+		promptSnippet: findToolSystemPromptContribution.snippet,
 		parameters: findSchema,
 		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			return new Promise((resolve, reject) => {
@@ -421,8 +431,6 @@ export function createFindToolDefinition(
 						const searchableTargets: FindTarget[] = [];
 						const skippedMissingPaths: string[] = [];
 						for (const target of targets) {
-							if (target.searchPath === path.parse(target.searchPath).root)
-								throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
 							const stat = customOps
 								? await customOps.stat?.(target.searchPath)
 								: await fsStat(target.searchPath).catch(() => undefined);
@@ -666,6 +674,8 @@ export function createFindToolDefinition(
 									target.pattern !== "**"
 								)
 									fdPattern = `**/${target.pattern}`;
+								// fd matches full paths with native separators on Windows.
+								if (process.platform === "win32") fdPattern = fdPattern.replaceAll("/", String.raw`[/\\]`);
 							}
 							args.push("--", fdPattern, target.searchPath);
 							const remainingMs = deadline - Date.now();
@@ -674,7 +684,10 @@ export function createFindToolDefinition(
 								return false;
 							}
 							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
-								const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+								const child = spawn(fdPath, args, {
+									env: createChildProcessEnvironment(),
+									stdio: ["ignore", "pipe", "pipe"],
+								});
 								const rl = createInterface({ input: child.stdout });
 								let stderr = "";
 								const lines: string[] = [];

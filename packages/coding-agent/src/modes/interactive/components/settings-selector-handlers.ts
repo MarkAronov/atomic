@@ -1,5 +1,7 @@
 import type { Transport } from "@earendil-works/pi-ai/compat";
+import type { ScrollViewScrollbar, TuiMode } from "@earendil-works/pi-tui";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import type { MermaidRenderingMode } from "../../../core/settings-manager.ts";
 import { DEFAULT_PROJECT_TRUST_BY_LABEL } from "./settings-selector-options.ts";
 import type {
 	DoubleEscapeAction,
@@ -49,6 +51,12 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "hide-thinking":
 				callbacks.onHideThinkingBlockChange(newValue === "true");
 				break;
+			case "mermaid-rendering":
+				callbacks.onMermaidRenderingModeChange(newValue as MermaidRenderingMode);
+				break;
+			case "latex-rendering":
+				callbacks.onLatexRenderingEnabledChange(newValue === "true");
+				break;
 			case "collapse-changelog":
 				callbacks.onCollapseChangelogChange(newValue === "true");
 				break;
@@ -73,6 +81,12 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 				break;
 			case "show-hardware-cursor":
 				callbacks.onShowHardwareCursorChange(newValue === "true");
+				break;
+			case "tui-mode":
+				callbacks.onTuiModeChange(newValue as TuiMode);
+				break;
+			case "fullscreen-scrollbar":
+				callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
 				break;
 			case "editor-padding":
 				callbacks.onEditorPaddingXChange(parseInt(newValue, 10));

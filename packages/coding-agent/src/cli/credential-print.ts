@@ -1,13 +1,14 @@
 /**
- * `atomic auth print-api-key` / `atomic auth print-bearer-token`.
+ * `atomic auth print-api-key` / `atomic auth print-bearer-token` and the
+ * explicit `atomic auth check --credentials` export path.
  *
  * The only door in Atomic whose purpose is emitting a secret. Everything here
  * exists to keep that egress narrow:
- *
  * - the secret leaves as a `Secret`, which cannot be interpolated, serialized,
  *   or inspected, and is consumed exactly once by the stdout writer;
- * - `--model` is required, so no ambient "current model" can emit a credential
- *   the caller did not name;
+ * - every export has an explicit target: the print commands require `--model`,
+ *   and auth checks require `--provider` or an exact `--model` plus
+ *   `--credentials`;
  * - there is no `--output <file>` and no clipboard path — stdout only;
  * - every failure is a distinct exit code, and stdout stays empty on all of
  *   them but one — `CredentialTruncated` (exit 9) exists to report the case
@@ -24,7 +25,6 @@
 import { inspect } from "node:util";
 import type { Api, AuthType, Model } from "@earendil-works/pi-ai";
 import { ModelsError } from "@earendil-works/pi-ai";
-import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
@@ -134,14 +134,55 @@ export class Secret {
 	}
 }
 
+/** Public readiness fields emitted with a credential under `auth check --json --credentials`. */
+export interface CredentialJsonFields {
+	status: string;
+	provider: string;
+	authType?: string;
+}
+
+/**
+ * The only function in `src` that opens a `Secret`.
+ *
+ * Its two `Secret.take()` calls are the only call sites in `src`, and the
+ * source-wide credential-egress test pins that list. This function builds one
+ * payload and returns it only to `emitCredential`; no caller receives a plain
+ * credential string.
+ */
+function credentialPayload(secret: Secret, jsonFields: CredentialJsonFields | undefined): string {
+	if (jsonFields === undefined) return `${secret.take()}\n`;
+
+	const { status, provider, authType } = jsonFields;
+	if (
+		typeof status !== "string" ||
+		typeof provider !== "string" ||
+		(authType !== undefined && typeof authType !== "string")
+	) {
+		throw new Error("Invalid credential JSON fields");
+	}
+
+	// Allowlist the non-secret envelope before opening the Secret. That leaves no
+	// formatter, logger, or error path between take() and the guarded stdout write.
+	const fields = JSON.stringify({
+		status,
+		provider,
+		...(authType === undefined ? {} : { authType }),
+	});
+	if (fields === undefined || !fields.startsWith("{") || !fields.endsWith("}")) {
+		throw new Error("Invalid credential JSON envelope");
+	}
+	return `${fields.slice(0, -1)},"credentials":${JSON.stringify(secret.take())}}\n`;
+}
+
 /**
  * The single credential egress in `src`.
  *
- * `Secret.take()` is called here and nowhere else in the source tree, so this
- * is the one statement that can turn a configured credential back into a string
- * and the one that hands it to the real stdout. A caller — `main.ts` included —
- * receives a `Secret` it cannot read, print, or serialize, so a second export
- * path cannot be grafted on without moving this function.
+ * `credentialPayload` opens the secret only while building this one payload,
+ * and this guarded write is the only path that hands it to real stdout. A
+ * caller — `main.ts` included — receives a `Secret` it cannot read, print, or
+ * serialize, so it cannot add a second export path without crossing this door.
+ * `test/credential-print.test.ts` pins both the `take()` sites and every
+ * data-bearing real-stdout write in `packages/coding-agent/src`.
  *
  * A failed payload write is answered from the stream rather than from the shape
  * of the error, because `bytesWritten` says how much of the credential actually
@@ -164,13 +205,9 @@ export class Secret {
  * the one code in this taxonomy whose contract is *not* an empty stdout —
  * stated as such in `EXIT_CODES` and asserted through `STDOUT_EMPTY_ON_EXIT`,
  * rather than left for a caller to discover.
- *
- * `test/credential-print.test.ts` asserts that chokepoint against the whole of
- * `packages/coding-agent/src`.
  */
-export async function emitCredential(secret: Secret): Promise<void> {
-	// take() returns a plain string; the Secret itself is never interpolated.
-	const payload = `${secret.take()}\n`;
+export async function emitCredential(secret: Secret, jsonFields: CredentialJsonFields | undefined): Promise<void> {
+	const payload = credentialPayload(secret, jsonFields);
 	try {
 		await writeRawStdoutOnce(payload);
 	} catch (error) {
@@ -219,97 +256,6 @@ export function toCredentialPrintError(error: unknown): CredentialPrintError {
 		error instanceof Error ? error.message : "Failed to resolve credential",
 		{ cause: error },
 	);
-}
-
-export interface CredentialPrintCommand {
-	kind: CredentialPrintKind;
-	/** Remaining argv for the normal parser (`--model`, `--provider`). */
-	args: string[];
-	minExpiryMs?: number;
-}
-
-export function isCredentialPrintHelp(args: string[]): boolean {
-	return (
-		args[0] === "auth" && (args[1] === undefined || args[1] === "help" || args[1] === "--help" || args[1] === "-h")
-	);
-}
-
-export function printCredentialPrintHelp(): void {
-	// Branded through APP_NAME: Atomic's binary is `atomic`, and help output must
-	// never render upstream's `pi`.
-	console.error(`Usage:
-  ${APP_NAME} auth print-api-key --model <model> [--provider <provider>]
-  ${APP_NAME} auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
-
-Prints one configured credential alone on stdout. Everything else — warnings,
-provider selection, refresh notices — goes to stderr, and stdout stays empty on
-every failure but exit 9, which reports that it could not be.
-
---model is required: there is no ambient "current model". Provider inference
-uses configured credentials; pass --provider to select one explicitly.
-
---min-expiry accepts ms, s, m, or h (for example 30m) and applies only to
-print-bearer-token, where it defaults to 30m. A token with less than that
-remaining is refreshed first.
-
-Exit codes:
-  0  credential written to stdout
-  1  usage error
-  2  no credential configured
-  3  provider ambiguous
-  4  credential kind unsupported for that provider
-  5  refresh failed (the stored credential is left untouched)
-  6  provider cannot mint a token that lives long enough
-  7  the provider's OAuth credential could not be used
-  8  the credential could not be written (nothing was emitted)
-  9  the credential was written only in part; stdout holds an unusable
-     fragment, which the caller must discard rather than use`);
-}
-
-function parseDuration(value: string | undefined): number {
-	const match = value ? /^(\d+)(ms|s|m|h)$/iu.exec(value) : undefined;
-	if (!match) {
-		throw new CredentialPrintError("Usage", "--min-expiry must use a duration such as 30m or 1h");
-	}
-	const unit = match[2].toLowerCase();
-	const scale = unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000;
-	return Number(match[1]) * scale;
-}
-
-/** Parse the `auth` command surface before normal startup. */
-export function parseCredentialPrintCommand(args: string[]): CredentialPrintCommand | undefined {
-	if (args[0] !== "auth") return undefined;
-
-	const kind: CredentialPrintKind | undefined =
-		args[1] === "print-api-key" ? "api_key" : args[1] === "print-bearer-token" ? "bearer_token" : undefined;
-	if (!kind) {
-		throw new CredentialPrintError(
-			"Usage",
-			`Unknown auth command "${args[1] ?? ""}". Use "${APP_NAME} auth print-api-key" or "${APP_NAME} auth print-bearer-token".`,
-		);
-	}
-
-	const INLINE_MIN_EXPIRY = "--min-expiry=";
-	const commandArgs: string[] = [];
-	let minExpiryMs: number | undefined;
-	for (let index = 2; index < args.length; index++) {
-		const arg = args[index];
-		const inline = arg.startsWith(INLINE_MIN_EXPIRY) ? arg.slice(INLINE_MIN_EXPIRY.length) : undefined;
-		if (arg !== "--min-expiry" && inline === undefined) {
-			commandArgs.push(arg);
-			continue;
-		}
-		// An API key has no expiry, so the option is an error rather than a
-		// silently ignored no-op that would imply a guarantee it cannot give.
-		// Both spellings are refused: `--min-expiry=30m` reaching the ordinary
-		// parser as an unknown flag would report the wrong cause.
-		if (kind !== "bearer_token") {
-			throw new CredentialPrintError("Usage", "--min-expiry is only supported by print-bearer-token");
-		}
-		minExpiryMs = parseDuration(inline ?? args[++index]);
-	}
-
-	return minExpiryMs === undefined ? { kind, args: commandArgs } : { kind, args: commandArgs, minExpiryMs };
 }
 
 /**

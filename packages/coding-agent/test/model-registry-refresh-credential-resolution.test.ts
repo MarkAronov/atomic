@@ -16,12 +16,17 @@ describeModelRegistry((context) => {
 				registry.registerProvider("environment-catalog", {
 					apiKey: `$${envVarName}`,
 					refreshModels: async ({ credential }) => {
-						observedKey = credential?.type === "api_key" ? credential.key : undefined;
+						if (credential?.type === "api_key") observedKey = credential.key;
 						return [];
 					},
 				});
 
-				await registry.refresh();
+				let result = await registry.refresh();
+				// registerProvider starts a cache-only refresh in the background. Under full-suite
+				// contention it can supersede the first explicit pass before its network phase;
+				// retry the caller-owned operation once in that case.
+				if (observedKey === undefined) result = await registry.refresh();
+				expect(result.errors.size).toBe(0);
 				expect(observedKey).toBe("environment-catalog-key");
 			} finally {
 				if (original === undefined) delete process.env[envVarName];
@@ -37,12 +42,17 @@ describeModelRegistry((context) => {
 			registry.registerProvider("command-catalog", {
 				apiKey: `!sh -c 'cat "${context.toShPath(tokenFile)}"'`,
 				refreshModels: async ({ credential }) => {
-					observedKey = credential?.type === "api_key" ? credential.key : undefined;
+					if (credential?.type === "api_key") observedKey = credential.key;
 					return [];
 				},
 			});
 
-			await registry.refresh();
+			let result = await registry.refresh();
+			// registerProvider starts a cache-only refresh in the background. Under full-suite
+			// contention it can supersede the first explicit pass before its network phase;
+			// retry the caller-owned operation once in that case.
+			if (observedKey === undefined) result = await registry.refresh();
+			expect(result.errors.size).toBe(0);
 			expect(observedKey).toBe("command-catalog-key");
 		});
 
@@ -91,7 +101,7 @@ describeModelRegistry((context) => {
 				key: "stored-key",
 			}));
 			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-			await getModelRuntime(registry).setRuntimeApiKey("credential-precedence", "runtime-key");
+			await getModelRuntime(registry).setRuntimeApiKey("credential-precedence", "runtime-key", {});
 			let observedKey: string | undefined;
 			registry.registerProvider("credential-precedence", {
 				apiKey: "configured-key",

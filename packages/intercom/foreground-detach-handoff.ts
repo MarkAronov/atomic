@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { isStaleExtensionContextError, type ExtensionAPI } from "@bastani/atomic";
 import type { Message, SessionInfo } from "./types.js";
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
@@ -97,29 +97,45 @@ export class ForegroundDetachHandoff {
         if (settled) return;
         settled = true;
         if (timeout) clearTimeout(timeout);
-        unsubscribe?.();
+        try {
+          unsubscribe?.();
+        } catch (error) {
+          if (!isStaleExtensionContextError(error)) throw error;
+          // Stale event-bus cleanup must not change the handshake result.
+        }
         signal.removeEventListener("abort", cancel);
         resolve(disposition);
       };
       const cancel = () => finish("cancelled");
-      unsubscribe = this.pi.events?.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
-        if (!payload || typeof payload !== "object") return;
-        const response = payload as Partial<DetachHandshake> & { accepted?: unknown };
-        if (response.accepted === true
-          && response.phase === route.phase
-          && response.requestId === route.requestId
-          && response.messageId === route.messageId
-          && response.childIntercomTarget === route.childIntercomTarget
-          && response.senderId === route.senderId
-          && response.runtimeGeneration === route.runtimeGeneration) finish("acknowledged");
-      });
+      try {
+        unsubscribe = this.pi.events?.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
+          if (!payload || typeof payload !== "object") return;
+          const response = payload as Partial<DetachHandshake> & { accepted?: unknown };
+          if (response.accepted === true
+            && response.phase === route.phase
+            && response.requestId === route.requestId
+            && response.messageId === route.messageId
+            && response.childIntercomTarget === route.childIntercomTarget
+            && response.senderId === route.senderId
+            && response.runtimeGeneration === route.runtimeGeneration) finish("acknowledged");
+        });
+      } catch (error) {
+        if (!isStaleExtensionContextError(error)) throw error;
+        finish("timed-out");
+        return;
+      }
       signal.addEventListener("abort", cancel, { once: true });
       timeout = setTimeout(() => finish("timed-out"), this.ackTimeoutMs);
       if (signal.aborted) {
         cancel();
         return;
       }
-      this.pi.events?.emit(INTERCOM_DETACH_REQUEST_EVENT, route);
+      try {
+        this.pi.events?.emit(INTERCOM_DETACH_REQUEST_EVENT, route);
+      } catch (error) {
+        if (!isStaleExtensionContextError(error)) throw error;
+        finish("timed-out");
+      }
     });
   }
 

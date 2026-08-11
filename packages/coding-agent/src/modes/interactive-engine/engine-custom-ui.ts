@@ -4,7 +4,8 @@ import {
 	type OverlayHandle,
 	type OverlayOptions,
 	type Terminal,
-	TUI,
+	type TUI,
+	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.ts";
 import { runCallback } from "../../core/callback-activity.ts";
@@ -120,7 +121,7 @@ export class EngineCustomUiService {
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
-		const tui = new TUI(terminal, undefined, getAgentDir());
+		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 		void runCallback({ kind: "renderer", name: `widget:${key}` }, () => factory(tui, theme))
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
@@ -187,7 +188,7 @@ export class EngineCustomUiService {
 			() => this.send({ type: "engine_custom_invalidate", componentId }),
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
 		);
-		const tui = new TUI(terminal, undefined, getAgentDir());
+		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 		const component = await factory(tui, theme, this.keybindings, done);
 		tui.addChild(component);
 		tui.setFocus(component);
@@ -248,7 +249,16 @@ export class EngineCustomUiService {
 		if (!command) return false;
 		if (!command.type.startsWith("engine_custom_")) return false;
 		const record = this.active.get(command.componentId);
-		if (!record) return true;
+		if (!record) {
+			if (command.type === "engine_custom_input")
+				this.send({
+					type: "engine_custom_input_result",
+					componentId: command.componentId,
+					requestId: command.requestId,
+					handled: false,
+				});
+			return true;
+		}
 		switch (command.type) {
 			case "engine_custom_render":
 				record.terminal.columns = Math.max(1, command.width);
@@ -275,9 +285,26 @@ export class EngineCustomUiService {
 				break;
 			case "engine_custom_input":
 				void runCallback({ kind: "renderer", name: command.componentId }, () => {
-					if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return;
-					record.component.handleInput?.(command.data);
-				}).catch(() => undefined);
+					if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
+					const handleInput = record.component.handleInput as ((data: string) => boolean | undefined) | undefined;
+					return handleInput?.call(record.component, command.data) === true;
+				})
+					.then((handled) =>
+						this.send({
+							type: "engine_custom_input_result",
+							componentId: command.componentId,
+							requestId: command.requestId,
+							handled,
+						}),
+					)
+					.catch(() =>
+						this.send({
+							type: "engine_custom_input_result",
+							componentId: command.componentId,
+							requestId: command.requestId,
+							handled: false,
+						}),
+					);
 				break;
 			case "engine_custom_dispose":
 				this.disposeComponent(command.componentId, true);

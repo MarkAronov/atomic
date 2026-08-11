@@ -22,6 +22,8 @@ type CtrlCHost = {
 	clearEditor: ReturnType<typeof vi.fn>;
 	shutdown: ReturnType<typeof vi.fn>;
 	showError: ReturnType<typeof vi.fn>;
+	manualCompactionTakeoverPending: boolean;
+	readonly compactionActive: boolean;
 	interruptActiveOperation: () => boolean;
 };
 
@@ -33,6 +35,9 @@ const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandler
 
 function createHost(sessionOverrides: Partial<CtrlCSession> = {}): CtrlCHost {
 	const host: CtrlCHost = {
+		get compactionActive() {
+			return this.session.isCompacting || this.manualCompactionTakeoverPending;
+		},
 		lastSigintTime: 0,
 		session: {
 			isStreaming: false,
@@ -48,6 +53,7 @@ function createHost(sessionOverrides: Partial<CtrlCSession> = {}): CtrlCHost {
 			abortRetry: vi.fn(),
 			...sessionOverrides,
 		},
+		manualCompactionTakeoverPending: false,
 		restoreQueuedMessagesToEditor: vi.fn(),
 		clearEditor: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
@@ -99,6 +105,16 @@ describe("InteractiveMode Ctrl+C", () => {
 		expect(host.clearEditor).not.toHaveBeenCalled();
 	});
 
+	test("aborts the active response while a manual-compaction handoff is pending", () => {
+		const host = createHost({ isStreaming: true });
+		host.manualCompactionTakeoverPending = true;
+		handleCtrlC.call(host);
+		expect(host.session.pauseQueuedMessages).toHaveBeenCalledTimes(1);
+		expect(host.session.abort).toHaveBeenCalledTimes(1);
+		expect(host.session.abortCompaction).not.toHaveBeenCalled();
+		expect(host.clearEditor).not.toHaveBeenCalled();
+	});
+
 	test("aborts an auto-retry countdown", () => {
 		const host = createHost({ isRetrying: true });
 		handleCtrlC.call(host);
@@ -146,7 +162,7 @@ describe("InteractiveMode Ctrl+C", () => {
 				abort: vi.fn().mockRejectedValue(abortError),
 			},
 			runtimeHost: {},
-			ui: { addInputListener() {}, requestRender() {}, hasOverlay: () => false },
+			ui: { addInputListener: () => () => {}, requestRender() {}, hasOverlay: () => false },
 			keybindings: { matches: () => false },
 			defaultEditor: editor,
 			editor,
@@ -157,6 +173,8 @@ describe("InteractiveMode Ctrl+C", () => {
 			lastEscapeTime: 0,
 			restoreQueuedMessagesToEditor: vi.fn(),
 			showError,
+			tuiInputSubscriptions: new Set(),
+			addTuiInputListener: InteractiveMode.prototype.addTuiInputListener,
 		};
 		setupKeyHandlers.call(host);
 

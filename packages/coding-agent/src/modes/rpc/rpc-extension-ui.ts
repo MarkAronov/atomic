@@ -332,6 +332,7 @@ export function createRpcExtensionUIContext({
 		},
 
 		setToolsExpanded(expanded: boolean) {
+			if (expanded === toolsExpanded) return;
 			toolsExpanded = expanded;
 			customUi?.requestRender();
 		},
@@ -343,6 +344,7 @@ export function createRpcExtensionUIContext({
 				toolOutputExpanded: toolsExpanded,
 				showImages: false,
 				imageWidthCells: 60,
+				markdownTransformers: [],
 				getToolDefinition: () => undefined,
 				getCustomMessageRenderer: () => undefined,
 			};

@@ -81,6 +81,7 @@ async function renderStartupWithEarlyNotify(
 			retryDeferredModelRestore: async () => {},
 			updateAvailableProviderCount: async () => {},
 			updateEditorBorderColor() {},
+			rebuildChatFromMessages() {},
 		});
 		await InteractiveMode.prototype.completeDeferredStartup.call(mode);
 	}
@@ -138,6 +139,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 		retryDeferredModelRestore: async () => {},
 		updateAvailableProviderCount: async () => {},
 		updateEditorBorderColor() {},
+		rebuildChatFromMessages() {},
 	});
 }
 
@@ -277,7 +279,10 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 			return () => {};
 		},
 	});
-	const dispose = attachInteractiveEngineHost(runtime, ui, () => {});
+	const dispose = attachInteractiveEngineHost(runtime, ui, () => {}, {
+		isFullscreen: () => false,
+		onRendererReplaced: () => () => {},
+	});
 	assert.ok(extensionUiHandler);
 	await extensionUiHandler({
 		type: "extension_ui_request",
@@ -288,6 +293,40 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 	});
 	dispose();
 	assertResourcesBefore(normalizeStartupOutput(mode.chatContainer), "isolated engine warning");
+});
+
+test("isolated chat settings include only the builtin Mermaid transformer", () => {
+	const mode = createOrderingMode();
+	const transformer = (markdown: string): string => `host:${markdown}`;
+	const runtime = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
+	Object.defineProperty(mode, "session", {
+		configurable: true,
+		value: {
+			extensionRunner: {
+				getMarkdownTransformers: () => [transformer],
+				getMessageRenderer: () => undefined,
+			},
+			settingsManager: {
+				getShowImages: () => true,
+				getImageWidthCells: () => 60,
+				getMermaidRenderingMode: () => "streaming",
+				getLatexRenderingEnabled: () => true,
+			},
+		},
+	});
+	Object.assign(mode, {
+		runtimeHost: runtime,
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		toolOutputExpanded: false,
+		outputPad: 1,
+		mermaidMarkdownTransformer: (markdown: string) => markdown,
+	});
+
+	const ui = InteractiveMode.prototype.createExtensionUIContext.call(mode) as ExtensionUIContext;
+	const transformers = ui.getChatRenderSettings().markdownTransformers;
+	assert.equal(transformers?.length, 1);
+	assert.notEqual(transformers?.[0], transformer);
 });
 
 for (const startupPath of ["eager", "deferred"] as const) {

@@ -11,6 +11,7 @@
  * without a bundled MCP adapter dependency.
  */
 
+import { isStaleExtensionContextError } from "@bastani/atomic";
 // ---------------------------------------------------------------------------
 // Minimal structural types — no hard imports from host MCP internals
 // ---------------------------------------------------------------------------
@@ -79,7 +80,12 @@ export function setMcpScope(pi: PiMcpExtensionAPI, opts: McpScopeOpts): void {
 		deny: opts.deny ?? null,
 	};
 
-	pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	try {
+		pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// Scope events are advisory and a stage can outlive its extension runtime.
+	}
 }
 
 /**
@@ -98,7 +104,12 @@ export function clearMcpScope(pi: PiMcpExtensionAPI, stageId: string): void {
 		deny: null,
 	};
 
-	pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	try {
+		pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// Scope events are advisory and a stage can outlive its extension runtime.
+	}
 }
 
 /**

@@ -10,7 +10,7 @@ After editing `keybindings.json`, run `/reload` in Atomic to apply the changes w
 
 ## Key Format
 
-`modifier+key` where modifiers are `ctrl`, `shift`, `alt` (combinable) and keys are:
+`modifier+key` where modifiers are `ctrl`, `shift`, `alt`, or `super` (combinable) and keys are:
 
 - **Letters:** `a-z`
 - **Digits:** `0-9`
@@ -18,7 +18,7 @@ After editing `keybindings.json`, run `/reload` in Atomic to apply the changes w
 - **Function:** `f1`-`f12`
 - **Symbols:** `` ` ``, `-`, `=`, `[`, `]`, `\`, `;`, `'`, `,`, `.`, `/`, `!`, `@`, `#`, `$`, `%`, `^`, `&`, `*`, `(`, `)`, `_`, `+`, `|`, `~`, `{`, `}`, `:`, `<`, `>`, `?`
 
-Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1`, etc.
+Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+super+x`, `ctrl+1`, etc. `super` depends on terminal support.
 
 ## All Actions
 
@@ -32,12 +32,16 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `tui.editor.cursorRight` | `right`, `ctrl+f` | Move cursor right |
 | `tui.editor.cursorWordLeft` | `alt+left`, `ctrl+left`, `alt+b` | Move cursor word left |
 | `tui.editor.cursorWordRight` | `alt+right`, `ctrl+right`, `alt+f` | Move cursor word right |
-| `tui.editor.cursorLineStart` | `home`, `ctrl+a` | Move to line start |
-| `tui.editor.cursorLineEnd` | `end`, `ctrl+e` | Move to line end |
+| `tui.editor.historyPrevious` | *(none)* | Select the previous prompt history entry |
+| `tui.editor.historyNext` | *(none)* | Select the next prompt history entry |
+| `tui.editor.cursorLineStart` | `home`, `ctrl+home`, `ctrl+a` | Move to line start |
+| `tui.editor.cursorLineEnd` | `end`, `ctrl+end`, `ctrl+e` | Move to line end |
 | `tui.editor.jumpForward` | `ctrl+]` | Jump forward to character |
 | `tui.editor.jumpBackward` | `ctrl+alt+]` | Jump backward to character |
-| `tui.editor.pageUp` | `pageUp` | Scroll up by page |
-| `tui.editor.pageDown` | `pageDown` | Scroll down by page |
+| `tui.editor.pageUp` | `pageUp`, `ctrl+pageUp` | Scroll up by page |
+| `tui.editor.pageDown` | `pageDown`, `ctrl+pageDown` | Scroll down by page |
+
+The dedicated history actions always change history entries, regardless of the cursor position in a multiline prompt. Explicit history bindings take precedence over ordinary application action handlers while the main editor is focused, so binding `tui.editor.historyPrevious` to `ctrl+p` or `tui.editor.historyNext` to `ctrl+n` overrides those app actions without changing the same keys in selectors.
 
 ### TUI Editor Deletion
 
@@ -54,7 +58,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `tui.input.newLine` | `shift+enter` | Insert new line |
+| `tui.input.newLine` | `shift+enter`, `ctrl+j` | Insert new line |
 | `tui.input.submit` | `enter` | Submit input |
 | `tui.input.tab` | `tab` | Tab / autocomplete |
 
@@ -78,6 +82,37 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `tui.select.confirm` | `enter` | Confirm selection |
 | `tui.select.cancel` | `escape`, `ctrl+c` | Cancel selection |
 
+### TUI Fullscreen Viewport
+
+These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard.
+
+
+Fullscreen text selection comes from the installed pi-tui 0.84.1 renderer. Drag with the primary button to select characters; double-click selects a word and triple-click selects a line. Focus changes and non-drag clicks clear transient selection state, preventing a stale highlight from appearing. The renderer also reduces mouse tracking in tmux, Zellij, and GNU Screen.
+Fullscreen transcript bindings take precedence over editor bindings while the main editor has focus. The default unmodified navigation keys therefore control the transcript in fullscreen mode, while their `ctrl` variants continue to control the editor. When a fullscreen overlay or inline custom component has focus, Atomic sends matching viewport bindings to that component first. Returning `true` keeps the key local. For an in-process component, returning `false`, `undefined`, or `void` lets transcript scrolling handle it. A remote component's correlated reply falls through on `false`, failure, or timeout; `undefined` after disposal is dropped because that component no longer owns focus. Outside fullscreen mode, both variants control the focused component.
+
+| Key | Default mode | Fullscreen mode |
+|-----|--------------|-----------------|
+| `home`, `end` | Editor | Transcript |
+| `ctrl+home`, `ctrl+end` | Editor | Editor |
+| `pageUp`, `pageDown` | Editor | Transcript |
+| `ctrl+pageUp`, `ctrl+pageDown` | Editor | Editor |
+
+This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for smaller transcript steps while keeping the full-page bindings. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
+When a fullscreen overlay or inline custom component owns focus, it receives matching `pageUp`, `pageDown`, `home`, `end`, and custom `tui.altScreen.*` bindings before transcript scrolling. Its handler returns `true` when it consumes the key; an unhandled result lets transcript scrolling proceed. Remote components receive a correlated reply and have a bounded fallback if the engine stalls. This keeps host selectors and workflow stage-chat paging local to their focused component; mouse-wheel routing remains owned by the fullscreen viewport.
+
+| Keybinding id | Default | Description |
+|--------|---------|-------------|
+| `tui.altScreen.pageUp` | `pageUp` | Scroll the transcript up by one page |
+| `tui.altScreen.pageDown` | `pageDown` | Scroll the transcript down by one page |
+| `tui.altScreen.halfPageUp` | *(none)* | Scroll the transcript up by half a page |
+| `tui.altScreen.halfPageDown` | *(none)* | Scroll the transcript down by half a page |
+| `tui.altScreen.previousPrompt` | `ctrl+shift+up` | Jump to the previous marked message |
+| `tui.altScreen.nextPrompt` | `ctrl+shift+down` | Jump to the next marked message |
+| `tui.altScreen.top` | `home` | Scroll to the beginning of the transcript |
+| `tui.altScreen.bottom` | `end` | Scroll to the transcript end and follow new output |
+
+On Windows, pressing the secondary mouse button in fullscreen pastes text from the system clipboard into the focused component.
+
 ### Application
 
 | Keybinding id | Default | Description |
@@ -87,8 +122,10 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
-| `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image from clipboard |
+| `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image or text from clipboard |
 | `app.message.copy` | `ctrl+x` | Copy the last assistant message (or the selected message in `/tree`) |
+
+In fullscreen mode, a successful `app.message.copy` shortcut shows a short `Copied!` flash without adding a row to the fixed status dock. The `/copy` command keeps its normal status-line confirmation.
 
 When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
 
@@ -174,8 +211,8 @@ Create `~/.atomic/agent/keybindings.json`:
 
 ```json
 {
-  "tui.editor.cursorUp": ["up", "ctrl+p"],
-  "tui.editor.cursorDown": ["down", "ctrl+n"],
+  "tui.editor.historyPrevious": "ctrl+p",
+  "tui.editor.historyNext": "ctrl+n",
   "tui.editor.deleteWordBackward": ["ctrl+w", "alt+backspace"]
 }
 ```
@@ -188,8 +225,8 @@ On native Windows, `app.suspend` has no default binding because Windows terminal
 
 ```json
 {
-  "tui.editor.cursorUp": ["up", "ctrl+p"],
-  "tui.editor.cursorDown": ["down", "ctrl+n"],
+  "tui.editor.historyPrevious": "ctrl+p",
+  "tui.editor.historyNext": "ctrl+n",
   "tui.editor.cursorLeft": ["left", "ctrl+b"],
   "tui.editor.cursorRight": ["right", "ctrl+f"],
   "tui.editor.cursorWordLeft": ["alt+left", "alt+b"],

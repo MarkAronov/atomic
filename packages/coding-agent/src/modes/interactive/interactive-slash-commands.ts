@@ -1,5 +1,7 @@
+import type { TuiAltScreen } from "@earendil-works/pi-tui";
 import { computeCacheWaste } from "../../core/cache-stats.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -32,7 +34,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		this.showWarning("Wait for the current response to finish before reloading.");
 		return;
 	}
-	if (this.session.isCompacting) {
+	if (this.compactionActive) {
 		this.showWarning("Wait for compaction to finish before reloading.");
 		return;
 	}
@@ -223,6 +225,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	try {
 		const authResult = spawnSync("gh", ["auth", "status"], {
 			encoding: "utf-8",
+			env: createChildProcessEnvironment(),
 		});
 		if (authResult.status !== 0) {
 			this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
@@ -276,7 +279,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 			stderr: string;
 			code: number | null;
 		}>((resolve) => {
-			proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
+			proc = spawn("gh", ["gist", "create", "--public=false", tmpFile], { env: createChildProcessEnvironment() });
 			let stdout = "";
 			let stderr = "";
 			proc.stdout?.on("data", (data) => {
@@ -318,7 +321,10 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.handleCopyCommand = async function (this: InteractiveModeBase): Promise<void> {
+InteractiveModeBase.prototype.handleCopyCommand = async function (
+	this: InteractiveModeBase,
+	options: { flashConfirmation?: boolean } = {},
+): Promise<void> {
 	const text = this.session.getLastAssistantText();
 	if (!text) {
 		this.showError("No agent messages to copy yet.");
@@ -327,7 +333,8 @@ InteractiveModeBase.prototype.handleCopyCommand = async function (this: Interact
 
 	try {
 		await copyToClipboard(text);
-		this.showStatus("Copied last agent message to clipboard");
+		if (options.flashConfirmation && this.ui.mode === "fullscreen") (this.ui as TuiAltScreen).flash("Copied!");
+		else this.showStatus("Copied last agent message to clipboard");
 	} catch (error) {
 		this.showError(error instanceof Error ? error.message : String(error));
 	}

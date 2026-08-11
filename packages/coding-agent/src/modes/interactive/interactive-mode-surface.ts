@@ -1,6 +1,8 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
+import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
+import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import type {
 	AgentMessage,
@@ -76,6 +78,7 @@ declare module "./interactive-mode-base.ts" {
 		getChangelogForDisplay(): string | undefined;
 		reportInstallTelemetry(version: string): void;
 		getMarkdownThemeWithSettings(): MarkdownTheme;
+		getMarkdownTransformers(): MarkdownTransformer[];
 		formatDisplayPath(p: string): string;
 		formatExtensionDisplayPath(path: string): string;
 		formatContextPath(p: string): string;
@@ -233,7 +236,7 @@ declare module "./interactive-mode-base.ts" {
 		drainStartupReplayCommands(): Promise<void>;
 		advanceStartupInputReplay(submittedText: string): void;
 		subscribeToAgent(): void;
-		handleEvent(event: AgentSessionEvent): Promise<void>;
+		handleEvent(event: AgentSessionEvent | JsonAgentSessionEvent): Promise<void>;
 		getUserMessageText(message: Message): string;
 		showStatus(message: string): void;
 		chatMessageRenderOptions(): ChatMessageRenderOptions;
@@ -305,7 +308,9 @@ declare module "./interactive-mode-base.ts" {
 		isExtensionCommand(text: string): boolean;
 		flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 		flushPendingBashComponents(): void;
-		showSelector(create: (done: () => void) => { component: Component; focus: Component }): void;
+		showSelector(
+			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
+		): void;
 		showFastModeSelector(): void;
 		showSettingsSelector(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
@@ -317,7 +322,7 @@ declare module "./interactive-mode-base.ts" {
 			targetContainer?: Container,
 		): Promise<void>;
 		showModelSelector(initialSearchInput?: string): void;
-		showModelsSelector(): Promise<void>;
+		showModelsSelector(): void;
 		showUserMessageSelector(): Promise<void>;
 		handleCloneCommand(): Promise<void>;
 		maybeSaveImplicitProjectTrustAfterReload(): boolean;
@@ -351,7 +356,7 @@ declare module "./interactive-mode-base.ts" {
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;
 		handleImportCommand(text: string): Promise<void>;
 		handleShareCommand(): Promise<void>;
-		handleCopyCommand(): Promise<void>;
+		handleCopyCommand(options?: { flashConfirmation?: boolean }): Promise<void>;
 		handleNameCommand(text: string): void;
 		handleSessionCommand(): void;
 		handleChangelogCommand(): void;

@@ -43,7 +43,8 @@ export {
 	setKeybindings,
 	Text,
 	TruncatedText,
-	TUI,
+	type TUI,
+	TuiMainScreen,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 export { spawn, spawnSync } from "child_process";
@@ -91,6 +92,7 @@ export {
 	findExactModelReferenceMatch,
 	findInitialModel,
 	resolveModelScope,
+	resolveModelScopeFromModels,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
 } from "../../core/model-resolver.ts";

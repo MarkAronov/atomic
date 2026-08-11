@@ -655,8 +655,7 @@ pi.on("message_start", async (event, ctx) => {
 });
 
 pi.on("message_update", async (event, ctx) => {
-  // event.message
-  // event.assistantMessageEvent (token-by-token stream event)
+  // event.assistantMessageEvent (token-by-token delta; no cumulative message)
 });
 
 pi.on("message_end", async (event, ctx) => {
@@ -811,7 +810,9 @@ Behavior guarantees:
 - Mutations to `event.input` affect the actual tool execution
 - Later `tool_call` handlers see mutations made by earlier handlers
 - No re-validation is performed after your mutation
-- Return values from `tool_call` only control blocking via `{ block: true, reason?: string }`
+- Return values from `tool_call` control blocking via `{ block: true, reason?: string, terminate?: boolean }`
+- `terminate` only applies to a blocked call; the agent stops early only when every finalized result in the batch is terminating
+- `terminate` applies only to a blocked call; the agent stops early only when every finalized result in the batch is terminating
 
 ```typescript
 import { isToolCallEventType } from "@bastani/atomic";
@@ -827,7 +828,7 @@ pi.on("tool_call", async (event, ctx) => {
     event.input.command = `source ~/.profile\n${event.input.command}`;
 
     if (event.input.command.includes("rm -rf")) {
-      return { block: true, reason: "Dangerous command" };
+      return { block: true, reason: "Dangerous command", terminate: true };
     }
   }
 
@@ -875,6 +876,8 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 - Handlers run in extension load order
 - Each handler sees the latest result after previous handler changes
 - Handlers can return partial patches (`content`, `details`, or `isError`); omitted fields keep their current values
+
+After all handlers finish, Atomic normalizes image blocks returned by the tool or inserted by a handler according to `images.autoResize` before saving the result to history. If image processing fails, the original image remains in the result.
 
 Use `ctx.signal` for nested async work inside the handler. This lets Escape cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
@@ -1035,7 +1038,24 @@ ctx.sessionManager.getLeafId()        // Current leaf entry ID
 
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels
 
-Access to models and API keys.
+Access models, auth state, and provider-aware requests.
+
+Use `ctx.modelRegistry.complete()` for an extension model request that must use Atomic's provider composition. It dispatches through the active `ModelRuntime`, retaining registered custom providers and resolved request auth: the credential-specific `baseUrl`, headers (including `null` suppression markers), and environment values.
+
+```typescript
+const model = ctx.modelRegistry.find("github-copilot", "gpt-5.5");
+if (!model) throw new Error("Model not found");
+
+const response = await ctx.modelRegistry.complete(
+  model,
+  { messages },
+  { signal: ctx.signal },
+);
+```
+
+Use `getApiKeyAndHeaders()` only when an extension must inspect auth before dispatch; normal requests do not need to resolve or overlay auth themselves.
+
+`await ctx.modelRegistry.refresh(options)` returns `{ aborted, errors }`, not just completion. `errors` is a per-provider map, so extensions can report partial refresh failures; `aborted` reports cancellation. Host integrations that call `ModelRuntime.setRuntimeApiKey(providerId, apiKey, options)` must note that it records the runtime credential but does not refresh the catalog; call `refresh({ providers: [providerId], signal })` explicitly when a fresh catalog is needed.
 
 `ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved from the `--models` CLI flag and the `enabledModels` setting, matched against the available catalogue. It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (for example `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue.
 
@@ -1314,6 +1334,7 @@ Lifecycle and footguns:
 - Captured old `pi` / old command `ctx` session-bound objects are stale after replacement and will throw if used. Use only the `ctx` passed to `withSession` for session-bound work.
 - Previously extracted raw objects are still your responsibility. For example, if you capture `const sm = ctx.sessionManager` before replacement, `sm` is still the old `SessionManager` object. Do not reuse it after replacement.
 - Code in `withSession` should assume any state invalidated by your `session_shutdown` handler is already gone. Only capture plain data that survives shutdown cleanly, such as strings, ids, and serialized config.
+- Long-lived callbacks that need to classify a stale API error should use `isStaleExtensionContextError(error)` from `@bastani/atomic`, not match the host's error message.
 
 Safe pattern:
 
@@ -1422,6 +1443,26 @@ Use `promptSnippet` to opt a custom tool into a one-line entry in `Available too
 **Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix. Each guideline must name the tool it refers to — avoid "Use this tool when..." because the LLM cannot tell which tool "this" means. Write "Use my_tool when..." instead.
 
 See [dynamic-tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/dynamic-tools.ts) for a full example.
+
+#### Built-in tool prompt contributions
+
+Atomic exports immutable prompt metadata for its built-in coding tools. Use these constants when a custom harness or tool registry needs the same prompt entries as the built-in factories:
+
+```typescript
+import {
+  bashToolSystemPromptContribution,
+  editToolSystemPromptContribution,
+  findToolSystemPromptContribution,
+  lsToolSystemPromptContribution,
+  readToolSystemPromptContribution,
+  searchToolSystemPromptContribution,
+  writeToolSystemPromptContribution,
+} from "@bastani/atomic";
+
+const { snippet, guidelines } = readToolSystemPromptContribution;
+```
+
+Each contribution has a readonly `snippet` for the `Available tools` section and readonly `guidelines` for the active tool's `Guidelines` entries. The seven exports are `bash`, `edit`, `find`, `ls`, `read`, `search`, and `write`; Atomic's public `search` export is the corresponding surface for pi's upstream `grep` tool. The built-in factories use these values directly, so consumers do not need to duplicate prompt text.
 
 Use Atomic's export rather than importing `StringEnum` directly from Pi. It preserves Pi's Google-compatible runtime schema while keeping the schema typed against Atomic's direct TypeBox version.
 
@@ -1669,6 +1710,27 @@ mode and would not execute if sent via `prompt`.
 
 Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. See [Custom UI](#custom-ui).
 
+### pi.registerMarkdownTransformer(transformer)
+
+Register a synchronous, display-only transformer for Markdown in normal user text, assistant text, and thinking blocks. Atomic runs transformers in extension load order. Each extension retains one transformer, so a later call from that extension replaces its prior transformer. Each transformer receives the Markdown returned by the prior transformer, then Atomic renders the final value with its built-in Markdown renderer.
+
+The transformer receives the Markdown string and a context with:
+
+- `messageType` — `"user"`, `"assistant"`, or `"assistant-thinking"`
+- `isStreaming` — `true` for partial assistant updates; `false` for user, finalized assistant, and restored messages
+- `availableWidth` — exact terminal columns available for the transformed Markdown content
+
+Return the transformed Markdown:
+
+```typescript
+pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
+  if (isStreaming || messageType === "assistant-thinking") return markdown;
+  return markdown.replaceAll("-->", "→");
+});
+```
+
+If a transformer throws, Atomic keeps the Markdown produced so far and continues with the next transformer. The hook never changes the original message, session transcript, or model context. It runs for new user messages, assistant streaming updates, restored session messages, and terminal-width changes, so keep transformers synchronous and inexpensive. Isolated-engine rendering does not run host-side display transformers.
+
 ### pi.registerShortcut(shortcut, options)
 
 Register a keyboard shortcut. See [Keybindings](/keybindings) for the shortcut format and built-in keybindings.
@@ -1760,12 +1822,17 @@ pi.setThinkingLevel("high");
 
 ### pi.events
 
-Shared event bus for communication between extensions:
+Shared event bus for communication between active extensions. A subscription made with `on()` is removed automatically when its extension reloads or the session disposes. Use the returned function if you need to stop listening sooner:
 
 ```typescript
-pi.events.on("my:event", (data) => { ... });
+const unsubscribe = pi.events.on("my:event", (data) => { ... });
 pi.events.emit("my:event", { ... });
+unsubscribe();
 ```
+
+`pi.events` belongs to the extension instance that received it. Register listeners again when that instance reloads, and do not retain the object for later use: calling `on()` or `emit()` through a captured handle after reload or disposal throws.
+
+If you implement an `ExtensionRuntime` for an embedded host, provide `trackEventBusSubscription(unsubscribe)` and retain each returned subscription until that extension runtime is reloaded or disposed. `ExtensionUIContext.getChatRenderSettings()` must return `markdownTransformers`; it may also return `renderLatex` to control terminal math rendering. These fields keep event subscriptions and display transforms scoped to the active extension instance.
 
 ### Native providers
 
@@ -1811,14 +1878,16 @@ pi.registerProvider("corporate-ai", {
   models: [...],
   oauth: {
     name: "Corporate AI (SSO)",
-    async login(callbacks) {
+    async login(callbacks, signal) {
       // Custom OAuth flow
       callbacks.onAuth({ url: "https://sso.corp.com/..." });
       const code = await callbacks.onPrompt({ message: "Enter code:" });
+      signal.throwIfAborted();
       return { refresh: code, access: code, expires: Date.now() + 3600000 };
     },
-    async refreshToken(credentials) {
-      // Refresh logic
+    async refreshToken(credentials, signal) {
+      // Forward signal to the refresh request.
+      signal.throwIfAborted();
       return credentials;
     },
     getApiKey(credentials) {
@@ -2142,6 +2211,8 @@ pi.registerTool({
   },
 });
 ```
+
+`ReadOperations` may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. The Harness factory supplies both. A custom read backend without both members keeps the existing file-only remote behavior. Archive, SQLite, internal-resource, notebook, and path-variant helpers still use Atomic's local filesystem unless the tool gains dedicated remote seams.
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
@@ -2543,6 +2614,8 @@ ctx.ui.setTheme(lightTheme!);  // Or switch by Theme object
 ctx.ui.theme.fg("accent", "styled text");  // Access current theme
 ```
 
+Calling `setToolsExpanded()` with the current value is a no-op.
+
 Atomic's default working indicator keeps the literal one-cell `∀` fixed while following the active theme's optional `workingIndicator` tone overrides through a dark → accent → bright/bold → accent → dark ramp every 88ms. Any omitted tones are derived from selected-surface, `accent`, and `text` roles. `NO_COLOR` keeps regular/bold activity without foreground-color escapes, and `ATOMIC_REDUCED_MOTION=1` uses a static regular accent `∀` without a timer. Custom working-indicator frames and intervals are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `ctx.ui.theme.fg(...)`.
 
 These APIs customize presentation only; they do not start work or emit an extension stream event before prompt startup. See [Working Indicator Customization](/tui#pattern-4b-working-indicator-customization) for accepted-prompt, pre-stream, and agent-turn handoff timing.
@@ -2605,9 +2678,16 @@ class ConfirmPrompt implements Component {
 
   invalidate(): void {}
 
-  handleInput(data: string): void {
-    if (data === "\r") this.done(true);
-    if (data === "\x1b") this.done(false);
+  handleInput(data: string): boolean {
+    if (data === "\r") {
+      this.done(true);
+      return true;
+    }
+    if (data === "\x1b") {
+      this.done(false);
+      return true;
+    }
+    return false;
   }
 
   constructor(private readonly done: (value: boolean) => void) {}
@@ -2629,6 +2709,9 @@ The callback receives:
 - `done(value)` - Call to close component and return value
 
 Pass `{ signal }` to dismiss the custom UI if an operation is aborted; the returned promise rejects with the signal reason.
+Custom component `handleInput` methods must return `true` when they consume an input and `false` (or `undefined`) when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply.
+
+Custom component `handleInput` methods must return `true` when they consume an input and `false` or `undefined` when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply. Return `true` for a handled key so it is not applied twice.
 
 Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so that a component which never resolves cannot trap the keyboard. See [Interactive callback isolation](#interactive-callback-isolation).
 
@@ -2699,6 +2782,7 @@ export default function (pi: ExtensionAPI) {
 - Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
 - Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`
+- When a custom editor installed through `ctx.ui.setEditorComponent()` exposes `setAutocompleteMaxVisible()`, Atomic initializes it from the active `autocompleteMaxVisible` setting.
 
 To compose with another extension that already replaced the editor, capture the previous factory before setting yours:
 

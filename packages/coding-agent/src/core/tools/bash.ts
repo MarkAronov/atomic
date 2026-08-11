@@ -9,7 +9,7 @@ import { APP_NAME } from "../../config.ts";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
-import { waitForChildProcess } from "../../utils/child-process.ts";
+import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
 	getShellConfig,
 	getShellEnv,
@@ -58,6 +58,12 @@ const bashSchema = Type.Object(
 	{ ...bashBaseSchema.properties, async: Type.Optional(Type.Boolean({ description: "Run as a background job." })) },
 	{ additionalProperties: false },
 );
+export const bashToolSystemPromptContribution = Object.freeze({
+	snippet: "Execute a shell command.",
+	guidelines: Object.freeze([
+		"You can inspect ATOMIC_* or PI_* environment variables for current model and session details.",
+	] as const),
+} as const);
 export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
@@ -133,7 +139,7 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
-				env: env ?? getShellEnv(),
+				env: createChildProcessEnvironment(undefined, env ?? getShellEnv()),
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
@@ -375,10 +381,8 @@ export function createBashToolDefinition(
 		name: "bash",
 		label: "bash",
 		description: "Execute a shell command in the session workspace, with optional PTY or background-job handling.",
-		promptSnippet: "Execute a shell command.",
-		promptGuidelines: exposeSessionEnvironment
-			? ["Inspect ATOMIC_* or PI_* environment variables for current model and session details."]
-			: undefined,
+		promptSnippet: bashToolSystemPromptContribution.snippet,
+		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
 		parameters: asyncEnabled ? bashSchema : (bashBaseSchema as typeof bashSchema),
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, bashCommand: BashToolInput, signal?: AbortSignal, onUpdate?, _ctx?) {
@@ -687,10 +691,5 @@ export function createBashToolDefinition(
 	};
 }
 export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
-	const definition = createBashToolDefinition(cwd, options),
-		tool = wrapToolDefinition(definition);
-	return Object.assign(tool, {
-		promptSnippet: definition.promptSnippet,
-		promptGuidelines: definition.promptGuidelines,
-	});
+	return wrapToolDefinition(createBashToolDefinition(cwd, options));
 }

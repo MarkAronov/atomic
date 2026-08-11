@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
@@ -10,7 +10,7 @@ import {
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
 import {
-	detectTerminalBackgroundTheme,
+	detectTerminalThemeForAuto,
 	initTheme,
 	setTheme,
 	type TerminalTheme,
@@ -19,7 +19,7 @@ import {
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	initTheme(settingsManager.getTheme());
 	setKeybindings(KeybindingsManager.create());
-	const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
+	const ui = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
 	ui.setClearOnShrink(settingsManager.getClearOnShrink());
 	return ui;
 }
@@ -31,11 +31,7 @@ async function clearStartupTui(ui: TUI): Promise<void> {
 }
 
 async function detectStartupTheme(ui: TUI): Promise<TerminalTheme> {
-	try {
-		const scheme = await ui.queryTerminalColorScheme({ timeoutMs: 100 });
-		if (scheme) return scheme;
-	} catch {}
-	return (await detectTerminalBackgroundTheme({ ui, timeoutMs: 100 })).theme;
+	return detectTerminalThemeForAuto({ ui, timeoutMs: 100 });
 }
 
 /** First-run setup is eligible only in the default agent directory before settings.json exists. */

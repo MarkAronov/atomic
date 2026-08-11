@@ -5,6 +5,7 @@ Atomic supports subscription-based providers via OAuth and API-key providers via
 ## Table of Contents
 
 - [Subscriptions](#subscriptions)
+- [Verify readiness before a session](#verify-readiness-before-a-session)
 - [API Keys](#api-keys)
 - [Auth File](#auth-file)
 - [Cloud Providers](#cloud-providers)
@@ -34,6 +35,12 @@ Use `/logout` to clear credentials. Logout immediately invalidates authenticatio
 ### Token Refresh
 
 A stored OAuth token is refreshed once fewer than **five minutes** of validity remain, rather than at expiry, so a long turn is not started on a credential that dies mid-request. The refresh runs inside the `auth.json` lock and re-checks the stored expiry after taking it, so concurrent sessions sharing one credential file — subagents, workflow stages, RPC children — refresh it once between them rather than once each, and a session that arrives after the rotation finds nothing to do. A token still outside the window is not touched.
+
+### Verify Readiness Before a Session
+
+Run `atomic auth check --provider <provider>` to verify the effective credential a provider would use without starting a session. You can pass `--model <model>` instead, including a `provider/model` ID, when that is the value your automation already has. The command prints `ready`, `not_ready`, or `invalid`; `--json` adds the resolved provider when one is found, credential type, and reason for a non-ready result.
+
+Checks refresh expired OAuth credentials by default through the ordinary locked `auth.json` path. Use `--no-refresh` for a read-only probe: it neither creates nor mutates an auth file and reads Atomic's primary `~/.atomic/agent/auth.json` plus legacy `~/.pi/agent/auth.json` paths with the normal precedence. Readiness output contains no credential material unless you explicitly ask for `--credentials` with `--provider` or an exact `--model` target. That opt-in treats stdout or the JSON `credentials` field as a credential export; it refuses an OAuth token with less than 30 minutes of life when `--no-refresh` prevents a refresh.
 
 ### OpenAI Codex
 
@@ -130,17 +137,21 @@ Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Matc
 | Hugging Face | `HF_TOKEN` | `huggingface` |
 | Fireworks | `FIREWORKS_API_KEY` | `fireworks` |
 | Together AI | `TOGETHER_API_KEY` | `together` |
+| Baseten | `BASETEN_API_KEY` | `baseten` |
 | Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
 | MiniMax | `MINIMAX_API_KEY` | `minimax` |
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
 | Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
 | Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
-| Qwen Token Plan | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan (existing catalog) | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan (Individual) | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan-individual` |
 | Qwen Token Plan (China) | `QWEN_TOKEN_PLAN_CN_API_KEY` | `qwen-token-plan-cn` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
+
+Baseten's built-in default is `zai-org/GLM-5.2`; its catalog supplies the provider-specific thinking levels. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider.
 
 Reference for environment variables and `auth.json` keys: `findEnvKeys()` / `getEnvApiKey()` in the installed `@earendil-works/pi-ai` dependency (`node_modules/@earendil-works/pi-ai/dist/env-api-keys.d.ts`). The private provider map those functions use is in `node_modules/@earendil-works/pi-ai/dist/env-api-keys.js`; Atomic does not include a separate `packages/ai` source directory in this monorepo.
 
@@ -157,9 +168,11 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "nvidia": { "type": "api_key", "key": "nvapi-..." },
   "google": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
+  "baseten": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
   "together": { "type": "api_key", "key": "..." },
   "qwen-token-plan": { "type": "api_key", "key": "sk-sp-..." },
+  "qwen-token-plan-individual": { "type": "api_key", "key": "sk-sp-..." },
   "qwen-token-plan-cn": { "type": "api_key", "key": "sk-sp-..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
@@ -167,6 +180,11 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." }
 }
 ```
+
+`qwen-token-plan-individual` uses the same international endpoint and `QWEN_TOKEN_PLAN_API_KEY` as
+`qwen-token-plan`, but limits the picker to the models documented for Individual subscriptions. The existing
+provider keeps its broader catalog for backward compatibility. When using `auth.json`, store the credential
+under the provider you select; an environment variable is shared by both international providers.
 
 The file is created with `0600` permissions (user read/write only). Auth file credentials take priority over environment variables.
 

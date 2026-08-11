@@ -3,13 +3,18 @@ import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
-import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
+import type { MarkdownTransformer, MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
 	type CustomMessage,
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
+import {
+	applyAssistantMessageDelta,
+	beginStreamingAssistantMessage,
+	type StreamingAssistantDelta,
+} from "../streaming-assistant-message.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
@@ -46,6 +51,9 @@ export interface ChatMessageRenderOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
+	isStreaming?: boolean;
+	markdownTransformers?: readonly MarkdownTransformer[];
+	renderLatex?: boolean;
 	getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
@@ -137,7 +145,7 @@ export function chatEntriesFromAgentMessages(messages: readonly AgentMessage[]):
 export interface LiveChatEventLike {
 	readonly type?: unknown;
 	readonly message?: unknown;
-	readonly assistantMessageEvent?: { readonly type?: unknown; readonly delta?: unknown };
+	readonly assistantMessageEvent?: StreamingAssistantDelta;
 	readonly toolCallId?: unknown;
 	readonly toolName?: unknown;
 	readonly args?: unknown;
@@ -164,6 +172,20 @@ export class LiveChatEntriesController {
 	}
 	appendUserText(text: string): void {
 		this.entries.push({ role: "user", kind: "user", text });
+	}
+	/**
+	 * Seed the assistant message a chat mounted mid-stream never saw start.
+	 *
+	 * Delta-only updates carry just the next fragment, so a consumer attached
+	 * part-way through a turn cannot recover the text that already streamed. The
+	 * live session keeps that in-flight message, and seeding it here makes the
+	 * deltas that arrive afterwards continue it instead of opening a second
+	 * assistant message. A stream this consumer is already following wins.
+	 */
+	hydrateStreamingAssistantMessage(message: unknown): boolean {
+		if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
+		if (this.currentStreamingAssistantMessage() !== undefined) return false;
+		return this.updateAssistantMessage(beginStreamingAssistantMessage(message as AssistantMessage));
 	}
 	applyEvent(event: LiveChatEventLike): boolean {
 		const type = String(event.type ?? "");
@@ -201,11 +223,16 @@ export class LiveChatEntriesController {
 	clearPendingTools(): void {
 		this.pendingToolIndexes.clear();
 	}
+
+	isStreamingAssistantEntry(entry: ChatMessageEntry): boolean {
+		return this.streamingAssistantIndex !== undefined && this.entries[this.streamingAssistantIndex] === entry;
+	}
+
 	private handleMessageStart(message: unknown): boolean {
 		if (!isAgentMessageLike(message)) return false;
 		if (message.role === "assistant") {
 			this.streamingAssistantIndex = undefined;
-			return this.updateAssistantMessage(message as AssistantMessage);
+			return this.updateAssistantMessage(beginStreamingAssistantMessage(message as AssistantMessage));
 		}
 		if (message.role === "toolResult") {
 			const toolResult = message as ToolResultMessage;
@@ -218,24 +245,10 @@ export class LiveChatEntriesController {
 		return true;
 	}
 	private handleMessageUpdate(event: LiveChatEventLike): boolean {
-		const message = event.message;
-		let changed = false;
-		const snapshotHasPayload =
-			isAgentMessageLike(message) &&
-			message.role === "assistant" &&
-			assistantContentHasRenderablePayload((message as { content?: unknown }).content);
-		if (isAgentMessageLike(message) && message.role === "assistant" && snapshotHasPayload) {
-			changed = this.updateAssistantMessage(message as AssistantMessage) || changed;
-		}
-		const assistantEvent = event.assistantMessageEvent;
-		const streamType = String(assistantEvent?.type ?? "");
-		const delta = typeof assistantEvent?.delta === "string" ? assistantEvent.delta : "";
-		if (!changed && streamType === "text_delta" && delta) {
-			changed = this.appendAssistantTextDelta(delta);
-		} else if (!changed && streamType === "thinking_delta" && delta) {
-			changed = this.appendAssistantThinkingDelta(delta);
-		}
-		return changed;
+		if (!event.assistantMessageEvent) return false;
+		const message = this.currentStreamingAssistantMessage() ?? minimalAssistantMessage();
+		if (!applyAssistantMessageDelta(message, event.assistantMessageEvent)) return false;
+		return this.updateAssistantMessage(message);
 	}
 	private handleMessageEnd(message: unknown): boolean {
 		if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
@@ -279,28 +292,6 @@ export class LiveChatEntriesController {
 			});
 		}
 		return true;
-	}
-	private appendAssistantTextDelta(delta: string): boolean {
-		const current = this.currentStreamingAssistantMessage();
-		const content = current ? [...current.content] : [];
-		const lastText = [...content].reverse().find((item) => item.type === "text");
-		if (lastText && lastText.type === "text") lastText.text += delta;
-		else content.push({ type: "text", text: delta });
-		return this.updateAssistantMessage({
-			...(current ?? minimalAssistantMessage()),
-			content,
-		});
-	}
-	private appendAssistantThinkingDelta(delta: string): boolean {
-		const current = this.currentStreamingAssistantMessage();
-		const content = current ? [...current.content] : [];
-		const lastThinking = [...content].reverse().find((item) => item.type === "thinking");
-		if (lastThinking && lastThinking.type === "thinking") lastThinking.thinking += delta;
-		else content.push({ type: "thinking", thinking: delta });
-		return this.updateAssistantMessage({
-			...(current ?? minimalAssistantMessage()),
-			content,
-		});
 	}
 	private currentStreamingAssistantMessage(): AssistantMessage | undefined {
 		const entry = this.streamingAssistantIndex !== undefined ? this.entries[this.streamingAssistantIndex] : undefined;
@@ -386,20 +377,6 @@ function isAgentMessageLike(
 ): message is AgentMessage & { stopReason?: unknown; errorMessage?: unknown } {
 	return message !== null && typeof message === "object" && "role" in message;
 }
-function assistantContentHasRenderablePayload(content: unknown): boolean {
-	if (typeof content === "string") return content.length > 0;
-	if (!Array.isArray(content)) return false;
-	return content.some((item) => {
-		if (typeof item === "string") return item.length > 0;
-		if (item == null || typeof item !== "object") return false;
-		const obj = item as { type?: unknown; text?: unknown; thinking?: unknown };
-		return (
-			(obj.type === "text" && typeof obj.text === "string" && obj.text.length > 0) ||
-			(obj.type === "thinking" && typeof obj.thinking === "string" && obj.thinking.length > 0) ||
-			obj.type === "toolCall"
-		);
-	});
-}
 function minimalAssistantMessage(): AssistantMessage {
 	return {
 		role: "assistant",
@@ -446,6 +423,9 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				markdownTheme,
 				options.hiddenThinkingLabel ?? "Thinking...",
 				options.outputPad ?? 1,
+				options.markdownTransformers,
+				options.isStreaming,
+				options.renderLatex,
 			);
 		case "tool": {
 			if (options.createToolComponent) return options.createToolComponent(messageEntry);
@@ -490,6 +470,8 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				markdownTheme,
 				options.toolOutputExpanded ?? false,
 				options.outputPad ?? 1,
+				options.markdownTransformers,
+				options.renderLatex,
 			);
 		case "custom": {
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
@@ -501,12 +483,13 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.getCustomMessageRenderer?.(messageEntry.message.customType),
 				markdownTheme,
 				options.outputPad ?? 1,
+				options.renderLatex,
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
 		case "branchSummary": {
-			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme);
+			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme, options.renderLatex);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
@@ -514,15 +497,24 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 			return new Text(theme.fg("dim", messageEntry.text), 1, 0);
 	}
 }
-function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expanded: boolean, outputPad = 1): Component {
+function userMessageComponent(
+	text: string,
+	markdownTheme: MarkdownTheme,
+	expanded: boolean,
+	outputPad = 1,
+	markdownTransformers: readonly MarkdownTransformer[] = [],
+	renderLatex = true,
+): Component {
 	const skillBlock = parseSkillBlock(text);
-	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad);
+	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad, markdownTransformers, renderLatex);
 	const container = new Container();
-	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme);
+	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex);
 	skillComponent.setExpanded(expanded);
 	container.addChild(skillComponent);
 	if (skillBlock.userMessage) {
-		container.addChild(new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad));
+		container.addChild(
+			new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad, markdownTransformers, renderLatex),
+		);
 	}
 	return container;
 }

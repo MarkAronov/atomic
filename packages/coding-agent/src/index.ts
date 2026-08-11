@@ -138,7 +138,13 @@ export {
 	normalizeModelFailureSignal,
 } from "./core/model-fallback-failures.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
-export { type CreateModelRuntimeOptions, ModelRuntime, type ModelRuntimeAuthOverrides } from "./core/model-runtime.ts";
+export {
+	type CreateModelRuntimeOptions,
+	CredentialSynchronizationError,
+	type CredentialSynchronizationOperation,
+	ModelRuntime,
+	type ModelRuntimeAuthOverrides,
+} from "./core/model-runtime.ts";
 export type {
 	PackageManager,
 	PathMetadata,
@@ -230,7 +236,7 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
-export type { DefaultProjectTrust } from "./core/settings-manager.ts";
+export type { DefaultProjectTrust, TuiMode } from "./core/settings-manager.ts";
 export {
 	type CompactionSettings,
 	type ImageSettings,
@@ -261,6 +267,7 @@ export {
 	type BashToolDetails,
 	type BashToolInput,
 	type BashToolOptions,
+	bashToolSystemPromptContribution,
 	createAskUserQuestionToolDefinition,
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -276,22 +283,27 @@ export {
 	type EditToolDetails,
 	type EditToolInput,
 	type EditToolOptions,
+	editToolSystemPromptContribution,
 	type FindOperations,
 	type FindToolDetails,
 	type FindToolInput,
 	type FindToolOptions,
+	findToolSystemPromptContribution,
 	formatSize,
 	type LsOperations,
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	lsToolSystemPromptContribution,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
+	readToolSystemPromptContribution,
 	type SearchToolDetails,
 	type SearchToolInput,
 	type SearchToolOptions,
+	searchToolSystemPromptContribution,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -302,6 +314,7 @@ export {
 	type WriteToolInput,
 	type WriteToolOptions,
 	withFileMutationQueue,
+	writeToolSystemPromptContribution,
 } from "./core/tools/index.ts";
 export {
 	hasProjectTrustInputs,
@@ -408,6 +421,15 @@ export {
 } from "./modes/interactive/theme/theme.ts";
 // Run modes for programmatic SDK usage
 export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messages.ts";
+// Experimental Harness factory
+export {
+	type BuildCodingAgentHarnessSystemPromptOptions,
+	buildCodingAgentHarnessSystemPrompt,
+	type CodingAgentHarnessTool,
+	type CreateCodingAgentHarnessOptions,
+	createCodingAgentHarness,
+} from "./server/create-harness.ts";
+export { createChildProcessEnvironment } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

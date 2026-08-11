@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { injectSingleProgressInstruction, writeInitialProgressFile } from "../../shared/settings.ts";
 import {
@@ -141,38 +142,48 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 		testSession: params.testSession,
 		onDetachedExit: (completed) => {
 			const envelope = completed.envelope?.trim() ? completed.envelope : "(no output)";
-			ctx.pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-				id,
-				runId: id,
-				asyncDir,
-				agent,
-				status: completed.status,
-				summary: envelope,
-				envelope,
-				timestamp: Date.now(),
-				sessionFile: completed.sessionFile,
-				results: [
-					{
-						agent,
-						output: envelope,
-						status: completed.status,
-						index: 0,
-						intercomTarget: childIntercomTarget?.(agent, 0),
-					},
-				],
-				result: completed,
-			});
+			try {
+				ctx.pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+					id,
+					runId: id,
+					asyncDir,
+					agent,
+					status: completed.status,
+					summary: envelope,
+					envelope,
+					timestamp: Date.now(),
+					sessionFile: completed.sessionFile,
+					results: [
+						{
+							agent,
+							output: envelope,
+							status: completed.status,
+							index: 0,
+							intercomTarget: childIntercomTarget?.(agent, 0),
+						},
+					],
+					result: completed,
+				});
+			} catch (error) {
+				if (!isStaleExtensionContextError(error)) throw error;
+				// A detached child may finish after its parent extension runtime reloads.
+			}
 		},
 	});
 
-	ctx.pi.events.emit(SUBAGENT_ASYNC_STARTED_EVENT, {
-		id,
-		asyncDir,
-		sessionId: result.path,
-		mode: "single",
-		agent,
-		agents: [agent],
-	});
+	try {
+		ctx.pi.events.emit(SUBAGENT_ASYNC_STARTED_EVENT, {
+			id,
+			asyncDir,
+			sessionId: result.path,
+			mode: "single",
+			agent,
+			agents: [agent],
+		});
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// The launch result remains useful when the captured runtime is stale.
+	}
 	return {
 		content: [{ type: "text", text: formatAsyncStartedMessage(`Async: ${agent} [${id}]`) }],
 		details: { mode: "single", runId: id, results: [result], asyncId: id, asyncDir },

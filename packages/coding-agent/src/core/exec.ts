@@ -3,7 +3,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { waitForChildProcess } from "../utils/child-process.ts";
+import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
 
 /**
  * Options for executing shell commands.
@@ -44,8 +44,9 @@ export async function execCommand(
 			// Pass the environment explicitly. Bun snapshots the process environment
 			// at startup for spawns that omit `env`, so an inherited default would
 			// still carry values this process deleted from `process.env` — including
-			// the interactive-engine control variables and their --api-key.
-			env: { ...process.env },
+			// the interactive-engine control variables and their --api-key. Preserve
+			// Atomic's child attribution in the same explicit environment.
+			env: createChildProcessEnvironment(),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 

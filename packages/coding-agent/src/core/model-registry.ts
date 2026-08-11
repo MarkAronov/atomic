@@ -1,4 +1,15 @@
-import type { Api, AuthResult, Model, Provider } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	AuthResult,
+	Context,
+	Model,
+	ModelsApiStreamOptions,
+	ModelsRefreshOptions,
+	ModelsRefreshResult,
+	Provider,
+	ProviderHeaders,
+} from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 
@@ -7,14 +18,15 @@ export type ResolvedRequestAuth =
 	| {
 			ok: true;
 			apiKey?: string;
-			headers?: Record<string, string>;
+			headers?: ProviderHeaders;
+			baseUrl?: string;
 			env?: Record<string, string>;
 	  }
 	| { ok: false; error: string };
 export { clearApiKeyCache } from "./provider-composer.ts";
 
 /**
- * Synchronous compatibility facade exposed to extensions.
+ * Compatibility facade exposed to extensions.
  * Coding-agent internals use ModelRuntime directly.
  */
 export class ModelRegistry {
@@ -24,9 +36,13 @@ export class ModelRegistry {
 		this.runtime = runtime;
 	}
 
-	/** Reload models.json asynchronously. Await before making synchronous registry reads. */
-	async refresh(): Promise<void> {
-		await this.runtime.refresh();
+	/**
+	 * Reload models.json asynchronously. Await before making synchronous registry reads.
+	 * Returns pi's refresh result so callers can react to per-provider failures
+	 * (`errors`) and cancellation (`aborted`); pi reports both without rejecting.
+	 */
+	async refresh(options?: ModelsRefreshOptions): Promise<ModelsRefreshResult> {
+		return this.runtime.refresh(options);
 	}
 
 	getError(): string | undefined {
@@ -57,23 +73,15 @@ export class ModelRegistry {
 				if (compatibility.authHeader) {
 					return { ok: false, error: `No API key found for "${model.provider}"` };
 				}
-				const headers = compatibility.headers
-					? Object.fromEntries(
-							Object.entries(compatibility.headers).filter(
-								(entry): entry is [string, string] => entry[1] !== null,
-							),
-						)
-					: undefined;
-				return { ok: true, headers };
+				return { ok: true, headers: compatibility.headers };
 			}
-			const headers = resolution.auth.headers
-				? Object.fromEntries(
-						Object.entries(resolution.auth.headers).filter(
-							(entry): entry is [string, string] => entry[1] !== null,
-						),
-					)
-				: undefined;
-			return { ok: true, apiKey: resolution.auth.apiKey, headers, env: resolution.env };
+			return {
+				ok: true,
+				apiKey: resolution.auth.apiKey,
+				headers: resolution.auth.headers,
+				...(resolution.auth.baseUrl === undefined ? {} : { baseUrl: resolution.auth.baseUrl }),
+				env: resolution.env,
+			};
 		} catch (error) {
 			const cause = error instanceof Error ? error.cause : undefined;
 			const message =
@@ -94,6 +102,15 @@ export class ModelRegistry {
 
 	getProvider(provider: string): Provider | undefined {
 		return this.runtime.getProvider(provider);
+	}
+
+	/** Complete through the active runtime so provider composition and request auth apply. */
+	complete<TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: ModelsApiStreamOptions<TApi>,
+	): Promise<AssistantMessage> {
+		return this.runtime.complete(model, context, options);
 	}
 
 	getProviderDisplayName(provider: string): string {

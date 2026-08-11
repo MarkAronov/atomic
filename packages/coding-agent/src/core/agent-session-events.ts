@@ -29,6 +29,7 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "./extensions/index.ts";
+import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 
@@ -132,6 +133,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	// This ensures the UI sees the updated queue state
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
+		this._recoverableLengthRecoveryAttempted = false;
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
 		const messageText = this._getUserMessageText(event.message);
@@ -203,17 +205,17 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			this._lastAssistantMessage = event.message;
 
 			const assistantMsg = event.message as AssistantMessage;
-			// Treat degenerate empty completions (no content, zero output tokens) and
-			// intercepted canned safety refusals as failures alongside stopReason ===
-			// "error". Otherwise such a turn that stops with reason "stop"/"length"
-			// would reset the retry counter on every attempt, causing unbounded
-			// retries instead of honoring maxRetries.
+			// A length stop preserves its one-shot recovery budget. Reset both
+			// recovery kinds only once a non-truncated response completes.
 			const assistantFailed =
 				assistantMsg.stopReason === "error" ||
 				this._isEmptyCompletion(assistantMsg) ||
 				this._isSafetyRefusal(assistantMsg);
-			if (!assistantFailed) {
+			if (!assistantFailed && assistantMsg.stopReason !== "length") {
 				this._overflowRecoveryAttempted = false;
+				this._recoverableLengthRecoveryAttempted = false;
+			}
+			if (!assistantFailed) {
 				this._contextOverflowUnresolved = false;
 				this._outputBudgetErrorContinuationAttempts = 0;
 			}
@@ -434,7 +436,6 @@ export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent)
 	} else if (event.type === "message_update") {
 		const extensionEvent: MessageUpdateEvent = {
 			type: "message_update",
-			message: event.message,
 			assistantMessageEvent: event.assistantMessageEvent,
 		};
 		await this._extensionRunner.emit(extensionEvent);
@@ -494,27 +495,12 @@ export function subscribe(this: AgentSession, listener: AgentSessionEventListene
 	};
 }
 
-/**
- * Temporarily disconnect from agent events.
- * User listeners are preserved and will receive events again after resubscribe().
- * Used internally during operations that need to pause event processing.
- */
-
+/** Disconnect from agent events during disposal. */
 export function _disconnectFromAgent(this: AgentSession): void {
 	if (this._unsubscribeAgent) {
 		this._unsubscribeAgent();
 		this._unsubscribeAgent = undefined;
 	}
-}
-
-/**
- * Reconnect to agent events after _disconnectFromAgent().
- * Preserves all existing listeners.
- */
-
-export function _reconnectToAgent(this: AgentSession): void {
-	if (this._unsubscribeAgent) return; // Already connected
-	this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 }
 
 /**
@@ -534,9 +520,7 @@ export function dispose(this: AgentSession): void {
 	// Fail closed while protected input remains queued, or flush a consumed
 	// reconciliation before invalidation can discard its recovery state.
 	prepareProtectedStreamingCustomMessagesForDisposal(this);
-	this._extensionRunner.invalidate(
-		"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-	);
+	this._extensionRunner.invalidate(STALE_EXTENSION_CONTEXT_MESSAGE);
 	disposeSessionAsyncJobManager(this._asyncJobManager, this._asyncJobManagerSessionId);
 	this._disconnectFromAgent();
 	this._eventListeners = [];
@@ -570,6 +554,5 @@ export const agentSessionEventsMethods = {
 	_emitExtensionEvent,
 	subscribe,
 	_disconnectFromAgent,
-	_reconnectToAgent,
 	dispose,
 };

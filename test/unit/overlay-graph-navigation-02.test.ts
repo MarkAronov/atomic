@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { GraphViewLayout, graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
@@ -151,25 +153,115 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
-	it("renders the constant 32-line frame when no viewport provider is wired", () => {
-		// Fallback path: direct unit renders without a host-provided
-		// viewport accessor get the legacy OVERLAY_LINE_COUNT rectangle.
-		const stages = [makeStage("A"), makeStage("B", ["A"])];
+	it("sizes an unhosted overlay from its layout content instead of a fixed frame", () => {
+		const stages = [makeStage("A"), makeStage("B", ["A"])] as const;
+		const view = makeView([...stages]);
+		const lines = view.render(96);
+		assert.equal(lines.length, 21);
+		assert.ok(lines.length < 32, "a short graph must not use the old fixed rectangle");
+		view.dispose();
+	});
+	it("tracks unhosted frame height with a large graph while keeping the body scrollable", () => {
+		const stages = Array.from({ length: 400 }, (_, index) =>
+			makeStage(`stage-${index}`, index === 0 ? [] : [`stage-${index - 1}`]),
+		);
 		const view = makeView(stages);
 		const lines = view.render(96);
-		assert.equal(lines.length, 32);
+		assert.ok(lines.length >= 32, "a large graph must not collapse to a short fixed frame");
+		assert.ok(lines.length > stages.length, "the natural frame must track graph content");
+		assert.ok(lines.length < stages.length * 10, "the frame should use graph geometry, not one row per stage");
 		view.dispose();
 	});
 
-	it("leaves unpainted top and bottom margin rows around the orchestrator panel", () => {
-		const stages = [makeStage("A"), makeStage("B", ["A"])];
-		const view = makeView(stages);
+	it("keeps unpainted margin rows around the layout root", () => {
+		const stages = [makeStage("A"), makeStage("B", ["A"])] as const;
+		const view = makeView([...stages]);
 		const lines = view.render(96);
-		assert.equal(lines.length, 32);
 		assert.equal(lines[0], " ".repeat(96));
+		assert.equal(lines.length, 21);
 		assert.equal(lines.at(-1), " ".repeat(96));
 		assert.match(visibleText(lines.slice(1, 4)), /ORCHESTRATOR/);
 		assert.match(visibleText(lines.slice(-4, -1)), /GRAPH/);
+		view.dispose();
+	});
+	it("keeps the ScrollView body box aligned with its viewport formula", () => {
+		const layout = new GraphViewLayout({
+			renderHeader: () => ["", "", ""],
+			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => ""),
+			renderFooter: () => ["", "", ""],
+			bodyContentHeight: (_width, rows) => rows,
+		});
+		try {
+			for (let height = 1; height <= 60; height++) {
+				const frame = layout.render(96, height);
+				assert.ok(frame.bodyBox, `layout should expose a body box at height ${height}`);
+				assert.equal(frame.bodyBox.rect.height, graphLayoutBodyRows(height), `body height at ${height}`);
+			}
+		} finally {
+			layout.dispose();
+		}
+	});
+	it("reserves the scrollbar column only while the body overflows", () => {
+		let overflowing = true;
+		const layout = new GraphViewLayout({
+			renderHeader: () => ["", "", ""],
+			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => ""),
+			renderFooter: () => ["", "", ""],
+			bodyContentHeight: (_width, rows) => (overflowing ? rows + 1 : rows),
+		});
+		try {
+			const overflowingFrame = layout.render(96, 20);
+			assert.ok(overflowingFrame.bodyBox);
+			assert.equal(overflowingFrame.bodyBox.children[0]?.rect.width, 95);
+			assert.equal(overflowingFrame.scrollbar?.column, 95);
+
+			overflowing = false;
+			const fittedFrame = layout.render(96, 20);
+			assert.ok(fittedFrame.bodyBox);
+			assert.equal(fittedFrame.bodyBox.children[0]?.rect.width, 96);
+			assert.equal(fittedFrame.scrollbar, undefined);
+		} finally {
+			layout.dispose();
+		}
+	});
+	it("terminates pi-tui's above-viewport image scan after one hidden row", () => {
+		const layout = new GraphViewLayout({
+			renderHeader: () => ["", "", ""],
+			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => "row"),
+			renderFooter: () => ["", "", ""],
+			bodyContentHeight: () => 5_000,
+		});
+		try {
+			layout.render(96, 24);
+			layout.scrollView.scrollTo(4_000);
+			const frame = layout.render(96, 24);
+			const content = frame.bodyBox?.scrollContentLines;
+			const scrollTop = layout.scrollView.scrollTop;
+			assert.ok(content && scrollTop > 0);
+			assert.equal(content[scrollTop - 1], " ", "the sentinel must stop the scan at the viewport edge");
+			assert.equal(content[scrollTop - 2], undefined, "rows above the sentinel remain unmaterialized");
+			assert.equal(content.length, 5_000);
+			assert.equal(frame.wrappedRows[frame.bodyBox!.rect.y], true, "painted body rows are tagged for normalization");
+		} finally {
+			layout.dispose();
+		}
+	});
+	it("preserves content OSC-8 terminators and composite seam resets", () => {
+		const view = makeView([makeStage("A")]);
+		const wrapper = "\x1b[0m\x1b]8;;\x07";
+		const content = "\x1b]8;;https://example.com\x07label\x1b[0m\x1b]8;;\x07";
+		const [line] = view._normalizeLayoutLines([`${wrapper}${content}${wrapper}`], [true], 96, 1, 0, 0);
+		assert.match(line, /\x1b\]8;;https:\/\/example\.com\x07label\x1b\[0m\x1b\]8;;\x07/);
+		assert.equal((line.match(/\x1b\[0m\x1b\]8;;\x07/g) ?? []).length, 1);
+
+		const sideBySide = `${wrapper}\x1b[41mleft${wrapper}\x1b[42mright${wrapper}`;
+		const [composited] = view._normalizeLayoutLines([sideBySide], [true], 96, 1, 0, 0);
+		assert.match(composited, /\x1b\[41mleft\x1b\[0m\x1b\]8;;\x07\x1b\[42mright/);
+
+		const unwrapped = "\x1b]8;;https://example.com\x07label\x1b[0m\x1b]8;;\x07";
+		const [kept] = view._normalizeLayoutLines([unwrapped], [false], 96, 1, 0, 0);
+		assert.ok(kept.startsWith(unwrapped), "unwrapped content keeps its own OSC-8 terminator");
+		assert.equal((kept.match(/\x1b\[0m\x1b\]8;;\x07/g) ?? []).length, 1);
 		view.dispose();
 	});
 
@@ -209,6 +301,81 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
+	it("keeps tiny terminal frames bounded while shrinking chrome", () => {
+		let rows = 5;
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap([makeStage("tiny")])),
+			graphTheme: defaultTheme,
+			getViewportRows: () => rows,
+		});
+		for (rows of [5, 3, 1]) {
+			const lines = view.render(96);
+			assert.equal(lines.length, rows);
+			assert.ok(lines.every((line) => visibleWidth(line) === 96));
+		}
+		view.dispose();
+	});
+
+	it("reflows the ScrollView body across terminal resize without losing graph scrolling", () => {
+		const stages = Array.from({ length: 12 }, (_, index) =>
+			makeStage(`resize-${index}`, index === 0 ? [] : [`resize-${index - 1}`]),
+		);
+		const store = makeStore(makeSnap(stages));
+		let terminalRows = 10;
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: defaultTheme,
+			getViewportRows: () => terminalRows,
+		});
+
+		assert.equal(view.render(96).length, 10);
+		const shortScrollbar = view._graphScrollbarGeometry;
+		assert.ok(shortScrollbar, "the short graph viewport has a ScrollView scrollbar");
+		assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
+		view.render(96);
+		assert.ok(view._graphScrollOffset > 0);
+
+		terminalRows = 40;
+		const tallLines = view.render(96);
+		const tallScrollbar = view._graphScrollbarGeometry;
+		assert.equal(tallLines.length, 40);
+		assert.ok(tallScrollbar, "the taller graph viewport keeps a ScrollView scrollbar");
+		assert.ok(tallScrollbar.trackHeight > shortScrollbar.trackHeight, "the scrollbar track follows the resized body");
+		assert.match(visibleText(tallLines.slice(-4)), /GRAPH/);
+		assert.ok(view._graphScrollOffset > 0, "a taller viewport keeps the still-valid ScrollView offset");
+		assert.ok(view._graphScrollOffset <= tallScrollbar.maxScrollTop);
+
+		terminalRows = 8;
+		const shortLines = view.render(96);
+		const resizedShortScrollbar = view._graphScrollbarGeometry;
+		assert.equal(shortLines.length, 8);
+		assert.ok(resizedShortScrollbar, "the short resized graph viewport keeps a scrollbar");
+		assert.match(visibleText(shortLines.slice(-4)), /GRAPH/);
+		assert.ok(view._graphScrollOffset <= resizedShortScrollbar.maxScrollTop);
+		view.dispose();
+	});
+
+	it("keeps the last hosted frame height while the host terminal disappears", () => {
+		let terminalRows: number | undefined = 40;
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap([makeStage("lifecycle")])),
+			graphTheme: defaultTheme,
+			getViewportRows: () => terminalRows,
+		});
+
+		assert.equal(view.render(96).length, 40);
+		terminalRows = undefined;
+		assert.equal(view.render(96).length, 40, "a torn-down terminal keeps the last hosted frame height");
+		terminalRows = 12;
+		assert.equal(view.render(96).length, 12, "a returning host resizes immediately");
+		view.dispose();
+	});
 	it("hides unstarted placeholder stages while a prompt stage is awaiting input", () => {
 		const stages = [
 			makeStage("capture"),
@@ -311,6 +478,9 @@ describe("GraphView keyboard navigation", () => {
 		assert.equal(view.handleInput("d"), true);
 		assert.deepEqual(resolved, []);
 		assert.equal(store.runs()[0]?.pendingPrompt?.id, prompt.id);
+
+		assert.equal(view.handleInput("\x1b[6~"), true, "raw PageDown remains owned by the select prompt");
+		assert.equal(view.handleInput("\x1b[5~"), true, "raw PageUp remains owned by the select prompt");
 
 		assert.equal(view.handleInput("s"), true);
 		assert.deepEqual(resolved, [{ runId: "run-1", promptId: prompt.id, response: "beta" }]);

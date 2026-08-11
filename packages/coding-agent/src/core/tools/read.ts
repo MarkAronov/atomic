@@ -13,7 +13,12 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { parseConflictBlocks, registerConflictBlocks } from "./conflict-registry.ts";
-import { buildDirectoryTree } from "./directory-tree.ts";
+import {
+	buildDirectoryTree,
+	buildDirectoryTreeFromOperations,
+	type DirectoryTreeEntry,
+	type DirectoryTreeResult,
+} from "./directory-tree.ts";
 import { isReadableUrlPath } from "./fetch-url.ts";
 import {
 	createHashlineSnapshotStore,
@@ -56,6 +61,12 @@ const readSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+export const readToolSystemPromptContribution = Object.freeze({
+	snippet: "Read a path selector.",
+	guidelines: Object.freeze([
+		"Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views.",
+	] as const),
+} as const);
 export type ReadToolInput = Static<typeof readSchema>;
 const READ_TOOL_MAX_RESULT_CHARS = 50_000;
 export interface OversizedReadDetails {
@@ -86,10 +97,12 @@ interface CompactReadClassification {
 	kind: "docs" | "resource" | "skill";
 	label: string;
 }
-const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
 export interface ReadOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	access: (absolutePath: string) => Promise<void>;
+	stat?: (absolutePath: string) => Promise<{ isFile: boolean; isDirectory: boolean } | undefined>;
+	listDir?: (absolutePath: string) => Promise<DirectoryTreeEntry[] | undefined>;
 	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
 }
 const defaultReadOperations: ReadOperations = {
@@ -301,10 +314,8 @@ export function createReadToolDefinition(
 		label: "read",
 		description:
 			"Read files, directories, archives, SQLite databases, internal resources, images, documents, and URLs through one path string.",
-		promptSnippet: "Read a path selector.",
-		promptGuidelines: [
-			"Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views.",
-		],
+		promptSnippet: readToolSystemPromptContribution.snippet,
+		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {
@@ -617,12 +628,23 @@ export function createReadToolDefinition(
 								resolve({ content, details: readSourceMeta(absolutePath) });
 								return;
 							}
-							if (!options?.operations && (await fsStat(absolutePath)).isDirectory()) {
-								const tree = await buildDirectoryTree(absolutePath, {
+							let tree: DirectoryTreeResult | undefined;
+							if (ops.stat && ops.listDir) {
+								const stat = await ops.stat(absolutePath);
+								if (stat?.isDirectory)
+									tree = await buildDirectoryTreeFromOperations(
+										absolutePath,
+										{ listDir: ops.listDir },
+										{ maxDepth: 2, perDirLimit: 12, rootLimit: null },
+									);
+							} else if (!options?.operations && (await fsStat(absolutePath)).isDirectory()) {
+								tree = await buildDirectoryTree(absolutePath, {
 									maxDepth: 2,
 									perDirLimit: 12,
 									rootLimit: null,
 								});
+							}
+							if (tree) {
 								const allLines = tree.rendered.split("\n"),
 									rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
 										allLines,

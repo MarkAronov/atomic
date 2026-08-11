@@ -4,28 +4,39 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
 
+const REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS = 120_000;
+
 type PiAiExports = {
 	complete?: object;
 	getModel?: object;
 	StringEnum?: object;
+};
+type PiTuiLayoutExports = {
+	getScrollbarGeometry?: object;
+	getScrollViewBox?: object;
+	renderLayoutFrame?: object;
 };
 
 // Provider-owned OAuth is exposed through provider metadata; the removed global
 // OAuth registration bridge is intentionally not part of extension aliases.
 
 describe("extension loader pi-ai compat aliases", () => {
-	it("keys root and compat specifiers to the same virtual module object", async () => {
-		const modules = await extensionLoaderTestHooks.loadVirtualModules();
+	it(
+		"keys root and compat specifiers to the same virtual module object",
+		async () => {
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 
-		expect(modules["@earendil-works/pi-ai"]).toBe(modules["@earendil-works/pi-ai/compat"]);
-		expect(modules["@mariozechner/pi-ai"]).toBe(modules["@mariozechner/pi-ai/compat"]);
-		expect(modules["@mariozechner/pi-ai"]).toBe(modules["@earendil-works/pi-ai/compat"]);
+			expect(modules["@earendil-works/pi-ai"]).toBe(modules["@earendil-works/pi-ai/compat"]);
+			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@mariozechner/pi-ai/compat"]);
+			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@earendil-works/pi-ai/compat"]);
 
-		const compat = modules["@earendil-works/pi-ai/compat"] as PiAiExports;
-		expect(typeof compat.complete).toBe("function");
-		expect(typeof compat.getModel).toBe("function");
-		expect(typeof compat.StringEnum).toBe("function");
-	});
+			const compat = modules["@earendil-works/pi-ai/compat"] as PiAiExports;
+			expect(typeof compat.complete).toBe("function");
+			expect(typeof compat.getModel).toBe("function");
+			expect(typeof compat.StringEnum).toBe("function");
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
 
 	it("maps root and compat specifiers to the same jiti alias path", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
@@ -34,6 +45,24 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 	});
+	it(
+		"maps pi-tui layout helpers through both loader resolution paths",
+		async () => {
+			const specifiers = ["@earendil-works/pi-tui/dist/layout.js", "@mariozechner/pi-tui/dist/layout.js"] as const;
+			const aliases = extensionLoaderTestHooks.getAliases();
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
+			for (const specifier of specifiers) {
+				expect(aliases[specifier]).toMatch(/[\\/]layout\.js$/);
+				expect(fs.existsSync(aliases[specifier]!)).toBe(true);
+				const layout = modules[specifier] as PiTuiLayoutExports;
+				expect(typeof layout.getScrollbarGeometry).toBe("function");
+				expect(typeof layout.getScrollViewBox).toBe("function");
+				expect(typeof layout.renderLayoutFrame).toBe("function");
+			}
+			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
 		const root = (await import("@earendil-works/pi-ai")) as PiAiExports;

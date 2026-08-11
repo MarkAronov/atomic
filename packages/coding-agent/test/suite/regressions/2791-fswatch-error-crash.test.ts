@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { bunExecutable } from "../../../../../test/helpers/runtime.ts";
 
 /**
  * Regression test for https://github.com/earendil-works/pi-mono/issues/2791
@@ -19,6 +20,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
  * 4. If the watcher has no error handler -> crash (exit != 0) -> bug present
  * 5. If the watcher has an error handler -> clean exit (exit 0) -> bug fixed
  */
+
+/**
+ * Structural: this test spawns a real Bun child process that imports the theme
+ * module graph. The budget covers child startup, not test logic. Keep it well
+ * below the suite-wide per-test budget so a hang still fails as a test timeout.
+ */
+const WATCHER_CHILD_TIMEOUT_MS = 10_000;
 describe("issue #2791 fs.watch error event crashes process", () => {
 	let tempRoot: string;
 
@@ -46,10 +54,7 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 		// Script that sets up the watcher and emits a synthetic error on it.
 		// If no .on('error') handler is attached, EventEmitter.emit('error')
 		// throws, which either crashes the process or gets caught by our try/catch.
-		const scriptPath = join(tempRoot, "test-watcher-error.mts");
-		writeFileSync(
-			scriptPath,
-			`
+		const script = `
 
 import { mock } from "bun:test";
 import * as realFs from "node:fs";
@@ -91,27 +96,46 @@ try {
 
 stopThemeWatcher();
 process.exit(0);
-`,
-		);
+		`;
 
 		let _stdout = "";
 		let stderr = "";
 		let exitCode: number;
+		let signal: NodeJS.Signals | null = null;
 		try {
-			_stdout = execFileSync("bun", [scriptPath], {
-				timeout: 10000,
+			_stdout = execFileSync(bunExecutable(), ["-e", script], {
+				timeout: WATCHER_CHILD_TIMEOUT_MS,
 				encoding: "utf-8",
 				env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir },
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 			exitCode = 0;
 		} catch (err: unknown) {
-			const e = err as { status: number; stdout: string; stderr: string };
+			// `code` distinguishes a starved child from a crashed one. Without it a
+			// timeout surfaces as `status: null` -> exit 1 -> "Child crashed", which
+			// is the exact failure this test exists to detect, so a loaded machine
+			// reads as the #2791 regression returning.
+			const e = err as {
+				status: number | null;
+				code?: string;
+				stdout?: string;
+				stderr?: string;
+				signal?: NodeJS.Signals | null;
+			};
+			expect(
+				e.code,
+				`Theme watcher child timed out after ${WATCHER_CHILD_TIMEOUT_MS} ms; it never reached the watcher assertion. This is starvation, not the #2791 crash.`,
+			).not.toBe("ETIMEDOUT");
 			_stdout = e.stdout ?? "";
 			stderr = e.stderr ?? "";
+			signal = e.signal ?? null;
 			exitCode = e.status ?? 1;
 		}
 
+		expect(
+			signal,
+			`Child was killed by ${signal} after ${WATCHER_CHILD_TIMEOUT_MS} ms without reaching the watcher assertion.`,
+		).toBeNull();
 		expect(exitCode, `Child crashed (exit ${exitCode}). stderr: ${stderr.trim()}`).toBe(0);
 	});
 });

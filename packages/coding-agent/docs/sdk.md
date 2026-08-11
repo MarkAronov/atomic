@@ -78,6 +78,24 @@ Atomic does not require package install scripts. If you want to disable dependen
 
 The SDK is included in the main package. No separate SDK package is needed.
 
+## Experimental remote sessions
+
+`@bastani/atomic/client` is an experimental entrypoint for upstream remote protocol sessions. It exports `RemoteSession` plus transcript projection helpers. Pass it a connected `PiClient` from `@earendil-works/pi-client`, then use `RemoteSession.open()` or `RemoteSession.create()` to own one remote session.
+
+`RemoteSession` and Atomic's isolated interactive engine deliberately **coexist**; neither adapts the other. `RemoteSession` owns the `pi-client`/`pi-protocol` transport, its `SessionLease`, the leased `SessionSnapshot`, and the transcript projection used by an external protocol client. The isolated engine owns Atomic's in-process host facade, child-process JSONL RPC engine, interactive rendering, custom UI, and engine recovery. The client entrypoint has no `atomic client` CLI command and does not start or control the local interactive engine.
+
+`RemoteSession.sessions` is a durable catalog of `SessionMetadata`. That is enough for listing and selecting stored sessions, but not for Atomic consumers that need runtime phase, model, thinking level, attachment, or lock state. Those consumers need the `SessionSnapshot` from an acquired lease; `RemoteSession.snapshot` exposes the current leased snapshot.
+
+This boundary is intentional. A bridge would join two different protocols and would risk routing isolated-engine teardown through the host facade's unbounded cooperative abort. Keep the surfaces separate until a future upstream `RemoteSession` change supplies an engine-aware/server contract with teardown semantics that can preserve Atomic's recovery guarantee. The API may change without notice while it remains experimental.
+
+## Experimental Harness factory
+
+The package root also exports `createCodingAgentHarness()` for applications that provide a pi-agent-core `ExecutionEnv`. It creates a Harness with Atomic's six coding tools: `read`, `bash`, `edit`, `write`, `find`, and `search`.
+
+The factory routes the primary operations for the first five tools through the supplied execution environment, including directory-tree reads. URL reads use the session id for cache scope, fetch through the process network, and do not persist host-local artifacts because the factory has no local session directory. `search` is fully local; read and edit still use local path-variant probes and notebook projection, read also uses local archive, SQLite, and internal-resource selectors, write retains local generated-file, shebang, conflict, and resource helpers, and bash validates its cwd locally and uses Atomic's local temp storage for overflow output.
+
+The factory requires `ExecutionEnv.renameFile()` and does not add a fallback filesystem implementation.
+
 ## Core Concepts
 
 ### createAgentSession()
@@ -377,6 +395,16 @@ session.subscribe((event) => {
 });
 ```
 
+A subscriber that rebuilds the assistant message from these deltas must
+accumulate them into its own message object. `message_start` reports the
+message the model is about to stream, but an in-process subscriber receives the
+provider's live partial rather than a snapshot of it, and the provider keeps
+appending to that same object as the stream runs. Appending a delta to it adds
+text the provider already added. A subscriber that attaches part-way through a
+turn missed the deltas that came before it and can seed itself from
+`session.agent.state.streamingMessage`, which holds the message currently being
+streamed, if any.
+
 ## Options Reference
 
 ### Directories
@@ -399,7 +427,7 @@ Atomic reads primary `.atomic` locations first and legacy `.pi` locations for co
   - `.atomic/skills/`, then legacy `.pi/skills/`
   - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
 - Project prompts (`.atomic/prompts/`, then legacy `.pi/prompts/`)
-- Context files (`AGENTS.md` walking up from cwd)
+- Context files (`AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` walking up from cwd)
 - Session directory naming
 
 `agentDir` is used by `DefaultResourceLoader` for:
@@ -408,7 +436,7 @@ Atomic reads primary `.atomic` locations first and legacy `.pi` locations for co
   - `skills/` under `agentDir` (for example `~/.atomic/agent/skills/`; legacy `~/.pi/agent/skills/` is also considered by default)
   - `~/.agents/skills/`
 - Global prompts (`prompts/`)
-- Global context file (`AGENTS.md`)
+- Global context files (`AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` under `agentDir`)
 - Settings (`settings.json`)
 - Custom models (`models.json`)
 - Credentials (`auth.json`)
@@ -459,7 +487,7 @@ If no model is provided:
 
 ### API Keys and OAuth
 
-`ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin synchronous compatibility facade for extensions; new SDK integrations should pass `modelRuntime` to `createAgentSession`.
+`ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin compatibility facade for extensions; `await modelRegistry.complete(model, context, options)` routes a request through its runtime with the resolved provider and auth. New SDK integrations should pass `modelRuntime` to `createAgentSession` and use `modelRuntime.complete()` directly when they issue standalone requests.
 
 Credential resolution combines runtime API-key overrides, stored `auth.json` credentials, environment variables, and the active `models.json` provider configuration. OAuth acquisition is provider-owned and runs through `ModelRuntime.login()`.
 
@@ -474,8 +502,12 @@ const { session } = await createAgentSession({
   modelRuntime,
 });
 
-// Runtime API key override (not persisted to disk)
-await modelRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
+// Runtime API key override (not persisted to disk). Setting the key updates
+// auth state; refresh the provider explicitly when its catalog must be current.
+const providerId = "anthropic";
+const authController = new AbortController();
+await modelRuntime.setRuntimeApiKey(providerId, "sk-my-temp-key", { signal: authController.signal });
+await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 
 // Custom credential and model configuration locations
 const customRuntime = await ModelRuntime.create({
@@ -1009,9 +1041,13 @@ import {
 const authStorage = AuthStorage.create("/custom/agent/auth.json");
 const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
-// Runtime API key override (not persisted)
+// Runtime API key override (not persisted). setRuntimeApiKey updates auth state;
+// the scoped refresh updates that provider's catalog.
 if (process.env.MY_KEY) {
-  await modelRuntime.setRuntimeApiKey("anthropic", process.env.MY_KEY);
+  const providerId = "anthropic";
+  const authController = new AbortController();
+  await modelRuntime.setRuntimeApiKey(providerId, process.env.MY_KEY, { signal: authController.signal });
+  await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 }
 
 // Inline tool

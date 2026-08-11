@@ -17,11 +17,12 @@ import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.t
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
+
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
-	mode.ui.addInputListener(() =>
+	mode.addTuiInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
 	);
-	mode.ui.addInputListener((data) =>
+	mode.addTuiInputListener((data) =>
 		routeGlobalClearInput(data, {
 			// Physical identity first: safety routing must survive an `app.clear` remap.
 			matchesCtrlC: isPhysicalCtrlC,
@@ -117,7 +118,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 	this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 	this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 	this.defaultEditor.onAction("app.message.copy", () => {
-		void this.handleCopyCommand();
+		void this.handleCopyCommand({ flashConfirmation: true });
 	});
 	this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 	this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
@@ -288,7 +289,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			if (text === "/scoped-models") {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
-				await this.showModelsSelector();
+				this.showModelsSelector();
 				return;
 			}
 			if (text === "/model" || text.startsWith("/model ")) {
@@ -384,9 +385,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					this.showWarning("Usage: /compact");
 					return;
 				}
-				// Evaluated before the general compaction queue gate below, so reject
-				// here: queueing would merely defer a duplicate compaction.
-				if (this.session.isCompacting) {
+				// A manual request can take over automatic compaction, but a second manual
+				// compaction or branch summary still has no safe independent owner.
+				const automaticCompaction =
+					this.session.compactionReason === "threshold" || this.session.compactionReason === "overflow";
+				if (this.manualCompactionTakeoverPending || (this.compactionActive && !automaticCompaction)) {
 					this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
 					return;
 				}
@@ -453,7 +456,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			}
 
 			// Queue input during compaction (extension commands execute immediately)
-			if (this.session.isCompacting) {
+			if (this.compactionActive) {
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");

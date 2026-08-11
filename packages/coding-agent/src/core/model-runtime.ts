@@ -5,15 +5,19 @@ import {
 	type AssistantMessageEventStream,
 	type AuthCheck,
 	type AuthInteraction,
+	type AuthOperationOptions,
 	type AuthResult,
 	type AuthType,
 	type Context,
 	type Credential,
 	type CredentialInfo,
 	createModels,
+	type DeferredHandle,
 	type Model,
 	type Models,
 	type ModelsApiStreamOptions,
+	type ModelsDeferredCancelOptions,
+	type ModelsDeferredFetchOptions,
 	type ModelsRefreshOptions,
 	type ModelsRefreshResult,
 	type ModelsSimpleStreamOptions,
@@ -35,6 +39,7 @@ import {
 	type ModelRuntimeSnapshot,
 	removeStoredCredentialProvider,
 	replaceStoredCredentialProviders,
+	snapshotModelKey,
 	updateSnapshotModels,
 } from "./model-runtime-snapshot.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
@@ -59,6 +64,59 @@ import { configureBuiltinProviders } from "./model-runtime-providers.ts";
 import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
 import { ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
 import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
+
+export type CredentialSynchronizationOperation =
+	| "login"
+	| "logout"
+	| "saveCredential"
+	| "setRuntimeApiKey"
+	| "removeRuntimeApiKey";
+
+/** Credentials changed successfully, but local model state could not be synchronized. */
+export class CredentialSynchronizationError extends Error {
+	readonly providerId: string;
+	readonly operation: CredentialSynchronizationOperation;
+	readonly credential: Credential | undefined;
+
+	constructor(
+		providerId: string,
+		operation: CredentialSynchronizationOperation,
+		credential: Credential | undefined,
+		options: ErrorOptions,
+	) {
+		super(`Credential ${operation} committed for ${providerId}, but local synchronization failed`, options);
+		this.name = "CredentialSynchronizationError";
+		this.providerId = providerId;
+		this.operation = operation;
+		// One call rather than assign-then-redefine: the two-step form is
+		// equivalent (defineProperty with only `enumerable` preserves the existing
+		// value) but reads as a redundant write and trips static analysis. The
+		// non-enumerable descriptor is the load-bearing part — it keeps the
+		// credential out of JSON.stringify, console.log, and structured error
+		// reporting.
+		Object.defineProperty(this, "credential", {
+			value: credential,
+			enumerable: false,
+			writable: true,
+			configurable: true,
+		});
+	}
+}
+
+function operationSignal(signal: AbortSignal | undefined): AbortSignal {
+	return signal ?? new AbortController().signal;
+}
+
+function raceWithAbortSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted)
+		return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+	});
+}
+
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -75,7 +133,10 @@ export class ModelRuntime implements Models {
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
-	private availabilityRefresh: Promise<void> | undefined;
+	private availabilityRefreshSeq = 0;
+	private availabilityErrorSeq = 0;
+	private readonly providerAvailabilitySeq = new Map<string, number>();
+	private readonly credentialOperations = new Map<string, Promise<unknown>>();
 	private availabilityError: string | undefined;
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -129,7 +190,9 @@ export class ModelRuntime implements Models {
 			? setTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? 15_000)
 			: undefined;
 		try {
-			await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
+			if (options.refreshOnCreate !== false) {
+				await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
+			}
 		} finally {
 			if (timeout) clearTimeout(timeout);
 		}
@@ -179,51 +242,94 @@ export class ModelRuntime implements Models {
 		this.snapshotGeneration += 1;
 		this.snapshot = updateSnapshotModels(this.snapshot, [...this.models.getModels()]);
 	}
-	private async runAvailabilityRefresh(generation: number): Promise<void> {
+	private async runAvailabilityRefresh(seq: number, errorSeq: number, signal: AbortSignal): Promise<void> {
 		const providers = this.models.getProviders();
 		const [available, checks, credentials] = await Promise.all([
-			this.models.getAvailable(),
+			this.models.getAvailable(undefined, { signal }),
 			Promise.all(
 				providers.map(
 					async (provider): Promise<[string, AuthCheck | undefined]> => [
 						provider.id,
-						await this.models.checkAuth(provider.id),
+						await this.models.checkAuth(provider.id, { signal }),
 					],
 				),
 			),
-			this.credentials.list(),
+			this.credentials.list({ signal }),
 		]);
-		// Credential and provider mutations publish their own snapshot immediately.
-		// A refresh started before that mutation must not overwrite newer state when
-		// a slower machine eventually lets it finish.
-		if (generation === this.snapshotGeneration) {
-			this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
-			this.availabilityError = undefined;
-		}
+		if (seq !== this.availabilityRefreshSeq) return;
+		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
+		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
 	}
-	private queueAvailabilityRefresh(after: Promise<void> | undefined): Promise<void> {
-		const generation = this.snapshotGeneration;
-		const refresh = (after ?? Promise.resolve()).catch(() => {}).then(() => this.runAvailabilityRefresh(generation));
-		const recorded = refresh.catch((error) => {
-			if (generation === this.snapshotGeneration) {
+	private queueAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
+		const seq = ++this.availabilityRefreshSeq;
+		for (const [providerId, providerSeq] of this.providerAvailabilitySeq)
+			this.providerAvailabilitySeq.set(providerId, providerSeq + 1);
+		const errorSeq = ++this.availabilityErrorSeq;
+		const effectiveSignal = operationSignal(signal);
+		return this.runAvailabilityRefresh(seq, errorSeq, effectiveSignal).catch((error) => {
+			if (errorSeq === this.availabilityErrorSeq && !effectiveSignal.aborted)
 				this.availabilityError = error instanceof Error ? error.message : String(error);
-			}
 			throw error;
 		});
-		const tracked = recorded.finally(() => {
-			if (this.availabilityRefresh === tracked) this.availabilityRefresh = undefined;
-		});
-		this.availabilityRefresh = tracked;
-		return tracked;
 	}
-	/** Coalesce concurrent readers onto the pending refresh. */
-	private refreshAvailability(): Promise<void> {
-		return this.availabilityRefresh ?? this.queueAvailabilityRefresh(undefined);
+	private async refreshProviderAvailability(providerId: string, signal: AbortSignal): Promise<void> {
+		++this.availabilityRefreshSeq;
+		const providerSeq = (this.providerAvailabilitySeq.get(providerId) ?? 0) + 1;
+		this.providerAvailabilitySeq.set(providerId, providerSeq);
+		const errorSeq = ++this.availabilityErrorSeq;
+		try {
+			const [available, auth, credential] = await Promise.all([
+				this.models.getAvailable(providerId, { signal }),
+				this.models.checkAuth(providerId, { signal }),
+				this.credentials.read(providerId, { signal }),
+			]);
+			signal.throwIfAborted();
+			if (this.providerAvailabilitySeq.get(providerId) !== providerSeq) return;
+			const configuredProviders = new Set(this.snapshot.configuredProviders),
+				storedProviders = new Set(this.snapshot.storedProviders),
+				storedCredentialTypes = new Map(this.snapshot.storedCredentialTypes),
+				authByProvider = new Map(this.snapshot.auth);
+			if (auth) {
+				configuredProviders.add(providerId);
+				authByProvider.set(providerId, auth);
+			} else {
+				configuredProviders.delete(providerId);
+				authByProvider.delete(providerId);
+			}
+			if (credential) {
+				storedProviders.add(providerId);
+				storedCredentialTypes.set(providerId, credential.type);
+			} else {
+				storedProviders.delete(providerId);
+				storedCredentialTypes.delete(providerId);
+			}
+			const all = [...this.models.getModels()];
+			const availableById = new Map(
+				[...this.snapshot.available.filter((model) => model.provider !== providerId), ...available].map((model) => [
+					`${model.provider}\0${model.id}`,
+					model,
+				]),
+			);
+			this.snapshot = {
+				all,
+				available: all.flatMap((model) => availableById.get(`${model.provider}\0${model.id}`) ?? []),
+				configuredProviders,
+				storedProviders,
+				storedCredentialTypes,
+				auth: authByProvider,
+			};
+			if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
+		} catch (error) {
+			if (
+				this.providerAvailabilitySeq.get(providerId) === providerSeq &&
+				errorSeq === this.availabilityErrorSeq &&
+				!signal.aborted
+			)
+				this.availabilityError = error instanceof Error ? error.message : String(error);
+			throw error;
+		}
 	}
-	/** Mutations must not observe an in-flight refresh started before them. */
-	private forceRefreshAvailability(): Promise<void> {
-		return this.queueAvailabilityRefresh(this.availabilityRefresh);
-	}
+
 	getProviders(): readonly Provider[] {
 		return this.models.getProviders();
 	}
@@ -249,20 +355,20 @@ export class ModelRuntime implements Models {
 	async checkAuth(providerId: string): Promise<AuthCheck | undefined> {
 		return this.models.checkAuth(providerId);
 	}
-	async getAvailable(providerId?: string): Promise<readonly Model<Api>[]> {
+	async getAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly Model<Api>[]> {
 		if (providerId) {
-			if (this.availabilityRefresh) {
-				await this.availabilityRefresh;
-				return this.snapshot.available.filter((model) => model.provider === providerId);
-			}
+			const errorSeq = ++this.availabilityErrorSeq;
 			try {
-				return await this.models.getAvailable(providerId);
+				const available = await this.models.getAvailable(providerId, options);
+				if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
+				return available;
 			} catch (error) {
-				this.availabilityError = error instanceof Error ? error.message : String(error);
+				if (errorSeq === this.availabilityErrorSeq && !options?.signal?.aborted)
+					this.availabilityError = error instanceof Error ? error.message : String(error);
 				throw error;
 			}
 		}
-		await this.refreshAvailability();
+		await this.queueAvailabilityRefresh(options?.signal);
 		return this.snapshot.available;
 	}
 	getAvailableSnapshot(): readonly Model<Api>[] {
@@ -337,26 +443,111 @@ export class ModelRuntime implements Models {
 			this.snapshot = replaceStoredCredentialProviders(this.snapshot, credentials);
 			return;
 		}
-		await this.forceRefreshAvailability();
+		await this.queueAvailabilityRefresh();
+	}
+
+	private assertCredentialRefreshSucceeded(
+		providerId: string,
+		result: ModelsRefreshResult,
+		signal?: AbortSignal,
+	): void {
+		if (result.aborted) {
+			signal?.throwIfAborted();
+			throw new Error(`Model refresh aborted for ${providerId}`);
+		}
+		const refreshError = result.errors.get(providerId);
+		if (refreshError) throw refreshError;
+		const compositionError = this.compositionErrors.get(providerId);
+		if (compositionError) throw new Error(compositionError);
+	}
+
+	private enqueueCredentialOperation<T>(providerId: string, signal: AbortSignal, task: () => Promise<T>): Promise<T> {
+		const previous = this.credentialOperations.get(providerId) ?? Promise.resolve();
+		let markStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const operation = (async () => {
+			await previous.catch(() => {});
+			signal.throwIfAborted();
+			markStarted?.();
+			return task();
+		})();
+		const tail = operation.catch(() => {});
+		this.credentialOperations.set(providerId, tail);
+		void tail.then(() => {
+			if (this.credentialOperations.get(providerId) === tail) this.credentialOperations.delete(providerId);
+		});
+		return raceWithAbortSignal(started, signal).then(() => operation);
+	}
+	private async synchronizeCredentialState(
+		providerId: string,
+		operation: CredentialSynchronizationOperation,
+		credential: Credential | undefined,
+		synchronize: () => void | Promise<void>,
+	): Promise<void> {
+		try {
+			await synchronize();
+		} catch (cause) {
+			if (cause instanceof CredentialSynchronizationError) throw cause;
+			throw new CredentialSynchronizationError(providerId, operation, credential, { cause });
+		}
+	}
+	private async refreshRemainingAuthAfterLogout(providerId: string, logoutGeneration: number): Promise<void> {
+		// Environment/runtime auth can remain after stored auth is removed. The
+		// probe is normally synchronous, but its deadline is authoritative because
+		// extension checks are third-party code and need not honor cancellation.
+		let timeout: number | undefined;
+		try {
+			const remainingAuth = await Promise.race([
+				this.checkAuth(providerId).catch(() => undefined),
+				new Promise<undefined>((resolve) => {
+					timeout = setTimeout(resolve, POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS);
+				}),
+			]);
+			if (logoutGeneration === this.snapshotGeneration && !this.snapshot.storedProviders.has(providerId)) {
+				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
+			}
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
 	}
 
 	async saveCredential(providerId: string, credential: Credential): Promise<void> {
-		await this.credentials.modify(providerId, async () => credential);
-		await this.refresh();
+		const signal = operationSignal(undefined);
+		await this.enqueueCredentialOperation(providerId, signal, async () => {
+			await this.credentials.modify(providerId, async () => credential);
+			await this.synchronizeCredentialState(providerId, "saveCredential", credential, async () => {
+				const result = await this.refresh({ providers: [providerId] });
+				this.assertCredentialRefreshSucceeded(providerId, result);
+			});
+		});
 	}
-	async setRuntimeApiKey(
-		providerId: string,
-		apiKey: string,
-		refreshOptions: ModelsRefreshOptions = {},
-	): Promise<void> {
-		this.credentials.setRuntimeApiKey(providerId, apiKey);
-		this.snapshot = addRuntimeApiKeyProvider(this.snapshot, providerId);
-		await this.refresh(refreshOptions);
+	/**
+	 * Apply a process-scoped API key override. This publishes the provider against
+	 * the current snapshot and deliberately does not refresh the model catalog;
+	 * callers needing catalog freshness call refresh({ providers: [providerId], signal })
+	 * separately.
+	 */
+	async setRuntimeApiKey(providerId: string, apiKey: string, options: AuthOperationOptions): Promise<void> {
+		const signal = operationSignal(options.signal);
+		await this.enqueueCredentialOperation(providerId, signal, async () => {
+			this.credentials.setRuntimeApiKey(providerId, apiKey);
+			await this.synchronizeCredentialState(providerId, "setRuntimeApiKey", { type: "api_key", key: apiKey }, () => {
+				this.snapshot = addRuntimeApiKeyProvider(this.snapshot, providerId);
+			});
+		});
 	}
 
-	async removeRuntimeApiKey(providerId: string): Promise<void> {
-		this.credentials.removeRuntimeApiKey(providerId);
-		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+	async removeRuntimeApiKey(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+		const signal = operationSignal(options.signal);
+		await this.enqueueCredentialOperation(providerId, signal, async () => {
+			this.credentials.removeRuntimeApiKey(providerId);
+			await this.synchronizeCredentialState(providerId, "removeRuntimeApiKey", undefined, async () => {
+				const result = await this.refresh({ allowNetwork: this.modelNetworkEnabled, signal });
+				this.assertCredentialRefreshSucceeded(providerId, result, signal);
+			});
+		});
 	}
 
 	listCredentials(): Promise<readonly CredentialInfo[]> {
@@ -413,68 +604,84 @@ export class ModelRuntime implements Models {
 		return this.streaming.completeSimple(model, context, options);
 	}
 
-	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
-		const credential = await this.models.login(providerId, type, interaction);
-		// Credential acquisition and persistence are the login transaction. Publish
-		// the provider against the current snapshot immediately; catalog restoration,
-		// ambient availability checks, and networking belong to /model's bounded
-		// background refresh and must never keep a successful login dialog open.
-		this.updateModelSnapshot();
-		this.externalProviderAuthStatuses.delete(providerId);
-		this.snapshot = addStoredCredentialProvider(this.snapshot, providerId, credential.type);
-		return credential;
+	fetchDeferred(
+		model: Model<Api>,
+		handle: DeferredHandle,
+		options?: ModelsDeferredFetchOptions,
+	): Promise<AssistantMessage> {
+		return this.streaming.fetchDeferred(model, handle, options);
 	}
 
-	async logout(providerId: string): Promise<void> {
-		await this.models.logout(providerId);
-		// Reset credential-dependent compatibility projections, then publish the
-		// persisted deletion without waiting for model stores or remote catalogs.
-		this.recomposeProvider(providerId);
-		this.updateModelSnapshot();
-		this.externalProviderAuthStatuses.delete(providerId);
-		this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId);
-		const logoutGeneration = this.snapshotGeneration;
+	cancelDeferred(model: Model<Api>, handle: DeferredHandle, options?: ModelsDeferredCancelOptions): Promise<void> {
+		return this.streaming.cancelDeferred(model, handle, options);
+	}
 
-		// Environment/runtime auth can remain after stored auth is removed. The
-		// probe is normally synchronous, but its deadline is authoritative because
-		// extension checks are third-party code and need not honor cancellation.
-		let timeout: number | undefined;
-		try {
-			const remainingAuth = await Promise.race([
-				this.checkAuth(providerId).catch(() => undefined),
-				new Promise<undefined>((resolve) => {
-					timeout = setTimeout(resolve, POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS);
-				}),
-			]);
-			if (logoutGeneration === this.snapshotGeneration && !this.snapshot.storedProviders.has(providerId)) {
-				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
-			}
-		} finally {
-			if (timeout) clearTimeout(timeout);
-		}
+	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
+		const signal = operationSignal(interaction.signal);
+		return this.enqueueCredentialOperation(providerId, signal, async () => {
+			const credential = await this.models.login(providerId, type, { ...interaction, signal });
+			await this.synchronizeCredentialState(providerId, "login", credential, () => {
+				// Credential acquisition and persistence are the login transaction. Publish
+				// the provider against the current snapshot immediately; catalog restoration,
+				// ambient availability checks, and networking belong to /model's bounded
+				// background refresh and must never keep a successful login dialog open.
+				this.updateModelSnapshot();
+				this.externalProviderAuthStatuses.delete(providerId);
+				this.snapshot = addStoredCredentialProvider(this.snapshot, providerId, credential.type);
+			});
+			return credential;
+		});
+	}
+
+	async logout(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+		const signal = operationSignal(options.signal);
+		const logoutGeneration = await this.enqueueCredentialOperation(providerId, signal, async () => {
+			await this.models.logout(providerId, { signal });
+			let generation = 0;
+			await this.synchronizeCredentialState(providerId, "logout", undefined, () => {
+				// Reset credential-dependent compatibility projections, then publish the
+				// persisted deletion without waiting for model stores or remote catalogs.
+				this.recomposeProvider(providerId);
+				this.updateModelSnapshot();
+				this.externalProviderAuthStatuses.delete(providerId);
+				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId);
+				generation = this.snapshotGeneration;
+			});
+			return generation;
+		});
+		await this.refreshRemainingAuthAfterLogout(providerId, logoutGeneration);
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		this.config = await ModelConfig.load(this.modelsPath);
 		this.configureRadiusProviders();
-		this.rebuildProviders();
-		const refreshOptions = {
-			...options,
-			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
-		};
-		// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
-		// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.
-		const result = ((await this.models.refresh(refreshOptions)) as ModelsRefreshResult | undefined) ?? {
-			aborted: refreshOptions.signal?.aborted ?? false,
-			errors: new Map(),
-		};
+		if (options.providers) {
+			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
+			this.updateModelSnapshot();
+		} else this.rebuildProviders();
+		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled };
+		const result = await this.models.refresh(refreshOptions);
+		const errors = new Map(result.errors);
 		this.updateModelSnapshot();
-		try {
-			await this.forceRefreshAvailability();
-		} catch {
-			// Availability errors are recorded by forceRefreshAvailability; refreshed models remain usable.
+		if (options.providers) {
+			await Promise.all(
+				[...new Set(options.providers)].map(async (providerId) => {
+					try {
+						await this.refreshProviderAvailability(providerId, operationSignal(options.signal));
+					} catch (error) {
+						if (!options.signal?.aborted)
+							errors.set(providerId, error instanceof Error ? error : new Error(String(error)));
+					}
+				}),
+			);
+		} else {
+			try {
+				await this.queueAvailabilityRefresh(options.signal);
+			} catch {
+				// Availability errors are recorded by the latest pass; refreshed models remain usable.
+			}
 		}
-		return result;
+		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
 	}
 
 	registerNativeProvider(provider: Provider): void {
@@ -514,12 +721,19 @@ export class ModelRuntime implements Models {
 					source: "configured provider",
 				});
 			}
-			this.snapshot = {
-				...this.snapshot,
-				auth,
-				configuredProviders,
-				available: this.snapshot.all.filter((model) => configuredProviders.has(model.provider)),
-			};
+			// A provider that was already configured has an availability result — possibly
+			// a credential-filtered subset of its catalog, as with an additive GitHub
+			// Copilot override — and keeps it until the refresh this registration schedules
+			// republishes it. Only a provider this registration newly configures has no
+			// result to keep, so only its catalog is exposed provisionally.
+			let available = this.snapshot.available;
+			if (!this.snapshot.configuredProviders.has(providerId)) {
+				const preserved = new Set(available.map(snapshotModelKey));
+				available = this.snapshot.all.filter(
+					(model) => model.provider === providerId || preserved.has(snapshotModelKey(model)),
+				);
+			}
+			this.snapshot = { ...this.snapshot, auth, configuredProviders, available };
 		}
 		void this.refresh({ allowNetwork: false });
 	}

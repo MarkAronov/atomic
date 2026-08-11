@@ -1,6 +1,7 @@
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
@@ -19,6 +20,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
+import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
 function createToolComponent(
 	mode: InteractiveModeBase,
@@ -53,7 +55,7 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 
 InteractiveModeBase.prototype.handleEvent = async function (
 	this: InteractiveModeBase,
-	event: AgentSessionEvent,
+	event: AgentSessionEvent | JsonAgentSessionEvent,
 ): Promise<void> {
 	if (!this.isInitialized) {
 		await this.init();
@@ -166,18 +168,25 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.getMarkdownThemeWithSettings(),
 					this.hiddenThinkingLabel,
 					this.outputPad,
+					this.getMarkdownTransformers(),
+					true,
+					this.settingsManager.getLatexRenderingEnabled(),
 				);
-				this.streamingMessage = event.message;
+				this.streamingMessage = beginStreamingAssistantMessage(event.message);
 				this.chatContainer.addChild(this.streamingComponent);
-				this.streamingComponent.updateContent(this.streamingMessage);
+				this.streamingComponent.updateContent(this.streamingMessage, true);
 				this.ui.requestRender();
 			}
 			break;
 
-		case "message_update":
-			if (this.streamingComponent && event.message.role === "assistant") {
-				this.streamingMessage = event.message;
-				this.streamingComponent.updateContent(this.streamingMessage);
+		case "message_update": {
+			// `message_start` seeds the stream, ordered deltas build it, and
+			// `message_end` supplies the authoritative final message.
+			if (this.streamingMessage) {
+				applyAssistantMessageDelta(this.streamingMessage, event.assistantMessageEvent);
+			}
+			if (this.streamingComponent && this.streamingMessage?.role === "assistant") {
+				this.streamingComponent.updateContent(this.streamingMessage, true);
 
 				for (const content of this.streamingMessage.content) {
 					if (content.type === "toolCall") {
@@ -197,6 +206,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.ui.requestRender();
 			}
 			break;
+		}
 
 		case "message_end":
 			if (event.message.role === "user") break;
@@ -216,7 +226,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 							: "Operation aborted");
 					this.streamingMessage.errorMessage = errorMessage;
 				}
-				this.streamingComponent.updateContent(this.streamingMessage);
+				this.streamingComponent.updateContent(this.streamingMessage, false);
 
 				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 					if (!errorMessage) {
@@ -296,8 +306,9 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 
-		case "agent_end":
-			if (this.settingsManager.getShowTerminalProgress()) {
+		case "agent_end": {
+			const compactionInProgress = this.compactionActive;
+			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
 			if (this.loadingAnimation) {
@@ -312,7 +323,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.streamingMessage = undefined;
 			}
 			this.pendingTools.clear();
-			if (this.compactionQueuedMessages.length > 0) {
+			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {
 				void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
 			}
 
@@ -320,6 +331,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 			this.ui.requestRender();
 			break;
+		}
 
 		case "compaction_start": {
 			if (this.settingsManager.getShowTerminalProgress()) {
@@ -359,15 +371,25 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "compaction_end": {
-			if (this.settingsManager.getShowTerminalProgress()) {
+			const manualTakeoverPending =
+				event.reason !== "manual" &&
+				(event.manualTakeoverPending === true ||
+					this.manualCompactionTakeoverPending ||
+					this.session.compactionReason === "manual");
+			if (manualTakeoverPending) {
+				this.manualCompactionTakeoverPending = true;
+			} else if (event.reason === "manual") {
+				this.manualCompactionTakeoverPending = false;
+			}
+			if (!manualTakeoverPending && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
-			if (this.autoCompactionEscapeHandlerSaved) {
+			if (!manualTakeoverPending && this.autoCompactionEscapeHandlerSaved) {
 				this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
 				this.autoCompactionEscapeHandler = undefined;
 				this.autoCompactionEscapeHandlerSaved = false;
 			}
-			if (this.autoCompactionLoader) {
+			if (!manualTakeoverPending && this.autoCompactionLoader) {
 				this.autoCompactionLoader.stop();
 				this.autoCompactionLoader = undefined;
 				this.statusContainer.clear();
@@ -376,7 +398,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			if (event.aborted) {
 				if (event.reason === "manual") {
 					this.showError("Compaction cancelled");
-				} else {
+				} else if (!manualTakeoverPending) {
 					this.showStatus("Auto-compaction cancelled");
 				}
 			} else if (event.result && !event.errorMessage) {
@@ -384,7 +406,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 				this.addCompactionBoundaryToChat(event.result);
 				this.footer.invalidate();
-			} else if (event.errorMessage) {
+			} else if (event.errorMessage && !manualTakeoverPending) {
 				if (event.reason === "manual") {
 					this.showError(event.errorMessage);
 				} else {
@@ -395,10 +417,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// Post-tool compaction resumes the same active run, so no new
 			// agent_start event will recreate the working loader. A successful
 			// no-op carries no `result` and still continues that stream.
-			if (event.midTurn && !event.aborted && !event.errorMessage) {
+			if (event.midTurn && !event.aborted && !event.errorMessage && !manualTakeoverPending) {
 				this.showWorkingLoaderNow();
 			}
-			if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
+			if (!event.midTurn && !manualTakeoverPending) void this.flushCompactionQueue({ willRetry: event.willRetry });
 			this.ui.requestRender();
 			break;
 		}

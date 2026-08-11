@@ -1,8 +1,10 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -111,6 +113,81 @@ describe("AssistantMessageComponent", () => {
 		]);
 	});
 
+	test("applies a single Markdown transformer without mutating the message", () => {
+		initTheme("dark");
+		const contexts: MarkdownTransformContext[] = [];
+		const message = createAssistantMessage([
+			{ type: "text", text: "answer" },
+			{ type: "thinking", thinking: "reasoning" },
+		]);
+		const component = new AssistantMessageComponent(message, false, undefined, "Thinking...", 1, [
+			(markdown, context) => {
+				contexts.push(context);
+				return `${context.messageType}:${markdown}`;
+			},
+		]);
+
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("assistant:answer");
+		expect(rendered).toContain("assistant-thinking:reasoning");
+		expect(contexts).toEqual([
+			{ messageType: "assistant", isStreaming: false, availableWidth: 78 },
+			{ messageType: "assistant-thinking", isStreaming: false, availableWidth: 78 },
+		]);
+		expect(message.content).toEqual([
+			{ type: "text", text: "answer" },
+			{ type: "thinking", thinking: "reasoning" },
+		]);
+	});
+
+	test("continues the Markdown transformer chain after a transformer throws", () => {
+		initTheme("dark");
+		const calls: string[] = [];
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "still visible" }]),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[
+				(markdown) => {
+					calls.push("first");
+					return markdown.replace("still", "remains");
+				},
+				() => {
+					calls.push("throw");
+					throw new Error("broken transformer");
+				},
+				(markdown) => {
+					calls.push("last");
+					return `${markdown} after error`;
+				},
+			],
+		);
+
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("remains visible after error");
+		expect(calls).toEqual(["first", "throw", "last"]);
+	});
+
+	test("marks partial assistant Markdown as streaming", () => {
+		initTheme("dark");
+		const streamingStates: boolean[] = [];
+		const message = createAssistantMessage([{ type: "text", text: "partial" }]);
+		const component = new AssistantMessageComponent(undefined, false, undefined, "Thinking...", 1, [
+			(markdown, context) => {
+				streamingStates.push(context.isStreaming);
+				return context.isStreaming ? markdown : `${markdown} transformed`;
+			},
+		]);
+
+		component.updateContent(message, true);
+		expect(stripAnsi(component.render(80).join("\n"))).not.toContain("transformed");
+
+		component.updateContent(message, false);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("partial transformed");
+		expect(streamingStates).toEqual([true, false]);
+	});
+
 	test("renders one hidden label for each adjacent thinking run", () => {
 		initTheme("dark");
 		const component = new AssistantMessageComponent(
@@ -145,7 +222,7 @@ describe("AssistantMessageComponent", () => {
 		}
 	});
 
-	test("derives the output-token-limit warning from a length stop", () => {
+	test("renders neutral truncation wording for a length stop", () => {
 		initTheme("dark");
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([{ type: "text", text: "partial response" }], {
@@ -154,7 +231,6 @@ describe("AssistantMessageComponent", () => {
 		);
 
 		const rendered = component.render(100).join("\n");
-		expect(rendered).toContain("maximum output token limit");
-		expect(rendered).toContain("The response may be");
+		expect(rendered).toContain("Response was truncated before completion.");
 	});
 });
