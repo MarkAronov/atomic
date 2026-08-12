@@ -272,6 +272,22 @@ A first named workflow launch commits the selected execution shape for the turn.
 
 Choose the cheapest complete graph. Routing cues are not a reason to add decorative stages: avoid duplicated research and review loops. Before launch, state the selected graph, why one broad builtin is sufficient or insufficient, the evidence each major stage produces, and the stop/repair conditions. A simple direct match can be one sentence; a composed graph should briefly name its children and task-specific gates.
 
+#### Stage model and thinking-level assignment
+
+Before launching an authored workflow, assign every model stage a **role**, **failure cost**, **primary model**, **thinking level**, and **fallback policy**. Read [Model Selection](/models/model-selection) for the role defaults, but treat thinking levels in benchmark rows as measurement configurations, not production defaults. Reserve `max` for high-cost-of-error roles or an explicit user request; use `high` for demanding mapping, lifecycle analysis, compatibility, planning, synthesis, triage, and repair; use `medium` for user-impact review and final reporting; and keep deterministic checks as tool nodes with no model call.
+
+Print this compact assignment before launch, with a short cost/quality rationale for each model stage:
+
+```text
+Stage | Model | Thinking | Role
+map | <catalog fullId> | high | codebase mapping
+approve | <catalog fullId> | max | final approval
+report | <catalog fullId> | medium | final reporting
+tests | — | — | deterministic check (tool node)
+```
+
+An explicit user request for a thinking level always wins over the role default, but the requested level must still be supported by the configured catalog. Apply the role and failure-cost policy independently to the primary and every fallback; a fallback must not inherit `max` mechanically. Call `workflow({ action: "models" })`, use only each returned entry's `fullId` and `availableThinkingLevels`, and if the role level is unsupported choose another catalog model or leave the stage unpinned rather than inventing a suffix. An empty or unavailable catalog is not a reason to fabricate a model or level. Deterministic typechecks, tests, schema checks, runtime probes, and artifact inspection remain durable tool gates rather than model self-report.
+
 When an arbitrary task-specific workflow has plausible-but-wrong contract risk, design a bounded evidence-backed adversarial loop:
 
 1. Give a fresh-context, grumpy/skeptical-but-fair reviewer the literal objective. It should aggressively seek realistic counterexamples without inventing requirements or accepting hand-waving and circular worker-authored evidence, then emit a structured verifier plan: exact probe, inputs, command/assertion, expected success condition, and requirement/risk covered.
@@ -337,6 +353,8 @@ The rubric prevents two common misuses: using parent-controlled subagent calls f
 #### Task queues and software factories
 
 Some requests are not one task but a queue of them: "address all open issues", "fix every Linear ticket assigned to me", "burn down the TODO backlog", or "implement issue A and create a PR after; also implement issue B and create a PR after". One monolithic worker loop would process the queue serially in a growing context and make unrelated work share one root failure boundary.
+
+Do not confuse splitting a queue across runs with splitting one objective across slices. Queue triage separates unrelated implementation items into top-level lifecycles; [Stacked implementation slices](#stacked-implementation-slices-starter-pattern) keeps one dependent objective in one parent and verifies each ordered child slice before the next.
 
 **Interpret ordering words locally unless a cross-item dependency is explicit.** "Implement A and create PR A after; implement B and create PR B after" normally means `implement A → validate A → PR A` and `implement B → validate B → PR B`; those two item lifecycles may run concurrently. It does not mean `PR A → start B`. Serialize only when the user or repository evidence says, for example, "implement B after A is merged", "B builds on A's branch", "use A's generated schema in B", or "do these in order". Do not infer a cross-item sequence from list order or from "create a PR after" when "after" naturally refers to that item's own implementation. Prove the dependency before serializing independent workflow items. If wording remains materially ambiguous after dependency research, ask one grouped clarification instead of silently serializing.
 
@@ -1198,7 +1216,7 @@ Stage completion never waits for producers that are still running; only traffic 
 
 ### Early exit with `ctx.exit()`
 
-Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard without classifying the run as failed. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `run` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
+Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard with a chosen terminal status. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `run` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
 
 ```ts
 export default workflow({
@@ -1224,13 +1242,15 @@ export default workflow({
 });
 ```
 
-`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and internal destructive cancellation keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable.
+`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked" | "failed"`; `status` defaults to `"completed"`. Choose `completed` when the objective was met and declared outputs are complete and trustworthy; `skipped` when a precondition made the run a valid no-op; `cancelled` when the work is no longer wanted, which is a decision rather than a defect; `blocked` when valid progress needs a changed condition or a later decision; and `failed` when required work was attempted and definitively could not complete. A bounded reviewer or repair loop that does not converge is `blocked`, not `failed`.
 
-Atomic allows missing required outputs only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
+`reason` from a valid author exit is persisted and shown in status surfaces and lifecycle notices, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. An exit rejected during validation is finalized as an ordinary failed run rather than an accepted author exit. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. `failed` exits default to `resumable: false`; set `resumable: true` only when a later durable retry is intended. `resumable` is valid only with `status: "failed"`; supplying it for another status records a non-resumable authoring failure. A durable retry keeps the failed handle in the resume catalog and re-dispatches the workflow with completed checkpoints replayed. The low-level `resumeRun()` helper only inspects terminal runs; it reports the durable retry path instead of silently claiming that it resumed. The other exit statuses keep their existing non-resumable author-exit behavior. Public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
+
+An author-initiated failed exit returns to a parent as `{ exited: true, status: "failed" }` with its reason and partial outputs; it does not throw. An unintentional child failure still throws, so check `child.exited === true` before reading required child outputs and use the discriminator to branch. The lifecycle terminal notice uses the same steer/trigger-turn delivery path and references partial outputs so the launching agent does not need a separate status call.
 
 The first selected `ctx.exit({ outputs })` snapshots its output payload synchronously by value before JavaScript `finally` blocks or cleanup callbacks can mutate the caller-owned object. The snapshot preserves undeclared keys and invalid values until post-cleanup validation, so deleting an undeclared key or changing an invalid value after `ctx.exit(...)` does not change the terminal validation result.
 
-If reading `status`, `reason`, or `outputs` options, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
+If reading `status`, `reason`, `resumable`, or `outputs`, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
 
 After the first `ctx.exit(...)` wins, the executor treats that exit as a level-triggered gate. Later delayed calls to `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, `ctx.workflow`, or graph-backed `ctx.ui.*` prompts rethrow the selected exit signal before creating stages, prompt nodes, child runs, or control handles. Retained `StageContext` handles from before the exit also become inert: `prompt`, `complete`, steering/follow-up, model/thinking controls, tree navigation, compaction, abort, and attached-pane session-realization paths refuse to touch or create an `AgentSession` after the exit is selected.
 
@@ -1383,7 +1403,7 @@ Passing a definition directly to `ctx.workflow(...)` uses the child definition's
 |---|---|
 | `workflow` | Normalized child workflow name. |
 | `runId` | Nested child run id. |
-| `status` | `completed`, or `skipped` / `cancelled` / `blocked` when the child intentionally ended with `ctx.exit(...)`. Failed or internally cancelled children make the parent child call fail. |
+| `status` | `completed` for normal completion, or `skipped` / `cancelled` / `blocked` / `failed` when the child intentionally ended with `ctx.exit(...)`. An unintentional failed child still makes the parent child call throw. |
 | `exited` | `false` for normal child completion; `true` when the child used `ctx.exit(...)` (including `ctx.exit({ status: "completed" })`). |
 | `outputs` | Full declared child outputs when `exited === false`; partial declared child outputs when `exited === true`. |
 | `exitReason` | Optional child `ctx.exit({ reason })` text, present only on the `exited === true` branch. |
@@ -2218,13 +2238,15 @@ type WorkflowExitOutputValues<TOutputs extends WorkflowOutputValues> =
     ? Readonly<Record<string, never>>
     : Partial<TOutputs>;
 interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
-  readonly status?: "completed" | "skipped" | "cancelled" | "blocked";
+  readonly status?: "completed" | "skipped" | "cancelled" | "blocked" | "failed";
   readonly reason?: string;
+  /** Valid only when status is failed; defaults to false. */
+  readonly resumable?: boolean;
   readonly outputs?: WorkflowExitOutputValues<TOutputs>;
 }
 ```
 
-Intentionally ends the current run from any call depth. `status` defaults to `"completed"`; the runtime persists and displays `reason`, and `outputs` may provide only declared, schema-valid, serializable output keys.
+Intentionally ends the current run from any call depth. `status` defaults to `"completed"`; `failed` exits default to `resumable: false`, and `resumable: true` keeps the durable run eligible for a later retry. Supplying `resumable` with another status records a non-resumable authoring failure. The runtime persists and displays `reason`, and `outputs` may provide only declared, schema-valid, serializable output keys.
 
 See [Early exit with `ctx.exit()`](#early-exit-with-ctxexit) for snapshotting, cleanup, replay, and race semantics.
 
@@ -2806,7 +2828,7 @@ interface WorkflowExitedChildResult<
 }
 ```
 
-Normal completion exposes the full declared output contract. A child that used `ctx.exit(...)`, including `status: "completed"`, exposes only a partial contract and optional exit reason; failed or internally cancelled children reject the parent call instead.
+Normal completion exposes the full declared output contract. A child that used `ctx.exit(...)`, including `status: "completed"` or `status: "failed"`, exposes only a partial contract and optional exit reason; an unintentional failed or internally cancelled child still rejects the parent call.
 
 ### `WorkflowStageResult`
 
@@ -2952,20 +2974,19 @@ Surface behavior:
 - **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
 - **Queued-message survival** - Steering and follow-up entries queued from a stage chat live on the stage session, not on the pane. Detaching to the graph and reattaching rehydrates the pending `Steering:` / `Follow-up:` rows, and while you are detached the stage's graph node shows a `✉ N queued` badge so a pending message stays visible without attaching. The attached chat shows the pending text; the detached node shows only their count. Both read one projection that the stage handle keeps current from the session's complete `queue_update` snapshots, so rows and badge shrink together as the agent consumes entries. That projection is fed by the events rather than by a concrete Atomic `AgentSession`, so a stage backed by a custom `AgentSessionAdapter` keeps this behavior as long as it publishes ordinary `queue_update` events; each snapshot replaces the previous steering and follow-up lists rather than adding to them. A queue can also outlive the session holding it — a stage session that fails over to a fallback model hands its pending messages to the session replacing it, and a completed stage reopened as a post-mortem chat is restored holding whatever it was queued. Those messages were announced before the projection could reach the new session, so Atomic reads it once as it attaches and the rows and badge show them too.
 - **Reserved keys** - `ctrl+d` and `q` do not navigate workflow surfaces; `ctrl+d` keeps its ordinary editor or prompt behavior where applicable, and `q` remains printable in text-owning prompts. Existing `esc`, `ctrl+c`, and graph `h` close/hide controls are unchanged.
-- **Wheel and trackpad** - While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events; these gestures remain scoped to the graph instead of leaking into the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback.
-- **Fullscreen mouse limitation** - In fullscreen TUI mode, the alternate-screen viewport consumes wheel/trackpad gestures before the workflow graph or attached stage chat sees them. Use regular TUI mode to pan graphs or scroll stage chats with a mouse or trackpad.
+- **Wheel and trackpad** - While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events. Focused graph and stage-chat overlays receive those gestures through the fullscreen application route, so scrolling stays inside the active workflow surface instead of falling through to terminal or main-chat scrollback.
+- **Fullscreen mouse routing and selection** - A focused workflow graph or attached stage chat overlay receives wheel/trackpad and click input through the host's application-owned input route before the fullscreen viewport. Events the overlay does not consume fall through to pi-tui's viewport, while non-overlay focused components leave pi-tui's transcript scrolling, scrollbar interaction, and drag-selection path intact. Graph panning, stage-chat scrolling, node click-to-attach, and drag or multi-click selection therefore work without a separate selection mode. Copy uses OSC 52; terminals that refuse OSC 52 writes still support the modifier-drag bypass (Shift/Option, as provided by the terminal). `ctrl+t` is not a workflow control: focused workflow overlays leave it to the host `app.thinking.toggle` action, while inline tree selectors keep `app.tree.filter.noTools`.
 - **Tool and node detail** - Attached stage chats match main chat's tool-detail expansion behavior while keeping expansion state local to the workflow UI context. Press Ctrl+O (the configurable `app.tools.expand` binding) to expand every visible workflow node and tool card, including single, parallel, and nested subagent progress, current tool activity, and artifact paths; press it again to collapse them. The toggle works for active, completed, and archived stage views, including at the supported 40-column terminal minimum. A mounted prompt, custom question, or other input-owning overlay keeps the key instead of changing it.
 - **Footer context** - An attached live stage chat carries the main chat's current-folder and Git-branch identity into its themed footer and mirrors live extension status lines such as the MCP server indicator. Branch changes trigger a repaint through the host's cached footer provider, and extension status changes are read from that same provider rather than recomputed by the workflow UI.
 - **Working animation lifecycle** - Ordinary attached-stage work keeps the same exact one-cell `∀` visible while following the active workflow theme's dark → accent → bright/bold → accent → dark luminance ramp every 88ms. Every agent and SDK turn resets to the dark regular phase with a fresh lifecycle-relative cadence; turn, terminal, error, replacement, and disposal cleanup stop the active timer without stale repaint. In an eligible retained-stage chat, every accepted idle follow-up — including a workflow-authored `stage.sendUserMessage(...)` after a prior turn ended — shows Working on admission or attach, including while Atomic restores a saved retained conversation, and keeps it through prompt startup, pre-turn compaction, and agent handoff. Attaching or remounting mid-delivery paints immediately rather than waiting for the turn's first event. A message queued into a live turn with `followUp`/`steer` uses that turn's existing status instead of starting a new one. A no-turn result, prompt or restore error, or terminal completion removes it; once the last accepted post-terminal delivery settles, a leftover start cannot bring it back. An accepted manual retry clears stale status from the prior prompt before showing new pre-stream activity. `NO_COLOR` retains regular/bold activity without foreground-color escapes. Reduced motion uses a static regular accent `∀` without an animation timer; factual automatic retry, fallback, compaction, cancellation, and error copy retains precedence.
 - **Async statusline** - If an async/background subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors the async summary so the background run remains visible; hide the graph with `h`, leave it with `ctrl+x`, or reconnect later to return to the full below-editor async widget.
-- **Copy mode** - Press `ctrl+t` inside an attached stage chat to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore transcript or prompt scrolling. Archived read-only stage transcripts expose the same footer and copy-mode status, so their text can also be selected and copied; `esc` closes the transcript and `ctrl+x` returns to the graph. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again.
 - **Run control** - Use `interrupt`, `pause`, and `resume` for resumable live work. Pause/interrupt holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`.
 - **Rediscovery** - Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process ([Reloading workflow resources](#reloading-workflow-resources)).
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 
 `/workflows` is the retained-run history alias for `/workflow resume`: with no id it opens the same mixed picker, but the resumable section lists only runs that the resume path can actually accept and the completed section is read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#workflow-resume--cross-session-resume-selector) for the full picker semantics.
 
-At the supported 40-column terminal minimum, attached stage chats use the compact `ctrl+x graph · ctrl+t …` footer. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
+At the supported 40-column terminal minimum, attached stage chats keep the `ctrl+x return to graph` hierarchy hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
@@ -3823,7 +3844,7 @@ interface Store {
 
 This is the stable core exposed by the standalone authoring declaration. Atomic's runtime store also has graph, prompt, session, pause/resume, snapshot, and subscription methods used by embedded integrations; those richer runtime controls are not part of the lean workflow-package `Store` contract shown here.
 
-The embedded runtime's `graphSnapshot()` returns one deeply frozen, payload-free projection for each store version; repeated reads at the same version return the same object. Runtime code must change graph-visible state through a version-bumping store method before another task can observe it. `subscribeInvalidation()` reports those changes synchronously without creating a full snapshot. Legacy `subscribe(snapshot)` consumers still receive a full cloned snapshot; this includes status-file output when `statusFile: true`, while the default `statusFile: false` path avoids that payload traversal.
+The embedded runtime's `graphSnapshot()` returns one deeply frozen, payload-bounded projection for each store version; repeated reads at the same version return the same object. Runtime code must change graph-visible state through a version-bumping store method before another task can observe it. `subscribeInvalidation()` reports those changes synchronously without creating a full snapshot. Legacy `subscribe(snapshot)` consumers still receive a full cloned snapshot; this includes status-file output when `statusFile: true`, while the default `statusFile: false` path avoids that payload traversal. Authored stage results remain omitted; a failed author-exit result may retain a bounded JSON output object for status inspection, and oversized output falls back to the existing bounded string fields without adding synthetic output keys.
 
 ### `createCancellationRegistry()` / `cancellationRegistry`
 
@@ -3885,9 +3906,9 @@ Workflow stages can use faster, higher-priority inference on supported providers
 
 ### Codex fast mode
 
-Use `/fast` to manage Codex fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope.
+Use `/fast` to manage Codex fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
 
-Fast mode is eligible only for supported `openai/*` and `openai-codex/*` providers. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. When Atomic applies fast mode, workflow stage displays keep the raw model id and expose `fast` as a separate marker/stage metadata indicator.
+Fast mode is eligible only for supported `openai/*` and `openai-codex/*` providers. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. Atomic resolves the marker and request tier for the effective model on every fallback attempt, so a supported fallback can be fast even when the primary failed, while an unsupported fallback is not. Workflow stage model labels and stage-launched subagent result labels keep the raw model id and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
 
 Enable workflow fast mode deliberately for broad workflows: parallel fan-out and fallback attempts can multiply priority-tier requests and cost.
 
@@ -4422,9 +4443,9 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 
 For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
-The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** is an authoring starter pattern rather than a builtin; compose its [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives.
+The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** and **Stacked implementation slices** are authoring starter patterns rather than builtins; compose scope guard's [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives, and use stacked slices to unroll dependent implementation children through existing `ctx.workflow(...)` boundaries. **Constructive quorum** is an accepted reviewer-coordination pattern used by `goal` and `ralph`; it is prompt guidance rather than a standalone builtin.
 
-These graph patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run.
+These patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run. Constructive quorum shapes bounded deliberation inside parallel reviewer stages; stacked implementation slices split one objective inside that lifecycle; queue triage splits separate whole items.
 
 | Pattern | Use it when | Atomic shape |
 |---|---|---|
@@ -4434,7 +4455,11 @@ These graph patterns organize work **inside one root lifecycle**. They do not re
 | **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
 | **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
 | **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
+| **Constructive quorum** | Several fresh-context verifiers judge the same artifact and a tallied vote could mask a defect one verifier found or block on one verifier's misreading. | Parallel verifiers form independent preliminary verdicts → exactly one bounded Intercom evidence-exchange round (share and challenge evidence) → each emits its own final structured verdict → deterministic reducer counts votes. |
 | **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
+| **Stacked implementation slices** | One dependent implementation objective is too broad for one verified diff but can be divided into ordered, independently verifiable concerns. | Pre-launch slice plan → sequential child `ctx.workflow(...)` boundaries (`goal`, `ralph`, or a task-specific child) → each slice's gates → next slice based on the previous verified branch and worktree, or stop/report at the first failure. |
+
+Constructive quorum relies on existing Intercom mechanics: every workflow invocation gets its own stable Intercom group, and parallel stages and delegated subagents inherit it when they can use Intercom. Reviewers can therefore reach siblings without authoring group plumbing; keep the evidence exchange bounded and leave quorum counting to the deterministic reducer.
 
 #### Pattern diagrams
 
@@ -4597,6 +4622,170 @@ Best practices:
 - Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
 - Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
 
+##### 7. Constructive quorum
+
+This prompt-level reviewer pattern is used by the `goal` and `ralph` builtins; it does not add a reducer or quorum mechanism.
+
+```text
+┌─ 7  Constructive quorum ──────────────────────────────────┐
+│                                                          │
+│  ┌──────────────┐   ┌──────────────┐                    │
+│  │reviewer A    │   │reviewer B    │   independent       │
+│  │preliminary   │   │preliminary   │   assessments        │
+│  │verdict       │   │verdict       │                    │
+│  └──────┬───────┘   └──────┬───────┘                    │
+│         ╰──── Intercom: one evidence round ────╮        │
+│                share · challenge · correct     │        │
+│                         ┌──────────────────────┘        │
+│                         ▾                               │
+│              ┌──────────────────┐   ┌───────────────┐   │
+│              │final structured  │──▸│deterministic  │   │
+│              │verdicts + change │   │reducer counts │   │
+│              │evidence          │   │votes          │   │
+│              └──────────────────┘   └───────────────┘   │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Give every reviewer an independent preliminary assessment before it reads sibling findings or verdicts.
+- Run exactly one bounded evidence-exchange round. Share concrete findings and evidence, challenge blocking claims, and stop rather than opening a second round.
+- Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether deliberation changed it and which evidence caused the change.
+- Let the existing deterministic reducer count the final votes; deliberation shapes votes but does not replace quorum counts or the `stop_review_loop` contract.
+
+##### Stacked implementation slices starter pattern
+
+Use this authoring pattern when one implementation objective should land as a stack of small, independently verified changes. It is not a queue dispatcher: the slices belong to one dependency chain, so slice N+1 starts only after slice N is verified.
+
+During the pre-launch architecture pass, enumerate the slices in the coverage matrix. Give every slice its own objective, acceptance criteria, changed-file scope, and verification gates. Target roughly 100–500 changed lines between verification points by default, but treat that as a reviewability default rather than a law: keep a genuinely atomic mechanical change or generated-artifact refresh in one slice, and do not split a small objective just to reach a count.
+
+```text
+┌─ Stacked implementation slices ─────────────────────────────┐
+│ plan → prepare branch/worktree → child slice 1 → gates      │
+│                                      │ verified              │
+│                                      ▼                       │
+│              prepare branch from slice 1's verified branch  │
+│                                      ▼                       │
+│                         child slice 2 → gates              │
+│                                      │ failed → stop/report │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/workflows/builtin`, or use a task-specific child when neither builtin matches. Before each child, use a durable `ctx.tool(...)` step to create or check out the slice's explicit branch in its worktree. `worktreeFromInputs` creates a missing target with a detached checkout and reuses an existing target as-is; `base_branch` and `git_worktree_dir` do not create or check out a feature branch by themselves. Create slice N+1's branch from slice N's verified branch, then pass that previous branch as `base_branch` and give the child a distinct `git_worktree_dir`.
+
+The parent should verify each child before creating the next boundary. If a gate fails, stop at the first failed gate, report that slice as unverified, and retain the earlier verified slices and their branch/worktree records. Do not roll earlier slices back and do not continue past the failure.
+
+The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
+
+```ts
+import { resolve } from "node:path";
+import { Type } from "typebox";
+import { workflow } from "@bastani/workflows";
+import { goal } from "@bastani/workflows/builtin";
+
+function runCommand(argv: readonly string[], cwd: string): string {
+  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
+  const stdout = result.stdout.toString().trim();
+  const stderr = result.stderr.toString().trim();
+  if (result.exitCode !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  }
+  return stdout;
+}
+
+export default workflow({
+  name: "stacked-slices",
+  inputs: {
+    slice1_branch: Type.String({ default: "stacked/slice-1" }),
+    slice2_branch: Type.String({ default: "stacked/slice-2" }),
+  },
+  outputs: {},
+  run: async (ctx) => {
+    const repoRoot = runCommand(["git", "rev-parse", "--show-toplevel"], ctx.cwd ?? process.cwd());
+    const slice1Branch = ctx.inputs.slice1_branch;
+    const slice2Branch = ctx.inputs.slice2_branch;
+    if (slice1Branch === slice2Branch) {
+      return ctx.exit({ status: "blocked", reason: "slice branches must be distinct" });
+    }
+
+    const prepareSliceWorktree = async (
+      toolName: string,
+      branch: string,
+      gitWorktreeDir: string,
+      baseBranch: string,
+    ) => {
+      const worktreePath = resolve(repoRoot, gitWorktreeDir);
+      await ctx.tool(
+        toolName,
+        { branch, base_branch: baseBranch, git_worktree_dir: gitWorktreeDir },
+        async () => {
+          const current = Bun.spawnSync(
+            ["git", "-C", worktreePath, "branch", "--show-current"],
+            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+          );
+          if (current.exitCode === 0) {
+            const checkedOutBranch = current.stdout.toString().trim();
+            if (checkedOutBranch !== branch) {
+              throw new Error(`${worktreePath} is checked out on ${checkedOutBranch || "detached HEAD"}, expected ${branch}`);
+            }
+            return { branch, worktree: worktreePath };
+          }
+
+          const branchProbe = Bun.spawnSync(
+            ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+          );
+          if (branchProbe.exitCode === 0) {
+            runCommand(["git", "worktree", "add", worktreePath, branch], repoRoot);
+          } else if (branchProbe.exitCode === 1) {
+            runCommand(["git", "worktree", "add", "-b", branch, worktreePath, baseBranch], repoRoot);
+          } else {
+            throw new Error(branchProbe.stderr.toString().trim() || `could not inspect branch ${branch}`);
+          }
+          return { branch, worktree: worktreePath };
+        },
+      );
+    };
+
+    await prepareSliceWorktree("prepare-slice-1-branch", slice1Branch, "../slice-1", "origin/main");
+    const slice1 = await ctx.workflow(goal, {
+      inputs: {
+        objective: "Implement the first independently verified concern.",
+        acceptance_criteria: "The first concern builds, passes its focused tests, and commits all changes on the current feature branch.",
+        base_branch: "origin/main",
+        git_worktree_dir: "../slice-1",
+        create_pr: false,
+      },
+      stageName: "slice 1",
+    });
+    if (slice1.exited === true || slice1.outputs.approved !== true) {
+      return ctx.exit({ status: "blocked", reason: "slice 1 is unverified" });
+    }
+
+    await prepareSliceWorktree("prepare-slice-2-branch", slice2Branch, "../slice-2", slice1Branch);
+    const slice2 = await ctx.workflow(goal, {
+      inputs: {
+        objective: "Implement the next concern on the verified slice-1 branch.",
+        acceptance_criteria: "The second concern builds, passes its focused tests, preserves slice 1, and commits all changes on the current feature branch.",
+        base_branch: slice1Branch,
+        git_worktree_dir: "../slice-2",
+        create_pr: false,
+      },
+      stageName: "slice 2",
+    });
+    if (slice2.exited === true || slice2.outputs.approved !== true) {
+      return ctx.exit({ status: "blocked", reason: "slice 2 is unverified; slice 1 remains verified" });
+    }
+
+    return {};
+  },
+});
+```
+
+The `prepareSliceWorktree` tools run before their child boundaries and use `git worktree add -b`, so each child starts in a named feature branch. Once the path exists, the child's worktree binding reuses it as-is; `base_branch` remains the comparison base for its reviewers. The child owns implementation, review, repair, and acceptance, while the parent owns branch/worktree setup and the stop boundary.
+
+Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape: create each next named branch from the previous verified branch, pass that previous branch as the next child's `base_branch`, and use a distinct worktree. Do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` from the explicit inputs and preparation records without reopening completed child work.
+
 #### Choosing a common workflow pattern
 
 - Pick **classify-and-act** when routing correctness matters more than breadth.
@@ -4605,7 +4794,9 @@ Best practices:
 - Pick **generate-and-filter** when output quality depends on exploring a large option space.
 - Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
 - Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
+- Pick **constructive quorum** when several fresh-context verifiers judge one artifact and a simple tally could hide a defect or preserve one verifier's misreading; use one bounded evidence exchange before each verifier emits its own final vote.
 - Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
+- Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes; create or check out each named branch before its child, create each next branch from the previous verified branch, pass that previous branch as `base_branch`, use a distinct `git_worktree_dir`, and stop at the first failed gate.
 
 Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
 

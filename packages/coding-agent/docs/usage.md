@@ -231,14 +231,13 @@ For raw credential exports, stdout is empty on every non-zero exit but one. Once
 
 | Flag | Description |
 |------|-------------|
-| default | Interactive mode |
-| `--tui-mode <mode>` | Experimental interactive layout: `regular` (default) or `fullscreen`; `/settings` can switch it while Atomic runs |
+| default | Interactive mode (fullscreen TUI) |
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines; see [JSON mode](/json) |
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
-In `fullscreen` mode, the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Use `regular` to scroll those overlays with a mouse or trackpad.
+Interactive sessions always use fullscreen: the transcript scrolls independently above a sticky dock containing the editor, status line, usage meter, extension widgets, and footer. Wheel and trackpad gestures go first to a focused workflow graph or stage chat overlay; events those overlays do not consume fall through to the alternate-screen viewport. Non-overlay focused components do not block pi-tui's mouse path, so transcript scrolling, scrollbar interaction, and drag selection still work.
 
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 
@@ -394,6 +393,6 @@ The snapshot is taken when the command executes, not when the tool is created, s
 
 ## Design Principles
 
-Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, and [intercom](/intercom). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
+Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, [intercom](/intercom), and [i-have-adhd](/i-have-adhd). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

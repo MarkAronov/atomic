@@ -13,12 +13,12 @@ import type { RunStatus, StageNotice, StageStatus } from "../shared/store-types.
 import type { GraphTheme } from "./graph-theme.js";
 import type { PromptCardState } from "./prompt-card.js";
 
+/** Unhosted fallback frame height used when no host terminal supplies rows. */
 export const VIEW_LINE_COUNT = 32;
 export const PROMPT_SCROLL_STEP_ROWS = 4;
 /** Header rows reserved by prompt paging for the normal UUID continuation shape. */
 export const HEADER_ROWS = 2;
 export const SEP_ROWS = 1;
-export const STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL = "ctrl+t";
 
 export function isReadOnlyArchiveStatus(status: StageStatus): boolean {
 	return status === "completed" || status === "failed" || status === "skipped";
@@ -66,14 +66,6 @@ export interface StageChatViewOpts {
 	setToolsExpanded?: (expanded: boolean) => void;
 	/** Parent footer data provider inherited from the host UI for core footer/usage rendering. */
 	footerData?: ReadonlyFooterDataProvider;
-	/**
-	 * Optional accessor returning the current terminal row count. The chat
-	 * surface expands its body band to roughly `viewportRows` minus the fixed
-	 * header / loader / editor / footer rows so the popup fills the
-	 * terminal under pi-tui's `width: "100%" / maxHeight: "100%"` geometry.
-	 * Returning `undefined` falls back to the constant 32-row frame.
-	 */
-	getViewportRows?: () => number | undefined;
 	/** Broker that routes stage-local custom UI, such as ask_user_question, into this node. */
 	stageUiBroker?: StageUiBroker;
 	/**
@@ -130,7 +122,6 @@ export interface StageChatViewContext {
 	requestRender: (() => void) | undefined;
 	requestFocus: (() => void) | undefined;
 	focusHoldTimer: ReturnType<typeof setInterval> | undefined;
-	getViewportRows: (() => number | undefined) | undefined;
 	piTui: TUI | undefined;
 	piTheme: unknown;
 	piKeybindings: unknown;
@@ -151,7 +142,6 @@ export interface StageChatViewContext {
 	promptMaxScroll: number;
 	promptVisibleRows: number;
 	localPaused: boolean;
-	mouseScrollCaptureEnabled: boolean;
 	lastObservedStageStatus: StageStatus | undefined;
 	lastObservedRunStatus: RunStatus | undefined;
 	seenNoticeIds: Set<string>;

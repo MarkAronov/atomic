@@ -11,7 +11,7 @@ import {
 } from "../../shared/types.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
 import { runSingleInProcess } from "../foreground/inprocess-run-sync.ts";
-import { resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { buildModelCandidates } from "../shared/model-fallback.ts";
 import {
@@ -179,6 +179,9 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 			mode: "single",
 			agent,
 			agents: [agent],
+			...(result.model !== undefined ? { model: result.model } : {}),
+			...(result.thinking !== undefined ? { thinking: result.thinking } : {}),
+			...(result.fastMode ? { fastMode: true } : {}),
 		});
 	} catch (error) {
 		if (!isStaleExtensionContextError(error)) throw error;

@@ -29,6 +29,12 @@ export interface CompactOptions {
 	onError?: (error: Error) => void;
 }
 
+/**
+ * Late routes settle as delivery acknowledgements: resolution means the route
+ * accepted delivery, while rejection means delivery was not fully accepted. A
+ * sequential batch may have delivered a prefix before it rejects; stale-context
+ * rejection identifies the dropped route, and other failures reject unchanged.
+ */
 export interface WorkflowStageLateMessageRouter {
 	routeMessage<T>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
@@ -98,6 +104,8 @@ export interface SubagentChildPolicy {
 	readonly mcpDirectTools?: readonly string[];
 	/** Admission-issued identity/capability; never inherited through process environment. */
 	readonly intercom?: SubagentIntercomIdentity;
+	/** Resolved intercom group for this admitted child, when one was assigned. */
+	readonly intercomGroup?: string;
 }
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;

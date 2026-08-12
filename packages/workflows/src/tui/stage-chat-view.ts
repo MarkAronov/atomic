@@ -79,7 +79,6 @@ export class StageChatView implements Component, Focusable {
 	private requestRender!: StageChatViewContext["requestRender"];
 	private requestFocus!: StageChatViewContext["requestFocus"];
 	private focusHoldTimer!: StageChatViewContext["focusHoldTimer"];
-	private getViewportRows!: StageChatViewContext["getViewportRows"];
 	private piTui!: StageChatViewContext["piTui"];
 	private piTheme!: StageChatViewContext["piTheme"];
 	private piKeybindings!: StageChatViewContext["piKeybindings"];
@@ -100,7 +99,6 @@ export class StageChatView implements Component, Focusable {
 	private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
 	private promptVisibleRows!: StageChatViewContext["promptVisibleRows"];
 	private localPaused!: StageChatViewContext["localPaused"];
-	private mouseScrollCaptureEnabled!: StageChatViewContext["mouseScrollCaptureEnabled"];
 	private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
 	private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
 	private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
@@ -186,10 +184,6 @@ export class StageChatView implements Component, Focusable {
 		return fitStageChatFrame(lines, totalRows, blankLine(w));
 	}
 
-	wantsMouseScrollTracking(): boolean {
-		return this.mouseScrollCaptureEnabled;
-	}
-
 	handleInput(data: string): boolean {
 		return handleStageChatInput(this._ctx(), data);
 	}
@@ -218,7 +212,6 @@ export class StageChatView implements Component, Focusable {
 		void this.requestRender;
 		void this.requestFocus;
 		void this.focusHoldTimer;
-		void this.getViewportRows;
 		void this.piTui;
 		void this.piTheme;
 		void this.piKeybindings;
@@ -235,7 +228,6 @@ export class StageChatView implements Component, Focusable {
 		void this.promptScrollOffset;
 		void this.promptMaxScroll;
 		void this.promptVisibleRows;
-		void this.mouseScrollCaptureEnabled;
 		void this.seenNoticeIds;
 		void this._unsubscribeStore;
 		void this._unsubscribeHandle;

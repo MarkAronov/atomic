@@ -6,33 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Breaking Changes
 
 - Custom workflow UI components must return `true` when they consume input and `false` when they do not. In fullscreen mode, an unhandled result lets the transcript process matching viewport navigation keys instead of swallowing them.
+- Added `failed` to the `ctx.exit()` status union. Author-initiated failed exits persist their reason and partial declared outputs, return the discriminated `{ exited: true, status: "failed" }` child result instead of throwing, and default to non-resumable unless `resumable: true` is set. Downstream exhaustive switches over `WorkflowExitStatus` must handle the new failed-exit case ([#2242](https://github.com/bastani-inc/atomic/issues/2242)).
 
 ### Changed
 
 - Updated the Ralph research stage model configuration. The primary model moves from `openai-codex/gpt-5.6-luna:max` to `anthropic/claude-opus-5:high`, and the fallback chain is rebuilt around high/xhigh thinking levels: GPT-5.6 Sol at `xhigh` replaces the Luna variants, Claude Fable 5 and Claude Opus 4.8 step up from `low`/`medium` to `high`, GPT-5.5 and GLM-5.2 step up to `xhigh`, and Kimi K3 (`kimi-coding`, `moonshotai`, `moonshotai-cn`, and OpenRouter) plus `openrouter/sakana/fugu-ultra:high` join the chain.
+- Extended workflow-authoring guidance with a stacked implementation-slices starter pattern: authors target roughly 100–500 changed lines between verification points by default, route each slice through a child lifecycle, explicitly create or check out each named branch before its child because `base_branch` and `git_worktree_dir` alone do not create feature branches, stack each verified branch and worktree, and stop at the first failed gate while preserving earlier verification ([#2262](https://github.com/bastani-inc/atomic/issues/2262)).
+- Updated authored-workflow model guidance to treat benchmark thinking levels as measurement settings, assign effort by stage role and failure cost, require a compact `Stage | Model | Thinking | Role` declaration before launch, reserve `max` for high-cost-of-error roles or explicit user requests, and apply catalog-aware role policy to primary and fallback attempts ([#2203](https://github.com/bastani-inc/atomic/issues/2203)).
+- Added bounded constructive-quorum deliberation to Goal and Ralph reviewer prompts: reviewers form independent preliminary verdicts, exchange evidence once over Intercom, and record evidence-backed verdict changes before the existing reducer counts final votes ([#2237](https://github.com/bastani-inc/atomic/issues/2237)).
 
 - Rebuilt the workflow graph overlay on pi-tui 0.84.1's `VStack` and `ScrollView` layout primitives. The graph body now adapts to terminal height and resize, supports vertical wheel scrolling and a draggable scrollbar, and keeps wide-graph horizontal panning and existing prompt/navigation key handling ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
+- Retired the legacy terminal-row callback thread from graph and stage-chat views. The two fullscreen-frame consumers still read `terminal.rows` directly: GraphView uses it for the overlay frame, and StageChatView uses it for the chat line count, falling back to the unhosted `VIEW_LINE_COUNT = 32` frame when no host is present. `PiCustomComponent.render` supplies only a width, so the #2223 viewport-row criterion remains partial at those call paths ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
 
 - Workflow command, worktree Git/setup-hook, and Playwright CLI subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
 
 ### Fixed
+- Fixed completed `ctx.exit()` runs losing the reserved returned-status convention, legacy child replay records losing their exit discriminator, and failed author-exit resume surfaces falling back to snapshot inspection instead of durable retry.
+- Fixed workflow graph node cards appending the Codex `fast` marker to dependency metadata; cards now show only topology details such as `root`, `1 dep`, or `<n> deps` while fast-mode state remains available to the stage and its model label ([#2337](https://github.com/bastani-inc/atomic/issues/2337)).
 
+- Fixed the workflow graph overlay statusline echoing the `i-have-adhd` extension's `ADHD Mode` badge. The badge remains in the main-chat footer while other extension statuses continue to render in the overlay ([#2341](https://github.com/bastani-inc/atomic/issues/2341)).
+
+- Fixed fullscreen workflow graph and stage-chat mouse routing. Focused workflow overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without a workflow-owned TTY-tracking seam; the fullscreen route also mirrors consumed left-button events into pi-tui's application-owned selection path ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
 - Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
 
 - Fixed switcher wheel input scrolling an obscured graph and the scrollbar covering the final graph column; overflow now reserves its scrollbar column and the switcher owns wheel selection ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
 - Restored natural graph geometry for unhosted overlays by removing the fixed-height fallback and kept pi-tui's layout metadata aligned with sparse, deeply scrolled content, so large graphs track their natural geometry without corrupting OSC-8 rows ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
 
 - Fixed the inline workflow form editor not inheriting the host's `autocompleteMaxVisible` setting when Atomic installs it as a custom editor.
-- Fixed late workflow messages and MCP scope cleanup that finish after an extension reload. Stale event-bus calls now no-op instead of throwing, while active routes keep their normal fallback behavior.
+- Fixed late workflow messages and MCP scope cleanup that finish after an extension reload. Stale event-bus calls now stop without retrying through stale APIs, while active routes keep their normal fallback behavior.
 - Fixed workflow stale-context guards by consuming the host's exported predicate instead of copying its error-message marker.
+- Fixed late-message routing to reject stale drops consistently for Intercom and generic batches, so a resolved route means delivery was accepted instead of silently treating a dropped message as routed; non-stale failures still propagate.
 
 - Fixed the `DISPATCHED` confirmation panel being torn apart by any workflow input containing a newline. Input values were truncated by visible width, which a control character does not have, so an embedded newline survived truncation and emitted extra physical lines that no border ever wrapped — the box was destroyed from that row down. Multi-line inputs are ordinary, so this fired for most real launches: a `prompt` or an `acceptance_criteria` block reliably reproduced it. String values and the object/array JSON projection now collapse control characters, `U+2028`, and `U+2029` to single spaces before truncation, so a run card stays one row per value. `U+2028`/`U+2029` are included because `JSON.stringify` does not escape them and some terminals still break lines on them. As a side effect, escape sequences in an input value can no longer inject ANSI styling into the chat surface.
 - Fixed workflow stages being unable to use the `subagent` tool at all. The stage policy set `managementActions: "full"` and `fanoutAuthorized: false` together, which contradict: stages could neither delegate nor, because of the companion subagents defect, run read-only management such as `subagent list`. Workflow stages are top-level sessions rather than subagent children, so the policy now sets `fanoutAuthorized: true`, restoring the delegation the workflow docs already describe. Nesting remains bounded by the typed in-process depth policy and Rust admission’s five-level ceiling ([#2220](https://github.com/bastani-inc/atomic/pull/2220), regression from [#2205](https://github.com/bastani-inc/atomic/pull/2205)).
 - Fixed nested subagents in workflow-stage sessions losing the bundled `subagent` extension. In-process child resource loading now carries the bundled package roots and disables only the workflow extension's repeated stage lifecycle, so a stage can delegate and its nested child receives the bundled tools instead of only the base built-in ones ([#2220](https://github.com/bastani-inc/atomic/pull/2220), regression from [#2205](https://github.com/bastani-inc/atomic/pull/2205)).
 - Fixed a stage chat opened on a stage that was already mid-turn showing an empty transcript. The stage's assistant message joins the handle's message list only when its turn ends, and streaming updates now carry a delta rather than the message so far, so a chat mounted after the stream started had nothing to draw and nothing that would restate it — a stage held mid-turn stayed blank for the whole turn. The chat now seeds itself from the stage session's in-flight assistant message when it mounts, and the deltas that arrive after that continue the same message.
+
+### Removed
+
+- Removed workflow-owned mouse-scroll reporting and attached-stage copy mode. Fullscreen pi-tui now keeps application-owned drag and multi-click selection available over workflow overlays, and `ctrl+t` is left to the host keybindings. Copy still uses OSC 52; terminals that refuse OSC 52 writes require the modifier-drag bypass (Shift/Option, as provided by the terminal).
 
 ## [0.9.13-alpha.1] - 2026-08-05
 

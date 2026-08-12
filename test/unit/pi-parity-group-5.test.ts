@@ -171,7 +171,6 @@ describe("Group 5 parity", () => {
 				doubleEscapeAction: "tree",
 				treeFilterMode: "default",
 				showHardwareCursor: false,
-				tuiMode: "regular",
 				fullscreenScrollbar: "auto",
 				editorPaddingX: 0,
 				outputPad: 1,
@@ -213,7 +212,7 @@ describe("Group 5 parity", () => {
 	test("idle status fills two rows", () => {
 		assert.deepEqual(new IdleStatus().render(4), ["    ", "    "]);
 	});
-	test("footer renders branch, session name, and sorted sanitized extension statuses", () => {
+	test("footer renders branch, session name, and sorted sanitized extension statuses with • separators", () => {
 		initTheme("dark");
 		const session = {
 			state: { model: undefined, thinkingLevel: "off" },
@@ -235,7 +234,7 @@ describe("Group 5 parity", () => {
 			.render(120)
 			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
 		assert.match(lines[0] ?? "", /project \(feature\).*demo/);
-		assert.equal(lines[1], "alpha status zeta status");
+		assert.equal(lines[1], "alpha status • zeta status");
 	});
 
 	test("footer keeps ANSI-colored extension statuses intact instead of leaking stripped sequences", () => {

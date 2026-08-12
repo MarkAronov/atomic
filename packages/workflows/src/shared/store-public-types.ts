@@ -117,7 +117,7 @@ export interface Store {
 	 * Records the end of a run.
 	 * Returns `true` if state changed, `false` if the run was not found or
 	 * already in a terminal state (completed | failed | killed | skipped | cancelled | blocked).
-	 * `result` is applied for intentional success/exit statuses (completed | skipped | cancelled | blocked)
+	 * `result` is applied for intentional success/exit statuses (completed | skipped | cancelled | blocked | failed)
 	 * and for workflows that intentionally return a failed status with structured outputs.
 	 * `error` is applied for status "failed" | "killed" | "blocked".
 	 */
@@ -265,7 +265,9 @@ export interface Store {
 	clear(): void;
 	snapshot(): StoreSnapshot;
 	/**
-	 * Return one immutable payload-free graph projection per store version.
+	 * Return one immutable payload-bounded graph projection per store version.
+	 * Authored failed-exit results may retain bounded JSON output values; all
+	 * other run payloads stay omitted or compacted to bounded diagnostic fields.
 	 * Graph-visible state may change only through a version-bumping store method;
 	 * direct mutation of values returned by `runs()` would leave this cache stale.
 	 */

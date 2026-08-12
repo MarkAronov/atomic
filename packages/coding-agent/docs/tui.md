@@ -22,11 +22,11 @@ interface Component {
 | Method | Description |
 |--------|-------------|
 | `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
-| `handleInput?(data)` | Receive keyboard input when the component has focus. Return `true` when it consumes the key; return `false`, `undefined`, or `void` when a matching fullscreen viewport key should fall through to transcript navigation. |
+| `handleInput?(data)` | Receive keyboard input when the component has focus. A focused overlay also receives mouse input before the fullscreen viewport. Return `true` when it consumes input; return `false`, `undefined`, or `void` when a matching fullscreen viewport key or overlay mouse event should fall through to viewport handling. Non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available. |
 | `wantsKeyRelease?` | If true, component receives key release events (Kitty protocol). Default: false. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
 
-The installed pi-tui type still permits handlers that return `void`; Atomic treats a missing or `undefined` result as unhandled only for a matching fullscreen viewport key. Components that mutate state for such a key must return `true` so the viewport does not apply it a second time.
+The installed pi-tui type still permits handlers that return `void`; Atomic treats a missing or `undefined` result as unhandled only for a matching fullscreen viewport key or a mouse event deferred to a focused overlay. Components that mutate state for such an input must return `true` so the viewport does not apply it a second time.
 
 The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line. Styles do not carry across lines. If you emit multi-line text with styling, reapply styles per line or use `wrapTextWithAnsi()` so styles are preserved for each wrapped line.
 
@@ -101,21 +101,20 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. If the signal aborts, Atomic dismisses the custom UI and rejects the returned promise with the signal reason. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
-In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. For a matching fullscreen viewport key, the host waits for the child's boolean input reply: `true` keeps the key local, while `false` lets the host transcript process it. A stalled reply has a bounded fallback. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
+In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. For a matching fullscreen viewport key, or for mouse input while a workflow overlay has focus, the host waits for the child's boolean input reply: `true` keeps the input local, while `false` lets the host transcript process it. Left-button selection events are also mirrored to pi-tui when an overlay handles them, so drag and multi-click selection stays available over fullscreen workflow overlays. Mouse input remains with pi-tui when a non-overlay component has focus, preserving transcript scrolling, scrollbar interaction, and drag selection. A stalled reply has a bounded fallback. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
 
 ### Host terminal modes from an isolated component
 
-Because the component runs in the engine child — whose stdout is the JSONL transport, not a TTY — writing raw terminal escape sequences to `process.stdout` from `render()`/`handleInput()` is a no-op and never reaches the real host terminal. For the two host-terminal modes an overlay commonly needs, the factory `tui.terminal` exposes typed, allowlisted setters that the host applies to the real TTY over the engine protocol:
+Because the component runs in the engine child — whose stdout is the JSONL transport, not a TTY — writing raw terminal escape sequences to `process.stdout` from `render()`/`handleInput()` is a no-op and never reaches the real host terminal. For the host autowrap mode an overlay may need, the factory `tui.terminal` exposes a typed, allowlisted setter that the host applies to the real TTY over the engine protocol:
 
 ```typescript
 await ctx.ui.custom((tui, theme, keybindings, done) => {
-  tui.terminal.setMouseScrollTracking?.(true); // enable SGR mouse-scroll reporting on the host TTY
-  tui.terminal.setAutowrap?.(false);           // disable autowrap (DECAWM) — Windows terminals only
+  tui.terminal.setAutowrap?.(false); // disable autowrap (DECAWM) — Windows terminals only
   return new MyOverlay({ onClose: done });
 }, { overlay: true });
 ```
 
-These are the only terminal controls exposed; arbitrary child bytes are never forwarded to the terminal. The host resets any mode a component enabled when the overlay hides, closes, is disposed, or when the engine child crashes/restarts, so a stranded child can never leave the terminal in mouse-reporting or autowrap-off mode. On non-isolated hosts and test seams the setters are absent, and callers should fall back to writing escape sequences to their own `process.stdout`.
+This is the only terminal control exposed; arbitrary child bytes are never forwarded to the terminal. The host resets the mode when a component hides, closes, is disposed, or when the engine child crashes or restarts. In fullscreen, pi-tui owns its baseline mouse and autowrap modes; non-isolated overlay fallbacks do not disable that baseline. On regular non-isolated hosts and test seams the setter is absent, and callers may fall back to writing escape sequences to their own `process.stdout`.
 
 ### Host-native session picker
 
@@ -914,35 +913,33 @@ type Mode = "normal" | "insert";
 class VimEditor extends CustomEditor {
   private mode: Mode = "insert";
 
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     // Escape: switch to normal mode, or pass through for app handling
     if (matchesKey(data, "escape")) {
       if (this.mode === "insert") {
         this.mode = "normal";
-        return;
+        return true;
       }
       // In normal mode, escape aborts agent (handled by CustomEditor)
-      super.handleInput(data);
-      return;
+      return super.handleInput(data);
     }
 
     // Insert mode: pass everything to CustomEditor
     if (this.mode === "insert") {
-      super.handleInput(data);
-      return;
+      return super.handleInput(data);
     }
 
     // Normal mode: vim-style navigation
     switch (data) {
-      case "i": this.mode = "insert"; return;
-      case "h": super.handleInput("\x1b[D"); return; // Left
-      case "j": super.handleInput("\x1b[B"); return; // Down
-      case "k": super.handleInput("\x1b[A"); return; // Up
-      case "l": super.handleInput("\x1b[C"); return; // Right
+      case "i": this.mode = "insert"; return true;
+      case "h": return super.handleInput("\x1b[D"); // Left
+      case "j": return super.handleInput("\x1b[B"); // Down
+      case "k": return super.handleInput("\x1b[A"); // Up
+      case "l": return super.handleInput("\x1b[C"); // Right
     }
     // Pass unhandled keys to super (ctrl+c, etc.), but filter printable chars
-    if (data.length === 1 && data.charCodeAt(0) >= 32) return;
-    super.handleInput(data);
+    if (data.length === 1 && data.charCodeAt(0) >= 32) return false;
+    return super.handleInput(data);
   }
 
   render(width: number): string[] {

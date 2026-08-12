@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - MCP server processes and npm/Glimpse resolver probes now receive `AI_AGENT=atomic` for generic child-process attribution; the reserved marker overrides a configured `AI_AGENT` value.

@@ -13,6 +13,7 @@ import type {
 import type { WorkflowOutputValues, WorkflowSerializableValue } from "./types.js";
 
 export const COMPACT_RESULT_FIELD_LIMIT = 1024;
+const COMPACT_EXIT_OUTPUT_LIMIT = COMPACT_RESULT_FIELD_LIMIT * 4;
 
 function compactResultField(value: WorkflowSerializableValue | undefined): string | undefined {
 	if (typeof value !== "string") return undefined;
@@ -22,7 +23,10 @@ function compactResultField(value: WorkflowSerializableValue | undefined): strin
 	return flattenTruncatedString(value.slice(0, COMPACT_RESULT_FIELD_LIMIT));
 }
 
-function compactRunResult(result: WorkflowOutputValues | undefined): WorkflowOutputValues | undefined {
+function compactRunResult(
+	result: WorkflowOutputValues | undefined,
+	preserveExitedOutputs = false,
+): WorkflowOutputValues | undefined {
 	if (result === undefined) return undefined;
 	const status = compactResultField(result.status);
 	const summary = compactResultField(result.summary);
@@ -34,7 +38,35 @@ function compactRunResult(result: WorkflowOutputValues | undefined): WorkflowOut
 		...(remainingWork !== undefined ? { remaining_work: remainingWork } : {}),
 		...(resultText !== undefined ? { result: resultText } : {}),
 	};
+	if (!preserveExitedOutputs) return Object.keys(compact).length === 0 ? undefined : compact;
+	return compactExitedOutputs(result, compact);
+}
+
+function compactExitedOutputs(
+	result: WorkflowOutputValues,
+	compact: WorkflowOutputValues,
+): WorkflowOutputValues | undefined {
+	try {
+		const serialized = JSON.stringify(result);
+		if (serialized !== undefined && serialized.length <= COMPACT_EXIT_OUTPUT_LIMIT) {
+			const parsed: unknown = JSON.parse(serialized);
+			if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return compactExitedObject(parsed as Record<string, WorkflowSerializableValue>);
+			}
+		}
+	} catch {
+		// Fall through to the bounded legacy fields below.
+	}
 	return Object.keys(compact).length === 0 ? undefined : compact;
+}
+
+function compactExitedObject(result: Record<string, WorkflowSerializableValue>): WorkflowOutputValues | undefined {
+	const compacted = { ...result };
+	for (const key of ["status", "summary", "remaining_work", "result"]) {
+		const value = compacted[key];
+		if (typeof value === "string") compacted[key] = compactResultField(value) ?? "";
+	}
+	return Object.keys(compacted).length === 0 ? undefined : compacted;
 }
 
 // Both cloners are called only from a `!== undefined` guard at their call sites,
@@ -106,7 +138,7 @@ function compactToolNode(node: ToolNodeSnapshot): ToolNodeSnapshot {
 
 function compactRun(run: RunSnapshot): RunSnapshot {
 	const { inputs: _inputs, result: sourceResult, stages, toolNodes, pendingPrompt, ...metadata } = run;
-	const result = compactRunResult(sourceResult);
+	const result = compactRunResult(sourceResult, run.exited === true && run.status === "failed");
 	return {
 		...metadata,
 		inputs: {},

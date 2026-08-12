@@ -104,6 +104,10 @@ export interface WorkflowControlIntercomPayload {
 	readonly mode: WorkflowDetails["mode"];
 	readonly status: WorkflowDetails["status"];
 	readonly message: string;
+	/** Terminal ctx.exit() discriminator and payload for parent sessions. */
+	readonly exited?: boolean;
+	readonly exitReason?: string;
+	readonly outputs?: WorkflowDetails["output"];
 	readonly parentSession?: string;
 	readonly createdAt: number;
 }
@@ -151,6 +155,9 @@ export function emitWorkflowControlIntercom(
 		mode: details.mode,
 		status: details.status,
 		message,
+		...(details.exited !== undefined ? { exited: details.exited } : {}),
+		...(details.exitReason !== undefined ? { exitReason: details.exitReason } : {}),
+		...(details.output !== undefined ? { outputs: details.output } : {}),
 		...(parentSession !== undefined ? { parentSession } : {}),
 		createdAt: Date.now(),
 	};

@@ -119,15 +119,27 @@ export function validateRunGroups(
 	grouped: Map<string, StageDraft[]>,
 	rootRunId: string,
 	tools: readonly DurableToolCheckpoint[],
+	checkpoints: readonly DurableCheckpoint[],
 ): boolean {
 	const toolsFor = (runId: string) =>
 		tools.filter((checkpoint) => (checkpoint.topology?.run?.runId ?? rootRunId) === runId);
 	const owners = new Map<string, StageDraft>();
+	const syntheticChildIds = new Set<string>();
 	for (const [parentRunId, drafts] of grouped) {
 		for (const draft of drafts) {
 			const childRunId = childRunIdFromDraft(draft);
 			if (childRunId === undefined) continue;
-			if (!grouped.has(childRunId) || childRunId === parentRunId || owners.has(childRunId)) return false;
+			if (childRunId === parentRunId || owners.has(childRunId)) return false;
+			if (!grouped.has(childRunId)) {
+				if (
+					!isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId) ||
+					childScopedEvidenceExists(checkpoints, draft.replayKey, childRunId)
+				)
+					return false;
+				syntheticChildIds.add(childRunId);
+				owners.set(childRunId, draft);
+				continue;
+			}
 			const childRun = runTopologyFor(grouped.get(childRunId)!, toolsFor(childRunId));
 			if (
 				childRun?.parentRunId !== parentRunId ||
@@ -146,6 +158,7 @@ export function validateRunGroups(
 			return false;
 	}
 	for (const runId of owners.keys()) {
+		if (syntheticChildIds.has(runId)) continue;
 		const seen = new Set<string>();
 		let current: string | undefined = runId;
 		while (current !== undefined && current !== rootRunId) {
@@ -156,6 +169,48 @@ export function validateRunGroups(
 		if (current !== rootRunId) return false;
 	}
 	return true;
+}
+
+export function isSyntheticExitedChild(
+	draft: StageDraft,
+	parentRunId: string,
+	childRunId: string,
+	rootRunId: string,
+): boolean {
+	const child = workflowChildFromDraft(draft);
+	const boundary = draft.topology?.boundary;
+	return (
+		child?.runId === childRunId &&
+		child.exited === true &&
+		boundary?.event === "terminal" &&
+		boundary.status === "completed" &&
+		boundary.child.runId === childRunId &&
+		boundary.child.parentRunId === parentRunId &&
+		boundary.child.parentStageId === draft.topology?.stageId &&
+		boundary.child.rootRunId === rootRunId
+	);
+}
+
+/** Raw scoped records disprove a zero-stage child reconstruction. */
+export function childScopedEvidenceExists(
+	checkpoints: readonly DurableCheckpoint[],
+	boundaryReplayKey: string,
+	childRunId: string,
+): boolean {
+	const prefix = `${boundaryReplayKey}:`;
+	return checkpoints.some((checkpoint) => {
+		const lookupIdentity =
+			checkpoint.kind === "tool"
+				? checkpoint.argsHash
+				: checkpoint.kind === "ui"
+					? checkpoint.promptHash
+					: checkpoint.replayKey;
+		return (
+			checkpoint.checkpointId.startsWith(prefix) ||
+			lookupIdentity.startsWith(prefix) ||
+			(checkpoint.kind !== "ui" && checkpoint.topology?.run?.runId === childRunId)
+		);
+	});
 }
 
 export function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, rootRunId: string): void {
@@ -267,14 +322,16 @@ function valueOrExisting<
 
 export function workflowChildFromDraft(draft: StageDraft): StageSnapshot["workflowChild"] | undefined {
 	const strict = parseWorkflowChildResult(draft.output);
-	const child = strict ?? (hasCurrentStageIdentity(draft) ? undefined : parseLegacyWorkflowChildResult(draft.output));
+	const legacy = hasCurrentStageIdentity(draft) ? undefined : parseLegacyWorkflowChildResult(draft.output);
+	const child = strict ?? legacy;
 	if (child === undefined) return undefined;
+	const exited = strict?.exited ?? false;
 	return {
 		alias: child.workflow,
 		workflow: child.workflow,
 		runId: child.runId,
 		status: child.status,
-		...(child.exited !== undefined ? { exited: child.exited } : {}),
+		exited,
 		outputs: child.outputs,
 		...(typeof child.exitReason === "string" ? { exitReason: child.exitReason } : {}),
 	};

@@ -111,14 +111,24 @@ export interface RunSyncOptions {
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
-	testSession?: {
-		output?: string;
-		promptLogPath?: string;
-		/** Hold a test prompt open until the caller releases the supplied promise. */
-		promptGate?: Promise<void>;
-		/** Match AgentSession.abort() settling an active prompt without throwing. */
-		abortResolvesPrompt?: boolean;
-	};
+	testSession?:
+		| false
+		| {
+				output?: string;
+				promptLogPath?: string;
+				/** Hold a test prompt open until the caller releases the supplied promise. */
+				promptGate?: Promise<void>;
+				/** Match AgentSession.abort() settling an active prompt without throwing. */
+				abortResolvesPrompt?: boolean;
+				/** Emit a fallback event for tests that exercise live model metadata. */
+				fallbackModel?: string;
+				/** Emit the effective thinking level applied to the fallback candidate. */
+				fallbackThinkingLevel?: string;
+				/** Test-only session model exposed through the AgentSession accessors. */
+				sessionModel?: string;
+				/** Test-only effective thinking level exposed through the AgentSession accessors. */
+				sessionThinkingLevel?: string;
+		  };
 }
 
 export type IntercomBridgeMode = "off" | "fork-only" | "always";

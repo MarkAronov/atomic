@@ -2,14 +2,7 @@
  * Shared state and constructor wiring for interactive mode.
  * Responsibility-specific behavior is installed by sibling modules.
  */
-import {
-	isViewportTUI,
-	type ScrollView,
-	type TuiInputListener,
-	TuiMainScreen,
-	type TuiMainScreenRenderState,
-	type TuiMode,
-} from "@earendil-works/pi-tui";
+import { isKeyRelease, isViewportTUI, type ScrollView, type TuiInputListener } from "@earendil-works/pi-tui";
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
@@ -74,6 +67,27 @@ const FULLSCREEN_VIEWPORT_ACTIONS = [
 	"tui.altScreen.bottom",
 ] as const;
 
+/**
+ * Decide whether the fullscreen viewport should run before the focused
+ * component. `isMouseInput` is classified by pi-tui's own mouse predicate in
+ * `AtomicTuiAltScreen`, so this policy does not duplicate terminal grammars.
+ * Mouse deferral is limited to actual overlays so inline components do not
+ * disable pi-tui's application-owned transcript selection path.
+ */
+export function shouldHandleFullscreenViewportInput(
+	focused: Component | null,
+	editor: Component,
+	data: string,
+	isMouseInput: boolean,
+	focusedIsOverlay: boolean,
+	keybindings: KeybindingsManager,
+): boolean {
+	if (focused === editor || !focused?.handleInput) return true;
+	if (isMouseInput) return !focusedIsOverlay;
+	if (focusedIsOverlay && keybindings.matches(data, "app.thinking.toggle")) return false;
+	return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+}
+
 function isCommandLikeStartupInput(text: string): boolean {
 	const trimmed = text.trimStart();
 	return trimmed.startsWith("/") || trimmed.startsWith("!");
@@ -120,17 +134,34 @@ export class InteractiveModeBase {
 	ui: TUI;
 	private renderer: InteractiveTui;
 
-	private readonly shouldHandleViewportInput = (data: string): boolean => {
-		const focused = this.renderer.getFocusedComponent();
-		if (focused === this.editor || !focused?.handleInput) return true;
-		return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => this.keybindings.matches(data, action));
+	private readonly shouldHandleViewportInput = (
+		data: string,
+		isMouseInput: boolean,
+		focusedIsOverlay: boolean,
+	): boolean => {
+		return shouldHandleFullscreenViewportInput(
+			this.renderer.getFocusedComponent(),
+			this.editor,
+			data,
+			isMouseInput,
+			focusedIsOverlay,
+			this.keybindings,
+		);
 	};
+	private readonly onOverlayUnhandledInput = (data: string): boolean => this.handleOverlayUnhandledInput(data);
+
+	/** Dispatch the host thinking action after a focused workflow overlay declines input. */
+	handleOverlayUnhandledInput(data: string): boolean {
+		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.thinking.toggle")) return false;
+		// Reuse the default editor's action dispatcher even while a workflow
+		// overlay owns focus. This keeps the host binding and its user remap as
+		// the source of truth instead of calling the implementation directly.
+		return this.defaultEditor.handleInput(data);
+	}
 
 	private readonly onRightClickPaste = (): void => {
 		void this.handleRightClickPaste();
 	};
-
-	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 
 	chatContainer: Container;
 	documentContainer: Container;
@@ -416,9 +447,6 @@ export class InteractiveModeBase {
 		return () => this.tuiRendererChangeListeners.delete(listener);
 	}
 
-	private notifyTuiRendererChange(): void {
-		for (const listener of this.tuiRendererChangeListeners) listener();
-	}
 	mountInteractiveTui(tui: TUI, components: readonly Component[]): void {
 		for (const component of components) tui.addChild(component);
 		if (isViewportTUI(tui)) {
@@ -442,74 +470,15 @@ export class InteractiveModeBase {
 	}
 
 	stopInteractiveTui(): void {
-		if (this.renderer.mode === "fullscreen") {
-			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-			this.switchTuiMode("regular", false, false);
-			this.renderer.renderNow();
-		}
+		while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
 		this.ui.stop();
-	}
-
-	switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
-		const previousUi = this.renderer;
-		if (mode === previousUi.mode) return true;
-		if (previousUi.hasOverlayEntries) return false;
-
-		const components = [...previousUi.children];
-		const focus = previousUi.getFocusedComponent();
-		const terminal = previousUi.terminal;
-		const showHardwareCursor = previousUi.getShowHardwareCursor();
-		const clearOnShrink = previousUi.getClearOnShrink();
-		const onDebug = previousUi.onDebug;
-		if (previousUi instanceof TuiMainScreen) {
-			this.mainScreenRenderState = previousUi.captureRenderState();
-		}
-
-		previousUi.stop({ preserveScreen: true });
-		previousUi.setFocus(null);
-		previousUi.clear();
-		if (isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
-
-		const nextUi = createInteractiveTui({
-			tuiMode: mode,
-			showHardwareCursor,
-			logDirectory: this.runtimeHost.services.agentDir,
-			terminal,
-			onRightClickPaste: this.onRightClickPaste,
-			shouldHandleViewportInput: this.shouldHandleViewportInput,
-		});
-		nextUi.setClearOnShrink(clearOnShrink);
-		nextUi.onDebug = onDebug;
-		if (nextUi instanceof TuiMainScreen && this.mainScreenRenderState) {
-			nextUi.restoreRenderState(this.mainScreenRenderState);
-		}
-		this.renderer = nextUi;
-		this.options.tuiMode = mode;
-		this.mountInteractiveTui(nextUi, components);
-		nextUi.invalidate();
-		nextUi.setFocus(focus);
-		if (!startRenderer) return true;
-		// A terminal-start failure must not leave the replacement without safety input handlers.
-		this.rebindTuiInputListeners();
-		nextUi.start();
-		this.notifyTuiRendererChange();
-		this.themeController.rebindTui();
-		if (
-			restoreProgress &&
-			this.settingsManager.getShowTerminalProgress() &&
-			(this.session.isStreaming || this.session.isCompacting)
-		) {
-			terminal.setProgress(true);
-		}
-		return true;
 	}
 
 	declare options: InteractiveModeOptions;
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
-		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
-		this.options = { ...options, tuiMode };
+		this.options = options;
 		this.deferredStartupPending = Boolean(options.deferredExtensionLoad);
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
@@ -520,12 +489,12 @@ export class InteractiveModeBase {
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
-			tuiMode,
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: runtimeHost.services.agentDir,
 			terminal: options.terminal,
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
+			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());

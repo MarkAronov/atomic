@@ -4,12 +4,16 @@ import {
 	assert,
 	createStore,
 	deriveGraphTheme,
+	FakePromptEditor,
 	fakeFooterAgentSession,
 	flush,
+	makeFakeKeybindings,
 	makeHandle,
 	StageChatView,
+	StageUiBroker,
 	setupRun,
 	stripAnsi,
+	type TUI,
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
@@ -99,12 +103,11 @@ describe("StageChatView", () => {
 		assert.deepEqual(state.promptCalls, []);
 		view.dispose();
 	});
-	test("read-only archive footer matches live workflow controls and toggles copy mode", () => {
+	test("read-only archive footer keeps hierarchy controls and close behavior", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a", "completed");
 		let detached = 0;
 		let closed = 0;
-		let renderRequests = 0;
 		const view = new StageChatView({
 			store,
 			graphTheme: deriveGraphTheme({}),
@@ -117,38 +120,91 @@ describe("StageChatView", () => {
 			onClose: () => {
 				closed += 1;
 			},
-			requestRender: () => {
-				renderRequests += 1;
-			},
+			piKeybindings: makeFakeKeybindings(),
 		});
 
-		const offLines = view.render(96).map(stripAnsi);
-		const offFooter = offLines.find((line) => line.includes("copy mode off"));
-		assert.equal(offFooter, `esc to close${" ".repeat(39)}ctrl+x return to graph · ctrl+t copy mode off`);
-		assert.equal(offLines.filter((line) => line.includes("esc to close")).length, 1);
-		assert.match(offLines.join("\n"), /ctrl\+x return to graph/);
-		const narrowFooter = view
-			.render(40)
-			.map(stripAnsi)
-			.find((line) => line.includes("ctrl+t off"));
-		assert.equal(narrowFooter, "esc to close   ctrl+x graph · ctrl+t off");
-		assert.equal(narrowFooter?.length, 40);
-
-		assert.equal(view.wantsMouseScrollTracking(), true);
-		assert.equal(view.handleInput("\x14"), true);
-		assert.equal(view.wantsMouseScrollTracking(), false);
-		const onFooter = view
+		const footer = view
 			.render(96)
 			.map(stripAnsi)
-			.find((line) => line.includes("copy mode on"));
-		assert.equal(onFooter, `esc to close${" ".repeat(40)}ctrl+x return to graph · ctrl+t copy mode on`);
-		assert.equal(renderRequests, 1);
+			.find((line) => line.includes("esc to close"));
+		assert.match(footer ?? "", /esc to close\s+ctrl\+x return to graph$/);
+		for (const key of ["\x14", "\x1b[116;5u", "\x1b[116;5:1u", "\x1b[27;5;116~"]) {
+			assert.equal(view.handleInput(key), false, `Ctrl+T variant ${JSON.stringify(key)} must fall through`);
+		}
+		assert.equal(detached, 0);
+		assert.equal(closed, 0);
 
 		assert.equal(view.handleInput("\x18"), true);
 		assert.equal(detached, 1);
 		assert.equal(view.handleInput("\x1b"), true);
 		assert.equal(closed, 1);
 		view.dispose();
+	});
+	test("remapped thinking action leaves Ctrl+T and the remapped editing key usable", async () => {
+		const keybindings = makeFakeKeybindings({ "app.thinking.toggle": ["\x17"] });
+		const piTui = { requestRender: () => {}, terminal: { rows: 32, columns: 80 } } as unknown as TUI;
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const { handle } = makeHandle();
+		const editor = new FakePromptEditor();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui,
+			piTheme: {},
+			piKeybindings: keybindings,
+			piEditorFactory: () => editor,
+			initialComposerDraft: "draft",
+		});
+
+		assert.equal(view.handleInput("\x14"), true);
+		assert.equal(view.handleInput("\x17"), true);
+		assert.deepEqual(editor.receivedInput, ["\x14", "\x17"]);
+		view.dispose();
+
+		const customStore = createStore();
+		setupRun(customStore, "run-1", "stage-a");
+		const broker = new StageUiBroker(customStore);
+		const customInputs: string[] = [];
+		const customView = new StageChatView({
+			store: customStore,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle: makeHandle().handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui,
+			piTheme: {},
+			piKeybindings: keybindings,
+			stageUiBroker: broker,
+		});
+		let complete!: (result: unknown) => void;
+		const pending = broker.requestCustomUi("run-1", "stage-a", (_tui, _theme, _keys, done) => {
+			complete = done;
+			return {
+				render: () => ["HIL"],
+				handleInput: (data: string) => {
+					customInputs.push(data);
+					return true;
+				},
+				invalidate: () => {},
+			};
+		});
+		await flush();
+		assert.equal(customView.handleInput("\x14"), true);
+		assert.equal(customView.handleInput("\x17"), true);
+		assert.deepEqual(customInputs, ["\x14", "\x17"]);
+		complete("done");
+		await pending;
+		customView.dispose();
 	});
 
 	test("skipped stages without a live handle render as read-only archives", () => {

@@ -40,9 +40,17 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 			recordRunTimingCheckpoint(input.durableBackend, input.runSnapshot);
 		}
 		const failure =
-			durableStatus === "failed" && input.runSnapshot.error !== undefined
+			durableStatus === "failed"
 				? {
-						error: input.runSnapshot.error,
+						...(input.runSnapshot.error !== undefined ? { error: input.runSnapshot.error } : {}),
+						...(input.runSnapshot.exited === true
+							? {
+									exited: true,
+									...(input.runSnapshot.exitReason !== undefined
+										? { exitReason: input.runSnapshot.exitReason }
+										: {}),
+								}
+							: {}),
 						...(input.runSnapshot.failureKind !== undefined
 							? { failureKind: input.runSnapshot.failureKind }
 							: {}),

@@ -77,6 +77,21 @@ intercom({ action: "ask", to: "6332faab", message: "Which option should I use?" 
 
 Intercom resolves exact full IDs first, exact case-insensitive names second, and unique ID prefixes last. A colliding prefix returns an ambiguity error; use a longer displayed ID or an exact name rather than guessing.
 
+### Runtime named groups
+
+Plain chat sessions can create or join a group without restarting:
+
+```typescript
+// Join or create the named group. Both sessions should run this call.
+intercom({ action: "join", group: "api-review" })
+intercom({ action: "list" }) // now shows only peers in api-review
+
+// Leave the named group and return to the resolved startup home group.
+intercom({ action: "leave" })
+```
+
+Joining changes broker presence without changing the session ID. `default` is the shared group. The names `true` and `auto` are reserved for subagent auto-groups and are rejected. Subagents launched after a join inherit the joined group. Ordinary `send`/`ask` calls remain group-isolated; only an authorized `contact_supervisor` call can cross groups.
+
 ### Pattern 3: Reply Naturally
 
 When responding to an inbound ask, prefer `reply` instead of reconstructing raw IDs:
@@ -196,16 +211,29 @@ metadata get the `contact_supervisor` tool. Normal sessions use the regular
 `intercom` tool. If you see the formatted supervisor decision/progress update
 message, treat it as a `contact_supervisor` escalation.
 
+### Pattern 7: Constructive Quorum
+
+Use constructive quorum when several fresh-context reviewers judge the same artifact and a tally could hide a defect one reviewer found or preserve another reviewer's misreading.
+
+1. Each reviewer inspects independently and records a preliminary verdict before reading sibling findings or verdicts.
+2. Run exactly one bounded evidence-exchange round: share concrete findings and evidence, challenge blocking claims, surface missed defects, and correct objective/acceptance-criteria misreadings. Do not continue into a second round.
+3. Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether the round changed it and which evidence caused the change.
+4. Let the deterministic reducer count final votes; this pattern does not change quorum counts or the `stop_review_loop` contract.
+
+In Atomic workflows, each invocation has its own Intercom group, and parallel stages and delegated subagents inherit it when Intercom is available. Sibling reviewers can therefore coordinate without custom group wiring. See the [constructive quorum workflow pattern](../../../coding-agent/docs/workflows.md#common-workflow-patterns).
+
 ## Key Differences
 
 | Action | Behavior | Use When |
 |--------|----------|----------|
+| `join` | Joins or creates a named group in place | Two plain chat sessions need a private group |
+| `leave` | Returns to the resolved home group | Restore the session's startup group |
 | `send` | Fire-and-forget | You don't need a response |
 | `ask` | Blocks until reply (10 min timeout) | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask; `to` accepts a displayed short ID | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
-| `list` | Returns all sessions with actionable short IDs and live status | You need to discover targets or choose an idle peer |
-| `status` | Returns your connection state | Troubleshooting |
+| `list` | Returns all sessions in the current group with actionable short IDs and live status | You need to discover targets or choose an idle peer |
+| `status` | Returns your connection state and current group | Troubleshooting |
 
 Inside workflows, `ask` may target a sibling stage that has already completed. If that stage retains a valid conversation, Atomic automatically schedules a post-mortem turn there and preserves the exact child-to-child reply thread; do not send a separate workflow follow-up. Missing, deleted, non-resumable, or failed-to-reopen completed targets return an actionable error. A parent or unrelated session cannot satisfy the pending ask.
 

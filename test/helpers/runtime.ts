@@ -15,12 +15,22 @@
  * node:assert/strict.
  */
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+/** Create a temporary directory for a test and return its path. */
+export function makeTempDirectory(prefix: string): string {
+	return mkdtempSync(join(tmpdir(), prefix));
+}
+
+/** Remove a temporary test directory and everything it contains. */
+export function removeTempDirectory(path: string): void {
+	rmSync(path, { recursive: true, force: true });
+}
 
 /** `Bun.sleep(ms)`. */
 export function sleep(milliseconds: number): Promise<void> {
@@ -275,7 +285,8 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 	// since Node 20.12 (CVE-2024-27980) it refuses to exec a `.cmd` or `.bat`
 	// without a shell. Spawn the resolved path, through a shell only for shims.
 	const isShim = /\.(?:cmd|bat)$/iu.test(executable);
-	const child = nodeSpawn(executable, args, {
+	const commandLine = isShim ? `"${executable}"` : executable;
+	const child = nodeSpawn(commandLine, args, {
 		cwd: options.cwd,
 		env: environment(options.env),
 		timeout: options.timeout,

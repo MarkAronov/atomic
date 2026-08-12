@@ -9,10 +9,10 @@ import {
 	makeFakeKeybindings,
 	makeHandle,
 	makePendingPrompt,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 	stripAnsi,
-	type TUI,
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
@@ -54,10 +54,7 @@ describe("StageChatView", () => {
 		const responseLineIndex = visibleLines.findIndex((line) => line.includes("Nebula"));
 		const footerLineIndex = visibleLines.findIndex((line) => line.includes("esc to close"));
 		assert.equal(footerLineIndex, visibleLines.length - 1);
-		assert.match(
-			visibleLines[footerLineIndex] ?? "",
-			/esc to close\s+ctrl\+x return to graph · ctrl\+t copy mode off$/,
-		);
+		assert.match(visibleLines[footerLineIndex] ?? "", /esc to close\s+ctrl\+x return to graph$/);
 		assert.ok(footerLineIndex > responseLineIndex);
 		assert.doesNotMatch(visible, /READ-ONLY SESSION/);
 		assert.equal(JSON.stringify(store.snapshot()).includes("Nebula"), false);
@@ -185,17 +182,13 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			piTui: {
-				requestRender: () => {},
-				terminal: { rows: 12, columns: 80 },
-			} as unknown as TUI,
+			piTui: makeTestTui(12),
 			piTheme: {},
 			piKeybindings: makeFakeKeybindings(),
 			piEditorFactory: () => {
 				createdEditor = new FakePromptEditor();
 				return createdEditor;
 			},
-			getViewportRows: () => 12,
 		});
 
 		view.render(80);
@@ -232,17 +225,13 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			piTui: {
-				requestRender: () => {},
-				terminal: { rows: 12, columns: 80 },
-			} as unknown as TUI,
+			piTui: makeTestTui(12),
 			piTheme: {},
 			piKeybindings: makeFakeKeybindings(),
 			piEditorFactory: () => {
 				createdEditor = new FakePromptEditor();
 				return createdEditor;
 			},
-			getViewportRows: () => 12,
 		});
 
 		view.render(80);
@@ -287,19 +276,19 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 12,
+			piTui: makeTestTui(12),
 		});
 
 		const top = stripAnsi(view.render(72).join("\n"));
 		assert.match(top, /SECTION 1/);
 		assert.doesNotMatch(top, /SECTION 5/);
 
-		view.handleInput("end");
+		for (let i = 0; i < 20; i++) assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
 		const bottom = stripAnsi(view.render(72).join("\n"));
 		assert.doesNotMatch(bottom, /SECTION 1/);
 		assert.match(bottom, /SECTION 5|response|Submit/);
 
-		view.handleInput("home");
+		for (let i = 0; i < 20; i++) assert.equal(view.handleInput("\x1b[<64;1;1M"), true);
 		const restoredTop = stripAnsi(view.render(72).join("\n"));
 		assert.match(restoredTop, /SECTION 1/);
 		view.dispose();

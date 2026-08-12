@@ -49,7 +49,6 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.requestRender = opts.requestRender;
 	ctx.requestFocus = opts.requestFocus;
 	ctx.focusHoldTimer = undefined;
-	ctx.getViewportRows = opts.getViewportRows;
 	ctx.piTui = opts.piTui;
 	ctx.piTheme = opts.piTheme;
 	ctx.piKeybindings = opts.piKeybindings;
@@ -69,7 +68,6 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.promptMaxScroll = 0;
 	ctx.promptVisibleRows = 0;
 	ctx.localPaused = false;
-	ctx.mouseScrollCaptureEnabled = true;
 	ctx.lastObservedStageStatus = undefined;
 	ctx.lastObservedRunStatus = undefined;
 	ctx.seenNoticeIds = new Set<string>();
@@ -471,7 +469,7 @@ export function resolvePromptResponse(
 }
 
 export function viewLineCount(ctx: StageChatViewContext): number {
-	const reported = ctx.getViewportRows?.();
+	const reported = ctx.piTui?.terminal?.rows;
 	if (typeof reported !== "number" || !Number.isFinite(reported)) {
 		return VIEW_LINE_COUNT;
 	}

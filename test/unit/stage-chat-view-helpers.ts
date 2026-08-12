@@ -30,6 +30,9 @@ import type { PendingPrompt } from "../../packages/workflows/src/shared/store-ty
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { makeTestTui } from "../support/fake-tui.js";
+
+export { makeTestTui };
 
 beforeAll(() => {
 	initTheme("dark", false);
@@ -266,8 +269,8 @@ export function stripAnsi(text: string): string {
 
 export const CTRL_X_VARIANTS = ["\x18", "\x1b[120;5u", "\x1b[120;5:1u", "\x1b[27;5;120~"];
 
-export const RETURN_HINT_TEXT = "ctrl+x return to graph · ctrl+t copy mode off";
-export const COMPACT_RETURN_HINT_TEXT = "ctrl+x graph · ctrl+t off";
+export const RETURN_HINT_TEXT = "ctrl+x return to graph";
+export const COMPACT_RETURN_HINT_TEXT = "ctrl+x graph";
 
 export function expectRightAlignedReturnHint(lines: readonly string[], width: number, rightInset = 0): number {
 	const hint = lines.some((line) => line.includes(RETURN_HINT_TEXT)) ? RETURN_HINT_TEXT : COMPACT_RETURN_HINT_TEXT;
@@ -311,7 +314,7 @@ export function makeCompletedPromptArchiveView(message: string, response: string
 		handle: undefined,
 		onDetach: () => {},
 		onClose: () => {},
-		getViewportRows: () => 10,
+		piTui: makeTestTui(10),
 	});
 }
 

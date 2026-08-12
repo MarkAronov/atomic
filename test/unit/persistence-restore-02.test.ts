@@ -275,6 +275,106 @@ describe("restoreOnSessionStart", () => {
 		assert.equal(stage.workflowChild?.exited, true);
 		assert.deepEqual(stage.workflowChild?.outputs, { summary: "ok" });
 	});
+	test("preserves legacy exited inference for non-failed child replay statuses", () => {
+		for (const childStatus of ["skipped", "cancelled", "blocked"] as const) {
+			const st = createStore();
+			const entries: SessionEntry[] = [
+				{
+					id: `${childStatus}-e1`,
+					type: "workflow.run.start",
+					payload: { runId: childStatus, name: "wf", inputs: {}, ts: 1 },
+				},
+				{
+					id: `${childStatus}-e2`,
+					type: "workflow.stage.start",
+					payload: { runId: childStatus, stageId: "boundary", name: "import:child", parentIds: [], ts: 2 },
+				},
+				{
+					id: `${childStatus}-e3`,
+					type: "workflow.stage.end",
+					payload: {
+						runId: childStatus,
+						stageId: "boundary",
+						status: "completed",
+						workflowChild: {
+							alias: "child",
+							workflow: "child-wf",
+							runId: "child-run",
+							status: childStatus,
+							outputs: {},
+						},
+					},
+				},
+			];
+			restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+			assert.equal(st.runs()[0]!.stages[0]!.workflowChild?.exited, true, childStatus);
+		}
+
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{
+				id: "completed-e1",
+				type: "workflow.run.start",
+				payload: { runId: "completed", name: "wf", inputs: {}, ts: 1 },
+			},
+			{
+				id: "completed-e2",
+				type: "workflow.stage.start",
+				payload: { runId: "completed", stageId: "boundary", name: "import:child", parentIds: [], ts: 2 },
+			},
+			{
+				id: "completed-e3",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "completed",
+					stageId: "boundary",
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "child-wf",
+						runId: "child-run",
+						status: "completed",
+						exitReason: "completed early",
+						outputs: {},
+					},
+				},
+			},
+		];
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		assert.equal(st.runs()[0]!.stages[0]!.workflowChild?.exited, true);
+	});
+	test("does not infer an exited child from a failed status without the discriminator", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{ id: "e1", type: "workflow.run.start", payload: { runId: "r3", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e2",
+				type: "workflow.stage.start",
+				payload: { runId: "r3", stageId: "boundary", name: "import:child", parentIds: [], ts: 2 },
+			},
+			{
+				id: "e3",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "r3",
+					stageId: "boundary",
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "child-wf",
+						runId: "child-run",
+						status: "failed",
+						exitReason: "ordinary failure metadata",
+						outputs: { attempted: 1 },
+					},
+				},
+			},
+		];
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const child = st.runs()[0]!.stages[0]!.workflowChild;
+		assert.equal(child?.exited, undefined);
+		assert.equal(child?.exitReason, "ordinary failure metadata");
+	});
 	test("ignores workflow child replay metadata from skipped and failed stage.end entries", () => {
 		for (const status of ["skipped", "failed"] as const) {
 			const st = createStore();
@@ -436,6 +536,61 @@ describe("restoreOnSessionStart", () => {
 		assert.equal(run.resumable, false);
 		assert.deepEqual(run.result, { note: "ok" });
 		assert.deepEqual(run.stages, []);
+	});
+	test("restores failed ctx.exit markers, reason, outputs, and resumability", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{ id: "e1", type: "workflow.run.start", payload: { runId: "r-failed-exit", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e2",
+				type: "workflow.run.end",
+				payload: {
+					runId: "r-failed-exit",
+					status: "failed",
+					exited: true,
+					exitReason: "all candidates rejected",
+					result: { attempted: 4 },
+					resumable: true,
+					ts: 2,
+				},
+			},
+		];
+
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const run = st.runs()[0]!;
+		assert.equal(run.status, "failed");
+		assert.equal(run.exited, true);
+		assert.equal(run.exitReason, "all candidates rejected");
+		assert.equal(run.resumable, true);
+		assert.deepEqual(run.result, { attempted: 4 });
+	});
+	test("does not infer an author exit from an ordinary failed run reason", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{
+				id: "e1",
+				type: "workflow.run.start",
+				payload: { runId: "r-ordinary-failed", name: "wf", inputs: {}, ts: 1 },
+			},
+			{
+				id: "e2",
+				type: "workflow.run.end",
+				payload: {
+					runId: "r-ordinary-failed",
+					status: "failed",
+					exitReason: "failure metadata reason",
+					error: "unexpected failure",
+					ts: 2,
+				},
+			},
+		];
+
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const run = st.runs()[0]!;
+		assert.equal(run.status, "failed");
+		assert.equal(run.exited, undefined);
+		assert.equal(run.exitReason, "failure metadata reason");
+		assert.equal(run.error, "unexpected failure");
 	});
 	test("skips completed terminal runs with incomplete stage end data", () => {
 		const st = createStore();

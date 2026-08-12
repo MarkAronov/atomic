@@ -197,75 +197,9 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
-	test("stage chat captures mouse tracking by default and ctrl+t toggles copy mode", () => {
-		const store = createStore();
-		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-		const registry = createStageControlRegistry();
-		registry.register(makeHandle("run-1", "stage-a"));
-		const mouseTracking: boolean[] = [];
-		const pane = new WorkflowAttachPane({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageControlRegistry: registry,
-			onClose: () => {},
-			setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
-		});
-
-		assert.equal(pane.wantsMouseScrollTracking(), true);
-		assert.deepEqual(mouseTracking, [true]);
-		pane.handleInput(Key.enter);
-		assert.equal(pane._mode, "stage-chat");
-		assert.equal(pane.wantsMouseScrollTracking(), true);
-		assert.deepEqual(mouseTracking, [true, true]);
-
-		pane.handleInput("\x1b[27;5;116~");
-		assert.equal(pane.wantsMouseScrollTracking(), false);
-		assert.deepEqual(mouseTracking, [true, true, false]);
-		pane.handleInput("\x1b[116;5u");
-		assert.equal(pane.wantsMouseScrollTracking(), true);
-		assert.deepEqual(mouseTracking, [true, true, false, true]);
-
-		pane.handleInput(Key.ctrl("x"));
-		assert.equal(pane._mode, "graph");
-		assert.equal(pane.wantsMouseScrollTracking(), true);
-		assert.deepEqual(mouseTracking, [true, true, false, true, true]);
-		pane.dispose();
-		assert.deepEqual(mouseTracking, [true, true, false, true, true, false]);
-	});
-	test("read-only stage copy mode releases terminal mouse tracking and ctrl+x returns to graph", () => {
-		const store = createStore();
-		setupRun(store, "run-1", [{ id: "stage-a", name: "A", status: "completed" }]);
-		const mouseTracking: boolean[] = [];
-		const pane = new WorkflowAttachPane({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageControlRegistry: createStageControlRegistry(),
-			onClose: () => {},
-			setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
-		});
-
-		pane.handleInput(Key.enter);
-		assert.equal(pane._mode, "stage-chat");
-		assert.match(pane.render(96).join("\n"), /copy mode off/);
-
-		pane.handleInput("\x1b[116;5u");
-		assert.equal(pane.wantsMouseScrollTracking(), false);
-		assert.match(pane.render(96).join("\n"), /copy mode on/);
-		assert.equal(mouseTracking.at(-1), false);
-
-		pane.handleInput(Key.ctrl("x"));
-		assert.equal(pane._mode, "graph");
-		assert.equal(pane.wantsMouseScrollTracking(), true);
-		assert.equal(mouseTracking.at(-1), true);
-		pane.dispose();
-	});
-
-	test("forwards getViewportRows to graph mode", () => {
-		// The host provides terminal.rows through `getViewportRows`; the
-		// attach pane must thread that through to GraphView so the
-		// overlay frame fills the terminal in graph mode.
+	test("uses host terminal rows in graph mode", () => {
+		// The pane reads geometry from the host TUI's terminal (the
+		// getViewportRows callback was retired in #2315).
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
 		const pane = new WorkflowAttachPane({
@@ -273,7 +207,7 @@ describe("WorkflowAttachPane", () => {
 			graphTheme: deriveGraphTheme({}),
 			runId: "run-1",
 			onClose: () => {},
-			getViewportRows: () => 50,
+			piTui: { terminal: { rows: 50 } },
 		});
 		const lines = pane.render(120);
 		assert.equal(pane._mode, "graph");
@@ -281,10 +215,9 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
-	test("forwards getViewportRows to stage-chat mode after attach", () => {
+	test("uses host terminal rows in stage-chat mode after attach", () => {
 		// After Enter on a graph node the attach pane swaps the interior
-		// to StageChatView. The viewport accessor must continue to apply
-		// so the chat surface keeps filling the terminal.
+		// to StageChatView, which reads the same host terminal geometry.
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
 		const registry = createStageControlRegistry();
@@ -295,7 +228,7 @@ describe("WorkflowAttachPane", () => {
 			runId: "run-1",
 			stageControlRegistry: registry,
 			onClose: () => {},
-			getViewportRows: () => 44,
+			piTui: { terminal: { rows: 44 } },
 		});
 		pane.handleInput(Key.enter);
 		assert.equal(pane._mode, "stage-chat");

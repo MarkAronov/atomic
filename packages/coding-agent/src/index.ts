@@ -124,6 +124,11 @@ export {
 } from "./core/flattened-tool-arguments.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+export {
+	RUNTIME_INTERCOM_GROUP_ENV,
+	readRuntimeIntercomGroup,
+	runtimeIntercomGroupEnvKey,
+} from "./core/intercom-runtime-group.ts";
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,
@@ -236,7 +241,7 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
-export type { DefaultProjectTrust, TuiMode } from "./core/settings-manager.ts";
+export type { DefaultProjectTrust } from "./core/settings-manager.ts";
 export {
 	type CompactionSettings,
 	type ImageSettings,

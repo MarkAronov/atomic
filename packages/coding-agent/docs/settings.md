@@ -86,7 +86,7 @@ Fallback attempts are visible as model changes in the session transcript and as 
 
 ### Codex Fast Mode
 
-Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode only to supported `openai/*` and `openai-codex/*` providers, not `github-copilot/*` or other OpenAI-compatible providers. Chat and workflow-stage scopes are independent. When fast mode is active for the current supported model, Atomic shows `fast` after the model name in the chat footer and workflow stage model labels. Enable the workflow scope deliberately for broad fan-outs because each eligible stage can consume priority-tier requests.
+Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode only to supported `openai/*` and `openai-codex/*` providers, not `github-copilot/*` or other OpenAI-compatible providers. Chat and workflow-stage scopes are independent. Workflow stages, nested `ctx.workflow(...)` stages, and subagents launched by those stages use `codexFastMode.workflow`; normal-chat subagents use `codexFastMode.chat`. Fast mode is resolved again for each fallback model, so the marker and priority tier follow the effective provider. When fast mode is active for the current supported model, Atomic shows `fast` after the model name in the chat footer, workflow stage model labels, and subagent results. Enable the workflow scope deliberately for broad fan-outs because each eligible stage can consume priority-tier requests.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -107,10 +107,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
-| `tuiMode` | string | `"regular"` | Experimental terminal layout: `"regular"` or `"fullscreen"`. `--tui-mode` overrides one launch without saving; `/settings` switches the live session and saves a successful choice globally. |
-| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. Has no effect in regular mode |
-| `tuiMode` | string | `"regular"` | **Experimental** terminal layout: `"regular"` or `"fullscreen"`. `--tui-mode` overrides one launch without saving; `/settings` switches the live session and saves a successful choice globally. |
-| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. Has no effect in regular mode. |
+| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
@@ -127,10 +124,11 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
-In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Switch to `regular` to scroll those overlays with a mouse or trackpad.
-In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures scroll the viewport rather than engine-hosted overlays such as workflow graphs; switch to `regular` to scroll those overlays. Fullscreen is selectable and experimental, not the default.
+Interactive sessions always use the fullscreen renderer. The transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures go first to a focused workflow overlay, including workflow graphs and stage chats. Events that overlay does not consume fall through to the alternate-screen viewport; non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available.
 
 The fullscreen renderer keeps minimum sizes for nested layout stacks during resize, and transient fullscreen notices stack instead of replacing a notice that is still visible.
+
+The alternate screen restores the terminal's prior contents on exit, so an interactive transcript does not remain in terminal scrollback. Use `/export` before exit for an HTML copy, or resume the saved session later to review it in Atomic.
 
 Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared asynchronous launcher. Atomic chooses `externalEditor`, then `$VISUAL`, then `$EDITOR`, then Notepad on Windows or `nano` elsewhere. Each edit uses a private `atomic-editor-*` directory containing only `prompt.md`, removes the directory recursively afterward, and never scans the system temporary directory. A successful empty edit is preserved; a failed editor leaves the original text unchanged, and the TUI always restarts and renders after the editor exits.
 

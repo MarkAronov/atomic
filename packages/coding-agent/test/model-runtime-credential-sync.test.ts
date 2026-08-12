@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CredentialSynchronizationError, ModelRuntime } from "../src/core/model-runtime.ts";
 
+beforeEach(() => {
+	// saveCredential refreshes the provider catalog; this test only exercises
+	// local credential synchronization and must not depend on a live endpoint.
+	vi.stubEnv("ATOMIC_OFFLINE", "1");
+});
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
@@ -9,6 +14,8 @@ afterEach(() => {
 
 describe("ModelRuntime credential synchronization", () => {
 	it("reports a committed credential when local synchronization fails", async () => {
+		// Credential synchronization must stay local; saveCredential refreshes the catalog after persisting.
+		vi.stubEnv("ATOMIC_OFFLINE", "1");
 		const credentials = AuthStorage.inMemory();
 		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
 		const credential = { type: "api_key" as const, key: "persisted-key" };

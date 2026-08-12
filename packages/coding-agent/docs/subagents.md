@@ -32,6 +32,7 @@ Atomic decides whether delegation adds value, which specialist fits each bounded
 Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, foreground, background, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Ask any necessary questions in the parent conversation before delegating.
 
 The human slash commands remain registered and continue to use their separate parsing and event-bridge path, including background and fork flags.
+Prompt-template delegation comes from the separately installed `pi-prompt-template-model` extension, whose `requestDelegatedRun` emits `prompt-template:subagent:request`. If that caller must survive an extension reload, import `registerPromptTemplateBridgeRequestSettlement` from `@bastani/subagents`, register it before the emit, and unregister it from the normal response, cancellation, or abort path. The hook rejects the caller only when the old bridge drops a stale response emit; normal completion still arrives through `prompt-template:subagent:response`. Atomic cannot register this opt-in for an out-of-tree emitter.
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
 
@@ -133,6 +134,8 @@ Status, interrupt, list, and resume use the Rust registry and status watch for l
 Inside workflow stages, completion delivery observes the stage generation boundary. A completion received before the boundary closes is queued through the stage AgentSession and processed before the stage publishes its terminal snapshot. A completion that arrives after close is routed once to the parent/main chat and cannot reopen or append to the completed stage transcript. Producers that are still running do not hold the stage open, so background work remains non-blocking; explicit post-mortem stage chat is still available separately.
 
 When a workflow graph overlay is open, Atomic also publishes the live async subagent summary into the shared status surface. The below-editor async widget remains available when the workflow overlay is hidden, and the overlay statusline keeps the run count/state visible while the graph fills the terminal.
+
+While a child is running, the jobs widget shows its resolved model, effective reasoning level, and applied Codex fast-mode marker for each step. The same badge appears in the completed result, including after a model fallback; parallel steps keep their metadata separate.
 
 ## Orchestrator model and group policy
 

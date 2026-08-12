@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
+import { defaultTheme, makeSnap, makeStage, makeStore, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
 function footerData(statuses: Map<string, string>): ReadonlyFooterDataProvider {
 	return {
@@ -32,7 +32,7 @@ function renderOverlay(statuses: Map<string, string>): string {
 		store: makeStore(makeSnap([{ ...makeStage("stage-1"), status: "running" }])),
 		graphTheme: defaultTheme,
 		footerData: footerData(statuses),
-		getViewportRows: () => 20,
+		piTui: makeTestTui(20),
 	});
 	try {
 		return visibleText(view.render(100));
@@ -51,6 +51,18 @@ describe("workflow orchestrator statusline extension statuses", () => {
 		);
 
 		assert.doesNotMatch(rendered, /MCP:/);
+		assert.match(rendered, /Other extension status/);
+	});
+
+	test("hides the i-have-adhd ADHD Mode badge while preserving other extension statuses", () => {
+		const rendered = renderOverlay(
+			new Map([
+				["i-have-adhd", "● ADHD Mode"],
+				["other-extension", "Other extension status"],
+			]),
+		);
+
+		assert.doesNotMatch(rendered, /ADHD Mode/);
 		assert.match(rendered, /Other extension status/);
 	});
 

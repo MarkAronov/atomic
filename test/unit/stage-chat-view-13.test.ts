@@ -5,66 +5,16 @@ import {
 	deriveGraphTheme,
 	flush,
 	makeHandle,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-	test("requests terminal mouse tracking by default so wheel scroll stays in stage chat", () => {
-		const store = createStore();
-		setupRun(store, "run-1", "stage-a");
-		const { handle } = makeHandle();
-		const view = new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-		});
-
-		assert.equal(view.wantsMouseScrollTracking(), true);
-		view.dispose();
-	});
-
-	test("ctrl+t toggles copy mode by disabling and restoring mouse-scroll capture", () => {
-		const ctrlTInputs = ["\x14", "\x1b[116;5u", "\x1b[116;5:1u", "\x1b[27;5;116~"];
-
-		for (const input of ctrlTInputs) {
-			const store = createStore();
-			setupRun(store, "run-1", "stage-a");
-			const { handle } = makeHandle();
-			let renderRequests = 0;
-			const view = new StageChatView({
-				store,
-				graphTheme: deriveGraphTheme({}),
-				runId: "run-1",
-				stageId: "stage-a",
-				workflowName: "test-wf",
-				handle,
-				onDetach: () => {},
-				onClose: () => {},
-				requestRender: () => {
-					renderRequests++;
-				},
-			});
-
-			assert.equal(view.wantsMouseScrollTracking(), true);
-			assert.equal(view.handleInput(input), true);
-			assert.equal(view.wantsMouseScrollTracking(), false);
-			assert.equal(view.handleInput(input), true);
-			assert.equal(view.wantsMouseScrollTracking(), true);
-			assert.equal(renderRequests, 2);
-			view.dispose();
-		}
-	});
-
 	test("expands the chat surface to the reported viewport row count", () => {
 		// Full-screen overlay: when the host surfaces terminal.rows
-		// through `getViewportRows`, the renderer must paint that many
-		// lines so the popup fills the terminal.
+		// Full-screen overlay: when the host surfaces terminal.rows,
+		// the renderer must paint that many lines so the popup fills the terminal.
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle } = makeHandle();
@@ -77,7 +27,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 44,
+			piTui: makeTestTui(44),
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 44);
@@ -104,7 +54,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 60,
+			piTui: makeTestTui(60),
 		});
 		for (let i = 0; i < 30; i++) {
 			for (const ch of `msg-${i}`) view.handleInput(ch);

@@ -1,4 +1,5 @@
 /** Shared fixtures for overlay graph tests. */
+
 import assert from "node:assert/strict";
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type {
@@ -146,6 +147,8 @@ export function makeStore(snap: StoreSnapshot): Store {
 
 export const defaultTheme = deriveGraphTheme({});
 export const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+export { makeTestTui } from "../support/fake-tui.js";
 export const SGR_MOUSE_WHEEL_DOWN = "\x1b[<65;10;10M";
 
 export function visibleText(lines: string[]): string {

@@ -4,9 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - Detached intercom broker processes now receive `AI_AGENT=atomic` for generic child-process attribution.
+- Added runtime `intercom` `join` and `leave` actions for named group membership. Joining updates broker presence without changing the session ID, keeps `send`/`ask` group-isolated, lets later subagents inherit the joined group, and reports success only after broker acknowledgement; `default` remains explicit while `true` and `auto` stay reserved for generated subagent groups ([#2334](https://github.com/bastani-inc/atomic/issues/2334)).
 
 ### Fixed
 - Fixed Intercom relay and detach-handshake callbacks that finish after an extension reload. Stale event-bus emissions and subscription cleanup are now best-effort, so runtime replacement does not turn a late delivery into an unhandled rejection.

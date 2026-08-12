@@ -36,10 +36,8 @@ export class WorkflowAttachPane implements Component {
 	private onClose: () => void;
 	private onHide?: () => void;
 	private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
-	private getViewportRows?: () => number | undefined;
 	private hostRequestRender?: () => void;
 	private hostRequestFocus?: () => void;
-	private setMouseScrollTracking?: (enabled: boolean) => void;
 	private piTui?: TUI;
 	private piTheme?: unknown;
 	private piKeybindings?: unknown;
@@ -74,10 +72,8 @@ export class WorkflowAttachPane implements Component {
 		this.onClose = opts.onClose;
 		this.onHide = opts.onHide;
 		this.onPromptResolve = opts.onPromptResolve;
-		this.getViewportRows = opts.getViewportRows;
 		this.hostRequestRender = opts.requestRender;
 		this.hostRequestFocus = opts.requestFocus;
-		this.setMouseScrollTracking = opts.setMouseScrollTracking;
 		this.piTui = opts.piTui;
 		this.piTheme = opts.piTheme;
 		this.piKeybindings = opts.piKeybindings;
@@ -102,7 +98,6 @@ export class WorkflowAttachPane implements Component {
 		} else {
 			this._syncAwaitingInputKeys(readGraphStoreSnapshot(this.store));
 			this._armGraphEnterQuarantineIfRunNeedsInput();
-			this._syncMouseScrollTracking();
 		}
 	}
 	private _buildGraphView(initialFocusedStageId?: string, initialFocusedRunId?: string): GraphView {
@@ -123,7 +118,7 @@ export class WorkflowAttachPane implements Component {
 			},
 			initialFocusedStageId,
 			initialFocusedRunId,
-			getViewportRows: this.getViewportRows,
+			piTui: this.piTui,
 			piKeybindings: this.piKeybindings,
 			footerData: this.footerData,
 			getStageQueuedMessageCount: (runId, stageId) => this._stageQueuedMessageCount(runId, stageId),
@@ -202,7 +197,6 @@ export class WorkflowAttachPane implements Component {
 			getToolsExpanded: this.getToolsExpanded,
 			setToolsExpanded: this.setToolsExpanded,
 			footerData: this.footerData,
-			getViewportRows: this.getViewportRows,
 			stageUiBroker: this.stageUiBroker,
 			canSubmitPrompt: (candidateRunId, candidateStageId) =>
 				this.visible &&
@@ -215,7 +209,6 @@ export class WorkflowAttachPane implements Component {
 		this.chatView = chatView;
 		this.mode = "stage-chat";
 		this.store.recordStageAttached(runId, stageId, this.visible);
-		this._syncMouseScrollTracking();
 	}
 	private _detachFromStage(reason: StageChatDetachReason = "user", metadata: StageChatDetachMetadata = {}): void {
 		this.composerDrafts.capture(this.attachedRunId, this.lastAttachedStageId, this.chatView?._inputBuffer);
@@ -237,7 +230,6 @@ export class WorkflowAttachPane implements Component {
 			reason === "prompt-resolved" && metadata.suppressNextGraphSubmit === true
 				? this.now() + ENTER_TRANSITION_QUARANTINE_MS
 				: 0;
-		this._syncMouseScrollTracking();
 	}
 	retarget(runId: string | null, stageId?: string, stageRunId?: string): void {
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
@@ -263,7 +255,6 @@ export class WorkflowAttachPane implements Component {
 			}
 		}
 		this._armGraphEnterQuarantineIfRunNeedsInput();
-		this._syncMouseScrollTracking();
 	}
 	private _resolveGraphStageTarget(
 		rootRunId: string,
@@ -323,15 +314,6 @@ export class WorkflowAttachPane implements Component {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
 		}
 	}
-	private _syncMouseScrollTracking(): void {
-		this.setMouseScrollTracking?.(this.wantsMouseScrollTracking());
-	}
-	wantsMouseScrollTracking(): boolean {
-		if (this.mode === "stage-chat" && this.chatView) {
-			return this.chatView.wantsMouseScrollTracking();
-		}
-		return this.mode === "graph";
-	}
 	wantsFocusForAwaitingInput(snapshot: StoreSnapshot): boolean {
 		if (!this.visible) return false;
 		const runId = this._resolveRunId();
@@ -356,12 +338,7 @@ export class WorkflowAttachPane implements Component {
 		if (!this.visible) return false;
 		if (this.mode === "stage-chat" && this.chatView) {
 			if (this._shouldQuarantineStagePromptEnter(data)) return true;
-			const beforeMouseTracking = this.chatView.wantsMouseScrollTracking();
-			const handled = this.chatView.handleInput(data);
-			const afterMouseTracking = this.chatView?.wantsMouseScrollTracking();
-			if (afterMouseTracking !== undefined && afterMouseTracking !== beforeMouseTracking)
-				this._syncMouseScrollTracking();
-			return handled;
+			return this.chatView.handleInput(data);
 		}
 		if (this._shouldQuarantineGraphEnter(data)) return true;
 		return this.graphView.handleInput(data);
@@ -472,7 +449,6 @@ export class WorkflowAttachPane implements Component {
 		this.chatView?.dispose();
 		this.chatView = null;
 		this.graphView.dispose();
-		this.setMouseScrollTracking?.(false);
 	}
 	get _mode(): WorkflowAttachPaneMode {
 		return this.mode;

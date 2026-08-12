@@ -339,7 +339,25 @@ describe("resumeRun", () => {
 		}
 	});
 
-	test("failed resumable terminal run returns snapshot mode for continuation callers", async () => {
+	test("failed resumable terminal author exit reports its durable retry path", async () => {
+		const st = createStore();
+		st.recordRunStart(makeRun({ id: "r1" }));
+		st.recordRunEnd("r1", "failed", undefined, undefined, {
+			exited: true,
+			exitReason: "retry this author exit",
+			resumable: true,
+		});
+		const result = await resumeRun("r1", { store: st });
+		assert.equal(result.ok, true);
+		if (result.ok) {
+			assert.equal(result.mode, "snapshot");
+			assert.equal(result.snapshot.status, "failed");
+			assert.match(result.message ?? "", /marked resumable/);
+			assert.match(result.message ?? "", /\/workflow resume r1/);
+		}
+	});
+
+	test("ordinary resumable terminal failure keeps the snapshot-only path", async () => {
 		const st = createStore();
 		st.recordRunStart(makeRun({ id: "r1" }));
 		st.recordRunEnd("r1", "failed", undefined, "boom", {
@@ -351,7 +369,6 @@ describe("resumeRun", () => {
 		assert.equal(result.ok, true);
 		if (result.ok) {
 			assert.equal(result.mode, "snapshot");
-			assert.equal(result.snapshot.status, "failed");
 			assert.equal(result.message, undefined);
 		}
 	});

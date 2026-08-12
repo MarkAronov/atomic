@@ -3,6 +3,8 @@ import {
 	Editor,
 	type EditorOptions,
 	type EditorTheme,
+	isKeyRepeat,
+	matchesKey,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
@@ -18,6 +20,17 @@ export interface CustomEditorOptions extends EditorOptions {
 
 const ANSI_ESCAPE_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[PX_][\s\S]*?\x1b\\/g;
 const BORDER_LINE_PATTERN = /^[─ ↑↓0-9more]+$/;
+/** Exact Empty Bracketed Paste sequence from the terminal (image-only macOS Cmd+V). */
+const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
+
+function isMacosNativeImagePasteSignal(data: string): boolean {
+	if (process.platform !== "darwin") {
+		return false;
+	}
+	// Image-only Cmd+V: some terminals emit Empty Bracketed Paste; Kitty-protocol
+	// terminals (e.g. Ghostty) emit super+v as a CSI-u key event instead.
+	return data === EMPTY_BRACKETED_PASTE || matchesKey(data, "super+v");
+}
 
 /**
  * Custom editor that handles app-level keybindings for coding-agent.
@@ -137,16 +150,21 @@ export class CustomEditor extends Editor {
 		return draft;
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {
-			return;
+			return true;
 		}
 
-		// Check for paste image keybinding
-		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
-			this.onPasteImage?.();
-			return;
+		// Explicit Image Paste keybinding, or macOS Native Paste (image-only Cmd+V
+		// as empty bracketed paste or Kitty-protocol super+v).
+		const isPasteImageSignal =
+			this.keybindings.matches(data, "app.clipboard.pasteImage") || isMacosNativeImagePasteSignal(data);
+		if (isPasteImageSignal) {
+			if (!isKeyRepeat(data)) {
+				this.onPasteImage?.();
+			}
+			return true;
 		}
 
 		// Check app keybindings first
@@ -160,12 +178,12 @@ export class CustomEditor extends Editor {
 				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
 				if (handler) {
 					handler();
-					return;
+					return true;
 				}
 			}
 			// Let parent handle escape for autocomplete cancellation
 			super.handleInput(data);
-			return;
+			return true;
 		}
 
 		// Exit (Ctrl+D) - only when editor is empty
@@ -173,7 +191,7 @@ export class CustomEditor extends Editor {
 			if (this.getText().length === 0) {
 				const handler = this.onCtrlD ?? this.actionHandlers.get("app.exit");
 				if (handler) handler();
-				return;
+				return true;
 			}
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
@@ -185,14 +203,14 @@ export class CustomEditor extends Editor {
 			this.keybindings.matches(data, "tui.editor.historyNext")
 		) {
 			super.handleInput(data);
-			return;
+			return true;
 		}
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
 			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
 				handler();
-				return;
+				return true;
 			}
 		}
 
@@ -204,5 +222,6 @@ export class CustomEditor extends Editor {
 		} finally {
 			this.submittedDraftSnapshot = undefined;
 		}
+		return false;
 	}
 }

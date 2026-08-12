@@ -298,6 +298,44 @@ import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-des
 
 Only `workflow({...})` definitions can be passed to `ctx.workflow(...)`; registry names, strings, and path objects are intentionally not supported for child workflow calls. Missing or invalid module imports fail when the workflow file itself is loaded. A parent receives the child's declared `outputs` from the child `run()` return object. Missing required outputs, schema type mismatches, returning an undeclared output, and non-JSON-serializable returned child values fail the child call before the parent continues.
 
+### Early exit with `ctx.exit()`
+
+Use `ctx.exit()` when the workflow intentionally ends before its normal `run()` return. It accepts `completed | skipped | cancelled | blocked | failed`, an optional reason, partial declared outputs, and `resumable` for an author-initiated failed outcome.
+
+```typescript
+if (allRejected) {
+  return ctx.exit({
+    status: "failed",
+    reason: "The upstream API rejected every candidate",
+    outputs: { attempted: candidates.length },
+    resumable: true, // failed exits default to false
+  });
+}
+```
+
+Choose the status by the outcome:
+
+- `completed` means the objective was met and declared outputs are complete and trustworthy.
+- `skipped` means a precondition made the run a valid no-op; no work was needed.
+- `cancelled` means the work is no longer wanted; it is a decision, not a defect.
+- `blocked` means valid progress needs a changed condition or a later decision. A bounded reviewer or repair loop that does not converge is blocked, not failed.
+- `failed` means required work was attempted and definitively could not complete. Do not use it for a non-converged reviewer loop. Failed exits are non-resumable by default; set `resumable: true` when a later durable retry is intended. `resumable` is valid only with `failed`; another status records a non-resumable authoring failure.
+
+`reason` from a valid author exit is persisted and shown in status and lifecycle notices. An exit rejected during validation is finalized as an ordinary failed run rather than an accepted author exit. `outputs` may be a partial subset of the declared `outputs` contract, but every provided key must be declared, schema-valid, and JSON-serializable. Missing required keys are allowed only on the exit path. A durable retry re-dispatches the workflow with completed checkpoints replayed. The low-level `resumeRun()` helper only inspects terminal runs and reports the durable retry path; it does not silently claim that it resumed one.
+
+When a child uses `ctx.exit()`, `ctx.workflow(child)` returns a discriminated result instead of throwing. Check `child.exited` before reading a required output:
+
+```typescript
+const child = await ctx.workflow(researchWorkflow);
+if (child.exited === true) {
+  // child.status includes failed; outputs may be partial.
+  return ctx.exit({ status: child.status, reason: child.exitReason ?? "research stopped early" });
+}
+return { report: child.outputs.report };
+```
+
+An author-initiated failed exit returns `{ exited: true, status: "failed" }` to its parent with its reason and partial outputs. An unintentional child failure still throws, so `exited` remains an intent discriminator.
+
 ### Reusable Git worktrees
 
 Use `gitWorktreeDir` when a workflow should run in a reusable Git worktree instead of the invoking checkout. The executor creates the worktree if it is missing, reuses it when it already exists as a same-repository worktree root, defaults workflow `ctx.cwd` to the matching path inside that worktree for `worktreeFromInputs`, and defaults stage/task `cwd` to that worktree path.
@@ -424,6 +462,8 @@ export default workflow({
 ```
 
 Set `model` and `fallbackModels` on the authored stage/task/chain/parallel item that needs them.
+
+For authored workflows, choose thinking effort by stage role and failure cost rather than copying a benchmark's level onto every stage. Before launch, record each model stage's role, failure cost, primary model, thinking level, and fallback policy, then print a compact `Stage | Model | Thinking | Role` assignment with a short rationale. Reserve `max` for high-cost-of-error roles or an explicit user request; use `high` for demanding analysis, planning, and repair; use `medium` for user-impact review and reporting; and keep deterministic checks as tool nodes with no model call. Apply the same role policy independently to every fallback, not a mechanical `max` inheritance. Use only levels listed in the configured catalog's `availableThinkingLevels`; if a level is unsupported, choose another catalog model or leave the stage unpinned rather than inventing a suffix.
 
 When pi exposes its model registry, workflow runs validate user-specified `model` / `fallbackModels` before starting model-backed work and report all unavailable or ambiguous IDs together. Bare model IDs are accepted only when they resolve uniquely or match the current provider; otherwise use `provider/model`. Fallback attempts may send the same prompt/context to a different provider, so choose fallbacks that fit your cost, privacy, and data-handling requirements.
 
@@ -595,7 +635,7 @@ Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts t
 
 Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-parsed when possible, so numbers, booleans, and quoted strings work as expected (e.g. `count=3`, `flag=true`, `prompt="multi word value"`). A whole-object override can be passed as a single JSON token (e.g. `{"prompt":"...","count":3}`). Runtime validation is strict: unknown input keys, missing required values, type mismatches, and invalid `select` choices fail before a named workflow run starts.
 
-Named workflow launches always run as **background tasks** in interactive sessions. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Foreground launches are reserved for explicit user requests or technical requirements, with notice before launch. Press **F2** to open the same live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor/custom`) appear as awaiting-input graph nodes. Press Enter on a focused node, or click a visible graph node directly, to open that stage and answer locally, never as a modal dialog over the chat. `ctrl+x` is the workflow hierarchy chord: attached stage chats show **ctrl+x return to graph**, while graph surfaces show **ctrl+x leave graph · return to main chat**. Workflow surfaces consume it before configurable editor/tool actions. Composer and prompt drafts survive leaving a stage, and pending custom questions remain pending for reattachment. `ctrl+d` and `q` are not workflow navigation controls; ordinary editor/prompt Ctrl+D behavior and printable prompt `q` remain available. Existing `esc`, `ctrl+c`, and graph `h` close/hide behavior is unchanged. While the graph pane is active, vertical wheel/trackpad gestures pan vertically and horizontal gestures pan wide graphs left and right when the terminal reports them, without falling through to the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Press `ctrl+t` to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore workflow-chat scrolling. Archived read-only stage transcripts show the same copy-mode footer/status, allowing their transcript text to be selected and copied while preserving `esc` close and `ctrl+x` graph navigation. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
+Named workflow launches always run as **background tasks** in interactive sessions. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Foreground launches are reserved for explicit user requests or technical requirements, with notice before launch. Press **F2** to open the same live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor/custom`) appear as awaiting-input graph nodes. Press Enter on a focused node, or click a visible graph node directly, to open that stage and answer locally, never as a modal dialog over the chat. `ctrl+x` is the workflow hierarchy chord: attached stage chats show **ctrl+x return to graph**, while graph surfaces show **ctrl+x leave graph · return to main chat**. Workflow surfaces consume it before configurable editor/tool actions. Composer and prompt drafts survive leaving a stage, and pending custom questions remain pending for reattachment. `ctrl+d` and `q` are not workflow navigation controls; ordinary editor/prompt Ctrl+D behavior and printable prompt `q` remain available. Existing `esc`, `ctrl+c`, and graph `h` close/hide behavior is unchanged. While the graph pane is active, vertical wheel/trackpad gestures pan vertically and horizontal gestures pan wide graphs left and right when the terminal reports them, without falling through to the main chat or terminal scrollback. Focused graph and stage-chat overlays receive those gestures through the fullscreen application route. Fullscreen pi-tui owns application selection, so drag and multi-click selection also work over workflow overlays; copied text uses OSC 52, and terminals that refuse OSC 52 writes rely on the modifier-drag bypass (Shift/Option, as provided by the terminal). `ctrl+t` is not a workflow control: focused workflow overlays leave it to the host `app.thinking.toggle` action, while inline tree selectors keep `app.tree.filter.noTools`. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
 
 Typing into an attached stage chat and pressing Enter steers: the message is consumed after the current assistant response finishes its tool batch and before the next model request, matching normal session steering. Ctrl+F queues a follow-up, consumed only when the agent would otherwise stop. Queued entries belong to the stage session rather than the pane, so leaving the stage and reattaching restores the pending `Steering:` / `Follow-up:` rows, and a detached stage node carries a `✉ N queued` badge in the graph.
 
