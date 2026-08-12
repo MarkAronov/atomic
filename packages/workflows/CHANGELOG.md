@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 - Fixed completed `ctx.exit()` runs losing the reserved returned-status convention, legacy child replay records losing their exit discriminator, and failed author-exit resume surfaces falling back to snapshot inspection instead of durable retry.
+- Fixed workflow graph node cards appending the Codex `fast` marker to dependency metadata; cards now show only topology details such as `root`, `1 dep`, or `<n> deps` while fast-mode state remains available to the stage and its model label ([#2337](https://github.com/bastani-inc/atomic/issues/2337)).
 
 - Fixed the workflow graph overlay statusline echoing the `i-have-adhd` extension's `ADHD Mode` badge. The badge remains in the main-chat footer while other extension statuses continue to render in the overlay ([#2341](https://github.com/bastani-inc/atomic/issues/2341)).
 
