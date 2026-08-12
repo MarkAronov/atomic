@@ -120,6 +120,7 @@
 - Fixed linked project session directories being omitted from the session picker ([#7552](https://github.com/earendil-works/pi/issues/7552)).
 - Fixed standalone x64 binaries failing to start on pre-Haswell CPUs that lack AVX2/BMI2 by using Bun's baseline target, including musl archives ([#7390](https://github.com/earendil-works/pi/issues/7390)).
 - Fixed credential-resolved model endpoints — including GitHub Copilot Business and Enterprise hosts — falling back to the catalog endpoint for Verbatim Compaction, branch summaries, MCP sampling, and direct web summaries. Atomic now retains the resolved `baseUrl` alongside request auth, so request-header `null` suppression markers still pass through unchanged ([#6768](https://github.com/earendil-works/pi/issues/6768), [#7579](https://github.com/earendil-works/pi/issues/7579)).
+- Fixed native macOS `Cmd+V` so clipboard images paste into the editor without duplicate image inserts from terminal key repeats ([#2186](https://github.com/bastani-inc/atomic/issues/2186)).
 
 ### Removed
 
