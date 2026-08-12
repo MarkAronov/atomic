@@ -4,6 +4,8 @@ All notable changes to the `@bastani/i-have-adhd` extension will be documented i
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Added
 
 - Added the upstream `i-have-adhd` skill and Atomic extension as a bundled first-party package.
