@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow command, worktree Git/setup-hook, and Playwright CLI subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
 
+- Workflow model fallback attempt metadata now includes per-attempt input/output tokens, cache reads/writes, provider-reported total cost, and meaningful assistant-turn counts when usage is available ([#2197](https://github.com/bastani-inc/atomic/issues/2197)).
+
 ### Fixed
 - Fixed completed `ctx.exit()` runs losing the reserved returned-status convention, legacy child replay records losing their exit discriminator, and failed author-exit resume surfaces falling back to snapshot inspection instead of durable retry.
 - Fixed workflow graph node cards appending the Codex `fast` marker to dependency metadata; cards now show only topology details such as `root`, `1 dep`, or `<n> deps` while fast-mode state remains available to the stage and its model label ([#2337](https://github.com/bastani-inc/atomic/issues/2337)).
