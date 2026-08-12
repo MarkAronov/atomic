@@ -25,30 +25,15 @@ import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workfl
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
 
+export {
+	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+	type WorkflowHeartbeatEvent,
+	type WorkflowHeartbeatEventDetails,
+	type WorkflowHeartbeatIdentity,
+} from "../shared/workflow-heartbeat-contract.js";
+
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
-export const WORKFLOW_HEARTBEAT_CUSTOM_TYPE = "workflows:workflow-heartbeat";
-
-/** Stable identity for one scheduled boundary of a workflow run. */
-export interface WorkflowHeartbeatIdentity {
-	readonly runId: string;
-	/** Unix timestamp in milliseconds for the cadence boundary. */
-	readonly scheduledAt: number;
-}
-
-/** Deterministic context carried by a workflow heartbeat event. */
-export interface WorkflowHeartbeatEventDetails extends WorkflowHeartbeatIdentity {
-	readonly workflowName: string;
-	/** Persisted workflow start timestamp in Unix milliseconds. */
-	readonly startedAt: number;
-	readonly intervalMinutes: number;
-}
-
-/** Slice-1 event envelope; scheduling and delivery are wired separately. */
-export interface WorkflowHeartbeatEvent {
-	readonly customType: typeof WORKFLOW_HEARTBEAT_CUSTOM_TYPE;
-	readonly details: WorkflowHeartbeatEventDetails;
-}
 
 export type WorkflowLifecycleNoticeKind =
 	| "started"
