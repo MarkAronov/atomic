@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { AsyncJobState, AsyncStartedEvent, AsyncStatus, SubagentState } from "../../shared/types.ts";
+import type { AsyncJobState, AsyncJobStep, AsyncStartedEvent, AsyncStatus, SubagentState } from "../../shared/types.ts";
 import { renderWidget } from "../../tui/render.ts";
 import { listSubagentControls } from "../inprocess/control-registry.ts";
 
@@ -92,8 +92,57 @@ function readActiveFileJobs(
 	}
 	return jobs;
 }
+function stepFromStartedEvent(info: AsyncStartedEvent): AsyncJobStep | undefined {
+	if (!info.agent) return undefined;
+	return {
+		index: 0,
+		agent: info.agent,
+		status: "running",
+		...(info.model !== undefined ? { model: info.model } : {}),
+		...(info.thinking !== undefined ? { thinking: info.thinking } : {}),
+		...(info.fastMode !== undefined ? { fastMode: info.fastMode } : {}),
+	};
+}
 
-function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | null): Map<string, AsyncJobState> {
+function mergeRegistryJob(previous: AsyncJobState | undefined, next: AsyncJobState): AsyncJobState {
+	if (!previous) return next;
+	const previousSteps = previous.steps ?? [];
+	const steps = next.steps?.map((step, index) => {
+		const previousStep = previousSteps.find(
+			(candidate, candidateIndex) =>
+				(candidate.index ?? candidateIndex) === (step.index ?? index) && candidate.agent === step.agent,
+		);
+		if (!previousStep) return step;
+		return {
+			...step,
+			...previousStep,
+			index: step.index,
+			agent: step.agent,
+			status: step.status,
+		};
+	});
+	return {
+		...next,
+		asyncDir: previous.asyncDir,
+		...(previous.sessionId !== undefined ? { sessionId: previous.sessionId } : {}),
+		...(previous.mode !== undefined ? { mode: previous.mode } : {}),
+		...(previous.agents !== undefined ? { agents: [...previous.agents] } : {}),
+		...(previous.startedAt !== undefined ? { startedAt: previous.startedAt } : {}),
+		...(previous.sessionDir !== undefined ? { sessionDir: previous.sessionDir } : {}),
+		...(previous.outputFile !== undefined ? { outputFile: previous.outputFile } : {}),
+		...(previous.sessionFile !== undefined ? { sessionFile: previous.sessionFile } : {}),
+		...(previous.updatedAt !== undefined
+			? { updatedAt: Math.max(previous.updatedAt, next.updatedAt ?? previous.updatedAt) }
+			: {}),
+		...(steps ? { steps } : {}),
+	};
+}
+
+function hydrateRegistryJobs(
+	state: SubagentState,
+	currentSessionId: string | null,
+	fileJobs?: Map<string, AsyncJobState>,
+): Map<string, AsyncJobState> {
 	const jobs = new Map<string, AsyncJobState>();
 	for (const control of listSubagentControls()) {
 		const children = control.listChildren();
@@ -122,7 +171,7 @@ function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | n
 					? "paused"
 					: "complete";
 		if (status !== "running") continue;
-		jobs.set(control.parent.path, {
+		const next: AsyncJobState = {
 			asyncId: control.parent.path,
 			asyncDir: control.parent.path,
 			status,
@@ -136,7 +185,9 @@ function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | n
 			activeParallelGroup: steps.some((step) => step.status === "running"),
 			startedAt: Date.now(),
 			updatedAt: Date.now(),
-		});
+		};
+		const previous = state.asyncJobs.get(control.parent.path) ?? fileJobs?.get(control.parent.path);
+		jobs.set(control.parent.path, mergeRegistryJob(previous, next));
 	}
 	return jobs;
 }
@@ -187,16 +238,21 @@ export function createAsyncJobTracker(
 		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
 		const currentCwd = cwdOverride ?? safeCtxCwd(ctx) ?? state.baseCwd;
 		const fileJobs = readActiveFileJobs(asyncDirRoot, state.currentSessionId, currentCwd);
-		const registryJobs = hydrateRegistryJobs(state, state.currentSessionId);
+		const registryJobs = hydrateRegistryJobs(state, state.currentSessionId, fileJobs);
 		const next = new Map([...fileJobs, ...registryJobs]);
-		for (const id of state.asyncJobs.keys()) if (!next.has(id)) state.asyncJobs.delete(id);
+		for (const id of state.asyncJobs.keys())
+			if (!next.has(id) && !state.cleanupTimers.has(id)) state.asyncJobs.delete(id);
 		for (const [id, job] of next) state.asyncJobs.set(id, job);
 		rerender();
 	};
+	function terminalStepStatus(result: { success?: boolean; status?: string }): AsyncJobStep["status"] {
+		return result.status === "interrupted" ? "paused" : result.success === false ? "failed" : "complete";
+	}
 	const handleStarted = (data: unknown) => {
 		const info = data as AsyncStartedEvent;
 		if (!info.id) return;
 		const now = Date.now();
+		const step = stepFromStartedEvent(info);
 		state.asyncJobs.set(info.id, {
 			asyncId: info.id,
 			asyncDir: info.asyncDir ?? path.join(asyncDirRoot, info.id),
@@ -204,17 +260,40 @@ export function createAsyncJobTracker(
 			sessionId: info.sessionId,
 			mode: info.mode ?? (info.agents && info.agents.length > 1 ? "parallel" : "single"),
 			agents: info.agents ?? (info.agent ? [info.agent] : undefined),
+			...(step ? { steps: [step], stepsTotal: 1, runningSteps: 1, completedSteps: 0 } : {}),
 			startedAt: now,
 			updatedAt: now,
 		});
 		rerender();
 	};
 	const handleComplete = (data: unknown) => {
-		const result = data as { id?: string; success?: boolean; status?: string };
+		const result = data as {
+			id?: string;
+			success?: boolean;
+			status?: string;
+			result?: { model?: string; thinking?: string; fastMode?: boolean };
+		};
 		if (!result.id) return;
 		const job = state.asyncJobs.get(result.id);
 		if (job) {
-			job.status = result.status === "interrupted" ? "paused" : result.success === false ? "failed" : "complete";
+			job.status =
+				terminalStepStatus(result) === "paused" ? "paused" : result.success === false ? "failed" : "complete";
+			if (job.steps?.length) {
+				const completed = result.result;
+				job.steps = job.steps.map((step, index) =>
+					index !== 0
+						? step
+						: {
+								...step,
+								status: terminalStepStatus(result),
+								...(completed?.model !== undefined ? { model: completed.model } : {}),
+								...(completed?.thinking !== undefined ? { thinking: completed.thinking } : {}),
+								...(completed?.fastMode !== undefined ? { fastMode: completed.fastMode } : {}),
+							},
+				);
+				job.runningSteps = job.steps.filter((step) => step.status === "running").length;
+				job.completedSteps = job.steps.filter((step) => step.status === "complete").length;
+			}
 			job.updatedAt = Date.now();
 			scheduleCleanup(result.id);
 		}

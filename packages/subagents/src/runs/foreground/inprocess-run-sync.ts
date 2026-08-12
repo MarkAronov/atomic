@@ -1,7 +1,13 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { CodexFastModeResolvedSettings, CodexFastModeScope } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.ts";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.ts";
+import {
+	getSubagentCodexFastModeSettings,
+	resolveSubagentCodexFastModeScope,
+	resolveSubagentModelFastMode,
+} from "../../shared/fast-mode.ts";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -55,7 +61,6 @@ function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["o
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
-
 function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, startedAt: number): AgentProgress {
 	const status = outcome.status === "ok" ? "completed" : outcome.status === "interrupted" ? "failed" : "failed";
 	return {
@@ -79,10 +84,22 @@ function resultFromOutcome(
 	task: string,
 	outcome: AttemptOutcome,
 	startedAt: number,
-	artifactPaths?: ArtifactPaths,
+	artifactPaths: ArtifactPaths | undefined,
+	fastMode: {
+		cwd: string;
+		settings: CodexFastModeResolvedSettings;
+		scope: CodexFastModeScope;
+	},
 ): SingleResult {
 	const status = outcome.status;
 	const output = outcome.status === "ok" ? outcome.output : outcome.envelope;
+	const model = outcome.status === "ok" || outcome.status === "error" ? outcome.model : undefined;
+	const fastModeEnabled = resolveSubagentModelFastMode({
+		model,
+		cwd: fastMode.cwd,
+		settings: fastMode.settings,
+		scope: fastMode.scope,
+	});
 	const result: SingleResult = {
 		agent: agent.name,
 		task,
@@ -94,7 +111,8 @@ function resultFromOutcome(
 		interrupted: status === "interrupted" ? true : undefined,
 		messages: [],
 		usage: usageFromStats(outcome.stats),
-		model: outcome.status === "ok" || outcome.status === "error" ? outcome.model : undefined,
+		...(model === undefined ? {} : { model }),
+		...(fastModeEnabled ? { fastMode: true } : {}),
 		...(outcome.status === "ok" || outcome.status === "error"
 			? outcome.attemptedModels?.length
 				? { attemptedModels: [...outcome.attemptedModels] }
@@ -170,7 +188,16 @@ export async function runSingleInProcess(
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
 	const candidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
+	const fastModeSettings = getSubagentCodexFastModeSettings(cwd);
 	const orchestrationContext = workflowOrchestrationContext(options);
+	const fastModeScope = resolveSubagentCodexFastModeScope(orchestrationContext?.kind === "workflow-stage");
+	const fastModeForModel = (model: string | undefined): boolean =>
+		resolveSubagentModelFastMode({
+			model,
+			cwd,
+			settings: fastModeSettings,
+			scope: fastModeScope,
+		});
 	const parent: ParentContext = {
 		path: options.runId,
 		depth: options.parentDepth ?? 0,
@@ -230,12 +257,16 @@ export async function runSingleInProcess(
 		onProgress: options.onUpdate
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };
+					const liveModel = liveProgress.model ?? candidate;
+					const liveFastMode = fastModeForModel(liveModel);
 					const liveResult: SingleResult = {
 						agent: agent.name,
 						task,
 						status: "continued",
 						messages: [],
 						usage: emptyUsage(),
+						...(liveModel === undefined ? {} : { model: liveModel }),
+						...(liveFastMode ? { fastMode: true } : {}),
 						progress: liveProgress,
 					};
 					options.onUpdate?.({
@@ -267,7 +298,11 @@ export async function runSingleInProcess(
 		control.continueInBackground(running, "async-requested");
 		void running.promise.then(
 			async (backgroundOutcome) => {
-				const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
+				const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths, {
+					cwd,
+					settings: fastModeSettings,
+					scope: fastModeScope,
+				});
 				await control.deliverChildResult(
 					{
 						path: backgroundOutcome.path,
@@ -275,6 +310,8 @@ export async function runSingleInProcess(
 						...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
 						stats: backgroundOutcome.stats,
 						envelope: backgroundOutcome.envelope,
+						...(recovered.model === undefined ? {} : { model: recovered.model }),
+						...(recovered.fastMode ? { fastMode: true } : {}),
 						sessionFile: backgroundOutcome.sessionFile,
 						timestamp: Date.now(),
 						artifactsDir: options.artifactsDir,
@@ -290,6 +327,8 @@ export async function runSingleInProcess(
 			},
 			() => undefined,
 		);
+		const continuedModel = running.currentModel ?? candidate;
+		const continuedFastMode = fastModeForModel(continuedModel);
 		const continuedResult: SingleResult = {
 			agent: agent.name,
 			task,
@@ -300,6 +339,8 @@ export async function runSingleInProcess(
 			detachedReason: "async-requested",
 			messages: [],
 			usage: emptyUsage(),
+			...(continuedModel === undefined ? {} : { model: continuedModel }),
+			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
@@ -339,7 +380,11 @@ export async function runSingleInProcess(
 	if (winner.kind === "continued") {
 		detachCleanup();
 		void running.promise.then(async (backgroundOutcome) => {
-			const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
+			const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths, {
+				cwd,
+				settings: fastModeSettings,
+				scope: fastModeScope,
+			});
 			await control.deliverChildResult(
 				{
 					path: backgroundOutcome.path,
@@ -347,6 +392,8 @@ export async function runSingleInProcess(
 					...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
 					stats: backgroundOutcome.stats,
 					envelope: backgroundOutcome.envelope,
+					...(recovered.model === undefined ? {} : { model: recovered.model }),
+					...(recovered.fastMode ? { fastMode: true } : {}),
 					sessionFile: backgroundOutcome.sessionFile,
 					timestamp: Date.now(),
 					artifactsDir: options.artifactsDir,
@@ -360,6 +407,8 @@ export async function runSingleInProcess(
 			}
 			options.onDetachedExit?.(recovered);
 		});
+		const continuedModel = running.currentModel ?? candidate;
+		const continuedFastMode = fastModeForModel(continuedModel);
 		const continuedResult: SingleResult = {
 			agent: agent.name,
 			task,
@@ -370,6 +419,8 @@ export async function runSingleInProcess(
 			detachedReason: "intercom-coordination",
 			messages: [],
 			usage: emptyUsage(),
+			...(continuedModel === undefined ? {} : { model: continuedModel }),
+			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
@@ -391,7 +442,11 @@ export async function runSingleInProcess(
 	}
 	detachCleanup();
 	const outcome = winner.value;
-	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths);
+	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, {
+		cwd,
+		settings: fastModeSettings,
+		scope: fastModeScope,
+	});
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	await control.deliverChildResult(
@@ -401,6 +456,8 @@ export async function runSingleInProcess(
 			...(outcome.status === "error" ? { cause: outcome.cause } : {}),
 			stats: outcome.stats,
 			envelope: outcome.envelope,
+			...(result.model === undefined ? {} : { model: result.model }),
+			...(result.fastMode ? { fastMode: true } : {}),
 			sessionFile: outcome.sessionFile,
 			timestamp: Date.now(),
 			artifactsDir: options.artifactsDir,
