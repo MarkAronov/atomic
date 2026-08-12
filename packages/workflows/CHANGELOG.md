@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Breaking Changes
 
 - Custom workflow UI components must return `true` when they consume input and `false` when they do not. In fullscreen mode, an unhandled result lets the transcript process matching viewport navigation keys instead of swallowing them.
+- Added `failed` to the `ctx.exit()` status union. Author-initiated failed exits persist their reason and partial declared outputs, return the discriminated `{ exited: true, status: "failed" }` child result instead of throwing, and default to non-resumable unless `resumable: true` is set. Downstream exhaustive switches over `WorkflowExitStatus` must handle the new failed-exit case ([#2242](https://github.com/bastani-inc/atomic/issues/2242)).
 
 ### Changed
 
@@ -20,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow command, worktree Git/setup-hook, and Playwright CLI subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
 
 ### Fixed
+- Fixed completed `ctx.exit()` runs losing the reserved returned-status convention, legacy child replay records losing their exit discriminator, and failed author-exit resume surfaces falling back to snapshot inspection instead of durable retry.
 
 - Fixed fullscreen workflow graph and stage-chat mouse routing. Focused workflow overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without a workflow-owned TTY-tracking seam; the fullscreen route also mirrors consumed left-button events into pi-tui's application-owned selection path ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
 - Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
