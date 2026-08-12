@@ -17,6 +17,7 @@ export type {
 	PackageSource,
 	ProviderRetrySettings,
 	RetrySettings,
+	SessionSummarySettings,
 	Settings,
 	SettingsError,
 	SettingsManagerCreateOptions,

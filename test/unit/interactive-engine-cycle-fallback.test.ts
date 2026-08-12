@@ -230,6 +230,10 @@ serialTest(
 				lastChangelogVersion: "0.0.0",
 				firstRunOnboardingStartedVersion: "0.0.0",
 				onboardedVersion: "0.0.0",
+				// The request count below is the point of this test: one provider turn for the
+				// cycled prompt, none from the fallback path. The idle session-summary launch
+				// would add an unrelated second request to the same fake provider.
+				sessionSummary: { enabled: false },
 			}),
 		);
 		writeFileSync(
