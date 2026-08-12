@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - GitHub, credential-store, and Bun subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution.

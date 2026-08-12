@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Changed
 
 - Detached intercom broker processes now receive `AI_AGENT=atomic` for generic child-process attribution.

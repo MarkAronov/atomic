@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Breaking Changes
 
 - **Removed CHAIN execution mode from the `subagent` tool.** The tool now supports only SINGLE (`{agent, task?, progress?}`) and top-level PARALLEL (`{tasks: [...], concurrency?, worktree?}`) execution. The `chain` parameter is gone from the tool schema, so a call that still passes it is rejected by ordinary schema validation rather than by a migration shim — there is no deprecation path. This also removes, with no replacement: sequential chain steps; static parallel steps inside a chain (`{parallel: [...]}` as a chain step); dynamic fan-out steps (`expand` / `collect` / `as` / `{outputs.name}`), which were **not** ported to top-level PARALLEL mode; the chain template variables `{previous}` and `{chain_dir}` and chain-scoped `{task}` substitution; the `chainName` and `chainDir` parameters; and saved chain definitions in `.chain.md` / `.chain.json` files under `~/.atomic/agent/chains/` and `.atomic/chains/`, along with their discovery, parsing, serialization, and management actions. Migrate a sequential chain to successive `subagent` calls, passing each step's result forward in the task text yourself; migrate an in-chain parallel step to a top-level PARALLEL call. Agent definitions, agent management, and every other mode are unaffected.

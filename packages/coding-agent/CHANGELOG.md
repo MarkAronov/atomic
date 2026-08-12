@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Breaking Changes
 
 - **Streaming `message_update` events are now delta-only across the public API.** JSON, RPC, SDK, and extension subscribers receive only `type` plus the raw `assistantMessageEvent`; the cumulative `message` and wire-only `assistantMessageEvent.partial` fields are gone. `message_start` seeds the message, ordered deltas build it without deduplication, and `message_end` supplies the authoritative final message. Consumers that read `message` or `partial` from `message_update` must accumulate deltas themselves. This also removes quadratic wire amplification: an 8000-character answer wrote 8,428,280 bytes across 501 frames and now writes 65,588, with bytes growing linearly rather than quadratically.

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.13-alpha.2] - 2026-08-12
+
 ### Breaking Changes
 
 - Custom workflow UI components must return `true` when they consume input and `false` when they do not. In fullscreen mode, an unhandled result lets the transcript process matching viewport navigation keys instead of swallowing them.
