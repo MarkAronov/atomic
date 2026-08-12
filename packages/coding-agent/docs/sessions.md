@@ -59,9 +59,9 @@ When available, Atomic uses the `trash` CLI for deletion instead of permanently 
 
 ### Session summaries
 
-Each row shows a short generated description of what the session was about, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and stores it in the session file as a `session_summary` entry.
+Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and stores it in the session file as a `session_summary` entry.
 
-A summary describes the conversation up to a specific message. Once a newer message arrives it is considered stale and the picker falls back to the session name, or to the first message — the same display you get when a summary has not been generated yet, could not be generated, or is still in flight. Summaries are also searchable along with the rest of the session text.
+A summary describes the conversation up to a specific message. Once a newer message arrives it is considered stale and the summary column shows "No summary available." instead — the same placeholder you get when a summary has not been generated yet, could not be generated, or is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
 
 Generation is best-effort and never blocks a turn: it is skipped for very short sessions, for workflow stage sessions, and in `--print` and JSON modes, it is cancelled when you send the next message or quit, and its failures are silent. Set `sessionSummary.enabled` to `false` to turn it off entirely.
 

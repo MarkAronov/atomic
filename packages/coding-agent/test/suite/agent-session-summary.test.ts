@@ -258,19 +258,30 @@ describe("session summary generation", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		await harness.session.bindExtensions({ mode: "tui" });
+		const requestStarted = Promise.withResolvers<void>();
+		const releaseRequest = Promise.withResolvers<void>();
 		harness.setResponses([
 			fauxAssistantMessage("first turn"),
 			fauxAssistantMessage("second turn"),
 			// Turn 2's own launch reaches the provider before dispose() lands, and is cancelled
 			// mid-request. Budgeting it keeps the response below as the one thing the disposal
-			// guard has to protect.
-			fauxAssistantMessage("cancelled by disposal"),
+			// guard has to protect. The gate makes "reaches the provider first" a fact rather
+			// than a race: without it, a fast dispose() cancels the launch before it spends a
+			// response and the pending count depends on scheduler timing.
+			async () => {
+				requestStarted.resolve();
+				await releaseRequest.promise;
+				return fauxAssistantMessage("cancelled by disposal");
+			},
 			fauxAssistantMessage("must never be requested"),
 		]);
 
 		await runTwoTurns(harness);
+		// Turn 2's fire-and-forget launch is now provably in flight.
+		await requestStarted.promise;
 
 		harness.session.dispose();
+		releaseRequest.resolve();
 		// Release the launch that was queued before disposal.
 		await harness.session._maybeGenerateSessionSummary();
 		await settle();
