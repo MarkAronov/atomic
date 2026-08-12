@@ -157,6 +157,11 @@ export function abortSessionSummary(this: AgentSession): void {
 	// provider that ignores its signal must still fail the ownership check, and a later launch
 	// must not join a run that has just been cancelled.
 	this._sessionSummaryRun = undefined;
+	// Drop the in-memory anchor as well. It is only a cache of the persisted state, and the
+	// persisted lookup is retirement-aware where the cache is not: after branchWithSummary()
+	// retires the stored summary, a cached anchor that still matches the last message id would
+	// skip regeneration and leave the picker on fallback text until the next real turn.
+	this._lastSummarizedMessageId = undefined;
 }
 
 export const agentSessionSummaryMethods = { _maybeGenerateSessionSummary, abortSessionSummary };

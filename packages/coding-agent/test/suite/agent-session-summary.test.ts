@@ -132,6 +132,42 @@ describe("session summary generation", () => {
 		expect(summaryEntries(harness)).toHaveLength(0);
 	});
 
+	it("regenerates after a branch summary retires the persisted summary", async () => {
+		// A branch_summary retires the stored summary without moving the last conversation message
+		// id, so the in-memory anchor cache alone would skip regeneration forever. Cancellation
+		// (which every branch/navigation path performs) must drop the cache so the next idle
+		// consults the retirement-aware persisted lookup and spends a fresh request.
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("summary before retirement"),
+			fauxAssistantMessage("summary after retirement"),
+		]);
+
+		await runTwoTurns(harness);
+		const first = await waitForSummary(harness);
+		expect(first.summary).toBe("summary before retirement");
+
+		// Retire it the way branchWithSummary() does: a branch_summary lands on the file and the
+		// session cancels any summary work, exactly as the branch and navigation paths do.
+		const assistants = harness.sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+		harness.sessionManager.branchWithSummary(assistants[assistants.length - 1]!.id, "the branch was abandoned");
+		harness.session.abortSessionSummary();
+
+		await harness.session._maybeGenerateSessionSummary();
+		await settle();
+
+		const summaries = summaryEntries(harness);
+		expect(summaries).toHaveLength(2);
+		expect(summaries[summaries.length - 1]!.summary).toBe("summary after retirement");
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
 	it("generates nothing when the setting is disabled", async () => {
 		const harness = await createHarness({ settings: { sessionSummary: { enabled: false } } });
 		harnesses.push(harness);
