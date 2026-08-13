@@ -1,4 +1,3 @@
-import type { TuiAltScreen } from "@earendil-works/pi-tui";
 import { computeCacheWaste } from "../../core/cache-stats.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
@@ -321,10 +320,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.handleCopyCommand = async function (
-	this: InteractiveModeBase,
-	options: { flashConfirmation?: boolean } = {},
-): Promise<void> {
+InteractiveModeBase.prototype.handleCopyCommand = async function (this: InteractiveModeBase): Promise<void> {
 	const text = this.session.getLastAssistantText();
 	if (!text) {
 		this.showError("No agent messages to copy yet.");
@@ -333,8 +329,7 @@ InteractiveModeBase.prototype.handleCopyCommand = async function (
 
 	try {
 		await copyToClipboard(text);
-		if (options.flashConfirmation && this.ui.mode === "fullscreen") (this.ui as TuiAltScreen).flash("Copied!");
-		else this.showStatus("Copied last agent message to clipboard");
+		this.showStatus("Copied last agent message to clipboard");
 	} catch (error) {
 		this.showError(error instanceof Error ? error.message : String(error));
 	}
