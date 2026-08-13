@@ -108,6 +108,28 @@ describe("handleUrlActivation", () => {
 		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith("ATOMIC-UI://transcript/jump-to-end");
 		expect(openUrl).not.toHaveBeenCalled();
 	});
+	test.each(["atomic-ui://[", "atomic-ui://a[b", "atomic-ui://tra nscript/jump-to-end", "ATOMIC-UI://tra nscript/x"])(
+		"drops malformed internal URLs without invoking either handler: %s",
+		(url) => {
+			const onInternalUiAction = vi.fn();
+			const openUrl = vi.fn();
+
+			handleUrlActivation(url, { onInternalUiAction, openUrl });
+
+			expect(onInternalUiAction).not.toHaveBeenCalled();
+			expect(openUrl).not.toHaveBeenCalled();
+		},
+	);
+
+	test("preserves browser routing for unparseable non-internal URLs", () => {
+		const onInternalUiAction = vi.fn();
+		const openUrl = vi.fn();
+
+		handleUrlActivation("not a url", { onInternalUiAction, openUrl });
+
+		expect(openUrl).toHaveBeenCalledExactlyOnceWith("not a url");
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+	});
 
 	test("wires fullscreen URL activation to the browser and internal action callback", () => {
 		const onInternalUiAction = vi.fn();

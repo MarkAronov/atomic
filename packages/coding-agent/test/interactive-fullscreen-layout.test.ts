@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { expect, test } from "vitest";
+import { TranscriptFollowIndicator } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -29,7 +30,6 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 		}
 
 		const dockChildren = [
-			(context.fullscreenLayoutRoot.children[1] as StackLike).children[0],
 			context.pendingMessagesContainer,
 			context.statusContainer,
 			context.widgetContainerAbove,
@@ -54,7 +54,10 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 		expect(root.children).toHaveLength(2);
 		expect(rootTranscript).toBe(transcript);
 		expect(transcript.children).toEqual([context.documentContainer]);
-		expect(dock.children).toEqual(dockChildren);
+		expect(dock.children).toHaveLength(dockChildren.length + 1);
+		expect(dock.children[0]).toBeInstanceOf(TranscriptFollowIndicator);
+		expect(dock.children[1]).toBe(context.pendingMessagesContainer);
+		expect(dock.children.slice(1)).toEqual(dockChildren);
 		expect(tui.children).toEqual(flatMountOrder);
 
 		tui.renderNow();

@@ -65,15 +65,8 @@ export interface UrlActivationHandlers {
 
 /** Route OSC 8 activation without allowing unknown internal URLs to escape to a browser. */
 export function handleUrlActivation(url: string, handlers: UrlActivationHandlers): void {
-	let parsed: URL;
-	try {
-		parsed = new URL(url);
-	} catch {
-		handlers.openUrl(url);
-		return;
-	}
-
-	if (parsed.protocol.toLowerCase() === "atomic-ui:") {
+	const internalUiScheme = "atomic-ui:";
+	if (url.slice(0, internalUiScheme.length).toLowerCase() === internalUiScheme) {
 		const schemeEnd = url.indexOf(":");
 		const normalizedInternalUrl = `${url.slice(0, schemeEnd).toLowerCase()}${url.slice(schemeEnd)}`;
 		if (normalizedInternalUrl === TRANSCRIPT_JUMP_TO_END_URL) handlers.onInternalUiAction?.(url);
