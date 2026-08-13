@@ -9,6 +9,7 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../utils/open-browser.ts";
+import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
 
 interface TuiOverlayEntry {
 	component: Component;
@@ -46,6 +47,7 @@ export interface InteractiveTuiOptions {
 	logDirectory: string;
 	terminal?: Terminal;
 	onRightClickPaste?: () => void;
+	onInternalUiAction?: (url: string) => void;
 	/**
 	 * Return false to let a focused overlay receive viewport input first.
 	 * Mouse input is deferred only while the focused component belongs to an
@@ -54,6 +56,24 @@ export interface InteractiveTuiOptions {
 	shouldHandleViewportInput?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean;
 	/** Handle an unconsumed overlay input before replaying it to the viewport. */
 	onOverlayUnhandledInput?: (data: string) => boolean;
+}
+
+export interface UrlActivationHandlers {
+	onInternalUiAction?: (url: string) => void;
+	openUrl: (url: string) => void;
+}
+
+/** Route OSC 8 activation without allowing unknown internal URLs to escape to a browser. */
+export function handleUrlActivation(url: string, handlers: UrlActivationHandlers): void {
+	const internalUiScheme = "atomic-ui:";
+	if (url.slice(0, internalUiScheme.length).toLowerCase() === internalUiScheme) {
+		const schemeEnd = url.indexOf(":");
+		const normalizedInternalUrl = `${url.slice(0, schemeEnd).toLowerCase()}${url.slice(schemeEnd)}`;
+		if (normalizedInternalUrl === TRANSCRIPT_JUMP_TO_END_URL) handlers.onInternalUiAction?.(url);
+		return;
+	}
+
+	handlers.openUrl(url);
 }
 
 const viewportInputListeners = new WeakSet<AtomicTuiAltScreen>();
@@ -326,7 +346,11 @@ export function createInteractiveTui(options: InteractiveTuiOptions): Interactiv
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
-			openUrl: openBrowser,
+			openUrl: (url) =>
+				handleUrlActivation(url, {
+					onInternalUiAction: options.onInternalUiAction,
+					openUrl: openBrowser,
+				}),
 			onRightClickPaste: options.onRightClickPaste,
 		},
 		options.shouldHandleViewportInput,

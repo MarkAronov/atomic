@@ -23,7 +23,6 @@ import {
 	createInteractiveTuiReference,
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
-import { openBrowser } from "../src/utils/open-browser.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -109,7 +108,7 @@ describe("interactive TUI renderer", () => {
 		});
 
 		expect(tui.mode).toBe("fullscreen");
-		expect(Reflect.get(tui, "openUrl")).toBe(openBrowser);
+		expect(typeof Reflect.get(tui, "openUrl")).toBe("function");
 		expect(isViewportTUI(tui)).toBe(true);
 
 		tui.start();
@@ -315,10 +314,27 @@ describe("interactive TUI renderer", () => {
 			const scrolled = getFrame();
 			const scrolledDock = scrolled.root.children[1];
 			if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
-			expect(scrolledDock.rect).toEqual(initialDock.rect);
-			expect(
-				scrolled.lines.slice(scrolledDock.rect.y, scrolledDock.rect.y + scrolledDock.rect.height).at(-1),
-			).toContain("footer");
+			expect(scrolledDock.rect.height).toBe(initialDock.rect.height + 1);
+			expect(scrolledDock.rect.y).toBe(terminal.rows - scrolledDock.rect.height);
+			const scrolledDockLines = scrolled.lines.slice(
+				scrolledDock.rect.y,
+				scrolledDock.rect.y + scrolledDock.rect.height,
+			);
+			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom"))).toBe(true);
+			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom") && line.includes("\x1b]8;;"))).toBe(
+				true,
+			);
+			expect(scrolledDockLines.at(-1)).toContain("footer");
+
+			context.jumpToTranscriptEnd();
+			tui.renderNow();
+			const jumped = getFrame();
+			const jumpedDock = jumped.root.children[1];
+			if (!jumpedDock) throw new Error("fullscreen dock disappeared after jumping to the transcript end");
+			expect(transcript.isFollowingEnd).toBe(true);
+			expect(jumpedDock.rect).toEqual(initialDock.rect);
+			const jumpedDockLines = jumped.lines.slice(jumpedDock.rect.y, jumpedDock.rect.y + jumpedDock.rect.height);
+			expect(jumpedDockLines.some((line) => line.includes("Jump to bottom"))).toBe(false);
 
 			terminal.resize(30, 8);
 			tui.renderNow();

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a clickable, centered jump-to-bottom indicator above the fullscreen input dock when the transcript is scrolled away from the live end; it displays the live `tui.altScreen.bottom` key binding and supports mouse activation ([#2361](https://github.com/bastani-inc/atomic/issues/2361)).
+
 ## [0.9.13-alpha.3] - 2026-08-13
 
 ### Breaking Changes
