@@ -1,14 +1,51 @@
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import {
 	assert,
 	createStore,
 	deriveGraphTheme,
+	fakeFooterAgentSession,
 	flush,
 	makeHandle,
 	makeTestTui,
 	StageChatView,
 	setupRun,
 } from "./stage-chat-view-helpers.js";
+
+async function makeScrollableStageChat(
+	rows: number | (() => number | undefined) = 12,
+	withFooter = false,
+): Promise<StageChatView> {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a", "pending");
+	const { handle } = withFooter ? makeHandle(undefined, [], "pending", fakeFooterAgentSession()) : makeHandle();
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		piTui: makeTestTui(rows),
+		footerData: withFooter
+			? {
+					getGitBranch: () => "main",
+					getExtensionStatuses: () => new Map(),
+					getAvailableProviderCount: () => 1,
+					onBranchChange: () => () => {},
+				}
+			: undefined,
+	});
+	for (let i = 0; i < 18; i++) {
+		for (const ch of `follow-msg-${i}`) view.handleInput(ch);
+		view.handleInput("\r");
+		await flush();
+		await flush();
+	}
+	return view;
+}
 
 describe("StageChatView", () => {
 	test("expands the chat surface to the reported viewport row count", () => {
@@ -165,6 +202,66 @@ describe("StageChatView", () => {
 		const before = view._inputBuffer;
 		view.handleInput("\x1b[<0;10;10M");
 		assert.equal(view._inputBuffer, before);
+		view.dispose();
+	});
+	test("hides the follow indicator at the live end after returning without changing row count", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		view.handleInput("\x1b[5~");
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+
+		assert.equal(view.handleInput("\x1b[F"), true);
+		const bottom = view.render(96);
+		const visible = stripTerminalSequences(bottom.join("\n"));
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.equal(bottom.length, 12);
+		view.dispose();
+	});
+
+	test("shows the shared follow indicator after scrolling stage-chat history", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		const scrolled = view.render(96);
+		const visible = stripTerminalSequences(scrolled.join("\n"));
+
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.match(visible, /Jump to bottom \(end\) ↓/);
+		assert.equal(scrolled.length, 12);
+		view.dispose();
+	});
+
+	test("the bound end key returns stage chat to the live end and hides the indicator", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		view.handleInput("\x1b[5~");
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+
+		assert.equal(view.handleInput("\x1b[F"), true);
+		const bottom = view.render(96);
+		const visible = stripTerminalSequences(bottom.join("\n"));
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.equal(bottom.length, 12);
+		view.dispose();
+	});
+
+	test("drops the indicator before the composer and footer in a tight viewport", async () => {
+		let rows = 12;
+		const view = await makeScrollableStageChat(() => rows, true);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+
+		rows = 8;
+		const tight = view.render(96);
+		const visible = stripTerminalSequences(tight.join("\n"));
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.ok(visible.includes("❯"), "composer must survive the tight viewport");
+		assert.match(visible, /ctrl\+x return to graph/);
+		assert.equal(tight.length, 8);
 		view.dispose();
 	});
 });

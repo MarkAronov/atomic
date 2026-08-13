@@ -404,6 +404,7 @@ export {
 	ThinkingSelectorComponent,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
+	TranscriptFollowIndicator,
 	TreeSelectorComponent,
 	truncateToVisualLines,
 	UsageMeterComponent,

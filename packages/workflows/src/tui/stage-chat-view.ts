@@ -23,6 +23,7 @@
  *  - https://pi.dev/docs/latest/tui (canonical Pi-tui component contract)
  */
 
+import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
@@ -155,26 +156,33 @@ export class StageChatView implements Component, Focusable {
 		const visibleFooterLines = takeRows(footerLines, plan.footerRows);
 		const bodyBudget = plan.bodyRows;
 		if (blocked) this.chatHost.scrollToBottom();
+		const indicator = new TranscriptFollowIndicator({
+			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
+			keyLabel: () => keyText("tui.altScreen.bottom"),
+		});
+		const indicatorLines = bodyBudget > 1 && this.chatHost.bodyScrollFromBottom() > 0 ? indicator.render(w) : [];
+		const bodyRenderBudget = bodyBudget - (indicatorLines.length > 0 ? 1 : 0);
 
 		let bodyLines: string[];
-		if (bodyBudget <= 0) {
+		if (bodyRenderBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
-			bodyLines = renderPromptBody(ctx, w, bodyBudget);
+			bodyLines = renderPromptBody(ctx, w, bodyRenderBudget);
 		} else if (blocked) {
-			bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
+			bodyLines = renderBlockedBody(ctx, w, bodyRenderBudget, stage);
 		} else if (!readOnlyArchive && isPaused(ctx, stage)) {
-			bodyLines = renderPausedBody(ctx, w, bodyBudget);
+			bodyLines = renderPausedBody(ctx, w, bodyRenderBudget);
 		} else if (readOnlyArchive) {
-			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage);
+			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyRenderBudget, stage);
 		} else {
-			bodyLines = this.chatHost.renderBody(w, bodyBudget);
+			bodyLines = this.chatHost.renderBody(w, bodyRenderBudget);
 		}
 
 		const lines = [
 			...headerLines,
 			...sepLines,
 			...bodyLines,
+			...indicatorLines,
 			...visiblePendingLines,
 			...visibleWorkingLines,
 			...visibleUsageLines,
