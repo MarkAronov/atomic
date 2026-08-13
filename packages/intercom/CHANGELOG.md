@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.13-alpha.3] - 2026-08-13
+
 ### Breaking Changes
 
 - Removed unique-ID-prefix targeting. `send`, `ask`, and `reply` now accept only an exact full session ID or an exact case-insensitive session name.
