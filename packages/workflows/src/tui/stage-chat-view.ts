@@ -23,6 +23,7 @@
  *  - https://pi.dev/docs/latest/tui (canonical Pi-tui component contract)
  */
 
+import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
@@ -157,6 +158,7 @@ export class StageChatView implements Component, Focusable {
 		if (blocked) this.chatHost.scrollToBottom();
 
 		let bodyLines: string[];
+		let transcriptBodyActive = false;
 		if (bodyBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
@@ -168,13 +170,23 @@ export class StageChatView implements Component, Focusable {
 		} else if (readOnlyArchive) {
 			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage);
 		} else {
+			transcriptBodyActive = true;
 			bodyLines = this.chatHost.renderBody(w, bodyBudget);
 		}
+		const indicator = new TranscriptFollowIndicator({
+			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
+			keyLabel: () => keyText("tui.altScreen.bottom"),
+		});
+		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
+		const indicatorVisible = indicatorLines.length > 0;
+		const dropBodyRow = transcriptBodyActive && indicatorVisible && bodyLines.length >= bodyBudget;
+		const visibleBodyLines = bodyLines.slice(dropBodyRow ? 1 : 0, bodyBudget);
 
 		const lines = [
 			...headerLines,
 			...sepLines,
-			...bodyLines,
+			...visibleBodyLines,
+			...indicatorLines,
 			...visiblePendingLines,
 			...visibleWorkingLines,
 			...visibleUsageLines,

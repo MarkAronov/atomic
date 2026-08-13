@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added the shared "Jump to bottom" follow indicator to workflow stage chat when its transcript is scrolled away from the live end, while preserving composer and footer rows in tight overlays.
+
 ## [0.9.13-alpha.3] - 2026-08-13
 
 ### Changed

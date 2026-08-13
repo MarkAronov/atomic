@@ -59,6 +59,7 @@ async function registerIsolatedTests(): Promise<void> {
 
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
+		TranscriptFollowIndicator: TestComponent,
 		keyHint: (key: string) => key,
 		keyText: (key: string) => key,
 		rawKeyHint: (key: string) => key,

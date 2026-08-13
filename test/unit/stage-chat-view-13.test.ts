@@ -1,14 +1,62 @@
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	assert,
 	createStore,
 	deriveGraphTheme,
+	fakeFooterAgentSession,
 	flush,
 	makeHandle,
+	makePendingPrompt,
 	makeTestTui,
 	StageChatView,
 	setupRun,
 } from "./stage-chat-view-helpers.js";
+
+async function makeScrollableStageChatFixture(
+	rows: number | (() => number | undefined) = 12,
+	withFooter = false,
+	piKeybindings?: unknown,
+): Promise<{ store: ReturnType<typeof createStore>; view: StageChatView }> {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a", "pending");
+	const { handle } = withFooter ? makeHandle(undefined, [], "pending", fakeFooterAgentSession()) : makeHandle();
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		piTui: makeTestTui(rows),
+		piKeybindings,
+		footerData: withFooter
+			? {
+					getGitBranch: () => "main",
+					getExtensionStatuses: () => new Map(),
+					getAvailableProviderCount: () => 1,
+					onBranchChange: () => () => {},
+				}
+			: undefined,
+	});
+	for (let i = 0; i < 18; i++) {
+		for (const ch of `follow-msg-${i}`) view.handleInput(ch);
+		view.handleInput("\r");
+		await flush();
+		await flush();
+	}
+	return { store, view };
+}
+
+async function makeScrollableStageChat(
+	rows: number | (() => number | undefined) = 12,
+	withFooter = false,
+): Promise<StageChatView> {
+	return (await makeScrollableStageChatFixture(rows, withFooter)).view;
+}
 
 describe("StageChatView", () => {
 	test("expands the chat surface to the reported viewport row count", () => {
@@ -165,6 +213,148 @@ describe("StageChatView", () => {
 		const before = view._inputBuffer;
 		view.handleInput("\x1b[<0;10;10M");
 		assert.equal(view._inputBuffer, before);
+		view.dispose();
+	});
+	test("hides the follow indicator and preserves the prompt card while awaiting input", async () => {
+		const { store, view } = await makeScrollableStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		assert.equal(
+			store.recordStagePendingPrompt("run-1", "stage-a", makePendingPrompt({ id: "scrolled-prompt" })),
+			true,
+		);
+		const scrolledPrompt = view.render(96).map(stripTerminalSequences);
+		assert.doesNotMatch(scrolledPrompt.join("\n"), /Jump to bottom/);
+
+		const { handle } = makeHandle();
+		const controlView = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(16),
+		});
+		const controlPrompt = controlView.render(96).map(stripTerminalSequences);
+		const controlBanner = controlPrompt.find((line) => line.includes("AWAITING INPUT"));
+		const scrolledBanner = scrolledPrompt.find((line) => line.includes("AWAITING INPUT"));
+		assert.ok(controlBanner);
+		assert.equal(scrolledBanner, controlBanner);
+		controlView.dispose();
+		view.dispose();
+	});
+
+	test("hides the follow indicator in paused stage chat", async () => {
+		const { store, view } = await makeScrollableStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
+
+		const paused = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(paused, /Jump to bottom/);
+		assert.match(paused, /PAUSED/);
+		view.dispose();
+	});
+
+	test("uses and honors a remapped stage-chat jump-to-bottom binding", async () => {
+		const previousKeybindings = getKeybindings();
+		const keybindings = new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+e" });
+		setKeybindings(keybindings);
+		let view: StageChatView | undefined;
+		try {
+			({ view } = await makeScrollableStageChatFixture(12, false, keybindings));
+			view.render(96);
+			assert.equal(view.handleInput("\x1b[5~"), true);
+			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
+			assert.match(scrolled, /Jump to bottom \(ctrl\+e\) ↓/);
+
+			assert.equal(view.handleInput("\x05"), true);
+			assert.equal(view._bodyScrollFromBottom, 0);
+			assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom/);
+		} finally {
+			view?.dispose();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
+	test("hides the follow indicator at the pristine live end without consuming a body row", async () => {
+		const view = await makeScrollableStageChat();
+		const bottom = view.render(96);
+		const visibleLines = bottom.map(stripTerminalSequences);
+
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(visibleLines.join("\n"), /Jump to bottom/);
+		assert.match(visibleLines[2] ?? "", /follow-msg-16/);
+		assert.match(visibleLines[6] ?? "", /follow-msg-17/);
+		assert.equal(bottom.length, 12);
+		view.dispose();
+	});
+
+	test("shows the shared follow indicator after scrolling stage-chat history", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		const scrolled = view.render(96);
+		const visible = stripTerminalSequences(scrolled.join("\n"));
+
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.match(visible, /Jump to bottom \(end\) ↓/);
+		assert.equal(scrolled.length, 12);
+		view.dispose();
+	});
+
+	test("keeps the transcript viewport size stable while the follow indicator is visible", async () => {
+		const view = await makeScrollableStageChat(13);
+		view.render(96);
+
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		const scrolled = view.render(96);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.match(stripTerminalSequences(scrolled.join("\n")), /Jump to bottom \(end\) ↓/);
+		assert.equal(scrolled.length, 13);
+
+		assert.equal(view.handleInput("\x1b[6~"), true);
+		view.render(96);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		view.dispose();
+	});
+
+	test("the bound end key returns stage chat to the live end and hides the indicator", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		view.handleInput("\x1b[5~");
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+
+		assert.equal(view.handleInput("\x1b[F"), true);
+		const bottom = view.render(96);
+		const visible = stripTerminalSequences(bottom.join("\n"));
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.equal(bottom.length, 12);
+		view.dispose();
+	});
+
+	test("drops the indicator before the composer and footer in a tight viewport", async () => {
+		let rows = 12;
+		const view = await makeScrollableStageChat(() => rows, true);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+
+		rows = 8;
+		const tight = view.render(96);
+		const visible = stripTerminalSequences(tight.join("\n"));
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.ok(visible.includes("❯"), "composer must survive the tight viewport");
+		assert.match(visible, /ctrl\+x return to graph/);
+		assert.equal(tight.length, 8);
 		view.dispose();
 	});
 });
