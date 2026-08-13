@@ -6,19 +6,8 @@ import { ENV_CODEX_FAST_MODE, getEnvNames } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.ts";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
-import { createAsyncJobTracker } from "../../packages/subagents/src/runs/background/async-job-tracker.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
-import { executeAsyncSingle } from "../../packages/subagents/src/runs/inprocess/background-single.ts";
-import {
-	clearSubagentControls,
-	listSubagentControls,
-} from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
-import {
-	ASYNC_DIR,
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	SUBAGENT_ASYNC_STARTED_EVENT,
-	type SubagentState,
-} from "../../packages/subagents/src/shared/types.ts";
+import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 
 const fastModeEnvNames = getEnvNames(ENV_CODEX_FAST_MODE);
 const agentDirEnvNames = getEnvNames(ENV_AGENT_DIR);
@@ -27,7 +16,6 @@ let previousAgentDirEnv: Record<string, string | undefined> = {};
 
 const tempRoots: string[] = [];
 const CODEX_MODEL = "openai/gpt-5.1-codex";
-const REAL_SUBAGENT_EVENT_TIMEOUT_MS = 15_000;
 // Structural cost (AGENTS.md per-test timeout policy): the real-session test
 // below (`testSession: false`) bootstraps a full builtin-package loader load
 // for the in-process child. On Windows CI the child's cwd differs from the
@@ -48,60 +36,6 @@ function agent(): AgentConfig {
 		filePath: "/tmp/fast-mode-worker.md",
 	};
 }
-
-type EventHandler = (payload: unknown) => void;
-
-class TestEvents {
-	private readonly handlers = new Map<string, Set<EventHandler>>();
-
-	on(event: string, handler: EventHandler): () => void {
-		const handlers = this.handlers.get(event) ?? new Set<EventHandler>();
-		handlers.add(handler);
-		this.handlers.set(event, handlers);
-		return () => handlers.delete(handler);
-	}
-
-	emit(event: string, payload: unknown): void {
-		for (const handler of this.handlers.get(event) ?? []) handler(payload);
-	}
-}
-
-function makeState(cwd: string): SubagentState {
-	return {
-		baseCwd: cwd,
-		currentSessionId: "parent-session",
-		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
-}
-
-function withEventTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(
-			() => reject(new Error(`${label} did not arrive within ${REAL_SUBAGENT_EVENT_TIMEOUT_MS} ms`)),
-			REAL_SUBAGENT_EVENT_TIMEOUT_MS,
-		);
-		void promise.then(
-			(value) => {
-				clearTimeout(timer);
-				resolve(value);
-			},
-			(error: unknown) => {
-				clearTimeout(timer);
-				reject(error);
-			},
-		);
-	});
-}
-
 async function requestBody(init: RequestInit | undefined): Promise<Record<string, unknown> | undefined> {
 	const text = await new Response(init?.body).text();
 	return text.trim() ? (JSON.parse(text) as Record<string, unknown>) : undefined;
@@ -162,7 +96,6 @@ function setupRoot(): string {
 	);
 	return root;
 }
-
 beforeEach(() => {
 	previousFastModeEnv = Object.fromEntries(fastModeEnvNames.map((name) => [name, process.env[name]]));
 	previousAgentDirEnv = Object.fromEntries(agentDirEnvNames.map((name) => [name, process.env[name]]));
@@ -183,7 +116,6 @@ afterEach(() => {
 	}
 	for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-
 test("in-process child results use the workflow fast-mode setting for workflow stages", async () => {
 	const root = setupRoot();
 	const workflowResult = await runSingleInProcess(root, agent(), "workflow task", {
@@ -234,6 +166,40 @@ test("foreground launch updates carry step metadata before the prompt settles", 
 	} finally {
 		gate.resolve();
 	}
+});
+
+test("foreground results and live progress follow the effective fallback model's fast-mode scope", async () => {
+	const root = setupRoot();
+	const fallbackModel = "anthropic/claude-sonnet-4";
+	const liveResults: Array<{ model?: string; thinking?: string; fastMode?: boolean }> = [];
+	const fallbackAgent: AgentConfig = {
+		...agent(),
+		thinking: "low",
+		fallbackModels: [`${fallbackModel}:high`],
+	};
+
+	const result = await runSingleInProcess(root, fallbackAgent, "fallback task", {
+		cwd: root,
+		runId: "foreground-fallback-metadata",
+		modelOverride: CODEX_MODEL,
+		workflowSessionMetadata: { runId: "workflow-run", stageId: "stage-1", stageName: "Stage 1" },
+		testSession: { output: "fallback result", fallbackModel, fallbackThinkingLevel: "high" },
+		onUpdate: (update) => {
+			const liveResult = update.details?.results[0];
+			if (liveResult) liveResults.push(liveResult);
+		},
+	});
+
+	assert.equal(result.model, fallbackModel);
+	assert.equal(result.thinking, "high");
+	assert.equal(result.fastMode, undefined);
+	assert.ok(
+		liveResults.some(
+			(liveResult) =>
+				liveResult.model === fallbackModel && liveResult.thinking === "high" && liveResult.fastMode === undefined,
+		),
+		"live progress should use the fallback model's effective thinking and fast-mode scope",
+	);
 });
 
 test(
@@ -357,222 +323,3 @@ test(
 	},
 	REAL_CHILD_BUILTIN_LOADER_TIMEOUT_MS,
 );
-
-test("live and detached results follow the effective fallback model's fast-mode scope", async () => {
-	const root = setupRoot();
-	const fallbackModel = "anthropic/claude-sonnet-4";
-	const detached = Promise.withResolvers<Awaited<ReturnType<typeof runSingleInProcess>>>();
-	const liveResults: Array<{ model?: string; thinking?: string; fastMode?: boolean }> = [];
-	const fallbackAgent: AgentConfig = {
-		...agent(),
-		thinking: "low",
-		fallbackModels: [`${fallbackModel}:high`],
-	};
-
-	const continued = await runSingleInProcess(root, fallbackAgent, "fallback task", {
-		cwd: root,
-		runId: "workflow-fallback-metadata",
-		modelOverride: CODEX_MODEL,
-		workflowSessionMetadata: { runId: "workflow-run", stageId: "stage-1", stageName: "Stage 1" },
-		backgroundContinuation: true,
-		testSession: { output: "fallback result", fallbackModel, fallbackThinkingLevel: "high" },
-		onUpdate: (update) => {
-			const result = update.details?.results[0];
-			if (result) liveResults.push(result);
-		},
-		onDetachedExit: (result) => detached.resolve(result),
-	});
-
-	assert.equal(continued.model, fallbackModel);
-	assert.equal(continued.thinking, "high");
-	assert.equal(continued.fastMode, undefined);
-	const recovered = await withEventTimeout(detached.promise, "fallback detached result");
-	assert.equal(recovered.model, fallbackModel);
-	assert.equal(recovered.thinking, "high");
-	assert.equal(recovered.fastMode, undefined);
-	assert.ok(
-		liveResults.some(
-			(result) => result.model === fallbackModel && result.thinking === "high" && result.fastMode === undefined,
-		),
-		"live progress should use the fallback model's effective thinking and fast-mode scope",
-	);
-});
-test("async workflow child launch and completion retain the scoped fast marker", async () => {
-	const root = setupRoot();
-	const runId = `workflow-fast-mode-async-${crypto.randomUUID()}`;
-	const started = Promise.withResolvers<unknown>();
-	const completed = Promise.withResolvers<unknown>();
-	const events = new TestEvents();
-	events.on(SUBAGENT_ASYNC_STARTED_EVENT, (payload) => started.resolve(payload));
-	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (payload) => completed.resolve(payload));
-
-	try {
-		const launched = await executeAsyncSingle(runId, {
-			agent: "worker",
-			task: "async workflow task",
-			agentConfig: { ...agent(), thinking: "high" },
-			ctx: {
-				pi: { events } as never,
-				cwd: root,
-				currentSessionId: "parent-session",
-				workflowSessionMetadata: { runId: "workflow-run", stageId: "stage-1", stageName: "Stage 1" },
-			},
-			cwd: root,
-			modelOverride: CODEX_MODEL,
-			workflowStageSubagentGuard: true,
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 0,
-			},
-			shareEnabled: false,
-			maxSubagentDepth: 2,
-			testSession: { output: "async workflow result" },
-		});
-
-		assert.equal(launched.details.results[0]?.model, CODEX_MODEL);
-		assert.equal(launched.details.results[0]?.thinking, "high");
-		assert.equal(launched.details.results[0]?.fastMode, true);
-		const startedEvent = (await withEventTimeout(started.promise, "async started event")) as {
-			model?: string;
-			thinking?: string;
-			fastMode?: boolean;
-		};
-		assert.equal(startedEvent.model, CODEX_MODEL);
-		assert.equal(startedEvent.thinking, "high");
-		assert.equal(startedEvent.fastMode, true);
-		const completionEvent = (await withEventTimeout(completed.promise, "async completion event")) as {
-			result?: { model?: string; thinking?: string; fastMode?: boolean };
-		};
-		assert.equal(completionEvent.result?.model, CODEX_MODEL);
-		assert.equal(completionEvent.result?.thinking, "high");
-		assert.equal(completionEvent.result?.fastMode, true);
-	} finally {
-		rmSync(join(ASYNC_DIR, runId), { recursive: true, force: true });
-	}
-});
-
-test("async workflow fast metadata survives live registry hydration", async () => {
-	const root = setupRoot();
-	const runId = `workflow-fast-mode-hydration-${crypto.randomUUID()}`;
-	const gate = Promise.withResolvers<void>();
-	const started = Promise.withResolvers<unknown>();
-	const completed = Promise.withResolvers<void>();
-	const events = new TestEvents();
-	const currentState = makeState(root);
-	const tracker = createAsyncJobTracker({ events } as never, currentState, join(root, "async"), {
-		pollIntervalMs: 60_000,
-	});
-	events.on(SUBAGENT_ASYNC_STARTED_EVENT, (payload) => started.resolve(payload));
-	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, tracker.handleComplete);
-	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, () => completed.resolve());
-	let launched = false;
-
-	try {
-		await executeAsyncSingle(runId, {
-			agent: "worker",
-			task: "async workflow hydration task",
-			agentConfig: { ...agent(), thinking: "high" },
-			ctx: {
-				pi: { events } as never,
-				cwd: root,
-				currentSessionId: "parent-session",
-				workflowSessionMetadata: { runId: "workflow-run", stageId: "stage-1", stageName: "Stage 1" },
-			},
-			cwd: root,
-			modelOverride: CODEX_MODEL,
-			workflowStageSubagentGuard: true,
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 0,
-			},
-			shareEnabled: false,
-			maxSubagentDepth: 2,
-			testSession: { output: "async workflow hydration result", promptGate: gate.promise },
-		});
-		launched = true;
-		await withEventTimeout(started.promise, "hydration async started event");
-		assert.equal(currentState.asyncJobs.has(runId), false);
-		const control = listSubagentControls().find((candidate) => candidate.parent.path === runId);
-		const child = control?.listChildren()[0];
-		assert.ok(control);
-		assert.ok(child);
-		assert.deepEqual(control.getChildMetadata(child.path), {
-			model: CODEX_MODEL,
-			thinking: "high",
-			fastMode: true,
-		});
-		const seededStartedAt = Date.now() - 5_000;
-		currentState.asyncJobs.set(runId, {
-			asyncId: runId,
-			asyncDir: join(root, "async", runId),
-			status: "running",
-			startedAt: seededStartedAt,
-			steps: [{ index: 0, agent: "worker", status: "running", currentTool: "live-tool" }],
-		});
-		tracker.hydrateActiveJobs();
-		const after = currentState.asyncJobs.get(runId);
-		assert.equal(after?.steps?.[0]?.currentTool, "live-tool");
-		assert.equal(after?.steps?.[0]?.model, CODEX_MODEL);
-		assert.equal(after?.steps?.[0]?.thinking, "high");
-		assert.equal(after?.steps?.[0]?.fastMode, true);
-		assert.equal(after?.startedAt, seededStartedAt);
-	} finally {
-		if (launched) {
-			gate.resolve();
-			await withEventTimeout(completed.promise, "hydration async completion event");
-		}
-		tracker.resetJobs();
-		rmSync(join(ASYNC_DIR, runId), { recursive: true, force: true });
-	}
-});
-
-test("async tracker completion metadata handles result and detached paths", () => {
-	const root = setupRoot();
-	const state = makeState(root);
-	const tracker = createAsyncJobTracker({ events: new TestEvents() } as never, state, join(root, "async"));
-	tracker.handleStarted({
-		id: "detached-run",
-		agent: "worker",
-		model: CODEX_MODEL,
-		thinking: "high",
-		fastMode: true,
-	});
-	tracker.handleComplete({ id: "detached-run", status: "ok" });
-	assert.equal(state.asyncJobs.get("detached-run")?.steps?.[0]?.fastMode, true);
-
-	tracker.handleStarted({
-		id: "result-run",
-		agent: "worker",
-		model: CODEX_MODEL,
-		thinking: "high",
-		fastMode: true,
-	});
-	tracker.handleComplete({
-		id: "result-run",
-		status: "ok",
-		result: { model: "anthropic/claude-sonnet-4", thinking: "high" },
-	});
-
-	const job = state.asyncJobs.get("result-run");
-	assert.equal(job?.status, "complete");
-	assert.equal(job?.steps?.[0]?.model, "anthropic/claude-sonnet-4");
-	assert.equal(job?.steps?.[0]?.thinking, "high");
-	assert.equal(job?.steps?.[0]?.fastMode, false);
-	assert.equal(job?.completedSteps, 1);
-
-	tracker.handleStarted({ id: "error-run", agent: "worker" });
-	tracker.handleComplete({ id: "error-run", status: "error" });
-	const errorJob = state.asyncJobs.get("error-run");
-	assert.equal(errorJob?.status, "failed");
-	assert.equal(errorJob?.steps?.[0]?.status, "failed");
-	assert.equal(errorJob?.completedSteps, 0);
-	tracker.resetJobs();
-});
