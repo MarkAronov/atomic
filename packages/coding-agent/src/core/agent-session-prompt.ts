@@ -319,9 +319,21 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 	// Drop the empty aborted reply from agent state so `continue()` resumes from the
 	// admitted user message. The session history keeps it, as the retry paths do.
 	session.agent.state.messages = messages.slice(0, -1);
-	await session.agent.continue();
-	await session.waitForRetry();
-	await session._agentEventQueue;
+	// Publish this turn before it starts. It begins after the pause abort boundary
+	// resolves, so a submission that only waited for that boundary would race it
+	// and be rejected by the streaming guard while the queue is still paused.
+	const recovery = (async () => {
+		await session.agent.continue();
+		await session.waitForRetry();
+		await session._agentEventQueue;
+	})();
+	const settled = recovery.catch(() => undefined);
+	session._admittedRecoveryTurn = settled;
+	try {
+		await recovery;
+	} finally {
+		if (session._admittedRecoveryTurn === settled) session._admittedRecoveryTurn = undefined;
+	}
 }
 
 /**

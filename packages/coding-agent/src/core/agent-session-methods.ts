@@ -426,6 +426,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_queuedMessagesPaused: boolean;
 	_queuedMessagesPauseAbortBoundary: Promise<void> | undefined;
 	_admittedQueuedMessageAwaitingReply: string | undefined;
+	_admittedRecoveryTurn: Promise<void> | undefined;
 	_workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];

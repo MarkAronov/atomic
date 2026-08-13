@@ -103,6 +103,13 @@ class AgentSessionBase {
 	 * strand it (issue #2362).
 	 */
 	protected _admittedQueuedMessageAwaitingReply: string | undefined = undefined;
+	/**
+	 * Settlement boundary for the recovery turn that answers an already-admitted
+	 * queued message. It starts after the pause abort boundary resolves, so the
+	 * resume path must wait for it too or an ordinary submission made while it
+	 * streams is rejected by the streaming guard (issue #2362).
+	 */
+	protected _admittedRecoveryTurn: Promise<void> | undefined = undefined;
 	protected _workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined = undefined;
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
