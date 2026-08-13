@@ -160,28 +160,30 @@ export class StageChatView implements Component, Focusable {
 			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
 			keyLabel: () => keyText("tui.altScreen.bottom"),
 		});
-		const indicatorLines = bodyBudget > 1 && this.chatHost.bodyScrollFromBottom() > 0 ? indicator.render(w) : [];
-		const bodyRenderBudget = bodyBudget - (indicatorLines.length > 0 ? 1 : 0);
+		const indicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
 
 		let bodyLines: string[];
-		if (bodyRenderBudget <= 0) {
+		if (bodyBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
-			bodyLines = renderPromptBody(ctx, w, bodyRenderBudget);
+			bodyLines = renderPromptBody(ctx, w, bodyBudget);
 		} else if (blocked) {
-			bodyLines = renderBlockedBody(ctx, w, bodyRenderBudget, stage);
+			bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
 		} else if (!readOnlyArchive && isPaused(ctx, stage)) {
-			bodyLines = renderPausedBody(ctx, w, bodyRenderBudget);
+			bodyLines = renderPausedBody(ctx, w, bodyBudget);
 		} else if (readOnlyArchive) {
-			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyRenderBudget, stage);
+			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage);
 		} else {
-			bodyLines = this.chatHost.renderBody(w, bodyRenderBudget);
+			bodyLines = this.chatHost.renderBody(w, bodyBudget);
 		}
+		const indicatorVisible = indicatorLines.length > 0;
+		const dropBodyRow = indicatorVisible && bodyLines.length >= bodyBudget;
+		const visibleBodyLines = bodyLines.slice(dropBodyRow ? 1 : 0, bodyBudget);
 
 		const lines = [
 			...headerLines,
 			...sepLines,
-			...bodyLines,
+			...visibleBodyLines,
 			...indicatorLines,
 			...visiblePendingLines,
 			...visibleWorkingLines,

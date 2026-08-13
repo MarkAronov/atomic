@@ -204,17 +204,15 @@ describe("StageChatView", () => {
 		assert.equal(view._inputBuffer, before);
 		view.dispose();
 	});
-	test("hides the follow indicator at the live end after returning without changing row count", async () => {
+	test("hides the follow indicator at the pristine live end without consuming a body row", async () => {
 		const view = await makeScrollableStageChat();
-		view.render(96);
-		view.handleInput("\x1b[5~");
-		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
-
-		assert.equal(view.handleInput("\x1b[F"), true);
 		const bottom = view.render(96);
-		const visible = stripTerminalSequences(bottom.join("\n"));
+		const visibleLines = bottom.map(stripTerminalSequences);
+
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.doesNotMatch(visibleLines.join("\n"), /Jump to bottom/);
+		assert.match(visibleLines[2] ?? "", /follow-msg-16/);
+		assert.match(visibleLines[6] ?? "", /follow-msg-17/);
 		assert.equal(bottom.length, 12);
 		view.dispose();
 	});
@@ -229,6 +227,22 @@ describe("StageChatView", () => {
 		assert.ok(view._bodyScrollFromBottom > 0);
 		assert.match(visible, /Jump to bottom \(end\) ↓/);
 		assert.equal(scrolled.length, 12);
+		view.dispose();
+	});
+
+	test("keeps the transcript viewport size stable while the follow indicator is visible", async () => {
+		const view = await makeScrollableStageChat(13);
+		view.render(96);
+
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		const scrolled = view.render(96);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.match(stripTerminalSequences(scrolled.join("\n")), /Jump to bottom \(end\) ↓/);
+		assert.equal(scrolled.length, 13);
+
+		assert.equal(view.handleInput("\x1b[6~"), true);
+		view.render(96);
+		assert.equal(view._bodyScrollFromBottom, 0);
 		view.dispose();
 	});
 

@@ -51,7 +51,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
 		return true;
 	}
-	if (handleStageChatScrollInput(ctx, data)) return true;
+	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
 			return ctx.chatHost.handleInput(data);
@@ -80,14 +80,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	return ctx.chatHost.handleInput(data);
 }
 
-function handleStageChatScrollInput(ctx: StageChatViewContext, data: string): boolean {
-	const wasScrolled = ctx.chatHost.bodyScrollFromBottom() > 0;
-	const handled = ctx.chatHost.handleScrollInput(data);
-	if (handled && wasScrolled && matchesKey(data, "pageDown") && ctx.chatHost.bodyScrollFromBottom() <= 1) {
-		ctx.chatHost.scrollToBottom();
-	}
-	return handled;
-}
 function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;
