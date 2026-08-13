@@ -30,6 +30,7 @@ class RemoteComponent implements Component {
 	wantsKeyRelease = true;
 	private lines = ["Loading remote component…"];
 	private width = 0;
+	private rows = 0;
 	private requestId = 0;
 	private inputRequestId = 0;
 	private appliedRequestId = 0;
@@ -56,15 +57,17 @@ class RemoteComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		if (!this.disposed && (this.dirty || width !== this.width)) {
+		const rows = this.getRows();
+		if (!this.disposed && (this.dirty || width !== this.width || rows !== this.rows)) {
 			this.width = width;
+			this.rows = rows;
 			this.dirty = false;
 			this.runtime.sendEngineCommand({
 				type: "engine_custom_render",
 				componentId: this.componentId,
 				requestId: ++this.requestId,
 				width,
-				rows: this.getRows(),
+				rows,
 			});
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
