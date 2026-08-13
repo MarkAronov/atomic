@@ -15,11 +15,7 @@ vi.mock("../src/utils/open-browser.ts", () => ({ openBrowser: vi.fn() }));
 
 beforeAll(() => initTheme("dark"));
 const OSC8_MARKER = "\x1b]8;;";
-
-function leadingSpaceCount(row: string): number {
-	return stripTerminalSequences(row).match(/^ */)?.[0].length ?? 0;
-}
-
+const BG_MARKER = "\x1b[48;";
 describe("TranscriptFollowIndicator", () => {
 	test("is hidden while the transcript follows its end", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => true, keyLabel: () => "End" });
@@ -27,43 +23,48 @@ describe("TranscriptFollowIndicator", () => {
 		expect(indicator.render(80)).toEqual([]);
 	});
 
-	test("renders a centered linked three-row box with the live key label", () => {
+	test("renders a centered linked highlight row with the live key label", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "Ctrl+End" });
-
+		const highlight = " Jump to bottom (Ctrl+End) ↓ ";
+		const highlightWidth = visibleWidth(highlight);
 		for (const width of [80, 41]) {
 			const rows = indicator.render(width);
-			expect(rows).toHaveLength(3);
-			expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true);
-			const boxWidth = visibleWidth(stripTerminalSequences(rows[0]!).trimStart());
-			const expectedLeftPadding = Math.floor((width - boxWidth) / 2);
-			expect(leadingSpaceCount(rows[0]!)).toBe(expectedLeftPadding);
-			expect(leadingSpaceCount(rows[1]!)).toBe(expectedLeftPadding);
-			expect(visibleWidth(stripTerminalSequences(rows[1]!).trimStart())).toBe(boxWidth);
-			expect(visibleWidth(stripTerminalSequences(rows[2]!).trimStart())).toBe(boxWidth);
+			expect(rows).toHaveLength(1);
+			const centered = " ".repeat(Math.floor((width - highlightWidth) / 2)) + highlight;
+			expect(stripTerminalSequences(rows[0]!)).toBe(centered);
+			expect(visibleWidth(rows[0]!)).toBeLessThanOrEqual(width);
 		}
 
 		const rows = indicator.render(80);
-		expect(rows[0]).not.toContain(OSC8_MARKER);
-		expect(rows[2]).not.toContain(OSC8_MARKER);
-		expect(rows[1]).toContain(OSC8_MARKER);
-		expect(rows[1]).toContain(TRANSCRIPT_JUMP_TO_END_URL);
-		expect(rows[1]).toContain("Ctrl+End");
-		expect(rows[0]).toContain("┌");
-		expect(rows[2]).toContain("└");
+		expect(rows[0]).toContain(OSC8_MARKER);
+		expect(rows[0]).toContain(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(rows[0]).toContain("Ctrl+End");
+		expect(rows[0]).not.toContain("┌");
+		expect(rows[0]).toContain(BG_MARKER);
 	});
 
-	test("truncates every row to a narrow viewport and omits an empty key suffix", () => {
+	test("truncates the row to a narrow viewport and omits an empty key suffix", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "" });
 		const rows = indicator.render(8);
-		expect(rows).toHaveLength(3);
-		expect(rows.every((row) => visibleWidth(row) <= 8)).toBe(true);
-		expect(stripTerminalSequences(rows[1]!)).toContain("J");
-		expect(rows[1]).not.toContain("()");
+		expect(rows).toHaveLength(1);
+		expect(visibleWidth(rows[0]!)).toBeLessThanOrEqual(8);
+		expect(stripTerminalSequences(rows[0]!)).toContain("J");
+		expect(rows[0]).not.toContain("()");
 
 		for (const width of [0, 1, 2, 3, 4]) {
 			const narrowRows = indicator.render(width);
-			expect(narrowRows).toHaveLength(3);
-			expect(narrowRows.every((row) => visibleWidth(row) <= width)).toBe(true);
+			expect(narrowRows).toHaveLength(1);
+			expect(visibleWidth(narrowRows[0]!)).toBeLessThanOrEqual(width);
+		}
+	});
+
+	test("keeps the highlight unbroken across the truncation ellipsis", () => {
+		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "End" });
+		const row = indicator.render(20)[0] ?? "";
+
+		expect(row).toContain("...");
+		for (const segment of row.split("\x1b[0m").slice(1)) {
+			expect(segment.startsWith(BG_MARKER)).toBe(true);
 		}
 	});
 });

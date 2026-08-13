@@ -152,8 +152,8 @@ handleUrlActivation(url: string): void
 ```
 
 `TranscriptFollowIndicator` is a rendering component, not a door: it holds no state,
-receives `isFollowing(): boolean`, `keyLabel(): string`, and renders `[]` or a small
-centered bordered box (3 rows).
+receives `isFollowing(): boolean`, `keyLabel(): string`, and renders `[]` or a single
+centered highlighted row.
 
 **Per-door audit:**
 
@@ -184,24 +184,22 @@ None. No settings key (see §9 Q3), no persisted state.
 
 1. If `isFollowing()` returns true → return `[]` (zero rows; the dock VStack collapses
    the entry via `shrink: 1, minSize: 0`).
-2. Else → return a 3-row centered solid-bordered box containing
-   `Jump to bottom (${keyLabel()}) ↓`:
+2. Else → return a single centered row whose label sits inside a background highlight:
 
    ```
-   ┌─────────────────────────┐
-   │ Jump to bottom (End) ↓  │
-   └─────────────────────────┘
+    Jump to bottom (End) ↓ 
    ```
 
-   Box width fits the label plus 1 column of inner padding; the whole box is centered
-   with left padding computed from `visibleWidth`. When the terminal is narrower than
-   the box, the label is truncated with `truncateToWidth` and the borders shrink to
-   match.
+   The highlight spans the label plus 1 column of padding on each side, centered with
+   left padding computed from `visibleWidth`. When the terminal is narrower, the label
+   is truncated with `truncateToWidth` and the padding columns drop below 3 columns.
 
-**Styling.** Borders and label in muted foreground (`theme.fg("muted", ...)`),
-matching existing dim chrome. The label text (inside the borders) is wrapped in an
-OSC 8 hyperlink carrying `TRANSCRIPT_JUMP_TO_END_URL`; border rows and padding stay
-outside the link so stray clicks near the box do not activate it.
+**Styling.** Muted foreground on the `selectedBg` background, matching the pill styling
+used by tab bars and select lists. The whole highlight — padding included — is wrapped
+in an OSC 8 hyperlink carrying `TRANSCRIPT_JUMP_TO_END_URL`, so any click on the
+highlighted block activates it. `truncateToWidth` emits a full SGR reset around its
+ellipsis, so the component reapplies both colors after every reset to keep the
+highlight solid.
 
 **Key label.** Reuse the display path behind `getEditorKeyDisplay`
 (`interactive-hotkeys-debug.ts:25`) for the `tui.altScreen.bottom` action, resolved at
@@ -281,7 +279,7 @@ Root suites run under vitest with `node:assert/strict` (AGENTS.md).
 - **Interactive verification (runnable checklist):**
   1. `npm run build` and launch atomic in a terminal with mouse support.
   2. Produce > 1 screen of transcript, scroll up (wheel or PageUp). Expect the centered
-     bordered `Jump to bottom (End) ↓` box above the input dock.
+     highlighted `Jump to bottom (End) ↓` row above the input dock.
   3. Press the displayed key. Expect: viewport at live end, indicator gone.
   4. Scroll up again, click the label. Expect the same result.
   5. Remap `tui.altScreen.bottom` in keybindings config, relaunch, scroll up. Expect
@@ -303,9 +301,10 @@ Root suites run under vitest with `node:assert/strict` (AGENTS.md).
 - [x] **Q3 — Settings toggle to hide the indicator?** Resolved (user, 2026-08-13):
       **No setting; always on.** The indicator is invisible whenever the viewport
       follows the end.
-- [x] **Q4 — Indicator copy.** Resolved (user, 2026-08-13): `Jump to bottom (End) ↓`
-      enclosed in a solid bordered box, muted, centered; label is the clickable span,
-      borders are not.
+- [x] **Q4 — Indicator copy.** Resolved (user, 2026-08-13): `Jump to bottom (End) ↓`,
+      muted and centered. Revised (user, 2026-08-13): the label sits in a background
+      highlight (`selectedBg`) on one row instead of a drawn border box; the whole
+      highlight is clickable.
 
 ## Backwards Compatibility
 

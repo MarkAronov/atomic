@@ -2,6 +2,7 @@ import { type Component, hyperlink, truncateToWidth, visibleWidth } from "@earen
 import { theme } from "../theme/theme.ts";
 
 export const TRANSCRIPT_JUMP_TO_END_URL = "atomic-ui://transcript/jump-to-end";
+const FULL_RESET = "\x1b[0m";
 
 export interface TranscriptFollowIndicatorOptions {
 	isFollowing: () => boolean;
@@ -21,45 +22,29 @@ export class TranscriptFollowIndicator implements Component {
 		if (this.options.isFollowing()) return [];
 
 		const viewportWidth = Math.max(0, Math.floor(width));
+		if (viewportWidth === 0) return [""];
+
 		const keyLabel = this.options.keyLabel();
 		const label = keyLabel.length > 0 ? `Jump to bottom (${keyLabel}) ↓` : "Jump to bottom ↓";
 
-		// A normal box has two border columns and one padding column on each side.
-		// For very narrow viewports, retain the three rows while clipping the box
-		// geometry to the available cells.
-		if (viewportWidth < 4) {
-			return this.renderNarrow(label, viewportWidth);
-		}
-
-		const truncatedLabel = truncateToWidth(label, viewportWidth - 4);
+		// The highlight is the box: one padding column on each side, dropped when the
+		// viewport cannot afford both columns and a visible character.
+		const sidePadding = viewportWidth >= 3 ? 1 : 0;
+		const truncatedLabel = truncateToWidth(label, viewportWidth - sidePadding * 2);
 		const labelWidth = visibleWidth(truncatedLabel);
-		const boxWidth = labelWidth + 4;
-		const leftPadding = Math.floor((viewportWidth - boxWidth) / 2);
-		const padding = " ".repeat(leftPadding);
-		const border = "─".repeat(labelWidth + 2);
+		if (labelWidth === 0) return [""];
 
-		return [
-			theme.fg("muted", `${padding}┌${border}┐`),
-			theme.fg("muted", `${padding}│ `) +
-				(labelWidth > 0 ? theme.fg("muted", hyperlink(truncatedLabel, TRANSCRIPT_JUMP_TO_END_URL)) : "") +
-				theme.fg("muted", " │"),
-			theme.fg("muted", `${padding}└${border}┘`),
-		];
-	}
+		const pad = " ".repeat(sidePadding);
+		const highlightWidth = labelWidth + sidePadding * 2;
+		const leftPadding = " ".repeat(Math.floor((viewportWidth - highlightWidth) / 2));
+		// `truncateToWidth` marks its ellipsis with a full SGR reset, which would punch a
+		// hole in the highlight; restore both colors after every reset it emits.
+		const restyled = truncatedLabel.replaceAll(
+			FULL_RESET,
+			`${FULL_RESET}${theme.getBgAnsi("selectedBg")}${theme.getFgAnsi("muted")}`,
+		);
+		const highlighted = theme.bg("selectedBg", theme.fg("muted", `${pad}${restyled}${pad}`));
 
-	private renderNarrow(label: string, width: number): string[] {
-		if (width === 0) return ["", "", ""];
-		if (width === 1) return [theme.fg("muted", "┌"), theme.fg("muted", "│"), theme.fg("muted", "└")];
-
-		const insideWidth = width - 2;
-		const truncatedLabel = truncateToWidth(label, insideWidth);
-		const labelWidth = visibleWidth(truncatedLabel);
-		const labelRow =
-			theme.fg("muted", "│") +
-			(labelWidth > 0 ? theme.fg("muted", hyperlink(truncatedLabel, TRANSCRIPT_JUMP_TO_END_URL)) : "") +
-			theme.fg("muted", `${" ".repeat(Math.max(0, insideWidth - labelWidth))}│`);
-		const border = `┌${"─".repeat(insideWidth)}┐`;
-		const bottom = `└${"─".repeat(insideWidth)}┘`;
-		return [theme.fg("muted", border), labelRow, theme.fg("muted", bottom)];
+		return [`${leftPadding}${hyperlink(highlighted, TRANSCRIPT_JUMP_TO_END_URL)}`];
 	}
 }

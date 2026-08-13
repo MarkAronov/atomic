@@ -314,7 +314,7 @@ describe("interactive TUI renderer", () => {
 			const scrolled = getFrame();
 			const scrolledDock = scrolled.root.children[1];
 			if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
-			expect(scrolledDock.rect.height).toBe(initialDock.rect.height + 3);
+			expect(scrolledDock.rect.height).toBe(initialDock.rect.height + 1);
 			expect(scrolledDock.rect.y).toBe(terminal.rows - scrolledDock.rect.height);
 			const scrolledDockLines = scrolled.lines.slice(
 				scrolledDock.rect.y,
