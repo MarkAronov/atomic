@@ -5,12 +5,20 @@ import {
 	TranscriptFollowIndicator,
 } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import "../src/modes/interactive/interactive-transcript-follow.ts";
-import { handleUrlActivation } from "../src/modes/interactive/interactive-tui.ts";
+import { createInteractiveTui, handleUrlActivation } from "../src/modes/interactive/interactive-tui.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { openBrowser } from "../src/utils/open-browser.ts";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+
+vi.mock("../src/utils/open-browser.ts", () => ({ openBrowser: vi.fn() }));
 
 beforeAll(() => initTheme("dark"));
 const OSC8_MARKER = "\x1b]8;;";
+
+function leadingSpaceCount(row: string): number {
+	return stripTerminalSequences(row).match(/^ */)?.[0].length ?? 0;
+}
 
 describe("TranscriptFollowIndicator", () => {
 	test("is hidden while the transcript follows its end", () => {
@@ -20,14 +28,21 @@ describe("TranscriptFollowIndicator", () => {
 	});
 
 	test("renders a centered linked three-row box with the live key label", () => {
-		const width = 80;
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "Ctrl+End" });
-		const rows = indicator.render(width);
 
-		expect(rows).toHaveLength(3);
-		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true);
-		expect(visibleWidth(rows[0]!)).toBe(visibleWidth(rows[2]!));
-		expect(visibleWidth(rows[1]!)).toBe(visibleWidth(rows[0]!));
+		for (const width of [80, 41]) {
+			const rows = indicator.render(width);
+			expect(rows).toHaveLength(3);
+			expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true);
+			const boxWidth = visibleWidth(stripTerminalSequences(rows[0]!).trimStart());
+			const expectedLeftPadding = Math.floor((width - boxWidth) / 2);
+			expect(leadingSpaceCount(rows[0]!)).toBe(expectedLeftPadding);
+			expect(leadingSpaceCount(rows[1]!)).toBe(expectedLeftPadding);
+			expect(visibleWidth(stripTerminalSequences(rows[1]!).trimStart())).toBe(boxWidth);
+			expect(visibleWidth(stripTerminalSequences(rows[2]!).trimStart())).toBe(boxWidth);
+		}
+
+		const rows = indicator.render(80);
 		expect(rows[0]).not.toContain(OSC8_MARKER);
 		expect(rows[2]).not.toContain(OSC8_MARKER);
 		expect(rows[1]).toContain(OSC8_MARKER);
@@ -92,6 +107,27 @@ describe("handleUrlActivation", () => {
 
 		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith("ATOMIC-UI://transcript/jump-to-end");
 		expect(openUrl).not.toHaveBeenCalled();
+	});
+
+	test("wires fullscreen URL activation to the browser and internal action callback", () => {
+		const onInternalUiAction = vi.fn();
+		const tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+		});
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		const browser = vi.mocked(openBrowser);
+		browser.mockClear();
+		openUrl("https://example.com");
+		expect(browser).toHaveBeenCalledExactlyOnceWith("https://example.com");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(browser).toHaveBeenCalledExactlyOnceWith("https://example.com");
 	});
 });
 

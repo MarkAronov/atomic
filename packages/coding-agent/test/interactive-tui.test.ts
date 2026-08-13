@@ -314,18 +314,34 @@ describe("interactive TUI renderer", () => {
 			const scrolled = getFrame();
 			const scrolledDock = scrolled.root.children[1];
 			if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
-			expect(scrolledDock.rect.height).toBeGreaterThanOrEqual(initialDock.rect.height);
+			expect(scrolledDock.rect.height).toBe(initialDock.rect.height + 3);
 			expect(scrolledDock.rect.y).toBe(terminal.rows - scrolledDock.rect.height);
-			expect(
-				scrolled.lines.slice(scrolledDock.rect.y, scrolledDock.rect.y + scrolledDock.rect.height).at(-1),
-			).toContain("footer");
+			const scrolledDockLines = scrolled.lines.slice(
+				scrolledDock.rect.y,
+				scrolledDock.rect.y + scrolledDock.rect.height,
+			);
+			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom"))).toBe(true);
+			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom") && line.includes("\x1b]8;;"))).toBe(
+				true,
+			);
+			expect(scrolledDockLines.at(-1)).toContain("footer");
+
+			context.jumpToTranscriptEnd();
+			tui.renderNow();
+			const jumped = getFrame();
+			const jumpedDock = jumped.root.children[1];
+			if (!jumpedDock) throw new Error("fullscreen dock disappeared after jumping to the transcript end");
+			expect(transcript.isFollowingEnd).toBe(true);
+			expect(jumpedDock.rect).toEqual(initialDock.rect);
+			const jumpedDockLines = jumped.lines.slice(jumpedDock.rect.y, jumpedDock.rect.y + jumpedDock.rect.height);
+			expect(jumpedDockLines.some((line) => line.includes("Jump to bottom"))).toBe(false);
 
 			terminal.resize(30, 8);
 			tui.renderNow();
 			const resized = getFrame();
 			const resizedDock = resized.root.children[1];
 			if (!resizedDock) throw new Error("fullscreen dock disappeared after resize");
-			expect(resizedDock.rect.height).toBeGreaterThanOrEqual(initialDock.rect.height);
+			expect(resizedDock.rect.height).toBe(initialDock.rect.height);
 			expect(resizedDock.rect.y).toBe(terminal.rows - resizedDock.rect.height);
 			expect(resized.lines.slice(resizedDock.rect.y, resizedDock.rect.y + resizedDock.rect.height).at(-1)).toContain(
 				"footer",
