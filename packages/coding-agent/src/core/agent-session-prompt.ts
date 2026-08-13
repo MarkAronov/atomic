@@ -297,6 +297,16 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 	// recovery turn ends the sequence instead of restarting it.
 	session._admittedQueuedMessageAwaitingReply = undefined;
 	if (admitted === undefined || session._disposed) return;
+	// An interrupt delivery already in flight aborts this reply and then starts its
+	// own turn, so continuing concurrently would reject the caller's prompt() with
+	// "Agent is already processing." Wait for it on the same boundary the resume
+	// path uses, then let the checks below re-read the transcript: a delivery that
+	// started its own turn changes the tail so they decline, while one that only
+	// joined a paused hold leaves the admitted message still waiting for its reply.
+	if (session._pendingInterruptDeliveries > 0) {
+		await session._interruptDeliveryQueue;
+		if (session._disposed) return;
+	}
 
 	const messages = session.agent.state.messages;
 	const reply = messages[messages.length - 1];
