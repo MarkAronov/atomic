@@ -404,6 +404,7 @@ export {
 	ThinkingSelectorComponent,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
+	TRANSCRIPT_JUMP_TO_END_URL,
 	TranscriptFollowIndicator,
 	TreeSelectorComponent,
 	truncateToVisualLines,

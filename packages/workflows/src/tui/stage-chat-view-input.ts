@@ -1,3 +1,5 @@
+import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+
 import { APP_ACTION, isKeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
@@ -83,7 +85,8 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 
 function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	if (!matchesAction(keybindings, data, TUI_ACTION.altScreenBottom)) return false;
+	if (data !== TRANSCRIPT_JUMP_TO_END_URL && !matchesAction(keybindings, data, TUI_ACTION.altScreenBottom))
+		return false;
 	ctx.chatHost.scrollToBottom();
 	return true;
 }

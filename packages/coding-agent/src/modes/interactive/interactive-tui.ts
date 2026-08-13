@@ -41,13 +41,32 @@ interface TuiAltScreenMouseInternals {
 }
 
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
+export function getFocusedOverlay(tui: InteractiveTui): Component | undefined {
+	const focused = tui.getFocusedComponent();
+	if (!focused) return undefined;
+	const internals = tui as unknown as Partial<TuiOverlayInternals>;
+	if (!Array.isArray(internals.overlayStack) || typeof internals.isOverlayVisible !== "function") return undefined;
+	const entry = internals.overlayStack.find((candidate) => candidate.component === focused);
+	return entry && internals.isOverlayVisible(entry) ? focused : undefined;
+}
+
+export function handleFocusedOverlayInternalUiAction(tui: InteractiveTui, url: string): InternalUiActionResult {
+	const overlay = getFocusedOverlay(tui);
+	const handleInput = overlay?.handleInput as
+		| ((data: string) => boolean | undefined | Promise<boolean | undefined>)
+		| undefined;
+	return handleInput?.call(overlay, url);
+}
+
+export type InternalUiActionResult = boolean | undefined | Promise<boolean | undefined>;
 
 export interface InteractiveTuiOptions {
 	showHardwareCursor: boolean;
 	logDirectory: string;
 	terminal?: Terminal;
 	onRightClickPaste?: () => void;
-	onInternalUiAction?: (url: string) => void;
+	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
+	onInternalUiAction?: (url: string) => InternalUiActionResult;
 	/**
 	 * Return false to let a focused overlay receive viewport input first.
 	 * Mouse input is deferred only while the focused component belongs to an
@@ -59,8 +78,33 @@ export interface InteractiveTuiOptions {
 }
 
 export interface UrlActivationHandlers {
-	onInternalUiAction?: (url: string) => void;
+	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
+	onInternalUiAction?: (url: string) => InternalUiActionResult;
 	openUrl: (url: string) => void;
+}
+
+function fallbackInternalUiAction(url: string, handlers: UrlActivationHandlers): void {
+	handlers.onInternalUiAction?.(url);
+}
+
+function routeInternalUiAction(url: string, handlers: UrlActivationHandlers): void {
+	let result: InternalUiActionResult;
+	try {
+		result = handlers.onOverlayInternalUiAction?.(url);
+	} catch {
+		fallbackInternalUiAction(url, handlers);
+		return;
+	}
+	if (result instanceof Promise) {
+		void result.then(
+			(handled) => {
+				if (handled !== true) fallbackInternalUiAction(url, handlers);
+			},
+			() => fallbackInternalUiAction(url, handlers),
+		);
+		return;
+	}
+	if (result !== true) fallbackInternalUiAction(url, handlers);
 }
 
 /** Route OSC 8 activation without allowing unknown internal URLs to escape to a browser. */
@@ -69,7 +113,7 @@ export function handleUrlActivation(url: string, handlers: UrlActivationHandlers
 	if (url.slice(0, internalUiScheme.length).toLowerCase() === internalUiScheme) {
 		const schemeEnd = url.indexOf(":");
 		const normalizedInternalUrl = `${url.slice(0, schemeEnd).toLowerCase()}${url.slice(schemeEnd)}`;
-		if (normalizedInternalUrl === TRANSCRIPT_JUMP_TO_END_URL) handlers.onInternalUiAction?.(url);
+		if (normalizedInternalUrl === TRANSCRIPT_JUMP_TO_END_URL) routeInternalUiAction(url, handlers);
 		return;
 	}
 
@@ -348,6 +392,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): Interactiv
 		{
 			openUrl: (url) =>
 				handleUrlActivation(url, {
+					onOverlayInternalUiAction: options.onOverlayInternalUiAction,
 					onInternalUiAction: options.onInternalUiAction,
 					openUrl: openBrowser,
 				}),

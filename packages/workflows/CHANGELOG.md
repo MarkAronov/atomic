@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed the stage-chat jump-to-bottom follow indicator remaining hidden in paused and read-only archive chats, while keeping their callout and instruction rows intact in tight overlays.
+- Fixed clicking the stage-chat jump-to-bottom indicator so its OSC-8 activation returns that stage chat to the live end instead of scrolling the host transcript ([#2370](https://github.com/bastani-inc/atomic/issues/2370)).
 
 ## [0.9.13-alpha.3] - 2026-08-13
 

@@ -84,7 +84,7 @@ The dedicated history actions always change history entries, regardless of the c
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions always use this fullscreen viewport for the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard.
+Interactive sessions always use this fullscreen viewport for the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler; the jump-to-bottom indicator's internal OSC 8 link returns the focused transcript surface to its live end, including an attached workflow stage chat. Dragging with the primary mouse button selects text and copies it to the clipboard.
 
 
 Fullscreen text selection comes from the installed pi-tui 0.84.1 renderer. Drag with the primary button to select characters; double-click selects a word and triple-click selects a line. Focus changes and non-drag clicks clear transient selection state, preventing a stale highlight from appearing. The renderer also reduces mouse tracking in tmux, Zellij, and GNU Screen.

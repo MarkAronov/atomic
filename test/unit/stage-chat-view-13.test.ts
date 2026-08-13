@@ -1,3 +1,5 @@
+import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+
 import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
@@ -498,6 +500,18 @@ describe("StageChatView", () => {
 		assert.equal(view.handleInput("\x1b[6~"), true);
 		view.render(96);
 		assert.equal(view._bodyScrollFromBottom, 0);
+		view.dispose();
+	});
+
+	test("the OSC-8 jump URL returns stage chat to its live end", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		view.handleInput("\x1b[5~");
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		assert.equal(view.handleInput(TRANSCRIPT_JUMP_TO_END_URL), true);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom/);
 		view.dispose();
 	});
 

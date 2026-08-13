@@ -1,4 +1,4 @@
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, type TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	TRANSCRIPT_JUMP_TO_END_URL,
@@ -6,7 +6,11 @@ import {
 } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-transcript-follow.ts";
-import { createInteractiveTui, handleUrlActivation } from "../src/modes/interactive/interactive-tui.ts";
+import {
+	createInteractiveTui,
+	handleFocusedOverlayInternalUiAction,
+	handleUrlActivation,
+} from "../src/modes/interactive/interactive-tui.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { openBrowser } from "../src/utils/open-browser.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
@@ -78,6 +82,71 @@ describe("handleUrlActivation", () => {
 
 		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
 		expect(openUrl).not.toHaveBeenCalled();
+	});
+
+	test("lets a focused overlay claim the jump before the host transcript", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => true);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({ render: () => [], invalidate: () => {}, handleInput: overlayInput });
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+
+		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+		overlay.hide();
+		tui.stop();
+	});
+
+	test("falls back to the host transcript when an overlay declines the jump", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => false);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({ render: () => [], invalidate: () => {}, handleInput: overlayInput });
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+
+		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		overlay.hide();
+		tui.stop();
+	});
+
+	test("waits for an asynchronous overlay claim before using the host fallback", async () => {
+		const onInternalUiAction = vi.fn();
+		let resolveClaim!: (handled: boolean) => void;
+		const claim = new Promise<boolean>((resolve) => {
+			resolveClaim = resolve;
+		});
+		handleUrlActivation(TRANSCRIPT_JUMP_TO_END_URL, {
+			onOverlayInternalUiAction: () => claim,
+			onInternalUiAction,
+			openUrl: vi.fn(),
+		});
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+
+		resolveClaim(true);
+		await claim;
+		await Promise.resolve();
+		expect(onInternalUiAction).not.toHaveBeenCalled();
 	});
 
 	test("opens non-internal URLs in the browser", () => {

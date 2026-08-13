@@ -44,6 +44,7 @@ async function registerIsolatedTests(): Promise<void> {
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
 		TranscriptFollowIndicator: TestComponent,
+		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
 		keyHint: (key: string) => key,
 		keyText: (key: string) => key,
 		rawKeyHint: (key: string) => key,

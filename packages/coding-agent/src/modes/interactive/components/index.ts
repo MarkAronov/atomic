@@ -62,7 +62,7 @@ export { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
-export { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
+export { TRANSCRIPT_JUMP_TO_END_URL, TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";
 export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";
