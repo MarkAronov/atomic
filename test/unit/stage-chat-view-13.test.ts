@@ -350,6 +350,27 @@ describe("StageChatView", () => {
 		assert.match(archive, /READ-ONLY SESSION/);
 		view.dispose();
 	});
+	test("keeps the follow indicator suppressed for a scrolled read-only prompt archive", async () => {
+		const { store, view } = await makeReadOnlyArchiveStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		const archivedStage = store.runs()[0]?.stages[0];
+		assert.ok(archivedStage);
+		store.recordStageEnd("run-1", { ...archivedStage, status: "running", endedAt: undefined });
+		const prompt = makePendingPrompt({ id: "archived-prompt", message: "Archived prompt question?" });
+		assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+		const promptedStage = store.runs()[0]?.stages[0];
+		assert.ok(promptedStage);
+		store.recordStageEnd("run-1", { ...promptedStage, status: "completed", endedAt: Date.now() });
+
+		const archived = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(archived, /Jump to bottom/);
+		assert.match(archived, /QUESTION ASKED/);
+		assert.match(archived, /Archived prompt question\?/);
+		view.dispose();
+	});
 	test("drops the read-only archive indicator before its callout rows in a tight viewport", async () => {
 		let rows = 16;
 		const { view } = await makeReadOnlyArchiveStageChatFixture(() => rows);
