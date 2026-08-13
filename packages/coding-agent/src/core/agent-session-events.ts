@@ -141,12 +141,18 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			const steeringIndex = this._steeringMessages.indexOf(messageText);
 			if (steeringIndex !== -1) {
 				this._steeringMessages.splice(steeringIndex, 1);
+				// The loop already polled this message out of the agent queue, so the
+				// pause hold can no longer reach it and Escape can no longer restore it
+				// to the editor. Record it so an interrupt that kills its reply before
+				// any output can still schedule that reply (issue #2362).
+				this._admittedQueuedMessageAwaitingReply = messageText;
 				this._emitQueueUpdate();
 			} else {
 				// Check follow-up queue
 				const followUpIndex = this._followUpMessages.indexOf(messageText);
 				if (followUpIndex !== -1) {
 					this._followUpMessages.splice(followUpIndex, 1);
+					this._admittedQueuedMessageAwaitingReply = messageText;
 					this._emitQueueUpdate();
 				}
 			}
