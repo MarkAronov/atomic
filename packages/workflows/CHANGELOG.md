@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.13-alpha.3] - 2026-08-13
+
 ### Changed
 
 - Workflow model fallback attempt metadata now includes per-attempt input/output tokens, cache reads/writes, provider-reported total cost, and meaningful assistant-turn counts when usage is available ([#2197](https://github.com/bastani-inc/atomic/issues/2197)).
