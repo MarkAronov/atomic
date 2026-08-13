@@ -392,6 +392,52 @@ describe("StageChatView", () => {
 		}
 		view.dispose();
 	});
+	test("hides the follow indicator after a live transcript resize clamps to the end", async () => {
+		let rows = 12;
+		const view = await makeScrollableStageChat(() => rows);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		rows = 200;
+		const grown = view.render(96).map(stripTerminalSequences);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.equal(grown.length, 200);
+		view.dispose();
+	});
+
+	test("hides the follow indicator after a paused transcript resize clamps to the end", async () => {
+		let rows = 12;
+		const { store, view } = await makeScrollableStageChatFixture(() => rows);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
+
+		rows = 200;
+		const grown = view.render(96).map(stripTerminalSequences);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.equal(grown.length, 200);
+		view.dispose();
+	});
+
+	test("hides the follow indicator after an archive transcript resize clamps to the end", async () => {
+		let rows = 12;
+		const { view } = await makeReadOnlyArchiveStageChatFixture(() => rows);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		rows = 200;
+		const grown = view.render(96).map(stripTerminalSequences);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.equal(grown.length, 200);
+		view.dispose();
+	});
+
 	test("uses and honors a remapped stage-chat jump-to-bottom binding", async () => {
 		const previousKeybindings = getKeybindings();
 		const keybindings = new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+e" });
