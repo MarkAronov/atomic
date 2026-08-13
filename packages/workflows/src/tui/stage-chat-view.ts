@@ -156,13 +156,9 @@ export class StageChatView implements Component, Focusable {
 		const visibleFooterLines = takeRows(footerLines, plan.footerRows);
 		const bodyBudget = plan.bodyRows;
 		if (blocked) this.chatHost.scrollToBottom();
-		const indicator = new TranscriptFollowIndicator({
-			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
-			keyLabel: () => keyText("tui.altScreen.bottom"),
-		});
-		const indicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
 
 		let bodyLines: string[];
+		let transcriptBodyActive = false;
 		if (bodyBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
@@ -174,10 +170,16 @@ export class StageChatView implements Component, Focusable {
 		} else if (readOnlyArchive) {
 			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage);
 		} else {
+			transcriptBodyActive = true;
 			bodyLines = this.chatHost.renderBody(w, bodyBudget);
 		}
+		const indicator = new TranscriptFollowIndicator({
+			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
+			keyLabel: () => keyText("tui.altScreen.bottom"),
+		});
+		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
 		const indicatorVisible = indicatorLines.length > 0;
-		const dropBodyRow = indicatorVisible && bodyLines.length >= bodyBudget;
+		const dropBodyRow = transcriptBodyActive && indicatorVisible && bodyLines.length >= bodyBudget;
 		const visibleBodyLines = bodyLines.slice(dropBodyRow ? 1 : 0, bodyBudget);
 
 		const lines = [

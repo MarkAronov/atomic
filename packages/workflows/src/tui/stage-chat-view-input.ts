@@ -1,4 +1,4 @@
-import { APP_ACTION, isKeybindingsLike, matchesAction } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
 import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
@@ -51,6 +51,10 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
 		return true;
 	}
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenBottom)) {
+		ctx.chatHost.scrollToBottom();
+		return true;
+	}
 	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
@@ -79,7 +83,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
 }
-
 function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;

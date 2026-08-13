@@ -44,6 +44,7 @@ export const APP_ACTION = {
 } as const;
 
 export const TUI_ACTION = {
+	altScreenBottom: "tui.altScreen.bottom",
 	editorCursorUp: "tui.editor.cursorUp",
 	editorCursorDown: "tui.editor.cursorDown",
 	editorCursorLeft: "tui.editor.cursorLeft",

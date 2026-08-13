@@ -1,5 +1,6 @@
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	assert,
 	createStore,
@@ -7,15 +8,17 @@ import {
 	fakeFooterAgentSession,
 	flush,
 	makeHandle,
+	makePendingPrompt,
 	makeTestTui,
 	StageChatView,
 	setupRun,
 } from "./stage-chat-view-helpers.js";
 
-async function makeScrollableStageChat(
+async function makeScrollableStageChatFixture(
 	rows: number | (() => number | undefined) = 12,
 	withFooter = false,
-): Promise<StageChatView> {
+	piKeybindings?: unknown,
+): Promise<{ store: ReturnType<typeof createStore>; view: StageChatView }> {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a", "pending");
 	const { handle } = withFooter ? makeHandle(undefined, [], "pending", fakeFooterAgentSession()) : makeHandle();
@@ -29,6 +32,7 @@ async function makeScrollableStageChat(
 		onDetach: () => {},
 		onClose: () => {},
 		piTui: makeTestTui(rows),
+		piKeybindings,
 		footerData: withFooter
 			? {
 					getGitBranch: () => "main",
@@ -44,7 +48,14 @@ async function makeScrollableStageChat(
 		await flush();
 		await flush();
 	}
-	return view;
+	return { store, view };
+}
+
+async function makeScrollableStageChat(
+	rows: number | (() => number | undefined) = 12,
+	withFooter = false,
+): Promise<StageChatView> {
+	return (await makeScrollableStageChatFixture(rows, withFooter)).view;
 }
 
 describe("StageChatView", () => {
@@ -204,6 +215,74 @@ describe("StageChatView", () => {
 		assert.equal(view._inputBuffer, before);
 		view.dispose();
 	});
+	test("hides the follow indicator and preserves the prompt card while awaiting input", async () => {
+		const { store, view } = await makeScrollableStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		assert.equal(
+			store.recordStagePendingPrompt("run-1", "stage-a", makePendingPrompt({ id: "scrolled-prompt" })),
+			true,
+		);
+		const scrolledPrompt = view.render(96).map(stripTerminalSequences);
+		assert.doesNotMatch(scrolledPrompt.join("\n"), /Jump to bottom/);
+
+		const { handle } = makeHandle();
+		const controlView = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(16),
+		});
+		const controlPrompt = controlView.render(96).map(stripTerminalSequences);
+		const controlBanner = controlPrompt.find((line) => line.includes("AWAITING INPUT"));
+		const scrolledBanner = scrolledPrompt.find((line) => line.includes("AWAITING INPUT"));
+		assert.ok(controlBanner);
+		assert.equal(scrolledBanner, controlBanner);
+		controlView.dispose();
+		view.dispose();
+	});
+
+	test("hides the follow indicator in paused stage chat", async () => {
+		const { store, view } = await makeScrollableStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
+
+		const paused = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(paused, /Jump to bottom/);
+		assert.match(paused, /PAUSED/);
+		view.dispose();
+	});
+
+	test("uses and honors a remapped stage-chat jump-to-bottom binding", async () => {
+		const previousKeybindings = getKeybindings();
+		const keybindings = new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+e" });
+		setKeybindings(keybindings);
+		let view: StageChatView | undefined;
+		try {
+			({ view } = await makeScrollableStageChatFixture(12, false, keybindings));
+			view.render(96);
+			assert.equal(view.handleInput("\x1b[5~"), true);
+			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
+			assert.match(scrolled, /Jump to bottom \(ctrl\+e\) ↓/);
+
+			assert.equal(view.handleInput("\x05"), true);
+			assert.equal(view._bodyScrollFromBottom, 0);
+			assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom/);
+		} finally {
+			view?.dispose();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
 	test("hides the follow indicator at the pristine live end without consuming a body row", async () => {
 		const view = await makeScrollableStageChat();
 		const bottom = view.render(96);
