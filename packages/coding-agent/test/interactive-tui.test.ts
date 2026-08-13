@@ -502,6 +502,7 @@ describe("InteractiveMode /copy confirmation", () => {
 		await copyCommandPrototype.handleCopyCommand.call(context);
 
 		expect(context.showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
+		expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 });
