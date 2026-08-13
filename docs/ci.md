@@ -269,23 +269,31 @@ carries its own `timeout-minutes`:
 | `cargo-xwin xwin cache xwin` | 8 min | 1.27× the worst measured full CRT/SDK download (6 m 19 s) |
 | `Build native binding`, plus one retry | `matrix.build_timeout_minutes` each | each attempt keeps the leg's measured p100 compile bound; a stall costs at most two bounds and the retry fails loudly if needed |
 
-The former blanket 15-minute job cap is replaced by per-leg caps that reserve
-the measured setup plus two bounded compile attempts. We measured setup from
-job start to `Build native binding` over six successful publishes
-(`31689424903`, `31634036246`, `31060235600`, `30892885915`, `30889823603`,
-`30835115933`). The cap arithmetic is `ceil(measured setup) + 2 x
-build_timeout_minutes`:
+The former blanket 15-minute job cap is replaced by per-leg caps. A cap has to
+contain every bounded recovery path the leg owns, not the time a green run
+happened to take: a cap sized on observed setup cancels the job part-way through
+the retry, which is the exact failure the retry exists to survive. Two steps are
+therefore reserved at their bound rather than at their measurement — both
+`setup-zig` attempts (2 + 2 min, Linux) and `cargo-xwin xwin cache xwin` (8 min,
+Windows, whose measured cost is its cache-miss path) — and every leg reserves one
+minute for `upload-artifact`, measured at 4 s or less.
 
-| Leg | Measured setup p100 | Build timeout | Cap arithmetic | Job cap |
-| --- | ---: | ---: | --- | ---: |
-| linux-x64-gnu | 46 s | 5 min | ceil(46s / 60)=1 + 2 x 5 = 11 | 11 min |
-| linux-arm64-gnu | 128 s | 5 min | ceil(128s / 60)=3 + 2 x 5 = 13 | 13 min |
-| linux-x64-musl | 107 s | 5 min | ceil(107s / 60)=2 + 2 x 5 = 12 | 12 min |
-| linux-arm64-musl | 142 s | 5 min | ceil(142s / 60)=3 + 2 x 5 = 13 | 13 min |
-| darwin-x64 | 98 s | 8 min | ceil(98s / 60)=2 + 2 x 8 = 18 | 18 min |
-| darwin-arm64 | 26 s | 5 min | ceil(26s / 60)=1 + 2 x 5 = 11 | 11 min |
-| win32-x64-msvc | 357 s | 5 min | ceil(357s / 60)=6 + 2 x 5 = 16 | 16 min |
-| win32-arm64-msvc | 384 s | 5 min | ceil(384s / 60)=7 + 2 x 5 = 17 | 17 min |
+We measured setup from job start to `Build native binding` over six successful
+publishes (`31689424903`, `31634036246`, `31060235600`, `30892885915`,
+`30889823603`, `30835115933`). The cap arithmetic is `ceil(measured setup minus
+the steps reserved at their bound) + those bounds + 2 x build_timeout_minutes +
+1 upload`:
+
+| Leg | Setup p100 (excl. reserved) | Reserved at bound | Build timeout | Cap arithmetic | Job cap |
+| --- | ---: | ---: | ---: | --- | ---: |
+| linux-x64-gnu | 46 − 18 = 28 s | zig 4 min | 5 min | 1 + 4 + 2 x 5 + 1 = 16 | 16 min |
+| linux-arm64-gnu | 128 − 8 = 120 s | zig 4 min | 5 min | 2 + 4 + 2 x 5 + 1 = 17 | 17 min |
+| linux-x64-musl | 107 − 3 = 104 s | zig 4 min | 5 min | 2 + 4 + 2 x 5 + 1 = 17 | 17 min |
+| linux-arm64-musl | 142 − 5 = 137 s | zig 4 min | 5 min | 3 + 4 + 2 x 5 + 1 = 18 | 18 min |
+| darwin-x64 | 98 s | — | 8 min | 2 + 2 x 8 + 1 = 19 | 19 min |
+| darwin-arm64 | 26 s | — | 5 min | 1 + 2 x 5 + 1 = 12 | 12 min |
+| win32-x64-msvc | 291 − 249 = 42 s | xwin 8 min | 5 min | 1 + 8 + 2 x 5 + 1 = 20 | 20 min |
+| win32-arm64-msvc | 384 − 343 = 41 s | xwin 8 min | 5 min | 1 + 8 + 2 x 5 + 1 = 20 | 20 min |
 
 `native-artifacts` sets an explicit `name:`, so these matrix columns do not
 rename its jobs. Re-measure before tightening any of them further, and never

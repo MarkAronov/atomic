@@ -484,19 +484,33 @@ test("each native leg declares its own measured job and compile budget", async (
 	);
 	assert.match(buildSteps[0] as string, /continue-on-error: true/u);
 	assert.doesNotMatch(buildSteps[1] as string, /continue-on-error/u);
-	const legs = [
+	const legMatches = [
 		...native.matchAll(/platform: (\w+), arch: (\w+),[^}]*timeout_minutes: (\d+), build_timeout_minutes: (\d+)/gu),
-	].map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
+	];
+	const legs = legMatches.map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
 	assert.deepEqual(legs, [
-		"linux x64 11/5",
-		"linux arm64 13/5",
-		"linux x64 12/5",
-		"linux arm64 13/5",
-		"darwin x64 18/8",
-		"darwin arm64 11/5",
-		"win32 x64 16/5",
-		"win32 arm64 17/5",
+		"linux x64 16/5",
+		"linux arm64 17/5",
+		"linux x64 17/5",
+		"linux arm64 18/5",
+		"darwin x64 19/8",
+		"darwin arm64 12/5",
+		"win32 x64 20/5",
+		"win32 arm64 20/5",
 	]);
+	// A cap sized on a green run's setup cancels the job mid-retry, which is the
+	// failure the retry exists to survive. Every leg must still contain the bounded
+	// recovery paths it owns: both zig attempts (linux), the CRT populate bound
+	// (win32), two compile attempts, and the artifact upload.
+	const RESERVED_BOUND_MINUTES: Record<string, number> = { linux: 2 + 2, win32: 8, darwin: 0 };
+	const UPLOAD_RESERVE_MINUTES = 1;
+	for (const [, platform, arch, job, build] of legMatches) {
+		const floor = (RESERVED_BOUND_MINUTES[platform as string] ?? 0) + 2 * Number(build) + UPLOAD_RESERVE_MINUTES;
+		assert.ok(
+			Number(job) >= floor,
+			`${platform} ${arch} job cap ${job} cannot contain its bounded recovery path (needs >= ${floor})`,
+		);
+	}
 	// No leg may fall back to the former blanket cap.
 	assert.doesNotMatch(native, /timeout-minutes: 15/u);
 });
