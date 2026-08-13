@@ -18,7 +18,11 @@ async function makeScrollableStageChatFixture(
 	rows: number | (() => number | undefined) = 12,
 	withFooter = false,
 	piKeybindings?: unknown,
-): Promise<{ store: ReturnType<typeof createStore>; view: StageChatView }> {
+): Promise<{
+	store: ReturnType<typeof createStore>;
+	view: StageChatView;
+	handle: ReturnType<typeof makeHandle>["handle"];
+}> {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a", "pending");
 	const { handle } = withFooter ? makeHandle(undefined, [], "pending", fakeFooterAgentSession()) : makeHandle();
@@ -48,7 +52,7 @@ async function makeScrollableStageChatFixture(
 		await flush();
 		await flush();
 	}
-	return { store, view };
+	return { store, view, handle };
 }
 
 async function makeScrollableStageChat(
@@ -56,6 +60,16 @@ async function makeScrollableStageChat(
 	withFooter = false,
 ): Promise<StageChatView> {
 	return (await makeScrollableStageChatFixture(rows, withFooter)).view;
+}
+async function makeReadOnlyArchiveStageChatFixture(
+	rows: number | (() => number | undefined) = 12,
+): Promise<Awaited<ReturnType<typeof makeScrollableStageChatFixture>>> {
+	const fixture = await makeScrollableStageChatFixture(rows);
+	const stage = fixture.store.runs()[0]?.stages[0];
+	assert.ok(stage);
+	fixture.store.recordStageEnd("run-1", { ...stage, status: "completed", endedAt: Date.now() });
+	Object.defineProperty(fixture.handle, "isDisposed", { value: true });
+	return fixture;
 }
 
 describe("StageChatView", () => {
@@ -249,7 +263,19 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("hides the follow indicator in paused stage chat", async () => {
+	test("keeps the follow indicator suppressed in a blocked stage chat", async () => {
+		const { store, view } = await makeScrollableStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.equal(store.recordStageBlocked("run-1", "stage-a", "upstream-stage"), true);
+
+		const blocked = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(blocked, /Jump to bottom/);
+		assert.match(blocked, /BLOCKED/);
+		view.dispose();
+	});
+	test("shows the follow indicator in paused stage chat when scrolled", async () => {
 		const { store, view } = await makeScrollableStageChatFixture(16);
 		view.render(96);
 		assert.equal(view.handleInput("\x1b[5~"), true);
@@ -257,8 +283,158 @@ describe("StageChatView", () => {
 		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
 
 		const paused = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.match(paused, /Jump to bottom \(end\) ↓/);
+		assert.match(paused, /PAUSED/);
+		assert.equal(view.handleInput("\x1b[F"), true);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to bottom/);
+		view.dispose();
+	});
+	test("drops the paused indicator before its callout rows in a tight viewport", async () => {
+		let rows = 16;
+		const { store, view } = await makeScrollableStageChatFixture(() => rows);
+		view.render(96);
+		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
+		const control = view.render(96).map(stripTerminalSequences);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		rows = 9;
+
+		const tight = view.render(96).map(stripTerminalSequences);
+		assert.doesNotMatch(tight.join("\n"), /Jump to bottom/);
+		assert.match(tight.join("\n"), /PAUSED/);
+		assert.match(tight.join("\n"), /This workflow stage is paused\./);
+		assert.equal(tight.length, 9);
+		for (const marker of ["PAUSED", "This workflow stage is paused."]) {
+			assert.equal(
+				tight.find((line) => line.includes(marker)),
+				control.find((line) => line.includes(marker)),
+			);
+		}
+		view.dispose();
+	});
+
+	test("hides the follow indicator at the paused live end", async () => {
+		const { store, view } = await makeScrollableStageChatFixture(16);
+		view.render(96);
+		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
+
+		const paused = view.render(96).map(stripTerminalSequences).join("\n");
 		assert.doesNotMatch(paused, /Jump to bottom/);
 		assert.match(paused, /PAUSED/);
+		view.dispose();
+	});
+
+	test("shows the follow indicator in a read-only archive when scrolled and returns on the bound key", async () => {
+		const { view } = await makeReadOnlyArchiveStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		const scrolled = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.match(scrolled, /Jump to bottom \(end\) ↓/);
+		assert.match(scrolled, /READ-ONLY SESSION/);
+
+		assert.equal(view.handleInput("\x1b[F"), true);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to bottom/);
+		view.dispose();
+	});
+
+	test("hides the follow indicator at the read-only archive live end", async () => {
+		const { view } = await makeReadOnlyArchiveStageChatFixture(16);
+		view.render(96);
+
+		const archive = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(archive, /Jump to bottom/);
+		assert.match(archive, /READ-ONLY SESSION/);
+		view.dispose();
+	});
+	test("keeps the follow indicator suppressed for a scrolled read-only prompt archive", async () => {
+		const { store, view } = await makeReadOnlyArchiveStageChatFixture(16);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		const archivedStage = store.runs()[0]?.stages[0];
+		assert.ok(archivedStage);
+		store.recordStageEnd("run-1", { ...archivedStage, status: "running", endedAt: undefined });
+		const prompt = makePendingPrompt({ id: "archived-prompt", message: "Archived prompt question?" });
+		assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+		const promptedStage = store.runs()[0]?.stages[0];
+		assert.ok(promptedStage);
+		store.recordStageEnd("run-1", { ...promptedStage, status: "completed", endedAt: Date.now() });
+
+		const archived = view.render(96).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(archived, /Jump to bottom/);
+		assert.match(archived, /QUESTION ASKED/);
+		assert.match(archived, /Archived prompt question\?/);
+		view.dispose();
+	});
+	test("drops the read-only archive indicator before its callout rows in a tight viewport", async () => {
+		let rows = 16;
+		const { view } = await makeReadOnlyArchiveStageChatFixture(() => rows);
+		view.render(96);
+		const control = view.render(96).map(stripTerminalSequences);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		rows = 7;
+
+		const tight = view.render(96).map(stripTerminalSequences);
+		assert.doesNotMatch(tight.join("\n"), /Jump to bottom/);
+		assert.match(tight.join("\n"), /READ-ONLY SESSION/);
+		assert.match(tight.join("\n"), /This node is no longer attached/);
+		assert.equal(tight.length, 7);
+		for (const marker of ["READ-ONLY SESSION", "This node is no longer attached"]) {
+			assert.equal(
+				tight.find((line) => line.includes(marker)),
+				control.find((line) => line.includes(marker)),
+			);
+		}
+		view.dispose();
+	});
+	test("hides the follow indicator after a live transcript resize clamps to the end", async () => {
+		let rows = 12;
+		const view = await makeScrollableStageChat(() => rows);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		rows = 200;
+		const grown = view.render(96).map(stripTerminalSequences);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.equal(grown.length, 200);
+		view.dispose();
+	});
+
+	test("hides the follow indicator after a paused transcript resize clamps to the end", async () => {
+		let rows = 12;
+		const { store, view } = await makeScrollableStageChatFixture(() => rows);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
+
+		rows = 200;
+		const grown = view.render(96).map(stripTerminalSequences);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.equal(grown.length, 200);
+		view.dispose();
+	});
+
+	test("hides the follow indicator after an archive transcript resize clamps to the end", async () => {
+		let rows = 12;
+		const { view } = await makeReadOnlyArchiveStageChatFixture(() => rows);
+		view.render(96);
+		assert.equal(view.handleInput("\x1b[5~"), true);
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		rows = 200;
+		const grown = view.render(96).map(stripTerminalSequences);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.equal(grown.length, 200);
 		view.dispose();
 	});
 

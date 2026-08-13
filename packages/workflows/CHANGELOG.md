@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added the shared "Jump to bottom" follow indicator to workflow stage chat when its transcript is scrolled away from the live end, while preserving composer and footer rows in tight overlays.
 
+### Fixed
+
+- Fixed the stage-chat jump-to-bottom follow indicator remaining hidden in paused and read-only archive chats, while keeping their callout and instruction rows intact in tight overlays.
+
 ## [0.9.13-alpha.3] - 2026-08-13
 
 ### Changed
