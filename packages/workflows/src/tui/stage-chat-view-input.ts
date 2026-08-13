@@ -51,10 +51,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
 		return true;
 	}
-	if (matchesAction(keybindings, data, TUI_ACTION.altScreenBottom)) {
-		ctx.chatHost.scrollToBottom();
-		return true;
-	}
+	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
@@ -83,6 +80,13 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
 }
+
+function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	if (!matchesAction(keybindings, data, TUI_ACTION.altScreenBottom)) return false;
+	ctx.chatHost.scrollToBottom();
+	return true;
+}
 function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;
@@ -110,6 +114,10 @@ function handleMountedCustomUiInput(ctx: StageChatViewContext, data: string): bo
 	}
 	// Let scroll input reach the transcript so history stays scrollable while the
 	// question is shown, matching the standalone ask_user_question tool.
+	if (handleStageChatJumpToBottom(ctx, data)) {
+		ctx.requestRender?.();
+		return true;
+	}
 	if (ctx.chatHost.handleScrollInput(data)) {
 		ctx.requestRender?.();
 		return true;
