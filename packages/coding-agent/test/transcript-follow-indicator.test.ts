@@ -95,7 +95,12 @@ describe("handleUrlActivation", () => {
 			onInternalUiAction,
 			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
 		}) as TuiAltScreen;
-		const overlay = tui.showOverlay({ render: () => [], invalidate: () => {}, handleInput: overlayInput });
+		const overlay = tui.showOverlay({
+			render: () => [],
+			invalidate: () => {},
+			handleInput: overlayInput,
+			handlesInternalUiAction: true,
+		});
 		const openUrl = Reflect.get(tui, "openUrl");
 		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
 
@@ -118,13 +123,41 @@ describe("handleUrlActivation", () => {
 			onInternalUiAction,
 			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
 		}) as TuiAltScreen;
-		const overlay = tui.showOverlay({ render: () => [], invalidate: () => {}, handleInput: overlayInput });
+		const overlay = tui.showOverlay({
+			render: () => [],
+			invalidate: () => {},
+			handleInput: overlayInput,
+			handlesInternalUiAction: true,
+		});
 		const openUrl = Reflect.get(tui, "openUrl");
 		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
 
 		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
 
 		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		overlay.hide();
+		tui.stop();
+	});
+
+	test("does not offer the jump to an overlay that did not opt in", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => true);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({ render: () => [], invalidate: () => {}, handleInput: overlayInput });
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+
+		expect(overlayInput).not.toHaveBeenCalled();
 		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
 		overlay.hide();
 		tui.stop();

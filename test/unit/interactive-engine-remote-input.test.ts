@@ -646,22 +646,25 @@ test("isolated stage-chat OSC-8 activation returns the remote chat to its live e
 	setupRun(store, "run-1", "stage-a");
 	const { handle } = makeHandle();
 	let stageView: StageChatView | undefined;
-	void bridge.child.custom((_tui, _theme, keybindings) => {
-		const view = new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(12),
-			piKeybindings: keybindings,
-		});
-		stageView = view;
-		return view;
-	});
+	void bridge.child.custom(
+		(_tui, _theme, keybindings) => {
+			const view = new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "test-wf",
+				handle,
+				onDetach: () => {},
+				onClose: () => {},
+				piTui: makeTestTui(12),
+				piKeybindings: keybindings,
+			});
+			stageView = view;
+			return view;
+		},
+		{ overlay: true, handlesInternalUiAction: true },
+	);
 	await flush(8);
 	const host = bridge.hostComponent;
 	assert.ok(host, "remote stage chat did not mount on the host");
@@ -691,6 +694,52 @@ test("isolated stage-chat OSC-8 activation returns the remote chat to its live e
 
 		assert.equal(stageView._bodyScrollFromBottom, 0, "remote stage chat did not claim the URL activation");
 		assert.equal(hostFallbacks, 0, "claimed remote activation also jumped the host transcript");
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+
+test("isolated non-opted-in overlay leaves the jump URL on the host transcript", async () => {
+	let tui: TuiAltScreen | undefined;
+	let hostFallbacks = 0;
+	const remoteInputs: string[] = [];
+	const bridge = makeBridge({
+		fullscreen: true,
+		onOverlayInternalUiAction: (url) => (tui ? handleFocusedOverlayInternalUiAction(tui, url) : undefined),
+		onInternalUiAction: () => {
+			hostFallbacks += 1;
+		},
+	});
+	tui = bridge.tui;
+	assert.ok(tui, "fullscreen renderer did not mount");
+	void bridge.child.custom(
+		() => ({
+			render: () => ["remote"],
+			handleInput: (data: string) => {
+				remoteInputs.push(data);
+				return true;
+			},
+			invalidate: () => {},
+		}),
+		{ overlay: true },
+	);
+	await flush(8);
+	const host = bridge.hostComponent;
+	assert.ok(host, "remote component did not mount on the host");
+
+	tui.setLayoutRoot(new Text("host transcript"));
+	const overlay = tui.showOverlay(host, { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 });
+	tui.start();
+	tui.renderNow();
+	try {
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+		await flush(8);
+
+		assert.deepEqual(remoteInputs, []);
+		assert.equal(hostFallbacks, 1);
 	} finally {
 		overlay.hide();
 		tui.stop();

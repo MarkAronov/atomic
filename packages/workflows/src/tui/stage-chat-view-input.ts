@@ -20,6 +20,7 @@ import { PROMPT_SCROLL_STEP_ROWS, type StageChatViewContext } from "./stage-chat
 import { Key, matchesKey } from "./text-helpers.js";
 
 export function handleStageChatInput(ctx: StageChatViewContext, data: string): boolean {
+	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	// Only the default physical Ctrl+T belongs to the host thinking action. A
 	// user remap may reuse an editor key, so let that key reach the composer.

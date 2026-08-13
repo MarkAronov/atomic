@@ -16,6 +16,10 @@ interface TuiOverlayEntry {
 	preFocus: Component | null;
 }
 
+interface InternalUiActionOverlay extends Component {
+	handlesInternalUiAction?: boolean;
+}
+
 type TuiOverlayFocusRestore =
 	| { status: "inactive" }
 	| { status: "eligible"; overlay: TuiOverlayEntry }
@@ -52,7 +56,8 @@ export function getFocusedOverlay(tui: InteractiveTui): Component | undefined {
 
 export function handleFocusedOverlayInternalUiAction(tui: InteractiveTui, url: string): InternalUiActionResult {
 	const overlay = getFocusedOverlay(tui);
-	const handleInput = overlay?.handleInput as
+	if (!overlay || (overlay as InternalUiActionOverlay).handlesInternalUiAction !== true) return undefined;
+	const handleInput = overlay.handleInput as
 		| ((data: string) => boolean | undefined | Promise<boolean | undefined>)
 		| undefined;
 	return handleInput?.call(overlay, url);

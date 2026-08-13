@@ -222,6 +222,7 @@ declare module "./interactive-mode-base.ts" {
 			options?: {
 				overlay?: boolean;
 				deferInlineCustomUiFocus?: boolean;
+				handlesInternalUiAction?: boolean;
 				signal?: AbortSignal;
 				overlayOptions?: OverlayOptions | (() => OverlayOptions);
 				onHandle?: (handle: OverlayHandle) => void;
