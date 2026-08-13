@@ -38,6 +38,7 @@ export function renderReadOnlyArchiveBody(
 	width: number,
 	budget: number,
 	stage: StageSnapshot | undefined,
+	indicatorLines: readonly string[] = [],
 ): string[] {
 	if (stage?.promptFootprint) {
 		return renderReadOnlyPromptArchiveBody(ctx, width, budget, stage);
@@ -69,8 +70,11 @@ export function renderReadOnlyArchiveBody(
 		).render(width),
 	);
 	const transcriptBudget = Math.max(0, budget - callout.length);
-	const lines = transcriptBudget > 0 ? ctx.chatHost.renderBody(width, transcriptBudget) : [];
-	lines.push(...callout);
+	const visibleIndicatorLines =
+		indicatorLines.length > 0 && transcriptBudget > indicatorLines.length ? indicatorLines : [];
+	const transcriptRows = transcriptBudget - visibleIndicatorLines.length;
+	const lines = transcriptRows > 0 ? ctx.chatHost.renderBody(width, transcriptRows) : [];
+	lines.push(...visibleIndicatorLines, ...callout);
 	while (lines.length < budget) lines.push(blankLine(width));
 	if (lines.length > budget) lines.length = budget;
 	return lines;
@@ -163,7 +167,12 @@ function formatReadOnlyPromptAnswer(value: unknown, kind: PendingPrompt["kind"])
 	}
 }
 
-export function renderPausedBody(ctx: StageChatViewContext, width: number, budget: number): string[] {
+export function renderPausedBody(
+	ctx: StageChatViewContext,
+	width: number,
+	budget: number,
+	indicatorLines: readonly string[] = [],
+): string[] {
 	const t = ctx.theme;
 	const callout: string[] = [];
 	callout.push(blankLine(width));
@@ -176,10 +185,13 @@ export function renderPausedBody(ctx: StageChatViewContext, width: number, budge
 		).render(width),
 	);
 
-	const calloutRows = Math.min(callout.length, Math.max(0, budget - 1));
-	const transcriptBudget = Math.max(1, budget - calloutRows);
-	const lines = ctx.chatHost.renderBody(width, transcriptBudget);
-	lines.push(...callout.slice(0, calloutRows));
+	const calloutRows = Math.min(callout.length, Math.max(0, budget));
+	const transcriptBudget = Math.max(0, budget - calloutRows);
+	const visibleIndicatorLines =
+		indicatorLines.length > 0 && transcriptBudget > indicatorLines.length ? indicatorLines : [];
+	const transcriptRows = transcriptBudget - visibleIndicatorLines.length;
+	const lines = transcriptRows > 0 ? ctx.chatHost.renderBody(width, transcriptRows) : [];
+	lines.push(...visibleIndicatorLines, ...callout.slice(0, calloutRows));
 	while (lines.length < budget) lines.push(blankLine(width));
 	if (lines.length > budget) lines.length = budget;
 	return lines;
