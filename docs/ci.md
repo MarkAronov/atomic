@@ -243,6 +243,8 @@ The build job downloads the eight same-run bindings, generates the eight platfor
 
 `native-artifacts` compiles for 20–30 s on Linux and Windows. Everything else in
 its budget is a third-party download, and two releases have been damaged by one.
+The native compile now has one bounded retry: the first attempt is allowed to
+finish with an error so the retry can run, while a second failure remains fatal.
 
 | Release | Run | Leg | Stall |
 | --- | --- | --- | --- |
@@ -255,8 +257,8 @@ stalled mirror was the job budget.
 
 **Step bounds are the stall detector; job caps are only hang detectors.** A job
 cap cannot distinguish a stall from slow work, and cancelling a job silently
-skips every job that `needs` it. Each acquisition step therefore carries its own
-`timeout-minutes`:
+skips every job that `needs` it. Each acquisition or compile attempt therefore
+carries its own `timeout-minutes`:
 
 | Step | Bound | Basis |
 | --- | --- | --- |
@@ -265,19 +267,25 @@ skips every job that `needs` it. Each acquisition step therefore carries its own
 | `taiki-e/install-action` | 3 min | |
 | `apt-get` LLVM install | 5 min | |
 | `cargo-xwin xwin cache xwin` | 8 min | 1.27× the worst measured full CRT/SDK download (6 m 19 s) |
-| `Build native binding` | `matrix.build_timeout_minutes` | that leg's measured p100 compile × ≥1.4 |
+| `Build native binding`, plus one retry | `matrix.build_timeout_minutes` each | each attempt keeps the leg's measured p100 compile bound; a stall costs at most two bounds and the retry fails loudly if needed |
 
-Job caps replace the former blanket `timeout-minutes: 15`, which was 16× the
-real work of the fastest leg and 2× that of the slowest:
+The former blanket 15-minute job cap is replaced by per-leg caps that reserve
+the measured setup plus two bounded compile attempts. We measured setup from
+job start to `Build native binding` over six successful publishes
+(`31689424903`, `31634036246`, `31060235600`, `30892885915`, `30889823603`,
+`30835115933`). The cap arithmetic is `ceil(measured setup) + 2 x
+build_timeout_minutes`:
 
-| Leg | Healthy p100 | Cap |
-| --- | --- | --- |
-| linux x64 | 107 s | 7 min |
-| linux arm64 | 233 s | 8 min |
-| darwin x64 | 387 s | 9 min |
-| darwin arm64 | 61 s after the checkout change | 5 min |
-| win32 x64 | 351 s | 10 min |
-| win32 arm64 | 443 s | 10 min |
+| Leg | Measured setup p100 | Build timeout | Cap arithmetic | Job cap |
+| --- | ---: | ---: | --- | ---: |
+| linux-x64-gnu | 46 s | 5 min | ceil(46s / 60)=1 + 2 x 5 = 11 | 11 min |
+| linux-arm64-gnu | 128 s | 5 min | ceil(128s / 60)=3 + 2 x 5 = 13 | 13 min |
+| linux-x64-musl | 107 s | 5 min | ceil(107s / 60)=2 + 2 x 5 = 12 | 12 min |
+| linux-arm64-musl | 142 s | 5 min | ceil(142s / 60)=3 + 2 x 5 = 13 | 13 min |
+| darwin-x64 | 98 s | 8 min | ceil(98s / 60)=2 + 2 x 8 = 18 | 18 min |
+| darwin-arm64 | 26 s | 5 min | ceil(26s / 60)=1 + 2 x 5 = 11 | 11 min |
+| win32-x64-msvc | 357 s | 5 min | ceil(357s / 60)=6 + 2 x 5 = 16 | 16 min |
+| win32-arm64-msvc | 384 s | 5 min | ceil(384s / 60)=7 + 2 x 5 = 17 | 17 min |
 
 `native-artifacts` sets an explicit `name:`, so these matrix columns do not
 rename its jobs. Re-measure before tightening any of them further, and never
