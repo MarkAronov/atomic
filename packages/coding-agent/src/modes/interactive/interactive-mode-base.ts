@@ -495,6 +495,7 @@ export class InteractiveModeBase {
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
+			onInternalUiAction: () => this.jumpToTranscriptEnd(),
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());

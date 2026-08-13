@@ -1,0 +1,116 @@
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { beforeAll, describe, expect, test, vi } from "vitest";
+import {
+	TRANSCRIPT_JUMP_TO_END_URL,
+	TranscriptFollowIndicator,
+} from "../src/modes/interactive/components/transcript-follow-indicator.ts";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import "../src/modes/interactive/interactive-transcript-follow.ts";
+import { handleUrlActivation } from "../src/modes/interactive/interactive-tui.ts";
+
+beforeAll(() => initTheme("dark"));
+const OSC8_MARKER = "\x1b]8;;";
+
+describe("TranscriptFollowIndicator", () => {
+	test("is hidden while the transcript follows its end", () => {
+		const indicator = new TranscriptFollowIndicator({ isFollowing: () => true, keyLabel: () => "End" });
+
+		expect(indicator.render(80)).toEqual([]);
+	});
+
+	test("renders a centered linked three-row box with the live key label", () => {
+		const width = 80;
+		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "Ctrl+End" });
+		const rows = indicator.render(width);
+
+		expect(rows).toHaveLength(3);
+		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true);
+		expect(visibleWidth(rows[0]!)).toBe(visibleWidth(rows[2]!));
+		expect(visibleWidth(rows[1]!)).toBe(visibleWidth(rows[0]!));
+		expect(rows[0]).not.toContain(OSC8_MARKER);
+		expect(rows[2]).not.toContain(OSC8_MARKER);
+		expect(rows[1]).toContain(OSC8_MARKER);
+		expect(rows[1]).toContain(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(rows[1]).toContain("Ctrl+End");
+		expect(rows[0]).toContain("┌");
+		expect(rows[2]).toContain("└");
+	});
+
+	test("truncates every row to a narrow viewport and omits an empty key suffix", () => {
+		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "" });
+		const rows = indicator.render(8);
+		expect(rows).toHaveLength(3);
+		expect(rows.every((row) => visibleWidth(row) <= 8)).toBe(true);
+		expect(stripTerminalSequences(rows[1]!)).toContain("J");
+		expect(rows[1]).not.toContain("()");
+
+		for (const width of [0, 1, 2, 3, 4]) {
+			const narrowRows = indicator.render(width);
+			expect(narrowRows).toHaveLength(3);
+			expect(narrowRows.every((row) => visibleWidth(row) <= width)).toBe(true);
+		}
+	});
+});
+
+describe("handleUrlActivation", () => {
+	test("routes the transcript jump URL internally without opening a browser", () => {
+		const onInternalUiAction = vi.fn();
+		const openUrl = vi.fn();
+
+		handleUrlActivation(TRANSCRIPT_JUMP_TO_END_URL, { onInternalUiAction, openUrl });
+
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(openUrl).not.toHaveBeenCalled();
+	});
+
+	test("opens non-internal URLs in the browser", () => {
+		const onInternalUiAction = vi.fn();
+		const openUrl = vi.fn();
+
+		handleUrlActivation("https://example.com", { onInternalUiAction, openUrl });
+
+		expect(openUrl).toHaveBeenCalledExactlyOnceWith("https://example.com");
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+	});
+
+	test("drops unknown atomic-ui URLs", () => {
+		const onInternalUiAction = vi.fn();
+		const openUrl = vi.fn();
+
+		handleUrlActivation("atomic-ui://transcript/unknown", { onInternalUiAction, openUrl });
+
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+		expect(openUrl).not.toHaveBeenCalled();
+	});
+
+	test("accepts case-insensitive internal schemes", () => {
+		const onInternalUiAction = vi.fn();
+		const openUrl = vi.fn();
+
+		handleUrlActivation("ATOMIC-UI://transcript/jump-to-end", { onInternalUiAction, openUrl });
+
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith("ATOMIC-UI://transcript/jump-to-end");
+		expect(openUrl).not.toHaveBeenCalled();
+	});
+});
+
+describe("jumpToTranscriptEnd", () => {
+	test("is safe without a transcript viewport and remains idempotent", () => {
+		const requestRender = vi.fn();
+		const context = {
+			transcriptScrollView: undefined,
+			ui: { requestRender },
+		};
+
+		expect(() => InteractiveModeBase.prototype.jumpToTranscriptEnd.call(context as never)).not.toThrow();
+		const scrollToEnd = vi.fn();
+		context.transcriptScrollView = { scrollToEnd } as never;
+
+		InteractiveModeBase.prototype.jumpToTranscriptEnd.call(context as never);
+		InteractiveModeBase.prototype.jumpToTranscriptEnd.call(context as never);
+
+		expect(scrollToEnd).toHaveBeenCalledTimes(2);
+		expect(requestRender).toHaveBeenCalledTimes(3);
+	});
+});

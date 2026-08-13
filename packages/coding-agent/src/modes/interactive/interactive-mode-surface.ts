@@ -362,6 +362,7 @@ declare module "./interactive-mode-base.ts" {
 		handleChangelogCommand(): void;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
+		jumpToTranscriptEnd(): void;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
 		handleDebugCommand(): void;

@@ -29,6 +29,7 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 		}
 
 		const dockChildren = [
+			(context.fullscreenLayoutRoot.children[1] as StackLike).children[0],
 			context.pendingMessagesContainer,
 			context.statusContainer,
 			context.widgetContainerAbove,
@@ -37,7 +38,16 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 			context.footerContainer,
 			context.widgetContainerBelow,
 		];
-		const flatMountOrder = [context.documentContainer, ...dockChildren];
+		const flatMountOrder = [
+			context.documentContainer,
+			context.pendingMessagesContainer,
+			context.statusContainer,
+			context.widgetContainerAbove,
+			context.usageMeter,
+			context.editorContainer,
+			context.footerContainer,
+			context.widgetContainerBelow,
+		];
 
 		// These are production components, not a hand-built test root. Their
 		// identities and order catch wiring changes before rendering.
