@@ -83,23 +83,39 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # timeout_minutes caps the job; build_timeout_minutes caps the compile step.
+        # timeout_minutes caps the job; build_timeout_minutes caps each compile attempt.
+        # A cap must contain every bounded recovery path, not the times a green run happened
+        # to take: reserving only observed setup cancels the job mid-retry, which is the
+        # failure this retry exists to survive. Each cap is therefore
+        #   ceil(measured p100 setup, excluding steps reserved at their bound)
+        #   + those steps' bounds + 2 x build_timeout_minutes + 1 upload.
+        # Reserved at their bound: both zig attempts (2 + 2, linux) and the MSVC CRT
+        # populate step (8, win32) whose measured cost is its cache-miss path.
+        # Upload is measured at <= 4s across legs and reserved at 1 minute.
+        # linux-x64-gnu: ceil((46-18)s / 60)=1 + 4 + 2 x 5 + 1 = 16
+        # linux-arm64-gnu: ceil((128-8)s / 60)=2 + 4 + 2 x 5 + 1 = 17
+        # linux-x64-musl: ceil((107-3)s / 60)=2 + 4 + 2 x 5 + 1 = 17
+        # linux-arm64-musl: ceil((142-5)s / 60)=3 + 4 + 2 x 5 + 1 = 18
+        # darwin-x64: ceil(98s / 60)=2 + 2 x 8 + 1 = 19
+        # darwin-arm64: ceil(26s / 60)=1 + 2 x 5 + 1 = 12
+        # win32-x64-msvc: ceil((291-249)s / 60)=1 + 8 + 2 x 5 + 1 = 20
+        # win32-arm64-msvc: ceil((384-343)s / 60)=1 + 8 + 2 x 5 + 1 = 20
         # `slug` is the napi platform id: it names the .node file, the npm leaf, and
         # this leg's artifact, so two legs that share platform+arch (glibc and musl
         # Linux) can never collide on an artifact name.
         include:
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, slug: linux-x64-gnu, target: x86_64-unknown-linux-gnu, timeout_minutes: 7, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, slug: linux-arm64-gnu, target: aarch64-unknown-linux-gnu, timeout_minutes: 8, build_timeout_minutes: 5 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, slug: linux-x64-gnu, target: x86_64-unknown-linux-gnu, timeout_minutes: 16, build_timeout_minutes: 5 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, slug: linux-arm64-gnu, target: aarch64-unknown-linux-gnu, timeout_minutes: 17, build_timeout_minutes: 5 }
           # musl legs reuse the same zig toolchain; @napi-rs/cli adds
           # `-C target-feature=-crt-static` for a musl ABI, which is what keeps the
           # produced .node a dlopen-able shared object instead of a static-CRT blob.
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, slug: linux-x64-musl, target: x86_64-unknown-linux-musl, timeout_minutes: 7, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, slug: linux-arm64-musl, target: aarch64-unknown-linux-musl, timeout_minutes: 8, build_timeout_minutes: 5 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, slug: linux-x64-musl, target: x86_64-unknown-linux-musl, timeout_minutes: 17, build_timeout_minutes: 5 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, slug: linux-arm64-musl, target: aarch64-unknown-linux-musl, timeout_minutes: 18, build_timeout_minutes: 5 }
           # Blacksmith macOS is Apple Silicon only, so darwin x64 stays GitHub-hosted.
-          - { runner: macos-26-intel, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 9, build_timeout_minutes: 8 }
-          - { runner: blacksmith-6vcpu-macos-26, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 5, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: x64, slug: win32-x64-msvc, target: x86_64-pc-windows-msvc, timeout_minutes: 10, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: arm64, slug: win32-arm64-msvc, target: aarch64-pc-windows-msvc, timeout_minutes: 10, build_timeout_minutes: 5 }
+          - { runner: macos-26-intel, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
+          - { runner: blacksmith-6vcpu-macos-26, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: x64, slug: win32-x64-msvc, target: x86_64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: arm64, slug: win32-arm64-msvc, target: aarch64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
     steps:
       # Sticky disks are Blacksmith-Linux-only; elsewhere this action stalls ~78s
       # before falling back to a normal clone.
@@ -220,7 +236,19 @@ jobs:
         run: cargo-xwin xwin cache xwin
       # The CRT fetch is hoisted above, so this is a compile: each budget is that
       # leg's measured p100 times at least 1.4.
+      # A stalled compile consumes one bounded attempt; continue-on-error allows
+      # exactly one fresh attempt, while its failure remains job-fatal.
       - name: Build native binding
+        id: native_build
+        continue-on-error: true
+        timeout-minutes: ${{ matrix.build_timeout_minutes }}
+        env:
+          CROSS_TARGET: ${{ matrix.platform != 'darwin' && steps.target.outputs.build-target || '' }}
+          NATIVE_TARGET: ${{ matrix.platform == 'darwin' && matrix.target || '' }}
+          XWIN_ACCEPT_LICENSE: "1"
+        run: bun run --cwd packages/natives build
+      - name: Retry native binding
+        if: steps.native_build.outcome == 'failure'
         timeout-minutes: ${{ matrix.build_timeout_minutes }}
         env:
           CROSS_TARGET: ${{ matrix.platform != 'darwin' && steps.target.outputs.build-target || '' }}
