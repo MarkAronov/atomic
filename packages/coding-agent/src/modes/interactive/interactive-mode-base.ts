@@ -15,6 +15,7 @@ import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
@@ -73,6 +74,10 @@ const FULLSCREEN_VIEWPORT_ACTIONS = [
 	"tui.altScreen.bottom",
 ] as const;
 
+export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
+	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+}
+
 /**
  * Decide whether the fullscreen viewport should run before the focused
  * component. `isMouseInput` is classified by pi-tui's own mouse predicate in
@@ -91,7 +96,7 @@ export function shouldHandleFullscreenViewportInput(
 	if (focused === editor || !focused?.handleInput) return true;
 	if (isMouseInput) return !focusedIsOverlay;
 	if (focusedIsOverlay && keybindings.matches(data, "app.thinking.toggle")) return false;
-	return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+	return !isFullscreenViewportAction(data, keybindings);
 }
 
 function isCommandLikeStartupInput(text: string): boolean {
@@ -371,6 +376,8 @@ export class InteractiveModeBase {
 	pendingInlineCustomUiFocus: Component | undefined = undefined;
 
 	hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
+
+	transcriptOverlayReserve: TranscriptOverlayReserve | undefined = undefined;
 
 	themeController: InteractiveThemeController;
 

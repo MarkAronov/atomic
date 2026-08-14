@@ -29,6 +29,8 @@ interface CustomUiOptions {
 	handlesCtrlC?: boolean;
 	/** The component claims internal UI actions such as the jump-to-bottom URL. */
 	handlesInternalUiAction?: boolean;
+	/** Bound this overlay and reserve transcript scroll extent on the host. */
+	reserveTranscriptRows?: boolean;
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	onHandle?: (handle: OverlayHandle) => void;
 	signal?: AbortSignal;
@@ -207,6 +209,7 @@ export class EngineCustomUiService {
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,
 			handlesCtrlC: options?.handlesCtrlC,
 			handlesInternalUiAction: options?.handlesInternalUiAction,
+			reserveTranscriptRows: options?.reserveTranscriptRows,
 			overlayOptions: serializableOverlayOptions(options?.overlayOptions),
 		});
 		if (options?.onHandle) options.onHandle(this.remoteHandle(componentId));

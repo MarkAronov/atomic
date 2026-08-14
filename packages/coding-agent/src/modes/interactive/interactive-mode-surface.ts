@@ -223,6 +223,8 @@ declare module "./interactive-mode-base.ts" {
 				overlay?: boolean;
 				deferInlineCustomUiFocus?: boolean;
 				handlesInternalUiAction?: boolean;
+				/** Overlay-only: bound the overlay and reserve transcript scroll extent. */
+				reserveTranscriptRows?: boolean;
 				signal?: AbortSignal;
 				overlayOptions?: OverlayOptions | (() => OverlayOptions);
 				onHandle?: (handle: OverlayHandle) => void;
