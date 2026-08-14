@@ -27,6 +27,8 @@ interface CustomUiOptions {
 	deferInlineCustomUiFocus?: boolean;
 	/** The component binds Ctrl+C itself; see ExtensionUIContext.custom options. */
 	handlesCtrlC?: boolean;
+	/** The component claims internal UI actions such as the jump-to-bottom URL. */
+	handlesInternalUiAction?: boolean;
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	onHandle?: (handle: OverlayHandle) => void;
 	signal?: AbortSignal;
@@ -204,6 +206,7 @@ export class EngineCustomUiService {
 			overlay: options?.overlay === true,
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,
 			handlesCtrlC: options?.handlesCtrlC,
+			handlesInternalUiAction: options?.handlesInternalUiAction,
 			overlayOptions: serializableOverlayOptions(options?.overlayOptions),
 		});
 		if (options?.onHandle) options.onHandle(this.remoteHandle(componentId));

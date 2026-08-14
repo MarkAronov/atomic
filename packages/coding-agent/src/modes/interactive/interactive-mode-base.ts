@@ -54,7 +54,13 @@ import type {} from "./interactive-mode-surface.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
-import { createInteractiveTui, createInteractiveTuiReference, type InteractiveTui } from "./interactive-tui.ts";
+import {
+	createInteractiveTui,
+	createInteractiveTuiReference,
+	handleFocusedOverlayInternalUiAction,
+	type InteractiveTui,
+	type InternalUiActionResult,
+} from "./interactive-tui.ts";
 
 const FULLSCREEN_VIEWPORT_ACTIONS = [
 	"tui.altScreen.pageUp",
@@ -149,6 +155,8 @@ export class InteractiveModeBase {
 		);
 	};
 	private readonly onOverlayUnhandledInput = (data: string): boolean => this.handleOverlayUnhandledInput(data);
+	private readonly onOverlayInternalUiAction = (url: string): InternalUiActionResult =>
+		handleFocusedOverlayInternalUiAction(this.renderer, url);
 
 	/** Dispatch the host thinking action after a focused workflow overlay declines input. */
 	handleOverlayUnhandledInput(data: string): boolean {
@@ -495,7 +503,11 @@ export class InteractiveModeBase {
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
-			onInternalUiAction: () => this.jumpToTranscriptEnd(),
+			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
+			onInternalUiAction: () => {
+				this.jumpToTranscriptEnd();
+				return undefined;
+			},
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());

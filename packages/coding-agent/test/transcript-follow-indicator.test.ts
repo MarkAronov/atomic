@@ -1,4 +1,4 @@
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, type TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	TRANSCRIPT_JUMP_TO_END_URL,
@@ -6,7 +6,11 @@ import {
 } from "../src/modes/interactive/components/transcript-follow-indicator.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-transcript-follow.ts";
-import { createInteractiveTui, handleUrlActivation } from "../src/modes/interactive/interactive-tui.ts";
+import {
+	createInteractiveTui,
+	handleFocusedOverlayInternalUiAction,
+	handleUrlActivation,
+} from "../src/modes/interactive/interactive-tui.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { openBrowser } from "../src/utils/open-browser.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
@@ -80,6 +84,104 @@ describe("handleUrlActivation", () => {
 		expect(openUrl).not.toHaveBeenCalled();
 	});
 
+	test("lets a focused overlay claim the jump before the host transcript", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => true);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({
+			render: () => [],
+			invalidate: () => {},
+			handleInput: overlayInput,
+			handlesInternalUiAction: true,
+		});
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+
+		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+		overlay.hide();
+		tui.stop();
+	});
+
+	test("falls back to the host transcript when an overlay declines the jump", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => false);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({
+			render: () => [],
+			invalidate: () => {},
+			handleInput: overlayInput,
+			handlesInternalUiAction: true,
+		});
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+
+		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		overlay.hide();
+		tui.stop();
+	});
+
+	test("does not offer the jump to an overlay that did not opt in", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => true);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({ render: () => [], invalidate: () => {}, handleInput: overlayInput });
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl(TRANSCRIPT_JUMP_TO_END_URL);
+
+		expect(overlayInput).not.toHaveBeenCalled();
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		overlay.hide();
+		tui.stop();
+	});
+
+	test("waits for an asynchronous overlay claim before using the host fallback", async () => {
+		const onInternalUiAction = vi.fn();
+		let resolveClaim!: (handled: boolean) => void;
+		const claim = new Promise<boolean>((resolve) => {
+			resolveClaim = resolve;
+		});
+		handleUrlActivation(TRANSCRIPT_JUMP_TO_END_URL, {
+			onOverlayInternalUiAction: () => claim,
+			onInternalUiAction,
+			openUrl: vi.fn(),
+		});
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+
+		resolveClaim(true);
+		await claim;
+		await Promise.resolve();
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+	});
+
 	test("opens non-internal URLs in the browser", () => {
 		const onInternalUiAction = vi.fn();
 		const openUrl = vi.fn();
@@ -100,14 +202,42 @@ describe("handleUrlActivation", () => {
 		expect(openUrl).not.toHaveBeenCalled();
 	});
 
-	test("accepts case-insensitive internal schemes", () => {
+	test("normalizes a case-insensitive internal scheme before forwarding it", () => {
 		const onInternalUiAction = vi.fn();
 		const openUrl = vi.fn();
 
 		handleUrlActivation("ATOMIC-UI://transcript/jump-to-end", { onInternalUiAction, openUrl });
 
-		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith("ATOMIC-UI://transcript/jump-to-end");
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
 		expect(openUrl).not.toHaveBeenCalled();
+	});
+
+	test("offers a mixed-case activation to an overlay as the canonical URL", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => true);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({
+			render: () => [],
+			invalidate: () => {},
+			handleInput: overlayInput,
+			handlesInternalUiAction: true,
+		});
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl("ATOMIC-UI://transcript/jump-to-end");
+
+		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+		overlay.hide();
+		tui.stop();
 	});
 	test.each(["atomic-ui://[", "atomic-ui://a[b", "atomic-ui://tra nscript/jump-to-end", "ATOMIC-UI://tra nscript/x"])(
 		"drops malformed internal URLs without invoking either handler: %s",

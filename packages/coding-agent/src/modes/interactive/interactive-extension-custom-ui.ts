@@ -35,6 +35,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 	options?: {
 		overlay?: boolean;
 		deferInlineCustomUiFocus?: boolean;
+		handlesInternalUiAction?: boolean;
 		signal?: AbortSignal;
 		overlayOptions?: OverlayOptions | (() => OverlayOptions);
 		onHandle?: (handle: OverlayHandle) => void;
@@ -150,6 +151,9 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 					return;
 				}
 				component = c;
+				if (options?.handlesInternalUiAction === true) {
+					(component as Component & { handlesInternalUiAction?: boolean }).handlesInternalUiAction = true;
+				}
 				if (isOverlay) {
 					// Resolve overlay options - can be static or dynamic function
 					const resolveOptions = (): OverlayOptions | undefined => {

@@ -1,6 +1,9 @@
+import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+
 import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import {
 	assert,
 	createStore,
@@ -499,6 +502,97 @@ describe("StageChatView", () => {
 		view.render(96);
 		assert.equal(view._bodyScrollFromBottom, 0);
 		view.dispose();
+	});
+
+	test("the OSC-8 jump URL returns stage chat to its live end", async () => {
+		const view = await makeScrollableStageChat();
+		view.render(96);
+		view.handleInput("\x1b[5~");
+		assert.ok(view._bodyScrollFromBottom > 0);
+
+		assert.equal(view.handleInput(TRANSCRIPT_JUMP_TO_END_URL), true);
+		assert.equal(view._bodyScrollFromBottom, 0);
+		assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom/);
+		view.dispose();
+	});
+
+	test("handles the OSC-8 jump before a mounted custom UI can consume it", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "pending");
+		const broker = new StageUiBroker(store);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(12),
+			piTheme: {},
+			piKeybindings: new KeybindingsManager(),
+			canSubmitPrompt: () => false,
+			stageUiBroker: broker,
+		});
+		const customInputs: string[] = [];
+		const abortController = new AbortController();
+		try {
+			for (let index = 0; index < 18; index += 1) {
+				for (const character of `custom-jump-msg-${index}`) view.handleInput(character);
+				view.handleInput("\r");
+				await flush();
+			}
+			view.render(96);
+			view.handleInput("\x1b[5~");
+			assert.ok(view._bodyScrollFromBottom > 0);
+
+			const pending = broker.requestCustomUi(
+				"run-1",
+				"stage-a",
+				() => ({
+					render: () => ["custom question"],
+					handleInput: (data: string) => {
+						customInputs.push(data);
+						return true;
+					},
+					invalidate: () => {},
+				}),
+				undefined,
+				abortController.signal,
+			);
+			pending.catch(() => {});
+			await flush();
+
+			assert.match(stripTerminalSequences(view.render(96).join("\n")), /custom question/);
+			assert.equal(view.handleInput(TRANSCRIPT_JUMP_TO_END_URL), true);
+			assert.equal(view._bodyScrollFromBottom, 0);
+			assert.deepEqual(customInputs, []);
+		} finally {
+			abortController.abort();
+			view.dispose();
+		}
+	});
+
+	test("handles the OSC-8 jump before a pending prompt editor can consume it", async () => {
+		const fixture = await makeScrollableStageChatFixture();
+		const { store, view } = fixture;
+		try {
+			view.render(96);
+			view.handleInput("\x1b[5~");
+			assert.ok(view._bodyScrollFromBottom > 0);
+			assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", makePendingPrompt()), true);
+			view.render(96);
+			const promptEditor = (view as unknown as { promptEditor: { getText(): string } | null }).promptEditor;
+			assert.ok(promptEditor);
+
+			assert.equal(view.handleInput(TRANSCRIPT_JUMP_TO_END_URL), true);
+			assert.equal(view._bodyScrollFromBottom, 0);
+			assert.equal(promptEditor.getText(), "");
+		} finally {
+			view.dispose();
+		}
 	});
 
 	test("the bound end key returns stage chat to the live end and hides the indicator", async () => {

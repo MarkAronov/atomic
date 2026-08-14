@@ -258,6 +258,8 @@ export interface ExtensionUIContext {
 			 * never resolves can never trap the keyboard.
 			 */
 			handlesCtrlC?: boolean;
+			/** Declare that this component claims internal UI actions such as the jump-to-bottom URL. */
+			handlesInternalUiAction?: boolean;
 			/** AbortSignal to programmatically dismiss the custom UI. */
 			signal?: AbortSignal;
 			/** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */

@@ -120,6 +120,8 @@ export interface PiCustomOverlayOptions {
 	 * surface whose hint row offers `ctrl+c Skip`, `ctrl+c Close`, or cancel.
 	 */
 	handlesCtrlC?: boolean;
+	/** Declare that this component claims internal UI actions such as jump-to-bottom. */
+	handlesInternalUiAction?: boolean;
 	/**
 	 * Geometry / anchoring intended for pi-tui's `resolveOverlayLayout`.
 	 * NOT forwarded by current pi interactive `custom()` — see
