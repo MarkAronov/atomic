@@ -1,0 +1,50 @@
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ● park-tool       running   3m 2s                                                                                                                                                                    │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=42316462-0b19-40b1-b9c1-12a0aa8723f9    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Run 42316462 at 3m: unchanged. park-tool still the only node, running since start; no stages, no prompts. On goal, continuing.
+
+ Separately: if park-tool is not expected to be long-running, this is the point where it looks parked rather than working. Want me to quit the run?
+
+╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Workflow "hb-slice3-throwaway" completed                                                                                                                                                           │
+│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
+│ run       42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                       │
+│ launched  user                                                                                                                                                                                       │
+│ duration  3m 20s                                                                                                                                                                                     │
+│ ▸ /workflow status 42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+workflow: list retained runs
+╭ RUN hb-slice3-throwaway  ✓ completed ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      hb-slice3-throwaway                                                                                                                                                                    │
+│ state         ✓ completed                                                                                                                                                                            │
+│ mode          single                                                                                                                                                                                 │
+│ started       11:04:41                                                                                                                                                                               │
+│ ended         11:08:01                                                                                                                                                                               │
+│ duration      3m 20s                                                                                                                                                                                 │
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ✓ park-tool       completed 3m 20s                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ ARTIFACTS                                                                                                                                                                                            │
+│ result        {"parked":"parked-until-timeout"}                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│ ▸ workflow status id=42316462-0b19-40b1-b9c1-12a0aa8723f9    inspect retained state                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Run 42316462 completed in 3m20s. One tool node park-tool finished with result "parked-until-timeout"; no model stages ran. Run result: { parked: "parked-until-timeout" }.
+
+ Next: nothing pending. Tell me the real task if this was a placeholder run.
+
+                                                                                                                                ↑15k • ↓1.3k • R412k • W6.0k • CH98.6% • $0.349 (sub) • 4.4%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • ~/Documents/projects/atomic-hb-slice3 (feat/workflow-heartbeat-cleanup)
+● ADHD Mode • MCP: 0/1 servers

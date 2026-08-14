@@ -1,50 +1,50 @@
- If you have not connected a provider yet, run `/login` first.
- Run `/atomic` for guides or `/workflow list` to see built-in workflows.
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-
- Warning: No models available. Use /login to log into a provider via OAuth or API key. See:
-   /Users/tonystark/Documents/projects/atomic-hb-slice3/packages/coding-agent/docs/providers.md
-   /Users/tonystark/Documents/projects/atomic-hb-slice3/packages/coding-agent/docs/models.md
-
-╭ WORKFLOW STARTED ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ▶ Workflow "workflow-heartbeat-cleanup-evidence" started                                                                                                                                             │
-│ workflow  workflow-heartbeat-cleanup-evidence                                                                                                                                                        │
-│ run       dc6e79b7-ea52-4596-abf6-519804966293                                                                                                                                                       │
+│ ▶ Workflow "hb-slice3-throwaway" started                                                                                                                                                             │
+│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
+│ run       42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                       │
 │ actor     user                                                                                                                                                                                       │
 │ duration  0ms                                                                                                                                                                                        │
-│ ▸ /workflow status dc6e79b7-ea52-4596-abf6-519804966293                                                                                                                                              │
+│ ▸ /workflow status 42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Error: Unknown provider: unknown
+ Thinking...
+
+ Workflow hb-slice3-throwaway (run 42316462) is running in the background. I'll report when it finishes.
+
+ Next: nothing to do — wait, or ask me for status on the run.
 
 ╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   dc6e79b7-ea52-4596-abf6-519804966293                                                                                                                                                               │
-│ ●  workflow-heartbeat-cleanup-evidence  ● running                                                                                                                                                    │
+│   42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                               │
+│ ●  hb-slice3-throwaway  ● running                                                                                                                                                                    │
 │   started in background                                                                                                                                                                              │
 │                                                                                                                                                                                                      │
-│ ▸ /workflow connect dc6e79b7-ea52-4596-abf6-519804966293  see agents working · chat with and steer each stage                                                                                        │
+│ ▸ /workflow connect 42316462-0b19-40b1-b9c1-12a0aa8723f9  see agents working · chat with and steer each stage                                                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...
+
+ Run confirmed: 42316462-0b19-40b1-b9c1-12a0aa8723f9, status running, no inputs.
+
+ Next: run /workflow connect 42316462-0b19-40b1-b9c1-12a0aa8723f9 to watch the stages live.
 
 ╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ♥ Workflow "workflow-heartbeat-cleanup-evidence" is still running                                                                                                                                    │
-│ workflow  workflow-heartbeat-cleanup-evidence                                                                                                                                                        │
-│ run       dc6e79b7-ea52-4596-abf6-519804966293                                                                                                                                                       │
+│ ♥ Workflow "hb-slice3-throwaway" is still running                                                                                                                                                    │
+│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
+│ run       42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                       │
 │ cadence   1-minute                                                                                                                                                                                   │
 │ elapsed   1m                                                                                                                                                                                         │
-│ ▸ /workflow status dc6e79b7-ea52-4596-abf6-519804966293                                                                                                                                              │
+│ ▸ /workflow status 42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Error: Unknown provider: unknown
+ ∀ Bungling...
 
-                                                                                                                                                                                           0.0%/0 (auto)
+                                                                                                                                    ↑4 • ↓265 • R78k • W2.9k • CH99.0% • $0.064 (sub) • 4.1%/1.0M (auto)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-unknown • /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-cleanup-evidence-U65oV0/project
-● ADHD Mode
+esc to interrupt
+● ADHD Mode • MCP: 0/1 servers
 
 ╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   ●  dc6e79b7-ea52-4596-abf6-519804966293                                                                                                                                                            │
-│     workflow-heartbeat-cleanup-evidence · single · 1m 1s                                                                                                                                             │
+│   ●  42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                            │
+│     hb-slice3-throwaway · single · 1m                                                                                                                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
