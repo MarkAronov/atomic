@@ -36,10 +36,17 @@ describe("workflow heartbeat parent pickup signal", () => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
-	/** Poll a condition the host settles asynchronously. Bounded, never a bare sleep. */
-	async function waitFor(condition: () => boolean): Promise<void> {
-		for (let attempt = 0; attempt < 200 && !condition(); attempt += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 5));
+	const WAIT_FOR_POLL_INTERVAL_MS = 5;
+	const WAIT_FOR_TIMEOUT_MS = 1_000;
+
+	/** Poll a condition the host settles asynchronously; timeout is a test failure. */
+	async function waitFor(condition: () => boolean, description: string): Promise<void> {
+		const deadline = Date.now() + WAIT_FOR_TIMEOUT_MS;
+		while (!condition()) {
+			if (Date.now() >= deadline) {
+				throw new Error(`Timed out after ${WAIT_FOR_TIMEOUT_MS}ms waiting for ${description}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, WAIT_FOR_POLL_INTERVAL_MS));
 		}
 	}
 
@@ -145,8 +152,9 @@ describe("workflow heartbeat parent pickup signal", () => {
 		// On an idle parent the send resolves at admission and the triggered turn
 		// continues in the background, so wait for the turn rather than for the send.
 		await sendHeartbeatCard(harness, HEARTBEAT_TEXT);
-		await waitFor(() =>
-			observed.consumed.some((identity) => identity.runId === "probe-run" && identity.scheduledAt === 1),
+		await waitFor(
+			() => observed.consumed.some((identity) => identity.runId === "probe-run" && identity.scheduledAt === 1),
+			"the idle parent to consume the heartbeat",
 		);
 
 		assert.ok(
@@ -164,7 +172,10 @@ describe("workflow heartbeat parent pickup signal", () => {
 		]);
 
 		await sendHeartbeatCard(harness, HEARTBEAT_TEXT);
-		await waitFor(() => observed.consumed.length === 1);
+		await waitFor(
+			() => observed.consumed.length === 1,
+			"the heartbeat to be consumed before sending the foreign message",
+		);
 		await harness.session.sendCustomMessage(
 			{
 				customType: "someone-else:notice",
@@ -174,7 +185,9 @@ describe("workflow heartbeat parent pickup signal", () => {
 			},
 			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
 		);
-		await waitFor(() => observed.settled.length >= 2);
+		await waitFor(() => observed.settled.length >= 2, "the foreign custom message turn to settle");
+
+		assert.ok(observed.settled.length >= 2, "the foreign custom message actually settled");
 
 		assert.deepEqual(observed.consumed, [{ runId: "probe-run", scheduledAt: 1 }]);
 	});

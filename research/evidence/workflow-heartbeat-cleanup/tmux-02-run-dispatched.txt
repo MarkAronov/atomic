@@ -1,7 +1,7 @@
 
    ██████▙                  ▟██████    Atomic v0.0.0                                                
-    ██████▙                ▟██████░░   (anthropic) claude-opus-5 high                               
-     ██████▙              ▟██████░░    ~/Documents/projects/atomic-hb-slice3                        
+    ██████▙                ▟██████░░   (unknown) unknown                                            
+     ██████▙              ▟██████░░    /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-cleanup-evidence-0VQXEs/project                                                      
       ██████▙            ▟██████░░                
        ████████████████████████░░      We question,                                                 
         ██████▛░░░░░░░░▜██████░░       we break away from what is accepted.                         
@@ -11,32 +11,45 @@
             ░████████████░░░                      
               ░░░░░░░░░░░░                        
 
-RESOURCES AGENTS.md · 19 skills · 14 prompts      
+RESOURCES context ready · 12 skills · 14 prompts  
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Atomic is a verifiable coding agent runtime for building and running                               
+ agent workflows you can feel confident in.       
+ Use it to implement tickets, research a codebase, design a UI,                                     
+ or build and run your own loops.                 
+ Run dynamic workflows and save the ones you like for future use.                                   
+ Start building a verifiable software factory.    
+
+ Type a message or slash command below to continue normally.                                        
+ If you have not connected a provider yet, run `/login` first.                                      
+ Run `/atomic` for guides or `/workflow list` to see built-in workflows.                            
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
- Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at                           
- https://claude.ai/settings/usage.                
+ Warning: No models available. Use /login to log into a provider via OAuth or API key. See:                                                                                                             
+   /Users/tonystark/Documents/projects/atomic-hb-slice3/packages/coding-agent/docs/providers.md                                                                                                         
+   /Users/tonystark/Documents/projects/atomic-hb-slice3/packages/coding-agent/docs/models.md        
 
 ╭ WORKFLOW STARTED ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ▶ Workflow "hb-slice3-throwaway" started                                                                                                                                                             │
-│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
-│ run       67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                       │
+│ ▶ Workflow "workflow-heartbeat-cleanup-evidence" started                                                                                                                                             │
+│ workflow  workflow-heartbeat-cleanup-evidence                                                                                                                                                        │
+│ run       e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                                       │
 │ actor     user                                                                                                                                                                                       │
 │ duration  0ms                                                                                                                                                                                        │
-│ ▸ /workflow status 67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                              │
+│ ▸ /workflow status e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jifsH8Dyr6JuyZ3dko"}   
+ Error: Unknown provider: unknown                 
 
 ╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                               │
-│ ●  hb-slice3-throwaway  ● running                                                                                                                                                                    │
+│   e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                                               │
+│ ●  workflow-heartbeat-cleanup-evidence  ● running                                                                                                                                                    │
 │   started in background                                                                                                                                                                              │
 │                                                                                                                                                                                                      │
-│ ▸ /workflow connect 67b756e9-3da6-4544-aaf6-aad58246d97f  see agents working · chat with and steer each stage                                                                                        │
+│ ▸ /workflow connect e1998cf1-34c3-4270-b6cc-38db04eb9184  see agents working · chat with and steer each stage                                                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jiqvGM8TCDkhnzLhwS"}   
 
 
 
@@ -64,27 +77,14 @@ RESOURCES AGENTS.md · 19 skills · 14 prompts
 
 
 
-
-
-
-
-
-
-
-
-
-
-
- ⠹ Retrying (2/3) in 4s... (esc Cancel)           
-
-                                                                                                                                                                         $0.000 (sub) • 0.2%/1.0M (auto)
+                                                                                                                                                                                           0.0%/0 (auto)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-(anthropic) claude-opus-5 high • ~/Documents/projects/atomic-hb-slice3 (feat/workflow-heartbeat-cleanup)                                                                                                
-● ADHD Mode • MCP: 0/1 servers                    
+unknown • /private/var/folders/cr/lt2lnmhd0g7c3g_62423frp80000gn/T/workflow-heartbeat-cleanup-evidence-0VQXEs/project                                                                                   
+● ADHD Mode                                       
 
 ╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   ●  67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                            │
-│     hb-slice3-throwaway · single · 2s                                                                                                                                                                │
+│   ●  e1998cf1-34c3-4270-b6cc-38db04eb9184                                                                                                                                                            │
+│     workflow-heartbeat-cleanup-evidence · single · 0s                                                                                                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
