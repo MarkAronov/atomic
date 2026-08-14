@@ -11,8 +11,10 @@ import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflo
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
+	MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
 	nextWorkflowHeartbeatBoundary,
 	type WorkflowHeartbeatAnchorStore,
+	type WorkflowHeartbeatLaunchRecord,
 	type WorkflowHeartbeatScheduler,
 	type WorkflowHeartbeatSchedulerState,
 	workflowHeartbeatConsumedContent,
@@ -36,6 +38,14 @@ const STARTED_AT = 1_000_000;
  * epoch timestamp, where one ULP is 2^-12 ms.
  */
 const EPOCH_ANCHOR = 1_700_000_000_000;
+
+/** Mirrors the scheduler's bit-level ULP step, so the expectation is computed rather than copied. */
+function nextRepresentableAfterForTest(at: number): number {
+	const view = new DataView(new ArrayBuffer(8));
+	view.setFloat64(0, at);
+	view.setBigUint64(0, view.getBigUint64(0) + 1n);
+	return view.getFloat64(0);
+}
 
 interface CapturedSend {
 	readonly customType: string;
@@ -319,12 +329,37 @@ describe("workflow heartbeat cadence", () => {
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, 0, STARTED_AT), undefined);
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, -1, STARTED_AT), undefined);
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, Number.NaN, STARTED_AT), undefined);
-		// Authoring accepts a denormal interval; no finite `n` yields a
-		// representable boundary for it, and no schedule is the narrow,
-		// non-throwing answer. Asserted at both anchors, because the anchor's ULP
-		// is what decides this.
-		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, Number.MIN_VALUE, STARTED_AT), undefined);
-		assert.equal(nextWorkflowHeartbeatBoundary(EPOCH_ANCHOR, Number.MIN_VALUE, EPOCH_ANCHOR), undefined);
+		// A denormal interval is finer than one ULP, so no representable `n` names
+		// its first series member — but that member still rounds to exactly one ULP
+		// past the anchor, and that is what is scheduled. Asserted at both anchors,
+		// because the anchor's ULP is what decides the value.
+		assert.equal(
+			nextWorkflowHeartbeatBoundary(EPOCH_ANCHOR, Number.MIN_VALUE, EPOCH_ANCHOR),
+			EPOCH_ANCHOR + 0.000244140625,
+		);
+		assert.equal(
+			nextWorkflowHeartbeatBoundary(STARTED_AT, Number.MIN_VALUE, STARTED_AT),
+			nextRepresentableAfterForTest(STARTED_AT),
+		);
+		// Above the largest representable cadence there is no boundary at all:
+		// `intervalMinutes × 60000` is already Infinity, so every series member is.
+		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, Number.MAX_VALUE, STARTED_AT), undefined);
+		assert.equal(
+			nextWorkflowHeartbeatBoundary(
+				STARTED_AT,
+				MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES * 2,
+				STARTED_AT,
+			),
+			undefined,
+		);
+		// And the largest cadence that is still representable does schedule.
+		assert.ok(
+			nextWorkflowHeartbeatBoundary(
+				STARTED_AT,
+				MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
+				STARTED_AT,
+			) !== undefined,
+		);
 	});
 
 	test("a cadence finer than one ULP at a real epoch anchor still yields its first anchored boundary", () => {
@@ -923,24 +958,27 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 
 describe("workflow heartbeat durable cadence anchor", () => {
 	function recordingAnchorStore(opts?: {
-		seed?: { runId: string; anchorAt: number };
+		seed?: { runId: string; anchorAt: number; intervalMinutes?: number };
 		/** Models the no-progress guard: the write is refused until this flips. */
 		acceptWrites?: () => boolean;
 	}): WorkflowHeartbeatAnchorStore & {
-		readonly writes: { runId: string; anchorAt: number }[];
+		readonly writes: { runId: string; anchorAt: number; intervalMinutes?: number }[];
 	} {
-		const stored = new Map<string, number>();
-		if (opts?.seed !== undefined) stored.set(opts.seed.runId, opts.seed.anchorAt);
-		const writes: { runId: string; anchorAt: number }[] = [];
+		const stored = new Map<string, WorkflowHeartbeatLaunchRecord>();
+		if (opts?.seed !== undefined) {
+			const { runId, ...record } = opts.seed;
+			stored.set(runId, record);
+		}
+		const writes: { runId: string; anchorAt: number; intervalMinutes?: number }[] = [];
 		return {
 			writes,
 			readAnchorAt(runId) {
 				return stored.get(runId);
 			},
-			recordAnchorAt(runId, anchorAt) {
-				writes.push({ runId, anchorAt });
+			recordAnchorAt(runId, record) {
+				writes.push({ runId, ...record });
 				if (opts?.acceptWrites !== undefined && !opts.acceptWrites()) return false;
-				if (!stored.has(runId)) stored.set(runId, anchorAt);
+				if (!stored.has(runId)) stored.set(runId, record);
 				return true;
 			},
 		};
@@ -984,7 +1022,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		assert.equal(harness.sent.length, 0, "no heartbeat has been raised");
 		assert.deepEqual(
 			anchorStore.writes,
-			[{ runId, anchorAt: STARTED_AT }],
+			[{ runId, anchorAt: STARTED_AT, intervalMinutes: 15 }],
 			"the anchor is already persisted, so a resume before boundary 1 stays on the series",
 		);
 		harness.scheduler.dispose();
@@ -1006,7 +1044,11 @@ describe("workflow heartbeat durable cadence anchor", () => {
 
 		hasProgress = true;
 		store.recordNotice({ id: runId, level: "info", message: "progress landed", createdAt: 2 });
-		assert.equal(anchorStore.readAnchorAt(runId), STARTED_AT, "the anchor lands on the first pass after progress");
+		assert.equal(
+			anchorStore.readAnchorAt(runId)?.anchorAt,
+			STARTED_AT,
+			"the anchor lands on the first pass after progress",
+		);
 		const attemptsAtSuccess = anchorStore.writes.length;
 
 		store.recordNotice({ id: runId, level: "info", message: "more churn", createdAt: 3 });
@@ -1039,6 +1081,101 @@ describe("workflow heartbeat durable cadence anchor", () => {
 			"the next boundary is on the original series, not on the resumed start time",
 		);
 		assert.equal(next, originalStart + 15 * MINUTE_MS);
+		harness.scheduler.dispose();
+	});
+
+	test("a durable resume in a later process keeps the launch cadence, not the edited one", () => {
+		const runId = testRunId("heartbeat-launch-cadence-across-process");
+		// Process 1 launched this run at 1 minute. Process 2 has only the durable
+		// record and a registry that now says 30 — an edit made between the two.
+		const resumedStartedAt = STARTED_AT + 5 * MINUTE_MS + 20_000;
+		const store = createStore();
+		startRun(store, runId, { name: "edited-since", startedAt: resumedStartedAt });
+		const anchorStore = recordingAnchorStore({
+			seed: { runId, anchorAt: STARTED_AT, intervalMinutes: 1 },
+		});
+		const harness = installHarness({
+			store,
+			anchorStore,
+			startAt: resumedStartedAt,
+			resolveInterval: () => 30,
+			state: createWorkflowHeartbeatSchedulerState(),
+		});
+
+		assert.equal(
+			harness.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + 6 * MINUTE_MS,
+			"the persisted launch cadence outranks the live registry after a restart",
+		);
+		assert.equal(harness.state.intervalMinutes.get(runId), 1);
+		harness.scheduler.dispose();
+	});
+
+	test("a record written before the cadence field existed falls back to the registry", () => {
+		const runId = testRunId("heartbeat-legacy-anchor");
+		const store = createStore();
+		startRun(store, runId, { name: "legacy" });
+		// An older build wrote `anchorAt` only. Absence must read as "unknown" and
+		// defer to the live definition, never as a disabled cadence.
+		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT } });
+		const harness = installHarness({ store, anchorStore, resolveInterval: () => 1 });
+
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS);
+		assert.equal(harness.state.intervalMinutes.get(runId), 1);
+		harness.scheduler.dispose();
+	});
+
+	test("a run launched with heartbeats disabled stays disabled and writes no record", () => {
+		const runId = testRunId("heartbeat-launched-disabled");
+		const store = createStore();
+		startRun(store, runId, { name: "launched-off" });
+		const anchorStore = recordingAnchorStore();
+		// Launched at 0, then the workflow is edited to a positive cadence and
+		// reloaded. The run launched with heartbeats off and must stay off.
+		let published = 0;
+		const harness = installHarness({ store, anchorStore, resolveInterval: () => published });
+		assert.equal(harness.state.intervalMinutes.get(runId), 0, "the disabled launch value is remembered");
+
+		published = 1;
+		store.recordNotice({ id: runId, level: "info", message: "reloaded", createdAt: 1 });
+		assert.equal(harness.state.scheduled.size, 0, "no schedule");
+		assert.equal(harness.clock.live().length, 0, "no timer");
+
+		harness.clock.advanceBy(10 * MINUTE_MS);
+		assert.equal(harness.sent.length, 0, "no heartbeat");
+		assert.deepEqual(anchorStore.writes, [], "and no durable record of any kind");
+		harness.scheduler.dispose();
+	});
+
+	test("a sub-ULP cadence schedules one wake-up and does not spin while its slot is held", () => {
+		const runId = testRunId("heartbeat-sub-ulp-run");
+		const store = createStore();
+		startRun(store, runId, { startedAt: EPOCH_ANCHOR });
+		// No consumption signal, so the slot stays held after the first heartbeat.
+		const harness = installHarness({ store, startAt: EPOCH_ANCHOR, defaultInterval: Number.MIN_VALUE });
+
+		assert.equal(harness.state.scheduled.size, 1, "a denormal cadence schedules rather than silently disabling");
+		assert.equal(harness.clock.live().length, 1, "one wake-up");
+
+		harness.clock.advanceBy(10);
+		assert.equal(harness.sent.length, 1, "one heartbeat is admitted");
+		assert.equal(harness.state.scheduled.size, 0, "and nothing re-arms while the slot is held");
+		assert.equal(harness.clock.live().length, 0, "so there is no hot timer loop");
+		harness.scheduler.dispose();
+	});
+
+	test("a cadence too large to have a representable boundary schedules nothing", () => {
+		const runId = testRunId("heartbeat-overflow-cadence");
+		const store = createStore();
+		startRun(store, runId);
+		const anchorStore = recordingAnchorStore();
+		const harness = installHarness({ store, anchorStore, defaultInterval: Number.MAX_VALUE });
+
+		assert.equal(harness.state.scheduled.size, 0);
+		assert.equal(harness.clock.live().length, 0);
+		assert.deepEqual(anchorStore.writes, [], "and writes no durable record");
+		harness.clock.advanceBy(10 * MINUTE_MS);
+		assert.equal(harness.sent.length, 0);
 		harness.scheduler.dispose();
 	});
 
@@ -1146,7 +1283,12 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		registerRun(backend, runId);
 
 		assert.equal(
-			recordWorkflowHeartbeatAnchor(backend, { runId, anchorAt: STARTED_AT, now: STARTED_AT + MINUTE_MS }),
+			recordWorkflowHeartbeatAnchor(backend, {
+				runId,
+				anchorAt: STARTED_AT,
+				intervalMinutes: 1,
+				now: STARTED_AT + MINUTE_MS,
+			}),
 			false,
 			"the write is skipped while the run has no other checkpoint",
 		);
@@ -1160,6 +1302,67 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		);
 	});
 
+	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-anchor-cadence-field");
+		registerRun(backend, runId);
+		recordProgress(backend, runId);
+
+		recordWorkflowHeartbeatAnchor(backend, {
+			runId,
+			anchorAt: STARTED_AT,
+			intervalMinutes: 7,
+			now: STARTED_AT + MINUTE_MS,
+		});
+		assert.deepEqual(readWorkflowHeartbeatAnchor(backend, runId), { anchorAt: STARTED_AT, intervalMinutes: 7 });
+
+		// A record written by an earlier build carries `anchorAt` only. Its absence
+		// must read as "unknown" so the reader falls back to the live definition —
+		// reading it as `0` would silence a run that launched enabled.
+		const legacyBackend = createInMemoryTestBackend();
+		const legacyRunId = testRunId("heartbeat-anchor-legacy-shape");
+		registerRun(legacyBackend, legacyRunId);
+		legacyBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: legacyRunId,
+			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			name: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			argsHash: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			output: { anchorAt: STARTED_AT },
+			completedAt: STARTED_AT,
+		});
+		const legacy = readWorkflowHeartbeatAnchor(legacyBackend, legacyRunId);
+		assert.equal(legacy?.anchorAt, STARTED_AT);
+		assert.equal(legacy?.intervalMinutes, undefined, "absent, not zero");
+
+		// A non-positive cadence is never written, so one in storage is corrupt and
+		// is ignored rather than treated as a disable.
+		const corruptBackend = createInMemoryTestBackend();
+		const corruptRunId = testRunId("heartbeat-anchor-corrupt-shape");
+		registerRun(corruptBackend, corruptRunId);
+		corruptBackend.recordCheckpoint({
+			kind: "tool",
+			workflowId: corruptRunId,
+			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			name: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			argsHash: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			output: { anchorAt: STARTED_AT, intervalMinutes: 0 },
+			completedAt: STARTED_AT,
+		});
+		assert.equal(readWorkflowHeartbeatAnchor(corruptBackend, corruptRunId)?.intervalMinutes, undefined);
+
+		// And the writer refuses a non-positive cadence outright.
+		assert.equal(
+			recordWorkflowHeartbeatAnchor(backend, {
+				runId: testRunId("heartbeat-anchor-zero-cadence"),
+				anchorAt: STARTED_AT,
+				intervalMinutes: 0,
+				now: STARTED_AT,
+			}),
+			false,
+		);
+	});
+
 	test("many boundaries produce exactly one row, and the first anchor stands", () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-one-row");
@@ -1170,6 +1373,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 			recordWorkflowHeartbeatAnchor(backend, {
 				runId,
 				anchorAt: STARTED_AT + boundary,
+				intervalMinutes: 1,
 				now: STARTED_AT + boundary * MINUTE_MS,
 			});
 		}
@@ -1180,7 +1384,11 @@ describe("workflow heartbeat anchor checkpoint", () => {
 					checkpoint.kind === "tool" && checkpoint.argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
 			);
 		assert.equal(anchorRows.length, 1, "one row per run, not one per boundary");
-		assert.equal(readWorkflowHeartbeatAnchor(backend, runId), STARTED_AT + 1, "write-once: the first value stands");
+		assert.equal(
+			readWorkflowHeartbeatAnchor(backend, runId)?.anchorAt,
+			STARTED_AT + 1,
+			"write-once: the first value stands",
+		);
 	});
 
 	test("the record stamps write time, so it cannot walk liveness backwards", () => {
@@ -1192,7 +1400,12 @@ describe("workflow heartbeat anchor checkpoint", () => {
 
 		const writeTime = before + 10 * MINUTE_MS;
 		// The anchor is far in the past; only the write time may reach `updatedAt`.
-		recordWorkflowHeartbeatAnchor(backend, { runId, anchorAt: before - 10 * MINUTE_MS, now: writeTime });
+		recordWorkflowHeartbeatAnchor(backend, {
+			runId,
+			anchorAt: before - 10 * MINUTE_MS,
+			intervalMinutes: 1,
+			now: writeTime,
+		});
 
 		const after = backend.getWorkflow(runId)?.updatedAt ?? 0;
 		assert.equal(after, writeTime);
@@ -1204,7 +1417,12 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		const runId = testRunId("heartbeat-anchor-reconstruction");
 		registerRun(backend, runId);
 		recordProgress(backend, runId);
-		recordWorkflowHeartbeatAnchor(backend, { runId, anchorAt: STARTED_AT, now: STARTED_AT + MINUTE_MS });
+		recordWorkflowHeartbeatAnchor(backend, {
+			runId,
+			anchorAt: STARTED_AT,
+			intervalMinutes: 1,
+			now: STARTED_AT + MINUTE_MS,
+		});
 
 		const handle = backend.getWorkflow(runId);
 		assert.ok(handle !== undefined);

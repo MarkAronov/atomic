@@ -67,9 +67,16 @@ function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 				return undefined;
 			}
 		},
-		recordAnchorAt(runId, anchorAt) {
+		recordAnchorAt(runId, record) {
 			try {
-				return recordWorkflowHeartbeatAnchor(getDurableBackend(), { runId, anchorAt, now: Date.now() });
+				return recordWorkflowHeartbeatAnchor(getDurableBackend(), {
+					runId,
+					anchorAt: record.anchorAt,
+					// The scheduler only records a positive cadence; a run launched
+					// disabled never reaches this seam.
+					intervalMinutes: record.intervalMinutes ?? 0,
+					now: Date.now(),
+				});
 			} catch {
 				// A backend that is not ready must not break a background pass; the
 				// caller retries on the next schedule pass.

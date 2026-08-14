@@ -46,29 +46,60 @@ import type { DurableToolCheckpoint } from "./types.js";
 /** Reserved checkpoint name, args-hash, AND checkpoint id for cadence anchors. */
 export const WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME = "workflow-heartbeat-anchor";
 
-/** The persisted original start time for a run, or undefined when absent. */
-export function readWorkflowHeartbeatAnchor(backend: DurableWorkflowBackend, workflowId: string): number | undefined {
+/**
+ * What a run launched with: its original start time, and the cadence its own
+ * definition declared.
+ *
+ * `intervalMinutes` is absent on records written before it was added, so a
+ * reader must treat that as "unknown" and fall back to the live definition —
+ * never as `0`.
+ */
+export interface WorkflowHeartbeatAnchorRecord {
+	readonly anchorAt: number;
+	readonly intervalMinutes?: number;
+}
+
+/** The persisted launch anchor for a run, or undefined when absent or malformed. */
+export function readWorkflowHeartbeatAnchor(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+): WorkflowHeartbeatAnchorRecord | undefined {
 	const output = backend.getToolOutput(workflowId, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME);
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
-	const anchorAt = (output as Record<string, unknown>).anchorAt;
+	const record = output as Record<string, unknown>;
+	const anchorAt = record.anchorAt;
 	if (typeof anchorAt !== "number" || !Number.isFinite(anchorAt)) return undefined;
-	return anchorAt;
+	const intervalMinutes = record.intervalMinutes;
+	// Only a positive finite cadence is carried: a disabled run never writes a
+	// record at all, so a non-positive value here is corrupt rather than meaningful.
+	return typeof intervalMinutes === "number" && Number.isFinite(intervalMinutes) && intervalMinutes > 0
+		? { anchorAt, intervalMinutes }
+		: { anchorAt };
 }
 
 /**
- * Persist a run's cadence anchor, once. Returns whether the record is readable
+ * Persist what a run launched with, once. Returns whether the record is readable
  * afterwards — the backend silently drops a checkpoint for a workflow it has
  * never registered, so the return value is a read-back rather than an
  * assumption.
  */
 export function recordWorkflowHeartbeatAnchor(
 	backend: DurableWorkflowBackend,
-	record: { readonly runId: string; readonly anchorAt: number; readonly now: number },
+	record: {
+		readonly runId: string;
+		readonly anchorAt: number;
+		readonly intervalMinutes: number;
+		readonly now: number;
+	},
 ): boolean {
 	if (!Number.isFinite(record.anchorAt)) return false;
+	// A run launched with heartbeats disabled writes no record at all, so this
+	// path is never reached for a non-positive cadence. Guarding it here keeps
+	// that invariant local to the writer as well as to its caller.
+	if (!Number.isFinite(record.intervalMinutes) || record.intervalMinutes <= 0) return false;
 	const existing = readWorkflowHeartbeatAnchor(backend, record.runId);
-	// Write-once: the first anchor stands. A later write cannot move it forward,
-	// and the reader takes the minimum anyway.
+	// Write-once: the first record stands. A later write cannot move the anchor
+	// forward, and it cannot retro-fit an edited cadence onto a run in flight.
 	if (existing !== undefined) return true;
 	// A record for a run with no durable progress of its own would make that run
 	// look resumable; the anchor is worth nothing on a run that cannot resume.
@@ -79,7 +110,7 @@ export function recordWorkflowHeartbeatAnchor(
 		checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
 		name: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
 		argsHash: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
-		output: { anchorAt: record.anchorAt },
+		output: { anchorAt: record.anchorAt, intervalMinutes: record.intervalMinutes },
 		// Write time, never the boundary: this lands on the handle as `updatedAt`,
 		// which the foreign-liveness window reads.
 		completedAt: record.now,

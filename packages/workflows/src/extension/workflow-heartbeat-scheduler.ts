@@ -149,20 +149,28 @@ export interface WorkflowHeartbeatSchedulerOptions {
 	readonly timers?: WorkflowHeartbeatTimerApi;
 }
 
+/** What a run launched with, recovered across a process boundary. */
+export interface WorkflowHeartbeatLaunchRecord {
+	/** The run's original start time. */
+	readonly anchorAt: number;
+	/** The cadence its own definition declared. Absent on pre-existing records. */
+	readonly intervalMinutes?: number;
+}
+
 /**
- * Durable cadence-anchor seam. Both sides are best-effort: a backend that is not
- * ready must degrade to the run's own `startedAt` rather than fail a background
- * pass.
+ * Durable launch-record seam. Both sides are best-effort: a backend that is not
+ * ready must degrade to the run's own `startedAt` and the live definition rather
+ * than fail a background pass.
  */
 export interface WorkflowHeartbeatAnchorStore {
-	/** The run's persisted original start time, when one was recorded. */
-	readAnchorAt(runId: string): number | undefined;
+	/** What the run launched with, when a record was written. */
+	readAnchorAt(runId: string): WorkflowHeartbeatLaunchRecord | undefined;
 	/**
-	 * Persist the run's cadence anchor. Write-once; later calls are no-ops.
-	 * Returns whether the anchor is durably readable afterwards, so the caller can
-	 * stop retrying.
+	 * Persist what the run launched with. Write-once; later calls are no-ops.
+	 * Returns whether the record is durably readable afterwards, so the caller can
+	 * stop retrying. Never called for a non-positive cadence.
 	 */
-	recordAnchorAt(runId: string, anchorAt: number): boolean;
+	recordAnchorAt(runId: string, record: WorkflowHeartbeatLaunchRecord): boolean;
 }
 
 export interface WorkflowHeartbeatScheduler {
@@ -184,6 +192,9 @@ export interface WorkflowHeartbeatScheduler {
 	dispose(): void;
 }
 
+/** Largest cadence in minutes whose millisecond conversion is still representable. */
+export const MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES = Number.MAX_VALUE / MS_PER_MINUTE;
+
 /**
  * First cadence boundary strictly after `after`, on the `startedAt + n × I`
  * series. Never derived from a previous delivery, so a retry, a pause, or a
@@ -197,11 +208,21 @@ export interface WorkflowHeartbeatScheduler {
  * unschedulable, so a bounded bracket-and-narrow finds the smallest such `n`
  * while keeping the boundary exactly on the anchored series.
  *
- * Returns `undefined` only when no finite `n` produces a representable
- * boundary — a non-positive or non-finite interval, or a cadence so fine that
- * `n` overflows before the sum moves (`Number.MIN_VALUE` minutes). Authoring
- * accepts those values, and no schedulable boundary is the narrow, non-throwing
- * answer for them.
+ * Below one ULP the naming `n` itself stops being representable — at
+ * `Number.MIN_VALUE` minutes the first `n` that moves the sum is about
+ * `4.1e314`, past `Number.MAX_VALUE`. The series member still exists and still
+ * rounds to exactly one ULP past the anchor, so that is what is returned. This
+ * is not an invented boundary: every value this function produces is the
+ * correctly-rounded `startedAt + n × I`, and this case only applies the same
+ * rounding when no `n` can be written down.
+ *
+ * Returns `undefined` only when no representable boundary exists at all: a
+ * non-positive or non-finite interval, or a cadence above
+ * {@link MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES}
+ * (~`3e303` minutes), where `intervalMs` is already `Infinity` and every
+ * `startedAt + n × I` is `Infinity` too. Authoring accepts those values, so no
+ * schedulable boundary is the narrow, non-throwing answer — but it is warned
+ * about under `ATOMIC_WORKFLOW_DEBUG` rather than being silent.
  */
 export function nextWorkflowHeartbeatBoundary(
 	startedAt: number,
@@ -211,7 +232,10 @@ export function nextWorkflowHeartbeatBoundary(
 	if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return undefined;
 	if (!Number.isFinite(startedAt) || !Number.isFinite(after)) return undefined;
 	const intervalMs = intervalMinutes * MS_PER_MINUTE;
-	if (!Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+	if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+		warnWorkflowHeartbeatUnschedulableInterval(intervalMinutes);
+		return undefined;
+	}
 	const boundaryAt = (n: number): number => startedAt + n * intervalMs;
 	const elapsed = after - startedAt;
 	const estimate = elapsed < 0 ? 1 : Math.floor(elapsed / intervalMs) + 1;
@@ -228,7 +252,9 @@ export function nextWorkflowHeartbeatBoundary(
 	while (boundaryAt(high) <= after) {
 		low = high;
 		high *= 2;
-		if (!Number.isFinite(high)) return undefined;
+		// `n` itself is no longer representable, but the series member it would
+		// name is: it rounds to the next representable instant after `after`.
+		if (!Number.isFinite(high)) return nextRepresentableAfter(after);
 	}
 	while (high - low > 1) {
 		const mid = Math.floor(low / 2 + high / 2);
@@ -242,6 +268,27 @@ export function nextWorkflowHeartbeatBoundary(
 
 function finiteBoundaryAfter(scheduledAt: number, after: number): number | undefined {
 	return Number.isFinite(scheduledAt) && scheduledAt > after ? scheduledAt : undefined;
+}
+
+/**
+ * The next representable instant after `at`, one unit in the last place away.
+ *
+ * JavaScript has no `Math.nextafter`, so the double is stepped at the bit level.
+ * Used only for a cadence finer than one ULP, where the anchored series member
+ * exists but no representable `n` names it.
+ */
+function nextRepresentableAfter(at: number): number | undefined {
+	if (!Number.isFinite(at)) return undefined;
+	const view = new DataView(new ArrayBuffer(8));
+	view.setFloat64(0, at);
+	// Stepping the bit pattern upward walks away from zero for a positive double
+	// and toward zero for a negative one, which is what "next larger" means on
+	// each side. A run's timestamps are positive, so the negative branch is a
+	// completeness guard rather than a live path.
+	const bits = view.getBigUint64(0);
+	view.setBigUint64(0, at >= 0 ? bits + 1n : bits - 1n);
+	const next = view.getFloat64(0);
+	return Number.isFinite(next) && next > at ? next : undefined;
 }
 
 /**
@@ -388,7 +435,7 @@ export function installWorkflowHeartbeatScheduler(
 		// on a fresh series. The write is a no-op until the run has durable progress
 		// of its own, and any such progress bumps the store, so this runs on the
 		// first refresh after the run becomes resumable.
-		persistAnchorOnce(run.id, anchorAt);
+		persistLaunchRecordOnce(run.id, anchorAt, intervalMinutes);
 		state.scheduled.set(run.id, {
 			runId: run.id,
 			scheduledAt,
@@ -462,7 +509,13 @@ export function installWorkflowHeartbeatScheduler(
 			// that window does not retro-fit a new cadence onto an owed boundary.
 			const owed = state.scheduled.get(run.id);
 			if (owed !== undefined && owed.scheduledAt <= now()) continue;
-			const intervalMinutes = resolveRunIntervalMinutes(state, options.resolveIntervalMinutes, run);
+			const launched = readLaunchRecord(run.id);
+			const intervalMinutes = resolveRunIntervalMinutes(
+				state,
+				options.resolveIntervalMinutes,
+				run,
+				launched?.intervalMinutes,
+			);
 			if (intervalMinutes === undefined) {
 				state.scheduled.delete(run.id);
 				continue;
@@ -478,6 +531,16 @@ export function installWorkflowHeartbeatScheduler(
 		arm();
 	};
 
+	/** The run's durable launch record, read at most once per run per process. */
+	function readLaunchRecord(runId: string): WorkflowHeartbeatLaunchRecord | undefined {
+		try {
+			return anchorStore?.readAnchorAt(runId);
+		} catch {
+			// A durable backend that is not ready falls back to live values.
+			return undefined;
+		}
+	}
+
 	/**
 	 * The run's cadence anchor: its original start time. A durable resume mints a
 	 * fresh `RunSnapshot.startedAt` under the original workflow id, so the
@@ -487,35 +550,34 @@ export function installWorkflowHeartbeatScheduler(
 	 *
 	 * A failed-run continuation legitimately starts a new series: it carries a
 	 * fresh run id, and the slice-1 identity is `runId + scheduledAt`, so it is a
-	 * different run and reads no anchor of its own.
+	 * different run and reads no record of its own.
 	 */
 	function resolveAnchorAt(run: WorkflowHeartbeatRun): number {
 		const cached = state.anchorAt.get(run.id);
 		if (cached !== undefined) return Math.min(cached, run.startedAt);
-		let stored: number | undefined;
-		try {
-			stored = anchorStore?.readAnchorAt(run.id);
-		} catch {
-			// A durable backend that is not ready falls back to the live start time.
-			stored = undefined;
-		}
+		const stored = readLaunchRecord(run.id)?.anchorAt;
 		const anchorAt = stored === undefined ? run.startedAt : Math.min(stored, run.startedAt);
 		state.anchorAt.set(run.id, anchorAt);
 		return anchorAt;
 	}
 
 	/**
-	 * Write the run's cadence anchor at most once per process, best-effort.
+	 * Write what the run launched with, at most once per process, best-effort.
 	 *
 	 * `recordAnchorAt` is itself a no-op until the run has durable progress of its
 	 * own, so this is called on every schedule pass until it succeeds and then
 	 * never again. Bounding it matters because a schedule pass runs on every store
 	 * invalidation for every running run.
+	 *
+	 * Only reached for a positive cadence, because `scheduleWorkflowHeartbeats`
+	 * returns `disabled` above this point — so a run launched with heartbeats off
+	 * leaves no durable artifact of any kind, which is what the acceptance
+	 * criterion "disabled (0) creates no timer or record" requires.
 	 */
-	function persistAnchorOnce(runId: string, anchorAt: number): void {
+	function persistLaunchRecordOnce(runId: string, anchorAt: number, intervalMinutes: number): void {
 		if (anchorStore === undefined || state.anchorPersisted.has(runId)) return;
 		try {
-			if (anchorStore.recordAnchorAt(runId, anchorAt)) state.anchorPersisted.add(runId);
+			if (anchorStore.recordAnchorAt(runId, { anchorAt, intervalMinutes })) state.anchorPersisted.add(runId);
 		} catch {
 			// A durable backend that is not ready must not stop a heartbeat; the
 			// next pass retries.
@@ -589,19 +651,25 @@ function resolveRunIntervalMinutes(
 	state: WorkflowHeartbeatSchedulerState,
 	resolve: (workflowName: string) => number | undefined,
 	run: WorkflowHeartbeatRun,
+	persistedIntervalMinutes?: number,
 ): number | undefined {
 	const memoized = state.intervalMinutes.get(run.id);
-	if (memoized !== undefined) return memoized;
-	const intervalMinutes = resolve(run.name);
-	if (intervalMinutes === undefined) return undefined;
-	// The authoring door already rejected negative and non-finite values; a
-	// definition that is missing, unreadable, or disabled schedules nothing rather
-	// than failing a background pass. Those two cases are indistinguishable here,
-	// which is why editing a live workflow from a positive cadence to `0` leaves
-	// an in-flight run on its launch cadence.
-	if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return undefined;
-	state.intervalMinutes.set(run.id, intervalMinutes);
-	return intervalMinutes;
+	// A memoized `0` means the run launched disabled, and stays disabled for its
+	// whole life however the definition is later edited.
+	if (memoized !== undefined) return memoized > 0 ? memoized : undefined;
+	// A persisted launch cadence outranks the live registry: it is what this run
+	// launched with, recovered across a process boundary. Absent on records
+	// written by earlier builds, which fall back to the registry.
+	const resolved = persistedIntervalMinutes ?? resolve(run.name);
+	// Not resolvable yet — startup discovery may still be warming up, so nothing
+	// is memoized and the next pass tries again.
+	if (resolved === undefined || !Number.isFinite(resolved)) return undefined;
+	// Memoize before the positivity test, so a run that launched disabled is
+	// remembered as such. Editing that workflow to a positive cadence mid-session
+	// must not start heartbeating a run that launched with heartbeats off, just as
+	// editing to `0` must not silence one that launched enabled.
+	state.intervalMinutes.set(run.id, resolved);
+	return resolved > 0 ? resolved : undefined;
 }
 
 function findRun(snapshot: StoreSnapshot, runId: string): RunSnapshot | undefined {
@@ -612,6 +680,20 @@ function warnWorkflowHeartbeatSendFailure(error: unknown): void {
 	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
 	const message = error instanceof Error ? error.message : String(error);
 	console.warn("[workflows] workflow heartbeat send failed", message);
+}
+
+/**
+ * A cadence so large that its first boundary is not a representable time.
+ * Authoring accepts every positive finite value, so this cannot be rejected at
+ * the door — but it must not be silent either, because the run simply never
+ * heartbeats.
+ */
+function warnWorkflowHeartbeatUnschedulableInterval(intervalMinutes: number): void {
+	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
+	console.warn(
+		`[workflows] heartbeatIntervalMinutes ${intervalMinutes} exceeds the largest representable cadence ` +
+			`(${MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES} minutes); no boundary can be scheduled for it`,
+	);
 }
 
 /**
