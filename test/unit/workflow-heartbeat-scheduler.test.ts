@@ -1290,6 +1290,36 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
+	test("a far-future boundary never displaces a due heartbeat or delays the wake-up", () => {
+		const store = createStore();
+		const soonId = testRunId("heartbeat-far-future-soon");
+		const farId = testRunId("heartbeat-far-future-far");
+		startRun(store, soonId, { name: "soon" });
+		startRun(store, farId, { name: "far" });
+		// The largest cadence whose milliseconds are still representable schedules
+		// a real boundary at `Number.MAX_VALUE` — roughly 5.7e297 years out. It sits
+		// in the same schedule map as ordinary runs and participates in the
+		// globally-next-due comparison, so pin that it sorts last and cannot starve
+		// a run that is actually due.
+		const harness = installHarness({
+			store,
+			intervals: { soon: 1, far: MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES },
+		});
+
+		assert.equal(harness.state.scheduled.size, 2, "both runs hold a schedule entry");
+		assert.equal(harness.state.scheduled.get(farId)?.scheduledAt, Number.MAX_VALUE);
+		assert.equal(harness.clock.live().length, 1, "still exactly one globally-next-due wake-up");
+		assert.equal(
+			harness.clock.live()[0]?.delayMs,
+			MINUTE_MS,
+			"and it is armed for the run that is actually due, not the far-future one",
+		);
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.deepEqual(runIds(harness.sent), [soonId], "only the due run heartbeats");
+		harness.scheduler.dispose();
+	});
+
 	test("a durable resume with a fresh startedAt stays on the original cadence", () => {
 		const runId = testRunId("heartbeat-anchor-durable-resume");
 		// A durable resume re-dispatches under the original workflow id but mints a
