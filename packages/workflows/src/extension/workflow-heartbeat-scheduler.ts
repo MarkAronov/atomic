@@ -723,28 +723,75 @@ function warnWorkflowHeartbeatUnschedulableInterval(intervalMinutes: number): vo
 	);
 }
 
+/** One normalized content part of a host message. */
+interface HostMessagePart {
+	readonly type: string;
+	readonly text?: string;
+}
+
+/** A host message as far as heartbeat consumption is concerned. */
+interface HostMessage {
+	readonly role: string;
+	readonly content: string | readonly HostMessagePart[];
+}
+
+/** The `message_end` payload the workflows-side handler receives. */
+interface HostMessageEndEvent {
+	readonly message: HostMessage;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function asHostMessagePart(value: unknown): HostMessagePart | undefined {
+	if (!isRecord(value)) return undefined;
+	const { type, text } = value;
+	if (typeof type !== "string") return undefined;
+	return typeof text === "string" ? { type, text } : { type };
+}
+
+/**
+ * Narrow an untyped `message_end` payload to the declared host shape.
+ *
+ * The handler signature is `(event?: unknown, ctx?) => unknown`, so `unknown` is
+ * the honest type of what arrives; it is validated once here and every consumer
+ * downstream reads a declared type instead of re-casting. A payload that does
+ * not match is rejected exactly as before rather than trusted because a type
+ * claims a shape.
+ */
+function asHostMessageEndEvent(event: unknown): HostMessageEndEvent | undefined {
+	if (!isRecord(event)) return undefined;
+	const message = event.message;
+	if (!isRecord(message)) return undefined;
+	const { role, content } = message;
+	if (typeof role !== "string") return undefined;
+	if (typeof content === "string") return { message: { role, content } };
+	if (!Array.isArray(content)) return undefined;
+	const parts: HostMessagePart[] = [];
+	for (const part of content) {
+		const parsed = asHostMessagePart(part);
+		if (parsed !== undefined) parts.push(parsed);
+	}
+	return { message: { role, content: parts } };
+}
+
 /**
  * The text of a consumed custom message, narrowed from an untyped host
  * `message_end` payload.
  *
- * The workflows-side `on` handler is typed `(event?: unknown, ctx?) => unknown`,
- * so the payload is narrowed here rather than cast. Both the string and the
- * normalized part-array content shapes are accepted, because the host may have
- * normalized the message before it is injected.
+ * Both the string and the normalized part-array content shapes are accepted,
+ * because the host may have normalized the message before it is injected.
  */
 export function workflowHeartbeatConsumedContent(event: unknown): string | undefined {
-	if (typeof event !== "object" || event === null) return undefined;
-	const message = (event as { message?: unknown }).message;
-	if (typeof message !== "object" || message === null) return undefined;
-	const candidate = message as { role?: unknown; content?: unknown };
-	if (candidate.role !== "custom") return undefined;
-	if (typeof candidate.content === "string") return candidate.content;
-	if (!Array.isArray(candidate.content)) return undefined;
+	const parsed = asHostMessageEndEvent(event);
+	if (parsed === undefined) return undefined;
+	const { role, content } = parsed.message;
+	if (role !== "custom") return undefined;
+	if (typeof content === "string") return content;
 	let text = "";
-	for (const part of candidate.content) {
-		if (typeof part !== "object" || part === null) continue;
-		const piece = part as { type?: unknown; text?: unknown };
-		if (piece.type === "text" && typeof piece.text === "string") text += piece.text;
+	for (const part of content) {
+		if (part.type === "text" && part.text !== undefined) text += part.text;
 	}
 	return text.length === 0 ? undefined : text;
 }

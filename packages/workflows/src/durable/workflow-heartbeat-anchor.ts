@@ -59,20 +59,40 @@ export interface WorkflowHeartbeatAnchorRecord {
 	readonly intervalMinutes?: number;
 }
 
+/**
+ * The stored checkpoint payload, before validation.
+ *
+ * `getToolOutput` returns whatever a previous process wrote, so the fields are
+ * declared optional and validated below rather than trusted. Naming the shape
+ * keeps the decode free of inline casts while leaving the trust boundary
+ * explicit.
+ */
+interface PersistedAnchorOutput {
+	readonly anchorAt?: number;
+	readonly intervalMinutes?: number;
+}
+
+function asPersistedAnchorOutput(output: unknown): PersistedAnchorOutput | undefined {
+	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
+	const { anchorAt, intervalMinutes } = output as Partial<Record<keyof PersistedAnchorOutput, unknown>>;
+	return {
+		...(typeof anchorAt === "number" ? { anchorAt } : {}),
+		...(typeof intervalMinutes === "number" ? { intervalMinutes } : {}),
+	};
+}
+
 /** The persisted launch anchor for a run, or undefined when absent or malformed. */
 export function readWorkflowHeartbeatAnchor(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
 ): WorkflowHeartbeatAnchorRecord | undefined {
-	const output = backend.getToolOutput(workflowId, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME);
-	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
-	const record = output as Record<string, unknown>;
-	const anchorAt = record.anchorAt;
-	if (typeof anchorAt !== "number" || !Number.isFinite(anchorAt)) return undefined;
-	const intervalMinutes = record.intervalMinutes;
+	const record = asPersistedAnchorOutput(backend.getToolOutput(workflowId, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME));
+	if (record === undefined) return undefined;
+	const { anchorAt, intervalMinutes } = record;
+	if (anchorAt === undefined || !Number.isFinite(anchorAt)) return undefined;
 	// Only a positive finite cadence is carried: a disabled run never writes a
 	// record at all, so a non-positive value here is corrupt rather than meaningful.
-	return typeof intervalMinutes === "number" && Number.isFinite(intervalMinutes) && intervalMinutes > 0
+	return intervalMinutes !== undefined && Number.isFinite(intervalMinutes) && intervalMinutes > 0
 		? { anchorAt, intervalMinutes }
 		: { anchorAt };
 }
