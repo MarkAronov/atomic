@@ -108,7 +108,7 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 	};
 
 	const runHead = (): void => {
-		if (!active || running) return;
+		if (!active || running || retryTimers.size > 0) return;
 		const details = queue[0];
 		if (details === undefined) return;
 		// The live guard runs immediately before every attempt, including the

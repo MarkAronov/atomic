@@ -3,10 +3,8 @@ import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../d
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
-import { isTerminalRunStatus } from "../shared/store-internal.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
@@ -43,6 +41,7 @@ import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.j
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
+	isWorkflowHeartbeatTerminalRun,
 	resetWorkflowHeartbeatSchedulerState,
 	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatScheduler,
@@ -235,16 +234,10 @@ export function createWorkflowExtensionRuntimeState(
 		});
 	}
 
-	/**
-	 * Whether a run still owns a heartbeat that already reached the parent.
-	 *
-	 * Reuses the store's own terminal authority — the same reading
-	 * `enqueueWorkflowHeartbeat` and `canDeliverWorkflowHeartbeat` take — so this
-	 * last guard cannot disagree with the three before it.
-	 */
+	/** Whether a run still owns a heartbeat that already reached the parent. */
 	function isWorkflowHeartbeatRunOwned(runId: string): boolean {
 		const run = store.runs().find((candidate) => candidate.id === runId);
-		return run !== undefined && !isTerminalRunStatus(effectiveRunStatus(run));
+		return run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
 	}
 
 	/**

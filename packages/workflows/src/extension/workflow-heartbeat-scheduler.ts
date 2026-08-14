@@ -324,18 +324,25 @@ function nextRepresentableAfter(at: number): number | undefined {
 }
 
 /**
- * Whether a run may hold a heartbeat schedule right now. Reuses the store's own
- * status authorities rather than restating them: `isTopLevelWorkflowRun` keeps
- * nested workflow runs from heartbeating the parent chat, and
- * `isTerminalRunStatus(effectiveRunStatus(run))` is the same terminal reading
- * lifecycle notices use, which also treats an actively blocked run as not
- * progressing.
+ * Whether a run may hold a heartbeat schedule right now. An effectively
+ * blocked run is not progressing, so it receives no new heartbeat even though
+ * its stored `running` status still makes it resumable.
  */
 export function isWorkflowHeartbeatEligibleRun(run: RunSnapshot): boolean {
 	if (!isTopLevelWorkflowRun(run)) return false;
 	if (run.status !== "running") return false;
 	if (run.pausedAt !== undefined) return false;
 	return !isTerminalRunStatus(effectiveRunStatus(run));
+}
+
+/**
+ * Whether a run is genuinely over and no longer owns heartbeat state.
+ * `recordRunBlocked` keeps a recoverable block at stored status `running`, so
+ * cleanup must use the store's terminal status rather than its effective
+ * lifecycle-notice status.
+ */
+export function isWorkflowHeartbeatTerminalRun(run: RunSnapshot): boolean {
+	return isTerminalRunStatus(run.status);
 }
 
 export function installWorkflowHeartbeatScheduler(
@@ -449,8 +456,8 @@ export function installWorkflowHeartbeatScheduler(
 	 * write only marks a run persisted when its own in-flight marker was still
 	 * there to remove.
 	 *
-	 * Does not arm: the two callers both re-arm afterwards, and re-arming from
-	 * inside `refresh()`'s loop would be wasted work.
+	 * Does not arm: the public cleanup door re-arms after this helper removes
+	 * every per-run field and queued identity.
 	 */
 	const clearRunHeartbeatState = (runId: string): boolean => {
 		let cleared = state.scheduled.delete(runId);
@@ -577,8 +584,8 @@ export function installWorkflowHeartbeatScheduler(
 			// boot sweep: a stale durable anchor or a leftover pending record for a
 			// run that is already terminal is discarded rather than replayed, and the
 			// anchor is neither read nor written for such a run.
-			if (isTerminalRunStatus(effectiveRunStatus(run))) {
-				clearRunHeartbeatState(run.id);
+			if (isWorkflowHeartbeatTerminalRun(run)) {
+				clearWorkflowHeartbeats(run.id);
 				continue;
 			}
 			observed.add(run.id);
@@ -611,7 +618,7 @@ export function installWorkflowHeartbeatScheduler(
 		// graph — owns nothing either. The sweep covers every per-run field, not
 		// just the schedule, so no timer, slot, or queued identity outlives its run.
 		for (const runId of trackedRunIds(state)) {
-			if (!observed.has(runId)) clearRunHeartbeatState(runId);
+			if (!observed.has(runId)) clearWorkflowHeartbeats(runId);
 		}
 		arm();
 	};

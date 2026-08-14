@@ -12,6 +12,7 @@ import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflo
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
+	isWorkflowHeartbeatTerminalRun,
 	MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
 	nextWorkflowHeartbeatBoundary,
 	type WorkflowHeartbeatAnchorStore,
@@ -1795,6 +1796,58 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 			harness.scheduler.dispose();
 		});
 	}
+
+	test("a recoverable active block pauses scheduling without destroying an admitted heartbeat", async () => {
+		const runId = testRunId("heartbeat-active-blocked");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, anchorStore: trackingAnchorStore(), defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "one heartbeat is admitted and awaiting parent pickup");
+
+		assert.equal(
+			store.recordRunBlocked(runId, "rate limited", {
+				failureKind: "rate_limit",
+				failureCode: "rate_limited",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: "Provider rate limit reached.",
+				failedStageId: "s1",
+				resumable: true,
+			}),
+			true,
+		);
+		assert.equal(
+			isWorkflowHeartbeatTerminalRun(runSnapshot(store, runId)),
+			false,
+			"stored running status remains owned even though lifecycle notices report blocked",
+		);
+		assert.deepEqual(heldFields(harness.state, runId), {
+			...NOTHING_HELD,
+			pending: true,
+			awaitingParentPickup: true,
+			lastEnqueuedAt: true,
+			anchorAt: true,
+			anchorPersisted: true,
+			intervalMinutes: true,
+		});
+		assert.equal(harness.clock.live().length, 0, "the resumable block owns no scheduled wake-up");
+
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "no new heartbeat is raised while the run is blocked");
+
+		assert.equal(store.recordRunEnd(runId, "failed"), true, "a true terminal transition is still accepted");
+		assert.equal(
+			isWorkflowHeartbeatTerminalRun(runSnapshot(store, runId)),
+			true,
+			"the stored failed end state is terminal",
+		);
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "terminal cleanup then removes all held state");
+		harness.scheduler.dispose();
+	});
 
 	test("repeat cleanup reports already-clear, creates no state, and never throws", () => {
 		const runId = testRunId("heartbeat-cleanup-repeat");

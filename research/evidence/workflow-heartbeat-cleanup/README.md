@@ -134,11 +134,20 @@ landed, rather than counted at the end.
 | `tmux-07-restart-continue.txt` | A restarted CLI resumes the same persisted session. The completed run and its history are restored; no heartbeat is replayed below the terminal card. |
 | `tmux-08-restart-quiet-3min.txt` | 4m 33s after the restart, still nothing new — this file is byte-identical to `tmux-07`. No stale schedule survived the process boundary. |
 
-The restart leg matters because the persisted session genuinely carried
-heartbeat state to reload: its JSONL held three `workflows:workflow-heartbeat`
-entries alongside `workflow.run.start` and `workflow.run.end`. After the
-restart it still held exactly three — the restored run raised none.
+The restart leg restored a session whose JSONL contained three
+`workflows:workflow-heartbeat` entries alongside `workflow.run.start` and
+`workflow.run.end`. The parent had consumed all three cards before completion,
+so their reconciliation completions were also persisted and restart recovery
+correctly skipped them. These captures prove the real queued-steer path was
+live — the parent replies quoted in `tmux-04` — and prove no terminal cadence
+or stale schedule raised a later card. They do not isolate Slice 3's final
+model-context invalidation from the parent scheduler branch; the host-level
+tests in `test/unit/workflow-heartbeat-parent-pickup.test.ts` provide that
+discriminating proof with an admitted-but-unread and a recovered card.
 
-`scripts/e2e/workflow-heartbeat-cleanup-evidence.sh` automates the pre-restart
-half of this scenario against its own scratch project, for re-running it without
-hand-driving tmux.
+`scripts/e2e/workflow-heartbeat-cleanup-evidence.sh` automates only the
+pre-restart shape against its committed `workflow-heartbeat-cleanup-evidence`
+fixture in a scratch project with `--no-session`. It does not reproduce the
+hand-driven `hb-slice3-throwaway` fixture, `/tmp/hb3-sessions`, or `--continue`
+restart leg captured here. The script remains the repeatable terminal-silence
+check; this README records the separate hand-driven restart evidence.

@@ -4,13 +4,12 @@ import { afterEach, describe, test } from "vitest";
 import type { MessageEndEventResult } from "../../packages/coding-agent/src/core/extensions/event-results.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import {
+	isWorkflowHeartbeatTerminalRun,
 	workflowHeartbeatConsumedContent,
 	workflowHeartbeatContextInvalidation,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
 import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { isTerminalRunStatus } from "../../packages/workflows/src/shared/store-internal.js";
 
 /**
  * Host-level regression for the heartbeat pickup signal (issue #1975).
@@ -201,7 +200,7 @@ describe("workflow heartbeat context invalidation", () => {
 							ctx.sessionManager.getEntries() as readonly SessionEntry[],
 							(runId) => {
 								const run = store.runs().find((candidate) => candidate.id === runId);
-								return run !== undefined && !isTerminalRunStatus(effectiveRunStatus(run));
+								return run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
 							},
 						);
 						return invalidation as MessageEndEventResult | undefined;
@@ -232,6 +231,66 @@ describe("workflow heartbeat context invalidation", () => {
 	function startRun(store: ReturnType<typeof createStore>, id: string): void {
 		store.recordRunStart({ id, name: "probe", inputs: {}, status: "running", stages: [], startedAt: 0 });
 	}
+
+	test("a card parked while its run becomes recoverably blocked still reaches the model", async () => {
+		const store = createStore();
+		startRun(store, RUN_ID);
+		const { harness, contexts } = await createInvalidatingHarness(store);
+		await harness.session.bindExtensions({ shutdownHandler: () => {} });
+
+		const started = Promise.withResolvers<void>();
+		harness.setResponses([
+			async (context, options) => {
+				recordContext(contexts, context);
+				started.resolve();
+				await new Promise<void>((resolve) => {
+					if (options?.signal?.aborted) resolve();
+					else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return fauxAssistantMessage("interrupted");
+			},
+			(context) => {
+				recordContext(contexts, context);
+				return fauxAssistantMessage("after the recoverable block");
+			},
+			fauxAssistantMessage("spare"),
+		]);
+
+		const active = harness.session.prompt("start a streaming turn");
+		await started.promise;
+		await harness.session.sendCustomMessage(
+			{
+				customType: "workflows:workflow-heartbeat",
+				content: [{ type: "text", text: HEARTBEAT_TEXT }],
+				display: true,
+				details: heartbeatDetails(),
+			},
+			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
+		);
+		harness.session.pauseQueuedMessages();
+		await harness.session.abort();
+		await active;
+
+		assert.equal(
+			store.recordRunBlocked(RUN_ID, "rate limited", {
+				failureKind: "rate_limit",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: "Provider rate limit reached.",
+				failedStageId: "s1",
+				resumable: true,
+			}),
+			true,
+		);
+
+		await harness.session.resumeQueuedMessages();
+		await harness.session.prompt("explicit resume driver");
+
+		assert.ok(
+			contextsCarrying(contexts, HEARTBEAT_TEXT) > 0,
+			"the resumable run still owns its admitted heartbeat, so the parent learns that it is stuck",
+		);
+	});
 
 	test("a card parked past its run's terminal state never reaches the model", async () => {
 		const store = createStore();
@@ -330,6 +389,14 @@ describe("workflow heartbeat context invalidation", () => {
 				recordContext(contexts, context);
 				return fauxAssistantMessage("spare");
 			},
+			(context) => {
+				recordContext(contexts, context);
+				return fauxAssistantMessage("spare two");
+			},
+			(context) => {
+				recordContext(contexts, context);
+				return fauxAssistantMessage("spare three");
+			},
 		]);
 
 		// A conversation has to exist before recovery can continue one.
@@ -346,12 +413,25 @@ describe("workflow heartbeat context invalidation", () => {
 			{ delivery: "steer" },
 			undefined,
 		);
+		harness.sessionManager.appendCustomMessageEntry(
+			"someone-else:notice",
+			[{ type: "text", text: FOREIGN_TEXT }],
+			true,
+			undefined,
+			true,
+			{ delivery: "steer" },
+			undefined,
+		);
 
 		// Binding again drives `recoverProtectedStreamingCustomMessages`.
 		await harness.session.bindExtensions({ shutdownHandler: () => {} });
 		await harness.session.prompt("drive the recovered queue");
 
 		assert.ok(contexts.length > 1, "the recovered queue drove a second turn");
+		assert.ok(
+			contextsCarrying(contexts, FOREIGN_TEXT) > 0,
+			"another extension's recovered card reaches the model, so recovery really requeued and drained",
+		);
 		assert.equal(
 			contextsCarrying(contexts, HEARTBEAT_TEXT),
 			0,

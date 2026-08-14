@@ -123,6 +123,39 @@ describe("workflow heartbeat delivery discard", () => {
 		delivery.dispose();
 	});
 
+	test("discarding a queued identity leaves another run's backing-off head untouched", () => {
+		const backoffId = testRunId("discard-backoff-head");
+		const droppedId = testRunId("discard-backoff-queued");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return payload.runId !== backoffId;
+			},
+			onSettled: () => {},
+		});
+
+		delivery.deliver(details(backoffId, 60_000));
+		const armed = timers.live();
+		assert.equal(armed.length, 1, "the failing head owns exactly one armed backoff handle");
+
+		// Admitting and then dropping a later identity must not re-enter a head
+		// that is waiting out its own backoff.
+		delivery.deliver(details(droppedId, 60_000));
+		assert.deepEqual(attempted, [backoffId], "admission burns no attempt from the head's budget");
+		assert.deepEqual(timers.live(), armed, "admission leaves the head's only handle intact");
+
+		assert.equal(delivery.discard(droppedId), true, "the queued entry for the other run is dropped");
+		assert.deepEqual(attempted, [backoffId], "discard burns no attempt from the head's budget");
+		assert.deepEqual(timers.live(), armed, "discard neither replaces nor orphans the head's handle");
+
+		timers.fireAll();
+		assert.deepEqual(attempted, [backoffId, backoffId], "the head retries only when its own timer fires");
+		delivery.dispose();
+	});
+
 	test("an in-flight head is left to settle rather than recalled", async () => {
 		const runId = testRunId("discard-in-flight");
 		const timers = fakeTimers();

@@ -708,6 +708,8 @@ Each heartbeat reaches the parent chat as a `workflows:workflow-heartbeat` card 
 
 When a run reaches any terminal status — completed, failed, blocked, skipped, cancelled, or killed — one idempotent cleanup pass drops its wake-up timer, its next boundary, its outstanding slot, any heartbeat of its own still queued inside the scheduler with the retry timer that belonged to it, and its cadence and durable-anchor memos. Repeating the pass creates nothing and resurrects nothing. Because it reads observed state rather than transition events, it is also the recovery pass: a later process discards a stale durable anchor or leftover queued record for an already-terminal run instead of replaying it, and never replays a missed boundary for an active one. A heartbeat the host already accepted into the parent's queue is past that pass, since nothing withdraws a queued message, so it is invalidated when the parent reads it instead: a heartbeat whose run is terminal, or absent from this process, is excluded from the model's context. That covers a card parked through a long turn and a card recovered from a previous process alike. The rendered card stays in the transcript as a record of what was raised; only the model-facing steer is invalidated ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
 
+A recoverable provider or rate-limit block is not the terminal `blocked` status: the run remains stored as `running` and resumable. It raises no new heartbeat while blocked, but keeps its cadence state and any card already waiting with the parent; cleanup runs only once the run's own status becomes terminal.
+
 ```ts
 import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
