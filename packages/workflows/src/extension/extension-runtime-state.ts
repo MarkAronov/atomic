@@ -1,3 +1,8 @@
+import { getDurableBackend } from "../durable/factory.js";
+import {
+	readWorkflowHeartbeatScheduleRecord,
+	recordWorkflowHeartbeatScheduleCheckpoint,
+} from "../durable/workflow-heartbeat-schedule.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
@@ -41,11 +46,40 @@ import {
 	installWorkflowHeartbeatScheduler,
 	resetWorkflowHeartbeatSchedulerState,
 	type WorkflowHeartbeatScheduler,
+	type WorkflowHeartbeatScheduleStore,
 } from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
 import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.js";
 import { type WorkflowReloadReport, workflowReloadDiagnostics } from "./workflow-reload-report.js";
+
+/**
+ * Best-effort durable schedule store for workflow heartbeats.
+ *
+ * `getDurableBackend()` throws `DbosNotReadyError` until a backend exists, and
+ * the scheduler installs at `session_start`, before any workflow has run — so
+ * both sides swallow failure and fall back to the derived cadence. Nothing
+ * behavioral depends on the record: it is read only as a monotone floor on a
+ * boundary that has already passed.
+ */
+function durableWorkflowHeartbeatScheduleStore(): WorkflowHeartbeatScheduleStore {
+	return {
+		readLastScheduledAt(runId) {
+			try {
+				return readWorkflowHeartbeatScheduleRecord(getDurableBackend(), runId)?.scheduledAt;
+			} catch {
+				return undefined;
+			}
+		},
+		recordScheduled(record) {
+			try {
+				recordWorkflowHeartbeatScheduleCheckpoint(getDurableBackend(), record);
+			} catch {
+				// A backend that is not ready must not break a background pass.
+			}
+		},
+	};
+}
 
 export interface WorkflowExtensionRuntimeState {
 	persistenceRef: { current: WorkflowPersistencePort | undefined };
@@ -138,6 +172,24 @@ export function createWorkflowExtensionRuntimeState(
 			sendMessage: sendWorkflowNotificationMessage,
 		});
 	};
+	// The parent chat reports finishing a turn and draining its queued messages.
+	// That is the only public signal that an admitted heartbeat has actually been
+	// picked up, so it is what releases a held pending slot.
+	//
+	// Registered exactly once, at construction: `pi.on` has no unsubscribe, so a
+	// per-install registration would accumulate a handler on every notification
+	// cycle. The mutable scheduler reference is what routes the signal to the
+	// current installation, and a `null` reference makes it a no-op.
+	//
+	// The same condition decides whether the scheduler holds a slot at all, so the
+	// registration and the option can never disagree: a host that reports no
+	// availability would leave a held slot with nothing to release it.
+	const parentAvailabilityReported = typeof pi.on === "function";
+	if (parentAvailabilityReported) {
+		pi.on?.("agent_settled", () => {
+			workflowHeartbeatScheduler?.notifyParentAvailable();
+		});
+	}
 	/**
 	 * Workflow heartbeats share the lifecycle-notice lifetime: they are armed
 	 * while notifications are active and disposed with them. The cadence itself
@@ -153,21 +205,10 @@ export function createWorkflowExtensionRuntimeState(
 			state: workflowHeartbeatSchedulerState,
 			sendMessage: sendWorkflowNotificationMessage,
 			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
+			parentAvailabilityReported,
+			scheduleStore: durableWorkflowHeartbeatScheduleStore(),
 		});
 	};
-	// The parent chat reports finishing a turn and draining its queued messages.
-	// That is the only public signal that an admitted heartbeat has actually been
-	// picked up, so it is what releases a held pending slot.
-	//
-	// Registered exactly once, at construction: `pi.on` has no unsubscribe, so a
-	// per-install registration would accumulate a handler on every notification
-	// cycle. The mutable scheduler reference is what routes the signal to the
-	// current installation, and a `null` reference makes it a no-op.
-	if (typeof pi.on === "function") {
-		pi.on("agent_settled", () => {
-			workflowHeartbeatScheduler?.notifyParentAvailable();
-		});
-	}
 
 	const hostStageSessionDir: { current: string | undefined } = { current: undefined };
 	const resolveDefaultStageSessionDir = (): string | undefined => hostStageSessionDir.current;

@@ -124,10 +124,10 @@ save "first-heartbeat"
 
 # 4. One interval later, a second card. Recurrence, not a one-shot notice.
 #
-# The slot holding the first heartbeat is released when the parent reports
-# settling its turn; if that signal never arrives, the one-interval hold cap
-# releases it instead and the second card lands a boundary later. The window
-# below covers both outcomes.
+# The first heartbeat holds its slot until the parent reports settling its turn,
+# with no deadline behind it — so this step is the load-bearing check that the
+# host's `agent_settled` really reaches the extension. If it never did, no
+# second card would ever appear and this wait would fail rather than pass late.
 await_count "WORKFLOW HEARTBEAT" 2 "the second heartbeat card one interval later" 200
 save "second-heartbeat"
 

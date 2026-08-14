@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { createInMemoryTestBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	readWorkflowHeartbeatScheduleRecord,
+	recordWorkflowHeartbeatScheduleCheckpoint,
+} from "../../packages/workflows/src/durable/workflow-heartbeat-schedule.js";
 import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
@@ -7,6 +12,7 @@ import {
 	nextWorkflowHeartbeatBoundary,
 	type WorkflowHeartbeatScheduler,
 	type WorkflowHeartbeatSchedulerState,
+	type WorkflowHeartbeatScheduleStore,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -21,6 +27,12 @@ type Store = ReturnType<typeof createStore>;
 const MINUTE_MS = 60_000;
 /** Fixed start anchor so every expected boundary in this file is literal arithmetic. */
 const STARTED_AT = 1_000_000;
+/**
+ * A production-scale anchor. `STARTED_AT` is small enough that its ULP is
+ * ~1e-10 ms, which hides floating-point behavior that only appears at a real
+ * epoch timestamp, where one ULP is 2^-12 ms.
+ */
+const EPOCH_ANCHOR = 1_700_000_000_000;
 
 interface CapturedSend {
 	readonly customType: string;
@@ -118,11 +130,14 @@ function installHarness(opts: {
 	defaultInterval?: number;
 	lateFireMs?: number;
 	/**
-	 * Milliseconds after an admitted send at which the parent reports settling.
-	 * Omitted means the parent never reports becoming available, which is how
-	 * the busy-parent and hold-cap cases are expressed.
+	 * Milliseconds after an admitted send at which the parent reports picking the
+	 * card up. Omitted means the parent never reports it, which is how the
+	 * busy-parent cases are expressed.
 	 */
 	parentSettleDelayMs?: number;
+	/** Defaults to true: the shipped host always routes `agent_settled`. */
+	parentAvailabilityReported?: boolean;
+	scheduleStore?: WorkflowHeartbeatScheduleStore;
 	state?: WorkflowHeartbeatSchedulerState;
 	send?: (details: WorkflowHeartbeatEventDetails, sent: readonly CapturedSend[]) => Promise<void> | undefined;
 }): Harness {
@@ -137,6 +152,8 @@ function installHarness(opts: {
 		state,
 		now: clock.now,
 		timers: clock.timerApi,
+		parentAvailabilityReported: opts.parentAvailabilityReported ?? true,
+		...(opts.scheduleStore === undefined ? {} : { scheduleStore: opts.scheduleStore }),
 		resolveIntervalMinutes: (name) => opts.intervals?.[name] ?? opts.defaultInterval,
 		sendMessage: (message, options) => {
 			const captured = message as unknown as {
@@ -268,9 +285,37 @@ describe("workflow heartbeat cadence", () => {
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, 0, STARTED_AT), undefined);
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, -1, STARTED_AT), undefined);
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, Number.NaN, STARTED_AT), undefined);
-		// Authoring accepts a denormal interval; no finite boundary exists for it,
-		// and no schedule is the narrow, non-throwing answer.
+		// Authoring accepts a denormal interval; no finite `n` yields a
+		// representable boundary for it, and no schedule is the narrow,
+		// non-throwing answer. Asserted at both anchors, because the anchor's ULP
+		// is what decides this.
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, Number.MIN_VALUE, STARTED_AT), undefined);
+		assert.equal(nextWorkflowHeartbeatBoundary(EPOCH_ANCHOR, Number.MIN_VALUE, EPOCH_ANCHOR), undefined);
+	});
+
+	test("a cadence finer than one ULP at a real epoch anchor still yields its first anchored boundary", () => {
+		// At `1.7e12` one ULP is 2^-12 ms = 0.000244140625 ms, and a 1e-9-minute
+		// cadence is 0.00006 ms — so the first representably-greater multiple is
+		// n = 3, which probing only n and n + 1 would miss. The test anchor's ULP
+		// is six orders of magnitude smaller, which is why the assertions above
+		// cannot catch this.
+		assert.equal(
+			nextWorkflowHeartbeatBoundary(EPOCH_ANCHOR, 1e-9, EPOCH_ANCHOR),
+			EPOCH_ANCHOR + 0.000244140625,
+			"the boundary is the third anchored multiple, still exactly on the series",
+		);
+		// A cadence coarser than one ULP is unaffected and still lands at n = 1.
+		assert.equal(nextWorkflowHeartbeatBoundary(EPOCH_ANCHOR, 1e-7, EPOCH_ANCHOR), EPOCH_ANCHOR + 0.006103515625);
+
+		// The installed scheduler arms such a run rather than treating a valid
+		// authored interval as unschedulable.
+		const runId = testRunId("heartbeat-sub-ulp-cadence");
+		const store = createStore();
+		startRun(store, runId, { startedAt: EPOCH_ANCHOR });
+		const harness = installHarness({ store, startAt: EPOCH_ANCHOR, defaultInterval: 1e-9 });
+		assert.equal(harness.state.scheduled.size, 1, "a sub-ULP cadence is scheduled, not silently dropped");
+		assert.equal(harness.clock.live().length, 1, "and one wake-up is armed for it");
+		harness.scheduler.dispose();
 	});
 
 	test("only one pending heartbeat exists per run while a send is in flight", () => {
@@ -329,21 +374,48 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a parent that never reports availability resumes the cadence rather than going silent", () => {
-		const runId = testRunId("heartbeat-hold-cap");
+	test("a parent that never picks a heartbeat up keeps the slot rather than stacking a second card", () => {
+		const runId = testRunId("heartbeat-no-pickup");
 		const store = createStore();
 		startRun(store, runId);
-		// No pickup signal ever arrives. The hold cap of one cadence interval is
-		// what keeps this from silencing the run forever.
+		// One long parent turn spans several boundaries. "Retain exactly one
+		// pending event" is about the event, not about the scheduler's own map, so
+		// no deadline may release the slot while the card is still unread.
 		const harness = installHarness({ store, defaultInterval: 1 });
 
-		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS + 30_000);
+		harness.clock.advanceTo(STARTED_AT + 5 * MINUTE_MS + 30_000);
 		assert.deepEqual(
 			boundaries(harness.sent),
-			[STARTED_AT + MINUTE_MS, STARTED_AT + 3 * MINUTE_MS],
-			"the held slot expires one interval later and the cadence resumes at the next future boundary",
+			[STARTED_AT + MINUTE_MS],
+			"no second card is admitted while the first is still outstanding",
 		);
-		assert.ok(harness.sent.length < 4, "the skipped boundary is dropped rather than replayed once the hold expires");
+		assert.equal(harness.state.pending.size, 1);
+		assert.equal(harness.state.awaitingParentPickup.size, 1);
+		assert.equal(harness.state.scheduled.size, 0, "the cadence pauses rather than stacking");
+
+		// Pickup, whenever it comes, resumes at the first future boundary only.
+		harness.scheduler.notifyParentAvailable();
+		harness.clock.advanceTo(STARTED_AT + 6 * MINUTE_MS + 5_000);
+		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 6 * MINUTE_MS]);
+		harness.scheduler.dispose();
+	});
+
+	test("a host that reports no parent availability releases on admission instead of going silent", () => {
+		const runId = testRunId("heartbeat-no-availability-signal");
+		const store = createStore();
+		startRun(store, runId);
+		// Nothing could ever release a held slot on such a host, so holding it
+		// would silence the run. Releasing on admission is the only live choice.
+		const harness = installHarness({ store, defaultInterval: 1, parentAvailabilityReported: false });
+
+		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS + 5_000);
+		assert.deepEqual(boundaries(harness.sent), [
+			STARTED_AT + MINUTE_MS,
+			STARTED_AT + 2 * MINUTE_MS,
+			STARTED_AT + 3 * MINUTE_MS,
+		]);
+		assert.equal(harness.state.pending.size, 0);
+		assert.equal(harness.state.awaitingParentPickup.size, 0);
 		harness.scheduler.dispose();
 	});
 
@@ -392,7 +464,7 @@ describe("workflow heartbeat cadence", () => {
 
 		assert.equal(harness.sent.length, 1, "the terminal run is suppressed instead of retried");
 		assert.equal(harness.state.pending.size, 0, "the suppressed identity releases its slot");
-		assert.equal(harness.state.pendingHoldExpiresAt.size, 0);
+		assert.equal(harness.state.awaitingParentPickup.size, 0);
 		harness.scheduler.dispose();
 	});
 
@@ -417,7 +489,7 @@ describe("workflow heartbeat cadence", () => {
 
 		assert.equal(harness.sent.length, WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS, "attempts are capped");
 		assert.equal(harness.state.pending.size, 0, "an undelivered identity does not hold the slot");
-		assert.equal(harness.state.pendingHoldExpiresAt.size, 0, "nothing is held, because nothing was admitted");
+		assert.equal(harness.state.awaitingParentPickup.size, 0, "nothing is held, because nothing was admitted");
 		assert.ok(
 			(harness.state.scheduled.get(runId)?.scheduledAt ?? 0) > harness.clock.now(),
 			"the cadence is re-armed at a future boundary",
@@ -683,5 +755,183 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		assert.equal(harness.clock.live().length, 0, "no timer survives dispose");
 		harness.clock.advanceBy(5 * MINUTE_MS);
 		assert.equal(harness.sent.length, 0);
+	});
+});
+
+describe("workflow heartbeat durable schedule record", () => {
+	function recordingScheduleStore(): WorkflowHeartbeatScheduleStore & {
+		readonly records: { runId: string; scheduledAt: number; intervalMinutes: number }[];
+	} {
+		const records: { runId: string; scheduledAt: number; intervalMinutes: number }[] = [];
+		return {
+			records,
+			readLastScheduledAt(runId) {
+				let last: number | undefined;
+				for (const record of records) {
+					if (record.runId === runId && (last === undefined || record.scheduledAt > last)) {
+						last = record.scheduledAt;
+					}
+				}
+				return last;
+			},
+			recordScheduled(record) {
+				records.push(record);
+			},
+		};
+	}
+
+	test("a positive interval records exactly one boundary per run and a disabled one records nothing", () => {
+		const enabledId = testRunId("heartbeat-record-enabled");
+		const disabledId = testRunId("heartbeat-record-disabled");
+		const store = createStore();
+		startRun(store, enabledId, { name: "enabled" });
+		startRun(store, disabledId, { name: "disabled" });
+		const scheduleStore = recordingScheduleStore();
+		const harness = installHarness({
+			store,
+			scheduleStore,
+			intervals: { enabled: 1, disabled: 0 },
+			parentSettleDelayMs: 1_000,
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.deepEqual(scheduleStore.records, [
+			{ runId: enabledId, scheduledAt: STARTED_AT + MINUTE_MS, intervalMinutes: 1 },
+		]);
+		assert.equal(
+			scheduleStore.records.filter((record) => record.runId === disabledId).length,
+			0,
+			"a 0 interval creates no durable record at all",
+		);
+
+		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 5_000);
+		assert.equal(
+			scheduleStore.records.filter((record) => record.runId === enabledId).length,
+			2,
+			"one record per raised boundary, never more than one outstanding",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("a restored record is a floor only: recovery still takes the first future boundary", () => {
+		const runId = testRunId("heartbeat-record-floor");
+		const store = createStore();
+		startRun(store, runId, { startedAt: STARTED_AT });
+		const scheduleStore = recordingScheduleStore();
+		// A previous process recorded boundary 2. The new process starts mid-way
+		// between boundaries 3 and 4.
+		scheduleStore.recordScheduled({ runId, scheduledAt: STARTED_AT + 2 * MINUTE_MS, intervalMinutes: 1 });
+		const harness = installHarness({
+			store,
+			scheduleStore,
+			startAt: STARTED_AT + 3 * MINUTE_MS + 30_000,
+			defaultInterval: 1,
+		});
+
+		assert.equal(
+			harness.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + 4 * MINUTE_MS,
+			"the floor is in the past, so `now` still decides the boundary",
+		);
+		harness.clock.advanceTo(STARTED_AT + 4 * MINUTE_MS + 5_000);
+		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + 4 * MINUTE_MS], "no recorded boundary is replayed");
+		harness.scheduler.dispose();
+	});
+
+	test("a schedule store that throws never stops the cadence", () => {
+		const runId = testRunId("heartbeat-record-unavailable");
+		const store = createStore();
+		startRun(store, runId);
+		// Models `getDurableBackend()` raising DbosNotReadyError at session start.
+		const throwingStore: WorkflowHeartbeatScheduleStore = {
+			readLastScheduledAt() {
+				throw new Error("DbosNotReadyError: no durable backend");
+			},
+			recordScheduled() {
+				throw new Error("DbosNotReadyError: no durable backend");
+			},
+		};
+		const harness = installHarness({
+			store,
+			scheduleStore: throwingStore,
+			defaultInterval: 1,
+			parentSettleDelayMs: 1_000,
+		});
+
+		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 5_000);
+		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 2 * MINUTE_MS]);
+		harness.scheduler.dispose();
+	});
+});
+
+describe("workflow heartbeat schedule checkpoint", () => {
+	/** The backend ignores a checkpoint for a workflow it has never seen. */
+	function registerRun(backend: ReturnType<typeof createInMemoryTestBackend>, runId: string): void {
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			createdAt: STARTED_AT,
+			status: "running",
+		});
+	}
+
+	test("round-trips one reserved record per run through the durable backend", () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-checkpoint-roundtrip");
+		registerRun(backend, runId);
+		assert.equal(readWorkflowHeartbeatScheduleRecord(backend, runId), undefined, "absent before any write");
+
+		assert.equal(
+			recordWorkflowHeartbeatScheduleCheckpoint(backend, {
+				runId,
+				scheduledAt: STARTED_AT + MINUTE_MS,
+				intervalMinutes: 1,
+			}),
+			true,
+		);
+		assert.deepEqual(readWorkflowHeartbeatScheduleRecord(backend, runId), {
+			scheduledAt: STARTED_AT + MINUTE_MS,
+			intervalMinutes: 1,
+		});
+
+		// Monotone: a later boundary wins, an equal or earlier one is refused, so a
+		// retry cannot walk the floor backwards.
+		assert.equal(
+			recordWorkflowHeartbeatScheduleCheckpoint(backend, {
+				runId,
+				scheduledAt: STARTED_AT + 2 * MINUTE_MS,
+				intervalMinutes: 1,
+			}),
+			true,
+		);
+		assert.equal(readWorkflowHeartbeatScheduleRecord(backend, runId)?.scheduledAt, STARTED_AT + 2 * MINUTE_MS);
+		assert.equal(
+			recordWorkflowHeartbeatScheduleCheckpoint(backend, {
+				runId,
+				scheduledAt: STARTED_AT + MINUTE_MS,
+				intervalMinutes: 1,
+			}),
+			false,
+			"an earlier boundary never overwrites a later record",
+		);
+		assert.equal(readWorkflowHeartbeatScheduleRecord(backend, runId)?.scheduledAt, STARTED_AT + 2 * MINUTE_MS);
+	});
+
+	test("a non-positive or non-finite interval writes no record at all", () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-checkpoint-disabled");
+		registerRun(backend, runId);
+		for (const intervalMinutes of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+			assert.equal(
+				recordWorkflowHeartbeatScheduleCheckpoint(backend, {
+					runId,
+					scheduledAt: STARTED_AT + MINUTE_MS,
+					intervalMinutes,
+				}),
+				false,
+			);
+		}
+		assert.equal(readWorkflowHeartbeatScheduleRecord(backend, runId), undefined);
 	});
 });
