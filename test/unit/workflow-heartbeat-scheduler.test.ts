@@ -1695,3 +1695,388 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 		harness.scheduler.dispose();
 	});
 });
+
+describe("workflow heartbeat terminal cleanup and recovery", () => {
+	/** Every terminal status the store's own authority recognises. */
+	const TERMINAL_STATUSES = ["completed", "failed", "blocked", "skipped", "cancelled", "killed"] as const;
+
+	interface TrackingAnchorStore extends WorkflowHeartbeatAnchorStore {
+		readonly reads: string[];
+		readonly writes: string[];
+	}
+
+	/** Records which runs the scheduler read or wrote an anchor for. */
+	function trackingAnchorStore(seed?: {
+		runId: string;
+		anchorAt: number;
+		intervalMinutes?: number;
+	}): TrackingAnchorStore {
+		const stored = new Map<string, WorkflowHeartbeatLaunchRecord>();
+		if (seed !== undefined) {
+			const { runId, ...record } = seed;
+			stored.set(runId, record);
+		}
+		const reads: string[] = [];
+		const writes: string[] = [];
+		return {
+			reads,
+			writes,
+			readAnchorAt(runId) {
+				reads.push(runId);
+				return stored.get(runId);
+			},
+			async recordAnchorAt(runId, record) {
+				writes.push(runId);
+				if (!stored.has(runId)) stored.set(runId, record);
+				return true;
+			},
+		};
+	}
+
+	/** Every per-run field the scheduler owns, so a leak in any one of them fails. */
+	function heldFields(state: WorkflowHeartbeatSchedulerState, runId: string): Record<string, boolean> {
+		return {
+			scheduled: state.scheduled.has(runId),
+			pending: state.pending.has(runId),
+			awaitingParentPickup: state.awaitingParentPickup.has(runId),
+			lastEnqueuedAt: state.lastEnqueuedAt.has(runId),
+			anchorAt: state.anchorAt.has(runId),
+			anchorPersisted: state.anchorPersisted.has(runId),
+			anchorWritesPending: state.anchorWritesPending.has(runId),
+			intervalMinutes: state.intervalMinutes.has(runId),
+		};
+	}
+
+	const NOTHING_HELD: Record<string, boolean> = {
+		scheduled: false,
+		pending: false,
+		awaitingParentPickup: false,
+		lastEnqueuedAt: false,
+		anchorAt: false,
+		anchorPersisted: false,
+		anchorWritesPending: false,
+		intervalMinutes: false,
+	};
+
+	for (const status of TERMINAL_STATUSES) {
+		test(`a run that reaches ${status} keeps no timer, schedule, slot, or memo`, async () => {
+			const runId = testRunId(`heartbeat-cleanup-${status}`);
+			const store = createStore();
+			startRun(store, runId);
+			const anchorStore = trackingAnchorStore();
+			const harness = installHarness({ store, anchorStore, defaultInterval: 1 });
+
+			// One heartbeat is admitted and held, so the run owns the widest set of
+			// state it can: a held slot, its card text, a cadence memo, and an
+			// acknowledged durable anchor.
+			harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+			await flushMicrotasks();
+			assert.equal(harness.sent.length, 1);
+			assert.deepEqual(heldFields(harness.state, runId), {
+				...NOTHING_HELD,
+				pending: true,
+				awaitingParentPickup: true,
+				lastEnqueuedAt: true,
+				anchorAt: true,
+				anchorPersisted: true,
+				intervalMinutes: true,
+			});
+
+			assert.equal(store.recordRunEnd(runId, status), true, `the store accepted the ${status} transition`);
+			assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "cleanup leaves the run owning nothing");
+			assert.equal(harness.clock.live().length, 0, "no wake-up survives the run that owned it");
+
+			harness.clock.advanceBy(5 * MINUTE_MS);
+			await flushMicrotasks();
+			assert.equal(harness.sent.length, 1, "no further boundary is ever raised");
+			harness.scheduler.dispose();
+		});
+	}
+
+	test("repeat cleanup reports already-clear, creates no state, and never throws", () => {
+		const runId = testRunId("heartbeat-cleanup-repeat");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+		assert.equal(harness.state.scheduled.size, 1, "the run owns a schedule to clear");
+
+		assert.deepEqual(harness.scheduler.clearWorkflowHeartbeats(runId), { kind: "cleared" });
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(harness.clock.live().length, 0, "the wake-up was re-derived from what is left");
+
+		assert.deepEqual(
+			harness.scheduler.clearWorkflowHeartbeats(runId),
+			{ kind: "already-clear" },
+			"a second pass has nothing to clear",
+		);
+		assert.deepEqual(
+			harness.scheduler.clearWorkflowHeartbeats(testRunId("heartbeat-cleanup-never-seen")),
+			{ kind: "already-clear" },
+			"a run the scheduler never saw is already clear rather than an error",
+		);
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "repeat cleanup created nothing");
+		assert.equal(harness.state.scheduled.size, 0, "and resurrected no schedule");
+		assert.equal(harness.clock.live().length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("an anchor write that acknowledges after cleanup marks nothing persisted", async () => {
+		const runId = testRunId("heartbeat-cleanup-late-anchor");
+		const store = createStore();
+		startRun(store, runId);
+		let acknowledge: ((stored: boolean) => void) | undefined;
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			anchorStore: {
+				readAnchorAt() {
+					return undefined;
+				},
+				recordAnchorAt() {
+					return new Promise<boolean>((resolve) => {
+						acknowledge = resolve;
+					});
+				},
+			},
+		});
+		assert.equal(harness.state.anchorWritesPending.has(runId), true, "a write is in flight");
+
+		store.recordRunEnd(runId, "completed");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+
+		acknowledge?.(true);
+		await flushMicrotasks();
+		assert.deepEqual(
+			heldFields(harness.state, runId),
+			NOTHING_HELD,
+			"a durable acknowledgement arriving after cleanup re-creates nothing",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("a send that settles after cleanup does not re-hold the run's slot", async () => {
+		const runId = testRunId("heartbeat-cleanup-late-send");
+		const store = createStore();
+		let admit: (() => void) | undefined;
+		startRun(store, runId);
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () =>
+				new Promise<void>((resolve) => {
+					admit = resolve;
+				}),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 1, "the send is with the host and cannot be recalled");
+		assert.equal(harness.state.pending.has(runId), true);
+
+		store.recordRunEnd(runId, "killed");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+
+		admit?.();
+		await flushMicrotasks();
+		assert.deepEqual(
+			heldFields(harness.state, runId),
+			NOTHING_HELD,
+			"the in-flight send settles inertly rather than re-holding a slot",
+		);
+		assert.equal(harness.clock.live().length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("terminal before enqueue: the due boundary is dropped and enqueue refuses it", () => {
+		const runId = testRunId("heartbeat-cleanup-terminal-before-enqueue");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+		const details: WorkflowHeartbeatEventDetails = {
+			runId,
+			scheduledAt: STARTED_AT + MINUTE_MS,
+			workflowName: "heartbeat-workflow",
+			startedAt: STARTED_AT,
+			intervalMinutes: 1,
+		};
+
+		// The boundary comes due, and the run finishes before the armed wake-up
+		// ever runs.
+		harness.clock.advanceWithoutFiring(STARTED_AT + MINUTE_MS + 10);
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS, "the boundary is owed");
+		store.recordRunEnd(runId, "failed", undefined, "boom");
+
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "cleanup drops the owed boundary");
+		assert.equal(harness.clock.live().length, 0, "and its wake-up");
+		harness.clock.fireDue();
+		assert.equal(harness.sent.length, 0);
+		assert.deepEqual(
+			harness.scheduler.enqueueWorkflowHeartbeat(details),
+			{ kind: "suppressed", reason: "terminal" },
+			"a boundary handed in directly is still refused",
+		);
+		assert.equal(harness.sent.length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("terminal after enqueue, while the identity waits behind another run", async () => {
+		const store = createStore();
+		const tied = [testRunId("heartbeat-cleanup-queued-a"), testRunId("heartbeat-cleanup-queued-b")].sort();
+		const [firstId, secondId] = [tied[0] as string, tied[1] as string];
+		startRun(store, firstId);
+		startRun(store, secondId);
+		let admitFirst: (() => void) | undefined;
+		// The first identity is admitted but unresolved, so the second is enqueued
+		// and sits in the delivery queue with no attempt of its own yet.
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: (details) =>
+				details.runId === firstId
+					? new Promise<void>((resolve) => {
+							admitFirst = resolve;
+						})
+					: undefined,
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.deepEqual(runIds(harness.sent), [firstId], "the second identity is queued, not yet attempted");
+		assert.equal(harness.state.pending.has(secondId), true);
+
+		store.recordRunEnd(secondId, "cancelled");
+		assert.deepEqual(heldFields(harness.state, secondId), NOTHING_HELD);
+
+		admitFirst?.();
+		await flushMicrotasks();
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		await flushMicrotasks();
+		assert.deepEqual(runIds(harness.sent), [firstId], "the queued identity of a terminal run is never processed");
+		harness.scheduler.dispose();
+	});
+
+	test("terminal after admission: the held slot is released and a late consumption arms nothing", () => {
+		const runId = testRunId("heartbeat-cleanup-terminal-after-admission");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		const content = harness.sent[0]?.content ?? "";
+		assert.equal(harness.state.awaitingParentPickup.get(runId), content, "the card is admitted and unread");
+
+		store.recordRunEnd(runId, "skipped");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "the slot is released by cleanup");
+		assert.equal(harness.clock.live().length, 0);
+
+		// The parent may still read the admitted card afterwards; that signal must
+		// release nothing and re-arm nothing.
+		harness.scheduler.notifyHeartbeatConsumed(content);
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(harness.clock.live().length, 0, "a late consumption re-arms no cadence");
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		assert.equal(harness.sent.length, 1);
+		harness.scheduler.dispose();
+	});
+
+	test("recovery discards a stale durable anchor without reading or writing it", () => {
+		const runId = testRunId("heartbeat-recovery-stale-anchor");
+		const store = createStore();
+		// The durable-reopen shape: a fresh process, and the run reappears in the
+		// store already terminal.
+		store.recordRunStart({
+			id: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			status: "completed",
+			stages: [],
+			startedAt: STARTED_AT,
+		});
+		const anchorStore = trackingAnchorStore({ runId, anchorAt: STARTED_AT, intervalMinutes: 1 });
+		const harness = installHarness({
+			store,
+			anchorStore,
+			defaultInterval: 1,
+			startAt: STARTED_AT + 10 * MINUTE_MS,
+		});
+
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "no schedule is rebuilt for a terminal run");
+		assert.deepEqual(anchorStore.reads, [], "the stale anchor is never read");
+		assert.deepEqual(anchorStore.writes, [], "and never rewritten");
+		assert.equal(harness.clock.live().length, 0);
+
+		harness.clock.advanceBy(10 * MINUTE_MS);
+		assert.equal(harness.sent.length, 0, "no missed boundary is replayed");
+		harness.scheduler.dispose();
+	});
+
+	test("recovery discards queued records left over for terminal and vanished runs", () => {
+		const terminalId = testRunId("heartbeat-recovery-stale-terminal");
+		const vanishedId = testRunId("heartbeat-recovery-vanished");
+		const store = createStore();
+		store.recordRunStart({
+			id: terminalId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			status: "failed",
+			stages: [],
+			startedAt: STARTED_AT,
+		});
+		// State carried across a scheduler reinstall: a held slot, an unread card,
+		// a delivered boundary, and cadence memos, for runs that no longer qualify.
+		const state = createWorkflowHeartbeatSchedulerState();
+		for (const runId of [terminalId, vanishedId]) {
+			state.pending.set(runId, { runId, scheduledAt: STARTED_AT + MINUTE_MS });
+			state.awaitingParentPickup.set(runId, "stale card");
+			state.lastEnqueuedAt.set(runId, STARTED_AT + MINUTE_MS);
+			state.anchorAt.set(runId, STARTED_AT);
+			state.anchorPersisted.add(runId);
+			state.anchorWritesPending.add(runId);
+			state.intervalMinutes.set(runId, 1);
+			state.scheduled.set(runId, {
+				runId,
+				scheduledAt: STARTED_AT + 2 * MINUTE_MS,
+				workflowName: "heartbeat-workflow",
+				startedAt: STARTED_AT,
+				intervalMinutes: 1,
+			});
+		}
+		const harness = installHarness({ store, state, defaultInterval: 1, startAt: STARTED_AT + 10 * MINUTE_MS });
+
+		assert.deepEqual(heldFields(harness.state, terminalId), NOTHING_HELD, "the terminal run's records are discarded");
+		assert.deepEqual(heldFields(harness.state, vanishedId), NOTHING_HELD, "so are those of a run the store lost");
+		assert.equal(harness.clock.live().length, 0, "nothing is armed for either");
+
+		harness.clock.advanceBy(10 * MINUTE_MS);
+		assert.equal(harness.sent.length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("cleaning up one run leaves an active held slot and a paused run's floor intact", () => {
+		const store = createStore();
+		const activeId = testRunId("heartbeat-cleanup-bystander-active");
+		const pausedId = testRunId("heartbeat-cleanup-bystander-paused");
+		const endingId = testRunId("heartbeat-cleanup-bystander-ending");
+		for (const runId of [activeId, pausedId, endingId]) startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 3, "all three heartbeat once");
+		store.recordRunPaused(pausedId, harness.clock.now());
+
+		store.recordRunEnd(endingId, "completed");
+		assert.deepEqual(heldFields(harness.state, endingId), NOTHING_HELD);
+		assert.deepEqual(
+			harness.state.pending.get(activeId),
+			{ runId: activeId, scheduledAt: STARTED_AT + MINUTE_MS },
+			"the active run keeps the slot it is still holding",
+		);
+		const activeCard = harness.sent.find((send) => send.details.runId === activeId)?.content;
+		assert.equal(harness.state.awaitingParentPickup.get(activeId), activeCard, "and the card text it is holding");
+		assert.equal(
+			harness.state.lastEnqueuedAt.get(pausedId),
+			STARTED_AT + MINUTE_MS,
+			"the paused run keeps the floor that stops it re-raising a delivered boundary",
+		);
+		assert.equal(harness.state.intervalMinutes.get(pausedId), 1);
+		harness.scheduler.dispose();
+	});
+});

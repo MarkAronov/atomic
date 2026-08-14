@@ -34,8 +34,11 @@
  *   never advance it. Recovery still floors at `now`, so no missed boundary is
  *   ever replayed.
  *
- * Deleting or invalidating this record on a terminal run is slice 3's door
- * (issue #1975).
+ * The record has no per-checkpoint deletion — `DurableWorkflowBackend` removes
+ * whole workflows only — so terminal cleanup (issue #1975) invalidates it on the
+ * read side instead: the scheduler neither reads nor writes an anchor for a run
+ * it observes as terminal, and drops the in-memory memo of it. A leftover row is
+ * therefore inert, and cannot put a finished run back on a cadence.
  *
  * cross-ref: packages/workflows/src/extension/workflow-heartbeat-scheduler.ts
  */

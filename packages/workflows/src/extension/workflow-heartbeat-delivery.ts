@@ -39,6 +39,16 @@ interface WorkflowHeartbeatDeliveryOptions {
 
 export interface WorkflowHeartbeatDelivery {
 	deliver(details: WorkflowHeartbeatEventDetails): void;
+	/**
+	 * Drop every not-yet-attempted identity belonging to one run, and cancel the
+	 * backoff timer of a head that belongs to it, then start the next identity.
+	 *
+	 * Terminal cleanup's queue half (issue #1975). A send already handed to the
+	 * host cannot be recalled, so an in-flight head is left to settle on its own;
+	 * the scheduler has already dropped that run's pending slot by then, so its
+	 * `onSettled` is inert. Returns whether anything was dropped.
+	 */
+	discard(runId: string): boolean;
 	dispose(): void;
 }
 
@@ -125,8 +135,35 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 		runHead();
 	};
 
+	const discard = (runId: string): boolean => {
+		// An attempt is already with the host and cannot be recalled, so the head
+		// is spared only while its send is genuinely in flight. A head sitting in
+		// backoff has nothing outstanding and is dropped with its timer.
+		const head = queue[0];
+		const headInFlight = running && head !== undefined && head.runId === runId;
+		let discarded = false;
+		// Back to front, so index 0 is decided last and the indices ahead of it
+		// stay valid while they are spliced out.
+		for (let index = queue.length - 1; index >= 0; index -= 1) {
+			if (queue[index]?.runId !== runId) continue;
+			if (index === 0 && headInFlight) continue;
+			queue.splice(index, 1);
+			discarded = true;
+			if (index > 0) continue;
+			// The dropped head owned the attempt counter and, if it was waiting to
+			// retry, the only live backoff timer.
+			attempt = 0;
+			running = false;
+			for (const handle of retryTimers) options.timers.clearTimeout(handle);
+			retryTimers.clear();
+		}
+		if (discarded) runHead();
+		return discarded;
+	};
+
 	return {
 		deliver,
+		discard,
 		dispose() {
 			active = false;
 			for (const handle of retryTimers) options.timers.clearTimeout(handle);

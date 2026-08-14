@@ -55,6 +55,16 @@ export interface WorkflowHeartbeatSuppressed {
 
 export type WorkflowHeartbeatEnqueueResult = WorkflowHeartbeatEnqueued | WorkflowHeartbeatSuppressed;
 
+export interface WorkflowHeartbeatCleared {
+	readonly kind: "cleared";
+}
+
+export interface WorkflowHeartbeatAlreadyClear {
+	readonly kind: "already-clear";
+}
+
+export type WorkflowHeartbeatClearResult = WorkflowHeartbeatCleared | WorkflowHeartbeatAlreadyClear;
+
 /**
  * Scheduler state.
  *
@@ -182,6 +192,21 @@ export interface WorkflowHeartbeatScheduler {
 	scheduleWorkflowHeartbeats(run: WorkflowHeartbeatRun, intervalMinutes: number): WorkflowHeartbeatScheduleResult;
 	/** Queue one due heartbeat for the parent chat without interrupting it. */
 	enqueueWorkflowHeartbeat(payload: WorkflowHeartbeatEventDetails): WorkflowHeartbeatEnqueueResult;
+	/**
+	 * Terminal cleanup (issue #1975): leave no deliverable heartbeat schedule,
+	 * timer, launch memo, or queued heartbeat for one run.
+	 *
+	 * Idempotent by construction — every step is an unconditional delete on a map,
+	 * a set, or the delivery queue, none of which throws for an absent key and
+	 * none of which writes anything back. A repeat call therefore reports
+	 * `already-clear` and cannot resurrect a schedule.
+	 *
+	 * What it cannot do is withdraw a card the host has already admitted into the
+	 * parent's queue: no extension-facing seam exposes that, so a race that gets
+	 * that far converges on suppression instead — the run's slot is released, and
+	 * a later consumption signal for it releases and re-arms nothing.
+	 */
+	clearWorkflowHeartbeats(runId: string): WorkflowHeartbeatClearResult;
 	/**
 	 * The parent chat consumed a heartbeat card: the host injected it into the
 	 * conversation. Releases that run's held slot and re-arms it at its first
@@ -356,9 +381,10 @@ export function installWorkflowHeartbeatScheduler(
 	 * objective-named guards are the pre-process batch read and the pre-enqueue
 	 * read; this one keeps the second guard true across the retry window, where
 	 * the run could otherwise reach a terminal state between attempt 1 and
-	 * attempt 5 and still be sent. Invalidating a heartbeat the host has already
-	 * admitted into its queue is slice 3's door (issue #1975), and no public host
-	 * seam exposes it.
+	 * attempt 5 and still be sent. A card the host has already admitted into its
+	 * queue is the parent's to read: terminal cleanup (issue #1975) discards the
+	 * identities still waiting here, but no public host seam withdraws an admitted
+	 * one, so that race converges on suppression instead.
 	 */
 	const canDeliverWorkflowHeartbeat = (details: WorkflowHeartbeatEventDetails): boolean => {
 		const run = findRun(readGraphStoreSnapshot(options.store), details.runId);
@@ -402,6 +428,44 @@ export function installWorkflowHeartbeatScheduler(
 			refresh();
 		},
 	});
+
+	/**
+	 * Drop everything one run owns, in one place.
+	 *
+	 * Every per-run map and set is listed deliberately rather than filtered: a
+	 * field left out here is a leak that survives the run that owns it, which is
+	 * precisely what slice 3 exists to close. `Map.delete`/`Set.delete` report
+	 * whether a key was there and never throw, so the union of those answers is
+	 * the `Cleared`/`AlreadyClear` result with no extra bookkeeping — and no
+	 * tombstone to grow without bound for the life of the process.
+	 *
+	 * Late callbacks cannot re-create what this removed. `onSettled` returns
+	 * early once `pending` no longer holds the identity, and the launch-record
+	 * write only marks a run persisted when its own in-flight marker was still
+	 * there to remove.
+	 *
+	 * Does not arm: the two callers both re-arm afterwards, and re-arming from
+	 * inside `refresh()`'s loop would be wasted work.
+	 */
+	const clearRunHeartbeatState = (runId: string): boolean => {
+		let cleared = state.scheduled.delete(runId);
+		cleared = state.pending.delete(runId) || cleared;
+		cleared = state.awaitingParentPickup.delete(runId) || cleared;
+		cleared = state.lastEnqueuedAt.delete(runId) || cleared;
+		cleared = state.anchorAt.delete(runId) || cleared;
+		cleared = state.anchorPersisted.delete(runId) || cleared;
+		cleared = state.anchorWritesPending.delete(runId) || cleared;
+		cleared = state.intervalMinutes.delete(runId) || cleared;
+		return delivery.discard(runId) || cleared;
+	};
+
+	const clearWorkflowHeartbeats = (runId: string): WorkflowHeartbeatClearResult => {
+		if (!clearRunHeartbeatState(runId)) return { kind: "already-clear" };
+		// The global wake-up may have been this run's; re-derive it from what is
+		// left rather than leaving a timer for a boundary nobody owns.
+		arm();
+		return { kind: "cleared" };
+	};
 
 	const notifyHeartbeatConsumed = (content: string): void => {
 		if (!active || state.awaitingParentPickup.size === 0) return;
@@ -500,6 +564,18 @@ export function installWorkflowHeartbeatScheduler(
 		const observed = new Set<string>();
 		for (const run of snapshot.runs) {
 			if (!isTopLevelWorkflowRun(run)) continue;
+			// Terminal cleanup and restart recovery (issue #1975). The trigger is
+			// observed state, not a transition event, because several paths reach a
+			// terminal snapshot without ever calling `recordRunEnd` — durable replay,
+			// completed-catalog reconstruction, and a restore that inserts an
+			// already-failed run. This pass also runs once at install, so it is the
+			// boot sweep: a stale durable anchor or a leftover pending record for a
+			// run that is already terminal is discarded rather than replayed, and the
+			// anchor is neither read nor written for such a run.
+			if (isTerminalRunStatus(effectiveRunStatus(run))) {
+				clearRunHeartbeatState(run.id);
+				continue;
+			}
 			observed.add(run.id);
 			if (state.pending.has(run.id) || !isWorkflowHeartbeatEligibleRun(run)) {
 				state.scheduled.delete(run.id);
@@ -526,12 +602,12 @@ export function installWorkflowHeartbeatScheduler(
 			}
 			scheduleWorkflowHeartbeats(run, intervalMinutes);
 		}
-		for (const runId of [...state.scheduled.keys()]) {
-			if (!observed.has(runId)) state.scheduled.delete(runId);
+		// A run that vanished from the store — cleared session state, a discarded
+		// graph — owns nothing either. The sweep covers every per-run field, not
+		// just the schedule, so no timer, slot, or queued identity outlives its run.
+		for (const runId of trackedRunIds(state)) {
+			if (!observed.has(runId)) clearRunHeartbeatState(runId);
 		}
-		// Slice 3 owns terminal cleanup and restart-recovery invalidation
-		// (issue #1975): a terminal run simply stops producing a schedule entry
-		// here, and no cleanup door is installed by this slice.
 		arm();
 	};
 
@@ -583,6 +659,11 @@ export function installWorkflowHeartbeatScheduler(
 	 * natural schedule pass. It deliberately does not call `refresh()`, which
 	 * would turn a persistently failing backend into a retry loop.
 	 *
+	 * The in-flight marker is also what makes a late acknowledgement safe after
+	 * terminal cleanup (issue #1975): cleanup removes the marker, so a write that
+	 * resolves afterwards finds nothing to remove and records nothing, rather
+	 * than re-creating an `anchorPersisted` entry for a run that is finished.
+	 *
 	 * Only reached for a positive cadence, because `scheduleWorkflowHeartbeats`
 	 * returns `disabled` above this point — so a run launched with heartbeats off
 	 * leaves no durable artifact of any kind, which is what the acceptance
@@ -602,8 +683,10 @@ export function installWorkflowHeartbeatScheduler(
 		}
 		void write.then(
 			(acknowledged) => {
-				state.anchorWritesPending.delete(runId);
-				if (acknowledged) state.anchorPersisted.add(runId);
+				// `Set.delete` reports whether this run was still tracked. Cleanup
+				// removes the marker, so a resolution arriving after it adds nothing.
+				const tracked = state.anchorWritesPending.delete(runId);
+				if (acknowledged && tracked) state.anchorPersisted.add(runId);
 			},
 			() => {
 				state.anchorWritesPending.delete(runId);
@@ -635,6 +718,7 @@ export function installWorkflowHeartbeatScheduler(
 	return {
 		scheduleWorkflowHeartbeats,
 		enqueueWorkflowHeartbeat,
+		clearWorkflowHeartbeats,
 		notifyHeartbeatConsumed,
 		state,
 		dispose() {
@@ -663,6 +747,26 @@ function earliestScheduled(state: WorkflowHeartbeatSchedulerState): WorkflowHear
 		if (earliest === undefined || compareWorkflowHeartbeatOrder(details, earliest) < 0) earliest = details;
 	}
 	return earliest;
+}
+
+/**
+ * Every run this state still holds anything for, as a snapshot safe to mutate
+ * under. Listing all eight fields is deliberate: the sweep that uses it exists
+ * to prove nothing outlives its run, and a field omitted here would be the one
+ * thing that did.
+ */
+function trackedRunIds(state: WorkflowHeartbeatSchedulerState): string[] {
+	const ids = new Set<string>([
+		...state.scheduled.keys(),
+		...state.pending.keys(),
+		...state.awaitingParentPickup.keys(),
+		...state.lastEnqueuedAt.keys(),
+		...state.anchorAt.keys(),
+		...state.anchorPersisted,
+		...state.anchorWritesPending,
+		...state.intervalMinutes.keys(),
+	]);
+	return [...ids];
 }
 
 /**
