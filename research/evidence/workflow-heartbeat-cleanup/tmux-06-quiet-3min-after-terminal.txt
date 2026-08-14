@@ -1,88 +1,88 @@
- State: 2 minutes elapsed; park-tool remains active with no failure. Next: wait for the next lifecycle notice.                                                                                          
 
-╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ♥ Workflow "hb-slice3-throwaway" is still running                                                                                                                                                    │
-│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
-│ run       e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                       │
-│ cadence   1-minute                                                                                                                                                                                   │
-│ elapsed   3m                                                                                                                                                                                         │
-│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2joaQkSdcGQwKpFsjg3"}   
 
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dLjefuyhwxkJKE9B9M"}   
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jpBuSZbtEZf2rCTa31"}   
 
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dLuQYwzQqXyTjkeZrS"}   
-
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dMDrpBnKWp2xbPJNt2"}   
-
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dMqUh3uJ6YbLVDRhfn"}   
+ Check the active stage now; no user action is needed.                                              
 
 workflow: list retained runs                      
 ╭ RUN hb-slice3-throwaway  ● running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ run id  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                         │
+│ run id  67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                         │
 │                                                                                                                                                                                                      │
 │ workflow      hb-slice3-throwaway                                                                                                                                                                    │
 │ state         ● running                                                                                                                                                                              │
 │ mode          single                                                                                                                                                                                 │
-│ started       12:15:06                                                                                                                                                                               │
-│ elapsed       3m 19s                                                                                                                                                                                 │
+│ started       13:41:45                                                                                                                                                                               │
+│ elapsed       1m 18s                                                                                                                                                                                 │
 │                                                                                                                                                                                                      │
 │ TOOLS                                                                                                                                                                                                │
-│ ● park-tool       running   3m 19s                                                                                                                                                                   │
+│ ● park-tool       running   1m 18s                                                                                                                                                                   │
 │                                                                                                                                                                                                      │
-│ ▸ workflow interrupt   id=e889dbc3-cb2e-4ea7-b54f-32e1b7702f05    cancel                                                                                                                             │
+│ ▸ workflow interrupt   id=67b756e9-3da6-4544-aaf6-aad58246d97f    cancel                                                                                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...                                      
+
+ Keep it running.                                 
+
+ State: park-tool is active, with no errors or blocked stages. This matches a throwaway heartbeat run.                                                                                                  
+
+╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ♥ Workflow "hb-slice3-throwaway" is still running                                                                                                                                                    │
+│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
+│ run       67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                       │
+│ cadence   1-minute                                                                                                                                                                                   │
+│ elapsed   2m                                                                                                                                                                                         │
+│ ▸ /workflow status 67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jsWj7EuR3QstbwmwUK"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jsgUjf4SscDk2K8eEP"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jszzxz9ZNexebbYVxK"}   
 
 ╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ Workflow "hb-slice3-throwaway" completed                                                                                                                                                           │
 │ workflow  hb-slice3-throwaway                                                                                                                                                                        │
-│ run       e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                       │
+│ run       67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                       │
 │ launched  user                                                                                                                                                                                       │
-│ duration  3m 20s                                                                                                                                                                                     │
-│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
+│ duration  2m 10s                                                                                                                                                                                     │
+│ ▸ /workflow status 67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- No action needed—keep it running.                
-
- State: 3 minutes elapsed; park-tool is still active with no error. Next: wait for the completion notice.                                                                                               
-
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dNUqFKyoCpfptcePPj"}   
-
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dNfFKTt5wYXs2XLQXi"}   
-
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dP1ftjJdMuqmybvBBW"}   
-
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dPd29MXHvNUwXvxKiN"}   
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jtcKywRu4NxaZvHMLJ"}   
 
  Thinking...                                      
 
+ Verify the completed run’s final result; no user action is needed.                                 
+
 workflow: list retained runs                      
 ╭ RUN hb-slice3-throwaway  ✓ completed ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ run id  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                         │
+│ run id  67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                         │
 │                                                                                                                                                                                                      │
 │ workflow      hb-slice3-throwaway                                                                                                                                                                    │
 │ state         ✓ completed                                                                                                                                                                            │
 │ mode          single                                                                                                                                                                                 │
-│ started       12:15:06                                                                                                                                                                               │
-│ ended         12:18:26                                                                                                                                                                               │
-│ duration      3m 20s                                                                                                                                                                                 │
+│ started       13:41:45                                                                                                                                                                               │
+│ ended         13:43:55                                                                                                                                                                               │
+│ duration      2m 10s                                                                                                                                                                                 │
 │                                                                                                                                                                                                      │
 │ TOOLS                                                                                                                                                                                                │
-│ ✓ park-tool       completed 3m 20s                                                                                                                                                                   │
+│ ✓ park-tool       completed 2m 10s                                                                                                                                                                   │
 │                                                                                                                                                                                                      │
 │ ARTIFACTS                                                                                                                                                                                            │
 │ result        {"parked":"parked-until-timeout"}                                                                                                                                                      │
 │                                                                                                                                                                                                      │
-│ ▸ workflow status id=e889dbc3-cb2e-4ea7-b54f-32e1b7702f05    inspect retained state                                                                                                                  │
+│ ▸ workflow status id=67b756e9-3da6-4544-aaf6-aad58246d97f    inspect retained state                                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Thinking...                                      
+ Done: hb-slice3-throwaway completed successfully in 2m 10s.                                        
 
- No action needed—the workflow completed successfully.                                              
+ Result: parked-until-timeout                     
+ Errors: none.                                    
 
- Result: park-tool returned parked-until-timeout after 3 minutes 20 seconds.                        
-
-                                                                                                                                         ↑30k • ↓626 • R191k • CH97.2% • $0.528 (sub) • 2.6%/1.0M (auto)
+                                                                                                                                          ↑27k • ↓446 • R93k • CH96.8% • $0.393 (sub) • 2.5%/1.0M (auto)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

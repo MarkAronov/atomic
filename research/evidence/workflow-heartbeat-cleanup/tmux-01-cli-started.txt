@@ -1,21 +1,62 @@
 
-   ██████▙                  ▟██████    Atomic v0.0.0                                                
-    ██████▙                ▟██████░░   (anthropic) claude-opus-5 high                               
-     ██████▙              ▟██████░░    ~/Documents/projects/atomic-hb-slice3                        
-      ██████▙            ▟██████░░                
-       ████████████████████████░░      We question,                                                 
-        ██████▛░░░░░░░░▜██████░░       we break away from what is accepted.                         
-         ██████▛      ▜██████░░        Engineering matters.                                         
-          ██████▛    ▜██████░░                    
-           ██████▛  ▜██████░░                     
-            ░████████████░░░                      
-              ░░░░░░░░░░░░                        
-
-RESOURCES AGENTS.md · 19 skills · 14 prompts      
 
 
- Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at                           
- https://claude.ai/settings/usage.                
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -46,5 +87,4 @@ RESOURCES AGENTS.md · 19 skills · 14 prompts
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-(anthropic) claude-opus-5 high • ~/Documents/projects/atomic-hb-slice3 (feat/workflow-heartbeat-cleanup)                                                                                                
-● ADHD Mode • MCP: 0/1 servers                    
+claude-opus-5 high • ~/Documents/projects/atomic-hb-slice3 (feat/workflow-heartbeat-cleanup)        

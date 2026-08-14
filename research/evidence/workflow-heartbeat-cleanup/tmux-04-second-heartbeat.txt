@@ -1,43 +1,83 @@
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dCzeMCyTWohKnhxMMK"}   
-
- Thinking...                                      
-
-workflow: list retained runs                      
-╭ RUN hb-slice3-throwaway  ● running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ run id  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                         │
-│                                                                                                                                                                                                      │
-│ workflow      hb-slice3-throwaway                                                                                                                                                                    │
-│ state         ● running                                                                                                                                                                              │
-│ mode          single                                                                                                                                                                                 │
-│ started       12:15:06                                                                                                                                                                               │
-│ elapsed       1m 17s                                                                                                                                                                                 │
-│                                                                                                                                                                                                      │
-│ TOOLS                                                                                                                                                                                                │
-│ ● park-tool       running   1m 17s                                                                                                                                                                   │
-│                                                                                                                                                                                                      │
-│ ▸ workflow interrupt   id=e889dbc3-cb2e-4ea7-b54f-32e1b7702f05    cancel                                                                                                                             │
+│ ▸ /workflow status 67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jifsH8Dyr6JuyZ3dko"}   
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                               │
+│ ●  hb-slice3-throwaway  ● running                                                                                                                                                                    │
+│   started in background                                                                                                                                                                              │
+│                                                                                                                                                                                                      │
+│ ▸ /workflow connect 67b756e9-3da6-4544-aaf6-aad58246d97f  see agents working · chat with and steer each stage                                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jiqvGM8TCDkhnzLhwS"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jjAFLdpLrqxwBCmieb"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jjn6MgF1B5eFEjhw3r"}   
+
  Thinking...                                      
 
- No action needed—leave the workflow running.     
+ Run /workflow connect 67b756e9-3da6-4544-aaf6-aad58246d97f to watch or steer it.                   
 
- State: park-tool is active; no failures or blocked stages. Next: wait for the completion notice.   
+ State: hb-slice3-throwaway is running in the background.                                           
 
 ╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ♥ Workflow "hb-slice3-throwaway" is still running                                                                                                                                                    │
 │ workflow  hb-slice3-throwaway                                                                                                                                                                        │
-│ run       e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                       │
+│ run       67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                       │
 │ cadence   1-minute                                                                                                                                                                                   │
-│ elapsed   2m                                                                                                                                                                                         │
-│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
+│ elapsed   1m                                                                                                                                                                                         │
+│ ▸ /workflow status 67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dGK4DHWZHE1QBPK8Q5"}   
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jo6BsbzkoF1zW7JUDn"}   
 
- ⠙ Retrying (1/3) in 2s... (esc Cancel)           
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2joG6vkMPGHSkYGMmDm"}   
 
-                                                                                                                                                    ↑25k • ↓273 • R46k • $0.313 (sub) • 2.4%/1.0M (auto)
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2joaQkSdcGQwKpFsjg3"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jpBuSZbtEZf2rCTa31"}   
+
+ Check the active stage now; no user action is needed.                                              
+
+workflow: list retained runs                      
+╭ RUN hb-slice3-throwaway  ● running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      hb-slice3-throwaway                                                                                                                                                                    │
+│ state         ● running                                                                                                                                                                              │
+│ mode          single                                                                                                                                                                                 │
+│ started       13:41:45                                                                                                                                                                               │
+│ elapsed       1m 18s                                                                                                                                                                                 │
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ● park-tool       running   1m 18s                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=67b756e9-3da6-4544-aaf6-aad58246d97f    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...                                      
+
+ Keep it running.                                 
+
+ State: park-tool is active, with no errors or blocked stages. This matches a throwaway heartbeat run.                                                                                                  
+
+╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ♥ Workflow "hb-slice3-throwaway" is still running                                                                                                                                                    │
+│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
+│ run       67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                       │
+│ cadence   1-minute                                                                                                                                                                                   │
+│ elapsed   2m                                                                                                                                                                                         │
+│ ▸ /workflow status 67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2jsWj7EuR3QstbwmwUK"}   
+
+ ⠦ Retrying (1/3) in 2s... (esc Cancel)           
+
+                                                                                                                                                    ↑25k • ↓323 • R46k • $0.317 (sub) • 2.4%/1.0M (auto)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -45,6 +85,6 @@ workflow: list retained runs
 ● ADHD Mode • MCP: 0/1 servers                    
 
 ╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   ●  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                            │
+│   ●  67b756e9-3da6-4544-aaf6-aad58246d97f                                                                                                                                                            │
 │     hb-slice3-throwaway · single · 2m                                                                                                                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
