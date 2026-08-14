@@ -27,6 +27,10 @@ import {
 export default workflow({
   name: "open-claude-design",
   description: "AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
+  // Disabled: this workflow is driven by the user reviewing generated HTML,
+  // so the parent chat is already the thing holding it to its goal. A periodic
+  // alignment steer would interrupt that review rather than inform it.
+  heartbeatIntervalMinutes: 0,
   inputs: {
     prompt: Type.String({
       description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.",
