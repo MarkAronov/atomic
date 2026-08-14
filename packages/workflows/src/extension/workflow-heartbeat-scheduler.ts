@@ -1,0 +1,367 @@
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
+import type { Store } from "../shared/store.js";
+import { isTerminalRunStatus } from "../shared/store-internal.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import {
+	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+	type WorkflowHeartbeatEventDetails,
+	type WorkflowHeartbeatIdentity,
+} from "../shared/workflow-heartbeat-contract.js";
+import type { ExtensionAPI } from "./index.js";
+import {
+	createWorkflowHeartbeatDelivery,
+	defaultWorkflowHeartbeatTimerApi,
+	type WorkflowHeartbeatTimerApi,
+	type WorkflowHeartbeatTimerHandle,
+} from "./workflow-heartbeat-delivery.js";
+import { formatWorkflowHeartbeatNoticeText } from "./workflow-heartbeat-notice.js";
+
+/**
+ * Longest delay a host timer accepts before it overflows to a 1 ms fire. A
+ * boundary further out than this is armed in one clamped hop; the wake-up finds
+ * nothing due and re-arms for the remainder.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+const MS_PER_MINUTE = 60_000;
+
+/** Minimal run shape the schedule door reads. */
+export type WorkflowHeartbeatRun = Pick<RunSnapshot, "id" | "name" | "startedAt" | "status">;
+
+export interface WorkflowHeartbeatScheduleDisabled {
+	readonly kind: "disabled";
+}
+
+export interface WorkflowHeartbeatScheduleScheduled {
+	readonly kind: "scheduled";
+	readonly scheduledAt: number;
+}
+
+export type WorkflowHeartbeatScheduleResult = WorkflowHeartbeatScheduleDisabled | WorkflowHeartbeatScheduleScheduled;
+
+export type WorkflowHeartbeatSuppressionReason = "missing" | "terminal" | "paused" | "duplicate" | "unavailable";
+
+export interface WorkflowHeartbeatEnqueued {
+	readonly kind: "enqueued";
+	readonly identity: WorkflowHeartbeatIdentity;
+}
+
+export interface WorkflowHeartbeatSuppressed {
+	readonly kind: "suppressed";
+	readonly reason: WorkflowHeartbeatSuppressionReason;
+}
+
+export type WorkflowHeartbeatEnqueueResult = WorkflowHeartbeatEnqueued | WorkflowHeartbeatSuppressed;
+
+/**
+ * Derived scheduler state. There is no separate durable record: the cadence is
+ * a pure function of the already-persisted `RunSnapshot.startedAt` and the
+ * frozen `heartbeatIntervalMinutes`, so a restart recomputes it exactly rather
+ * than reading a second, divergable copy of the same truth.
+ */
+export interface WorkflowHeartbeatSchedulerState {
+	/** Next due boundary per enabled active run. At most one entry per run. */
+	readonly scheduled: Map<string, WorkflowHeartbeatEventDetails>;
+	/** In-flight heartbeat per run. At most one entry per run. */
+	readonly pending: Map<string, WorkflowHeartbeatIdentity>;
+	/** Most recently enqueued boundary per run, so a boundary is never re-raised. */
+	readonly lastEnqueuedAt: Map<string, number>;
+}
+
+export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedulerState {
+	return {
+		scheduled: new Map<string, WorkflowHeartbeatEventDetails>(),
+		pending: new Map<string, WorkflowHeartbeatIdentity>(),
+		lastEnqueuedAt: new Map<string, number>(),
+	};
+}
+
+export function resetWorkflowHeartbeatSchedulerState(state: WorkflowHeartbeatSchedulerState): void {
+	state.scheduled.clear();
+	state.pending.clear();
+	state.lastEnqueuedAt.clear();
+}
+
+export interface WorkflowHeartbeatSchedulerOptions {
+	readonly store: Store;
+	readonly sendMessage?: ExtensionAPI["sendMessage"];
+	/**
+	 * Resolved cadence for a workflow name, read from the compiled definition.
+	 * `undefined` means the definition is not available, which schedules nothing.
+	 */
+	readonly resolveIntervalMinutes: (workflowName: string) => number | undefined;
+	readonly state?: WorkflowHeartbeatSchedulerState;
+	readonly now?: () => number;
+	readonly timers?: WorkflowHeartbeatTimerApi;
+}
+
+export interface WorkflowHeartbeatScheduler {
+	/** Maintain at most one next-due heartbeat schedule for one enabled active run. */
+	scheduleWorkflowHeartbeats(run: WorkflowHeartbeatRun, intervalMinutes: number): WorkflowHeartbeatScheduleResult;
+	/** Queue one due heartbeat for the parent chat without interrupting it. */
+	enqueueWorkflowHeartbeat(payload: WorkflowHeartbeatEventDetails): WorkflowHeartbeatEnqueueResult;
+	readonly state: WorkflowHeartbeatSchedulerState;
+	dispose(): void;
+}
+
+/**
+ * First cadence boundary strictly after `after`, on the `startedAt + n × I`
+ * series. Never derived from a previous delivery, so a retry, a pause, or a
+ * process restart cannot shift the cadence.
+ *
+ * Returns `undefined` when no finite boundary exists — a non-positive or
+ * non-finite interval, and the denormal-interval case where `n` overflows.
+ * Authoring accepts `Number.MIN_VALUE` minutes, and no schedulable boundary is
+ * the narrow, non-throwing answer for it.
+ */
+export function nextWorkflowHeartbeatBoundary(
+	startedAt: number,
+	intervalMinutes: number,
+	after: number,
+): number | undefined {
+	if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return undefined;
+	if (!Number.isFinite(startedAt) || !Number.isFinite(after)) return undefined;
+	const intervalMs = intervalMinutes * MS_PER_MINUTE;
+	if (!Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+	const elapsed = after - startedAt;
+	const n = elapsed < 0 ? 1 : Math.floor(elapsed / intervalMs) + 1;
+	if (!Number.isFinite(n)) return undefined;
+	let scheduledAt = startedAt + n * intervalMs;
+	// Floating-point rounding can land the computed boundary exactly on or a hair
+	// before `after`; step one whole interval rather than shaving the anchor.
+	if (scheduledAt <= after) scheduledAt = startedAt + (n + 1) * intervalMs;
+	if (!Number.isFinite(scheduledAt) || scheduledAt <= after) return undefined;
+	return scheduledAt;
+}
+
+/**
+ * Whether a run may hold a heartbeat schedule right now. Reuses the store's own
+ * status authorities rather than restating them: `isTopLevelWorkflowRun` keeps
+ * nested workflow runs from heartbeating the parent chat, and
+ * `isTerminalRunStatus(effectiveRunStatus(run))` is the same terminal reading
+ * lifecycle notices use, which also treats an actively blocked run as not
+ * progressing.
+ */
+export function isWorkflowHeartbeatEligibleRun(run: RunSnapshot): boolean {
+	if (!isTopLevelWorkflowRun(run)) return false;
+	if (run.status !== "running") return false;
+	if (run.pausedAt !== undefined) return false;
+	return !isTerminalRunStatus(effectiveRunStatus(run));
+}
+
+export function installWorkflowHeartbeatScheduler(
+	options: WorkflowHeartbeatSchedulerOptions,
+): WorkflowHeartbeatScheduler {
+	const state = options.state ?? createWorkflowHeartbeatSchedulerState();
+	const now = options.now ?? Date.now;
+	const timers = options.timers ?? defaultWorkflowHeartbeatTimerApi;
+	const send = options.sendMessage;
+	let active = true;
+	let timerHandle: WorkflowHeartbeatTimerHandle | undefined;
+
+	const emit = (details: WorkflowHeartbeatEventDetails): boolean | Promise<boolean> => {
+		if (typeof send !== "function") return false;
+		try {
+			const result = send(
+				{
+					customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+					content: formatWorkflowHeartbeatNoticeText(details),
+					display: true,
+					details,
+				},
+				// Identical to the lifecycle notice options: the parent's active
+				// response is never aborted; the steer waits for the next
+				// protocol-safe boundary and is persisted meanwhile.
+				{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
+			);
+			if (result === undefined) return true;
+			return Promise.resolve(result).then(
+				() => true,
+				(error: unknown) => {
+					warnWorkflowHeartbeatSendFailure(error);
+					return false;
+				},
+			);
+		} catch (error) {
+			warnWorkflowHeartbeatSendFailure(error);
+			return false;
+		}
+	};
+
+	const delivery = createWorkflowHeartbeatDelivery({
+		emit,
+		timers,
+		onSettled: (details) => {
+			if (state.pending.get(details.runId)?.scheduledAt === details.scheduledAt) {
+				state.pending.delete(details.runId);
+			}
+			refresh();
+		},
+	});
+
+	const scheduleWorkflowHeartbeats = (
+		run: WorkflowHeartbeatRun,
+		intervalMinutes: number,
+	): WorkflowHeartbeatScheduleResult => {
+		state.scheduled.delete(run.id);
+		// A resolved interval of 0 creates no timer and no schedule record at all.
+		if (intervalMinutes <= 0) return { kind: "disabled" };
+		if (run.status !== "running") return { kind: "disabled" };
+		// Recovery and resume both land here: the floor is `now`, so missed
+		// boundaries are skipped rather than replayed.
+		const floor = Math.max(now(), state.lastEnqueuedAt.get(run.id) ?? Number.NEGATIVE_INFINITY);
+		const scheduledAt = nextWorkflowHeartbeatBoundary(run.startedAt, intervalMinutes, floor);
+		if (scheduledAt === undefined) return { kind: "disabled" };
+		state.scheduled.set(run.id, {
+			runId: run.id,
+			scheduledAt,
+			workflowName: run.name,
+			startedAt: run.startedAt,
+			intervalMinutes,
+		});
+		return { kind: "scheduled", scheduledAt };
+	};
+
+	const enqueueWorkflowHeartbeat = (payload: WorkflowHeartbeatEventDetails): WorkflowHeartbeatEnqueueResult => {
+		if (!active || typeof send !== "function") return { kind: "suppressed", reason: "unavailable" };
+		// Pre-enqueue guard: an independent read of live status, so a run that
+		// finished between the processing batch and this call is suppressed.
+		const run = findRun(readGraphStoreSnapshot(options.store), payload.runId);
+		if (run === undefined) return { kind: "suppressed", reason: "missing" };
+		if (isTerminalRunStatus(effectiveRunStatus(run))) return { kind: "suppressed", reason: "terminal" };
+		if (!isWorkflowHeartbeatEligibleRun(run)) return { kind: "suppressed", reason: "paused" };
+		// One pending event per run, and the oldest one wins: a newer boundary is
+		// not enqueued while an identity is still in flight.
+		if (state.pending.has(payload.runId)) return { kind: "suppressed", reason: "duplicate" };
+		if ((state.lastEnqueuedAt.get(payload.runId) ?? Number.NEGATIVE_INFINITY) >= payload.scheduledAt) {
+			return { kind: "suppressed", reason: "duplicate" };
+		}
+		const identity: WorkflowHeartbeatIdentity = { runId: payload.runId, scheduledAt: payload.scheduledAt };
+		state.pending.set(payload.runId, identity);
+		state.lastEnqueuedAt.set(payload.runId, payload.scheduledAt);
+		delivery.deliver(payload);
+		return { kind: "enqueued", identity };
+	};
+
+	const arm = (): void => {
+		if (timerHandle !== undefined) {
+			timers.clearTimeout(timerHandle);
+			timerHandle = undefined;
+		}
+		if (!active) return;
+		const next = earliestScheduled(state);
+		if (next === undefined) return;
+		// One globally-next-due wake-up, not one recurring timer per run.
+		const delay = Math.min(Math.max(1, Math.ceil(next.scheduledAt - now())), MAX_TIMER_DELAY_MS);
+		const handle = timers.setTimeout(() => {
+			timerHandle = undefined;
+			processDue();
+		}, delay);
+		handle.unref?.();
+		timerHandle = handle;
+	};
+
+	const refresh = (): void => {
+		if (!active || typeof send !== "function") return;
+		const snapshot = readGraphStoreSnapshot(options.store);
+		const observed = new Set<string>();
+		for (const run of snapshot.runs) {
+			if (!isTopLevelWorkflowRun(run)) continue;
+			observed.add(run.id);
+			if (state.pending.has(run.id) || !isWorkflowHeartbeatEligibleRun(run)) {
+				state.scheduled.delete(run.id);
+				continue;
+			}
+			const intervalMinutes = resolveRunIntervalMinutes(options.resolveIntervalMinutes, run.name);
+			if (intervalMinutes === undefined) {
+				state.scheduled.delete(run.id);
+				continue;
+			}
+			scheduleWorkflowHeartbeats(run, intervalMinutes);
+		}
+		for (const runId of [...state.scheduled.keys()]) {
+			if (!observed.has(runId)) state.scheduled.delete(runId);
+		}
+		// Slice 3 owns terminal cleanup and restart-recovery invalidation
+		// (issue #1975): a terminal run simply stops producing a schedule entry
+		// here, and no cleanup door is installed by this slice.
+		arm();
+	};
+
+	const processDue = (): void => {
+		if (!active) return;
+		const at = now();
+		const due = [...state.scheduled.values()]
+			.filter((details) => details.scheduledAt <= at)
+			.sort(compareWorkflowHeartbeatOrder);
+		// Pre-process guard: live status read taken immediately before the batch,
+		// separate from the per-enqueue read below.
+		const snapshot = readGraphStoreSnapshot(options.store);
+		for (const details of due) {
+			state.scheduled.delete(details.runId);
+			const run = findRun(snapshot, details.runId);
+			if (run === undefined || !isWorkflowHeartbeatEligibleRun(run)) continue;
+			enqueueWorkflowHeartbeat(details);
+		}
+		refresh();
+	};
+
+	const unsubscribe = subscribeStoreInvalidation(options.store, refresh);
+	refresh();
+
+	return {
+		scheduleWorkflowHeartbeats,
+		enqueueWorkflowHeartbeat,
+		state,
+		dispose() {
+			active = false;
+			unsubscribe();
+			if (timerHandle !== undefined) {
+				timers.clearTimeout(timerHandle);
+				timerHandle = undefined;
+			}
+			state.scheduled.clear();
+			delivery.dispose();
+		},
+	};
+}
+
+/** Due heartbeats process in `scheduledAt` order, with `runId` as the stable tie-break. */
+export function compareWorkflowHeartbeatOrder(a: WorkflowHeartbeatIdentity, b: WorkflowHeartbeatIdentity): number {
+	if (a.scheduledAt !== b.scheduledAt) return a.scheduledAt - b.scheduledAt;
+	if (a.runId === b.runId) return 0;
+	return a.runId < b.runId ? -1 : 1;
+}
+
+function earliestScheduled(state: WorkflowHeartbeatSchedulerState): WorkflowHeartbeatEventDetails | undefined {
+	let earliest: WorkflowHeartbeatEventDetails | undefined;
+	for (const details of state.scheduled.values()) {
+		if (earliest === undefined || compareWorkflowHeartbeatOrder(details, earliest) < 0) earliest = details;
+	}
+	return earliest;
+}
+
+function resolveRunIntervalMinutes(
+	resolve: (workflowName: string) => number | undefined,
+	workflowName: string,
+): number | undefined {
+	const intervalMinutes = resolve(workflowName);
+	if (intervalMinutes === undefined) return undefined;
+	// The authoring door already rejected negative and non-finite values; a
+	// definition that is missing or unreadable schedules nothing rather than
+	// failing a background pass.
+	if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return undefined;
+	return intervalMinutes;
+}
+
+function findRun(snapshot: StoreSnapshot, runId: string): RunSnapshot | undefined {
+	return snapshot.runs.find((run) => run.id === runId);
+}
+
+function warnWorkflowHeartbeatSendFailure(error: unknown): void {
+	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
+	const message = error instanceof Error ? error.message : String(error);
+	console.warn("[workflows] workflow heartbeat send failed", message);
+}

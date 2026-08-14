@@ -934,7 +934,7 @@ Authoring basics:
 - Workflow names normalize for lookup: trim, lowercase, convert whitespace/underscore to hyphen, remove other punctuation, and collapse hyphens.
 - `description` sets the listing text.
 - `autoAttach: true` opens the graph overlay when an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. Only exact `true` is retained on the compiled definition; omission and `false` do not opt a definition into auto-attachment. Existing input-form launch behavior is unchanged.
-- `heartbeatIntervalMinutes` declares the workflow's heartbeat cadence in minutes. Omission uses the `15`-minute default; `0` disables heartbeats for the workflow. Negative and non-finite values are rejected when the definition is authored. The authoring contract lands first; scheduling and parent delivery follow in a separate change.
+- `heartbeatIntervalMinutes` declares the workflow's heartbeat cadence in minutes. Omission uses the `15`-minute default; `0` disables heartbeats for the workflow. Negative and non-finite values are rejected when the definition is authored. While a run is active, each boundary at `startedAt + n × interval` delivers a heartbeat card to the main chat as a queued steer that never interrupts an in-flight response. See [`heartbeatIntervalMinutes`](#heartbeatintervalminutes).
 - `inputs` declares typed user inputs.
 - `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
@@ -1919,7 +1919,11 @@ export default workflow({
 });
 ```
 
-This is the authoring contract only. Scheduling the cadence and delivering heartbeats to the parent chat land in a separate change, so a positive interval does not yet produce heartbeat messages.
+That example heartbeats every 30 minutes: a run started at 09:00 raises boundaries at 09:30, 10:00, 10:30, and so on, until it reaches a terminal state. Boundaries are `startedAt + n × interval` computed from the run's persisted start time, never from the previous delivery, so a slow delivery, a retry, or a restart cannot drift the cadence.
+
+Each heartbeat arrives in the main chat as a `workflows:workflow-heartbeat` card naming the workflow, the run id, the cadence, and elapsed run time, with `/workflow status <runId>` as the inspection hint. It is delivered as a queued steer that waits for the parent's next protocol-safe boundary, so it never interrupts a response that is already streaming. Only one heartbeat per run is pending at a time; a later boundary is skipped rather than queued behind it.
+
+Paused runs emit nothing and are never backfilled. A resumed or restarted run picks up at the first future boundary on the original cadence rather than bursting the boundaries it missed. A run that reaches a terminal state is re-checked immediately before a heartbeat is queued and again immediately before it is processed, so a run that finishes mid-flight stays silent. When several runs are due at once, they are processed in `scheduledAt` order with the run id as the stable tie-break. Nested workflow runs never heartbeat the parent chat; only top-level runs do.
 
 ### `inputs`
 
@@ -3190,6 +3194,8 @@ Deliberate control actions on a top-level run report themselves too. `/workflow 
 **One notice per request.** A whole-run pause or resume reports at run scope. A stage-scoped `/workflow pause <run> <stage>` that leaves other stages running reports at stage scope, and one that stops the last active stage reports the run instead — never a stage card and a run card for the same request. A quit reports only the quit, never the pause it publishes on the way. Because control actions are reversible, these notices are deduplicated by run id *and* the occurrence timestamp, so pause → resume → pause → resume emits four notices while repeated snapshot invalidations at one unchanged state emit one. Resuming reports a resume and never a start, whoever asked for it — a resumed run re-enters the dispatch path, so keying that on the resume rather than on the requester is what stops an agent-requested resume of a user-started run from being announced as a fresh launch. Resuming a failed or blocked run launches a continuation under a fresh run id, and its notice names both ("run 4d7e, continuing run 8c31"); resuming a quit run reuses the original workflow id so durable checkpoints replay, so that notice names the one id. A run that is already started, paused, or quit when notifications install — restore, replay, `/reload`, or a session-preserving reinstall — is seeded as delivered and stays silent, and nested `ctx.workflow(...)` child runs never notify at top level.
 
 Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]`). A config that pins `notifyOn` explicitly keeps exactly the kinds it lists, so `notifyOn: ["failed"]` suppresses every control notice.
+
+**Heartbeats are separate from lifecycle notices.** A lifecycle notice reports a transition; a heartbeat reports that nothing has transitioned yet. While a top-level run is active, Atomic raises one `workflows:workflow-heartbeat` card per `startedAt + n × heartbeatIntervalMinutes` boundary, on the same queued-steer delivery (`triggerTurn`, `deliverAs: "steer"`, `persistWhenStreaming`) and the same notice-card renderer, under its own custom type. The cadence is per workflow definition — `15` minutes by default, `0` to disable — and is documented under [`heartbeatIntervalMinutes`](#heartbeatintervalminutes). `workflowNotifications.notifyOn` selects lifecycle kinds only; it does not list or filter heartbeats.
 
 Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, or `ctx.ui.custom<T>` when the workflow needs a decision. No builder-level declaration is required or supported.
 

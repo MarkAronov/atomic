@@ -35,6 +35,13 @@ import {
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "./runtime.js";
 import { createStatusWriter, type StatusWriter } from "./status-writer.js";
+import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.js";
+import {
+	createWorkflowHeartbeatSchedulerState,
+	installWorkflowHeartbeatScheduler,
+	resetWorkflowHeartbeatSchedulerState,
+	type WorkflowHeartbeatScheduler,
+} from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
 import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.js";
@@ -48,6 +55,7 @@ export interface WorkflowExtensionRuntimeState {
 	discoveryRef: { current: DiscoveryResult | null };
 	lifecycleNotificationState: ReturnType<typeof createWorkflowLifecycleNotificationState>;
 	hilAnswerNotificationState: ReturnType<typeof createWorkflowHilAnswerNotificationState>;
+	workflowHeartbeatSchedulerState: ReturnType<typeof createWorkflowHeartbeatSchedulerState>;
 	/** Seed lifecycle notification state before completed historical snapshots are inserted. */
 	beforeRestoreCompleted(snapshots: readonly RunSnapshot[]): void;
 	runtimeForContext(ctx?: PiModelContext): ExtensionRuntime;
@@ -83,10 +91,12 @@ export function createWorkflowExtensionRuntimeState(
 	let statusWriterRef: StatusWriter = createStatusWriter(store, runtimeConfigRef.current);
 	let lifecycleNotificationsUnsubscribe: (() => void) | null = null;
 	let hilAnswerNotificationsUnsubscribe: (() => void) | null = null;
+	let workflowHeartbeatScheduler: WorkflowHeartbeatScheduler | null = null;
 	let notificationsActive = false;
 	let notificationGeneration = 0;
 	const lifecycleNotificationState = createWorkflowLifecycleNotificationState();
 	const hilAnswerNotificationState = createWorkflowHilAnswerNotificationState();
+	const workflowHeartbeatSchedulerState = createWorkflowHeartbeatSchedulerState();
 	const beforeRestoreCompleted = (snapshots: readonly RunSnapshot[]): void => {
 		seedWorkflowLifecycleNotificationState(lifecycleNotificationState, {
 			...readGraphStoreSnapshot(store),
@@ -102,6 +112,7 @@ export function createWorkflowExtensionRuntimeState(
 			: undefined;
 	registerLifecycleNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
 	registerHilAnswerNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
+	registerWorkflowHeartbeatRenderer({ rendererHost: pi, registerMessageRenderer });
 	const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
 		typeof pi.sendMessage === "function" ? (message, options) => pi.sendMessage!(message, options) : undefined;
 	const reinstallLifecycleNotifications = (): void => {
@@ -125,6 +136,23 @@ export function createWorkflowExtensionRuntimeState(
 			stageUiBroker,
 			state: hilAnswerNotificationState,
 			sendMessage: sendWorkflowNotificationMessage,
+		});
+	};
+	/**
+	 * Workflow heartbeats share the lifecycle-notice lifetime: they are armed
+	 * while notifications are active and disposed with them. The cadence itself
+	 * comes from the live registry, so a workflow reload is picked up without a
+	 * reinstall.
+	 */
+	const reinstallWorkflowHeartbeatScheduler = (): void => {
+		workflowHeartbeatScheduler?.dispose();
+		workflowHeartbeatScheduler = null;
+		if (!notificationsActive) return;
+		workflowHeartbeatScheduler = installWorkflowHeartbeatScheduler({
+			store,
+			state: workflowHeartbeatSchedulerState,
+			sendMessage: sendWorkflowNotificationMessage,
+			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
 		});
 	};
 
@@ -425,6 +453,7 @@ export function createWorkflowExtensionRuntimeState(
 		discoveryRef,
 		lifecycleNotificationState,
 		hilAnswerNotificationState,
+		workflowHeartbeatSchedulerState,
 		beforeRestoreCompleted,
 		runtimeForContext,
 		resetWorkflowDiscoveryForSession,
@@ -442,6 +471,10 @@ export function createWorkflowExtensionRuntimeState(
 			notificationsActive = active;
 			reinstallLifecycleNotifications();
 			reinstallHilAnswerNotifications();
+			// A fresh host session restarts the cadence from each run's persisted
+			// start time; prior-session schedule and pending state cannot apply.
+			if (!active) resetWorkflowHeartbeatSchedulerState(workflowHeartbeatSchedulerState);
+			reinstallWorkflowHeartbeatScheduler();
 		},
 		updateHostStageSessionDir(sessionManager) {
 			try {
