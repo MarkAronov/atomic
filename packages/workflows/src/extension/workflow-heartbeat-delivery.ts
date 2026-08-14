@@ -39,6 +39,19 @@ interface WorkflowHeartbeatDeliveryOptions {
 
 export interface WorkflowHeartbeatDelivery {
 	deliver(details: WorkflowHeartbeatEventDetails): void;
+	/**
+	 * Drop every not-yet-attempted identity belonging to one run, and cancel the
+	 * backoff timer of a head that belongs to it, then start the next identity.
+	 *
+	 * Terminal cleanup's queue half (issue #1975). A send already handed to the
+	 * host cannot be recalled, so an in-flight head stays where it is — but it is
+	 * marked, so whatever the host answers settles straight through instead of
+	 * arming a retry for a run that is already finished. Its `onSettled` is inert
+	 * at the scheduler too, because the pending slot is gone by then. Returns
+	 * whether anything was dropped, so a spared in-flight head alone reports
+	 * `false`.
+	 */
+	discard(runId: string): boolean;
 	dispose(): void;
 }
 
@@ -72,18 +85,30 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 	let attempt = 0;
 	let running = false;
 	let active = true;
+	/**
+	 * Whether the in-flight head was discarded while its send was outstanding.
+	 *
+	 * The send itself cannot be recalled, but its *result* must not start a
+	 * retry: a rejection arriving after cleanup would otherwise arm a backoff
+	 * timer, and re-attempt the old identity, for a run whose cleanup already
+	 * finished. One boolean suffices because only one head is ever in flight,
+	 * and `settleHead` — the only path that shifts the queue — clears it, so it
+	 * can never carry over to the next identity or to another run.
+	 */
+	let headDiscarded = false;
 
 	/** Finish the head identity and start the next one, in handover order. */
 	const settleHead = (details: WorkflowHeartbeatEventDetails, delivered: boolean): void => {
 		queue.shift();
 		attempt = 0;
 		running = false;
+		headDiscarded = false;
 		options.onSettled(details, delivered);
 		runHead();
 	};
 
 	const runHead = (): void => {
-		if (!active || running) return;
+		if (!active || running || retryTimers.size > 0) return;
 		const details = queue[0];
 		if (details === undefined) return;
 		// The live guard runs immediately before every attempt, including the
@@ -99,7 +124,9 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 		attempt += 1;
 		const thisAttempt = attempt;
 		const settle = (delivered: boolean): void => {
-			if (delivered || thisAttempt >= WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS || !active) {
+			// A discarded head settles straight through, whatever the host answered:
+			// no retry, and the real result is still reported once.
+			if (delivered || headDiscarded || thisAttempt >= WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS || !active) {
 				settleHead(details, delivered);
 				return;
 			}
@@ -125,8 +152,39 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 		runHead();
 	};
 
+	const discard = (runId: string): boolean => {
+		// An attempt is already with the host and cannot be recalled, so the head
+		// is spared only while its send is genuinely in flight. A head sitting in
+		// backoff has nothing outstanding and is dropped with its timer.
+		const head = queue[0];
+		const headInFlight = running && head !== undefined && head.runId === runId;
+		let discarded = false;
+		// Back to front, so index 0 is decided last and the indices ahead of it
+		// stay valid while they are spliced out.
+		for (let index = queue.length - 1; index >= 0; index -= 1) {
+			if (queue[index]?.runId !== runId) continue;
+			if (index === 0 && headInFlight) {
+				// Spared, but invalidated: its settlement must not schedule a retry.
+				headDiscarded = true;
+				continue;
+			}
+			queue.splice(index, 1);
+			discarded = true;
+			if (index > 0) continue;
+			// The dropped head owned the attempt counter and, if it was waiting to
+			// retry, the only live backoff timer.
+			attempt = 0;
+			running = false;
+			for (const handle of retryTimers) options.timers.clearTimeout(handle);
+			retryTimers.clear();
+		}
+		if (discarded) runHead();
+		return discarded;
+	};
+
 	return {
 		deliver,
+		discard,
 		dispose() {
 			active = false;
 			for (const handle of retryTimers) options.timers.clearTimeout(handle);

@@ -13,6 +13,7 @@ import type {
 	WorkflowPersistencePort,
 	WorkflowRuntimeConfig,
 } from "../shared/types.js";
+import type { WorkflowHeartbeatIdentity } from "../shared/workflow-heartbeat-contract.js";
 import {
 	type ConfigLoadResult,
 	loadWorkflowConfig,
@@ -41,10 +42,12 @@ import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.j
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
+	isWorkflowHeartbeatTerminalRun,
 	resetWorkflowHeartbeatSchedulerState,
 	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatScheduler,
-	workflowHeartbeatConsumedContent,
+	workflowHeartbeatConsumedIdentity,
+	workflowHeartbeatContextInvalidation,
 } from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
@@ -201,13 +204,43 @@ export function createWorkflowExtensionRuntimeState(
 	// consumption would leave a held slot with nothing to release it.
 	const parentAvailabilityReported = typeof pi.on === "function";
 	if (parentAvailabilityReported) {
-		// Returns nothing: a `message_end` handler that returns a message must
-		// return the same role, and this handler only observes.
-		pi.on?.("message_end", (event) => {
-			const content = workflowHeartbeatConsumedContent(event);
-			if (content !== undefined) workflowHeartbeatScheduler?.notifyHeartbeatConsumed(content);
+		// This handler observes, and for one narrow case replaces.
+		//
+		// The last guard on the heartbeat path (issue #1975): the three before it
+		// all sit before `sendMessage`, so a heartbeat the host has already
+		// admitted is beyond them. Consumption is the final moment before its
+		// steer joins the model's context, and `message_end` may return a
+		// replacement of the same role, so a heartbeat whose run has finished,
+		// vanished, or no longer owns that exact scheduled identity is excluded
+		// from context rather than steering the parent about stale work.
+		//
+		// `absent` counts as much as `terminal`. A card recovered at the restart
+		// door is consumed just after `session_start` cleared the store, so its run
+		// is normally absent. A durable resume may instead reuse the run id, but its
+		// future pending boundary has a different `scheduledAt`. Both cases fail
+		// exact pending ownership and preserve the no-backfill rule.
+		pi.on?.("message_end", (event, ctx) => {
+			// The host hands the session manager to the handler on its context; the
+			// top-level `pi.sessionManager` is not populated in every host, so the
+			// per-call one is preferred and the other is the fallback. Verified
+			// against a real `AgentSession` in
+			// test/unit/workflow-heartbeat-parent-pickup.test.ts.
+			const entries = (ctx?.sessionManager ?? pi.sessionManager)?.getEntries?.();
+			const invalidation = workflowHeartbeatContextInvalidation(event, entries, isWorkflowHeartbeatIdentityOwned);
+			if (invalidation !== undefined) return invalidation;
+			const identity = workflowHeartbeatConsumedIdentity(event, entries);
+			if (identity !== undefined) workflowHeartbeatScheduler?.notifyHeartbeatConsumed(identity);
+			return undefined;
 		});
 	}
+
+	/** Whether this exact identity is still pending for a current nonterminal run. */
+	function isWorkflowHeartbeatIdentityOwned(identity: WorkflowHeartbeatIdentity): boolean {
+		const pending = workflowHeartbeatSchedulerState.pending.get(identity.runId);
+		const run = store.runs().find((candidate) => candidate.id === identity.runId);
+		return pending?.scheduledAt === identity.scheduledAt && run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
+	}
+
 	/**
 	 * Workflow heartbeats share the lifecycle-notice lifetime: they are armed
 	 * while notifications are active and disposed with them. The cadence itself

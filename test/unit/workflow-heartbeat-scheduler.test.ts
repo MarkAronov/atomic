@@ -8,23 +8,28 @@ import {
 	recordWorkflowHeartbeatAnchor,
 	WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
 } from "../../packages/workflows/src/durable/workflow-heartbeat-anchor.js";
+import { createDurableStageSessionRecorder } from "../../packages/workflows/src/engine/run-durable-stage-session.js";
 import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
+	isWorkflowHeartbeatTerminalRun,
 	MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
 	nextWorkflowHeartbeatBoundary,
 	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatLaunchRecord,
 	type WorkflowHeartbeatScheduler,
 	type WorkflowHeartbeatSchedulerState,
-	workflowHeartbeatConsumedContent,
+	workflowHeartbeatConsumedIdentity,
+	workflowHeartbeatContextInvalidation,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
+import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
 	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 	type WorkflowHeartbeatEventDetails,
+	type WorkflowHeartbeatIdentity,
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
@@ -217,7 +222,11 @@ function installHarness(opts: {
 			// carrying the exact content the host injected.
 			if (opts.parentConsumeDelayMs !== undefined) {
 				clock.timerApi.setTimeout(
-					() => installed?.notifyHeartbeatConsumed(captured.content),
+					() =>
+						installed?.notifyHeartbeatConsumed({
+							runId: captured.details.runId,
+							scheduledAt: captured.details.scheduledAt,
+						}),
 					opts.parentConsumeDelayMs,
 				);
 			}
@@ -261,6 +270,11 @@ function boundaries(sent: readonly CapturedSend[]): number[] {
 
 function runIds(sent: readonly CapturedSend[]): string[] {
 	return sent.map((send) => send.details.runId);
+}
+
+function identityOf(send: CapturedSend | undefined): WorkflowHeartbeatIdentity {
+	assert.ok(send !== undefined, "expected a captured heartbeat");
+	return { runId: send.details.runId, scheduledAt: send.details.scheduledAt };
 }
 
 describe("workflow heartbeat cadence", () => {
@@ -432,7 +446,7 @@ describe("workflow heartbeat cadence", () => {
 		// Consumption happens after boundary 2 would have been due, so boundary 2
 		// is a missed boundary and must never be raised.
 		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 30_000);
-		harness.scheduler.notifyHeartbeatConsumed(harness.sent[0]?.content ?? "");
+		harness.scheduler.notifyHeartbeatConsumed(identityOf(harness.sent[0]));
 		assert.equal(harness.state.pending.size, 0, "the slot is free once the card was consumed");
 		assert.equal(
 			harness.state.scheduled.get(runId)?.scheduledAt,
@@ -464,13 +478,13 @@ describe("workflow heartbeat cadence", () => {
 		assert.equal(harness.state.awaitingParentPickup.size, 1);
 		assert.equal(harness.state.scheduled.size, 0, "the cadence pauses rather than stacking");
 		// Consumption, whenever it comes, resumes at the first future boundary only.
-		harness.scheduler.notifyHeartbeatConsumed(harness.sent[0]?.content ?? "");
+		harness.scheduler.notifyHeartbeatConsumed(identityOf(harness.sent[0]));
 		harness.clock.advanceTo(STARTED_AT + 6 * MINUTE_MS + 5_000);
 		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 6 * MINUTE_MS]);
 		harness.scheduler.dispose();
 	});
 
-	test("a signal that is not this run's consumed card never releases its slot", () => {
+	test("only the exact consumed identity releases its run's slot", () => {
 		const runId = testRunId("heartbeat-wrong-consumption");
 		const otherId = testRunId("heartbeat-wrong-consumption-other");
 		const store = createStore();
@@ -480,46 +494,39 @@ describe("workflow heartbeat cadence", () => {
 
 		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
 		assert.equal(harness.sent.length, 1, "only the 1-minute run has heartbeated");
-		const heldContent = harness.sent[0]?.content ?? "";
+		const heldIdentity = identityOf(harness.sent[0]);
 
-		// A turn-settled-shaped nudge carries no content of ours, and another run's
-		// card is not this run's. Neither may release the held slot: releasing on a
-		// signal that is not consumption is exactly the defect this guards.
-		harness.scheduler.notifyHeartbeatConsumed("");
-		harness.scheduler.notifyHeartbeatConsumed("some unrelated assistant text");
-		harness.scheduler.notifyHeartbeatConsumed(`${heldContent} (a near miss)`);
-		assert.equal(harness.state.pending.size, 1, "the slot is still held");
-		assert.equal(harness.state.awaitingParentPickup.get(runId), heldContent);
+		harness.scheduler.notifyHeartbeatConsumed({ runId: otherId, scheduledAt: heldIdentity.scheduledAt });
+		harness.scheduler.notifyHeartbeatConsumed({ runId, scheduledAt: heldIdentity.scheduledAt + MINUTE_MS });
+		assert.equal(harness.state.pending.size, 1, "a different run or boundary leaves the slot held");
+		assert.deepEqual(harness.state.awaitingParentPickup.get(runId), heldIdentity);
 
 		harness.clock.advanceTo(STARTED_AT + 4 * MINUTE_MS);
 		assert.deepEqual(
 			boundaries(harness.sent),
 			[STARTED_AT + MINUTE_MS],
-			"and no second card stacks behind the unconsumed first",
+			"no second card stacks behind the unconsumed identity",
 		);
 
-		harness.scheduler.notifyHeartbeatConsumed(heldContent);
-		assert.equal(harness.state.pending.size, 0, "the exact consumed content releases it");
+		harness.scheduler.notifyHeartbeatConsumed(heldIdentity);
+		assert.equal(harness.state.pending.size, 0, "the exact consumed identity releases it");
 		harness.scheduler.dispose();
 	});
 
-	test("workflowHeartbeatConsumedContent narrows only a custom message's text", () => {
-		assert.equal(workflowHeartbeatConsumedContent(undefined), undefined);
-		assert.equal(workflowHeartbeatConsumedContent({}), undefined);
-		assert.equal(workflowHeartbeatConsumedContent({ message: { role: "assistant", content: "hi" } }), undefined);
-		assert.equal(workflowHeartbeatConsumedContent({ message: { role: "custom", content: "hi" } }), "hi");
+	test("custom text without a typed heartbeat entry reports no consumed identity", () => {
 		assert.equal(
-			workflowHeartbeatConsumedContent({
-				message: { role: "custom", content: [{ type: "text", text: "one" }, { type: "image" }, { text: "no" }] },
-			}),
-			"one",
+			workflowHeartbeatConsumedIdentity({ message: { role: "custom", content: "same rendered text" } }, []),
+			undefined,
 		);
 		assert.equal(
-			workflowHeartbeatConsumedContent({ message: { role: "custom", content: [{ type: "image" }] } }),
+			workflowHeartbeatConsumedIdentity(
+				{ message: { role: "custom", content: [{ type: "text", text: "same rendered text" }] } },
+				[],
+			),
 			undefined,
-			"an empty extraction is not a match key",
 		);
 	});
+
 	test("a host that reports no consumption releases on admission instead of going silent", () => {
 		const runId = testRunId("heartbeat-no-availability-signal");
 		const store = createStore();
@@ -1443,6 +1450,209 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		);
 	});
 
+	test("a pause that creates the first durable progress preserves the original cadence on resume", async () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-anchor-first-progress-during-pause");
+		const intervalMinutes = 15;
+		const pauseAt = STARTED_AT + 5 * MINUTE_MS;
+		registerRun(backend, runId);
+
+		const anchorStore: WorkflowHeartbeatAnchorStore = {
+			readAnchorAt(id) {
+				return readWorkflowHeartbeatAnchor(backend, id);
+			},
+			recordAnchorAt(id, record) {
+				return recordWorkflowHeartbeatAnchor(backend, {
+					runId: id,
+					anchorAt: record.anchorAt,
+					intervalMinutes: record.intervalMinutes ?? 0,
+					now: pauseAt,
+				});
+			},
+		};
+
+		const originalStore = createStore();
+		startRun(originalStore, runId);
+		const originalProcess = installHarness({
+			store: originalStore,
+			anchorStore,
+			defaultInterval: intervalMinutes,
+		});
+		await flushMicrotasks();
+		assert.equal(readWorkflowHeartbeatAnchor(backend, runId), undefined, "no progress means no anchor yet");
+
+		// Stage control publishes the paused state before forcing its session
+		// durability boundary. This checkpoint is the run's first resumable
+		// progress, after the scheduler has stopped scheduling the paused run.
+		originalStore.recordRunPaused(runId, pauseAt);
+		backend.setWorkflowStatus(runId, "paused");
+		const recordPausedStageSession = createDurableStageSessionRecorder({
+			runId,
+			deps: {
+				workflowId: runId,
+				backend,
+				nextCheckpointId: () => "unused-tool-checkpoint",
+				nextReplayKey: () => "stage:paused:1",
+				now: () => pauseAt,
+			},
+			runSnapshot: runSnapshot(originalStore, runId),
+			heartbeatIntervalMinutes: intervalMinutes,
+		});
+		await recordPausedStageSession(
+			runId,
+			{
+				id: "paused-stage",
+				name: "paused-stage",
+				replayKey: "stage:paused:1",
+				status: "paused",
+				parentIds: [],
+				toolEvents: [],
+				startedAt: STARTED_AT + 1_000,
+				pausedAt: pauseAt,
+				sessionId: "paused-session",
+				sessionFile: "/tmp/paused-session.jsonl",
+			},
+			{ forceDurable: true },
+		);
+		assert.ok(
+			backend.listResumableWorkflows().some((candidate) => candidate.workflowId === runId),
+			"the forced pause checkpoint makes the run resumable",
+		);
+		assert.deepEqual(
+			readWorkflowHeartbeatAnchor(backend, runId),
+			{ anchorAt: STARTED_AT, intervalMinutes },
+			"the forced durability boundary carries the original launch anchor and cadence",
+		);
+		originalProcess.scheduler.dispose();
+
+		// A durable resume re-registers the same workflow id with a freshly minted
+		// startedAt. The next process must still derive from the original series.
+		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			createdAt: resumedStartedAt,
+			status: "running",
+		});
+		const resumedStore = createStore();
+		startRun(resumedStore, runId, { startedAt: resumedStartedAt });
+		const resumedProcess = installHarness({
+			store: resumedStore,
+			anchorStore,
+			startAt: resumedStartedAt,
+			defaultInterval: intervalMinutes,
+			state: createWorkflowHeartbeatSchedulerState(),
+		});
+
+		assert.equal(
+			resumedProcess.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + intervalMinutes * MINUTE_MS,
+			"the resumed run stays on its original cadence instead of anchoring to its fresh startedAt",
+		);
+		resumedProcess.scheduler.dispose();
+	});
+
+	test("an ordinary first checkpoint persists the anchor even when the scheduler's write never lands", async () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-anchor-first-progress-crash-race");
+		const launchIntervalMinutes = 15;
+		const checkpointAt = STARTED_AT + 5 * MINUTE_MS;
+		registerRun(backend, runId);
+
+		// The scheduler's own launch-record write is asynchronous and best-effort.
+		// This store models the process exiting while that write is still in
+		// flight: it is issued, never acknowledged, and its result is lost.
+		let schedulerWrites = 0;
+		const strandedAnchorStore: WorkflowHeartbeatAnchorStore = {
+			readAnchorAt(id) {
+				return readWorkflowHeartbeatAnchor(backend, id);
+			},
+			recordAnchorAt() {
+				schedulerWrites += 1;
+				return new Promise<boolean>(() => {});
+			},
+		};
+
+		const originalStore = createStore();
+		startRun(originalStore, runId);
+		const originalProcess = installHarness({
+			store: originalStore,
+			anchorStore: strandedAnchorStore,
+			defaultInterval: launchIntervalMinutes,
+		});
+		await flushMicrotasks();
+		assert.equal(readWorkflowHeartbeatAnchor(backend, runId), undefined, "no progress means no anchor yet");
+
+		// An ordinary stage-session checkpoint — no pause, no forced durability.
+		// This is the first progress that makes the run resumable, and it is the
+		// window the launch record has to survive.
+		const recordStageSession = createDurableStageSessionRecorder({
+			runId,
+			deps: {
+				workflowId: runId,
+				backend,
+				nextCheckpointId: () => "unused-tool-checkpoint",
+				nextReplayKey: () => "stage:running:1",
+				now: () => checkpointAt,
+			},
+			runSnapshot: runSnapshot(originalStore, runId),
+			heartbeatIntervalMinutes: launchIntervalMinutes,
+		});
+		await recordStageSession(runId, {
+			id: "running-stage",
+			name: "running-stage",
+			replayKey: "stage:running:1",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+			startedAt: STARTED_AT + 1_000,
+			sessionId: "running-session",
+			sessionFile: "/tmp/running-session.jsonl",
+		});
+
+		assert.ok(
+			backend.listResumableWorkflows().some((candidate) => candidate.workflowId === runId),
+			"the ordinary checkpoint makes the run resumable",
+		);
+		assert.deepEqual(
+			readWorkflowHeartbeatAnchor(backend, runId),
+			{ anchorAt: STARTED_AT, intervalMinutes: launchIntervalMinutes },
+			"the launch record is durable by the time that checkpoint is acknowledged",
+		);
+		assert.ok(schedulerWrites >= 0, "the scheduler's own write is irrelevant once the boundary owns it");
+		originalProcess.scheduler.dispose();
+
+		// The crash is followed by a durable resume under the same id with a fresh
+		// startedAt, and the definition has since been edited to a new cadence.
+		// Neither may reach a run that is already in flight.
+		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
+		const editedIntervalMinutes = 30;
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			createdAt: resumedStartedAt,
+			status: "running",
+		});
+		const resumedStore = createStore();
+		startRun(resumedStore, runId, { startedAt: resumedStartedAt });
+		const resumedProcess = installHarness({
+			store: resumedStore,
+			anchorStore: strandedAnchorStore,
+			startAt: resumedStartedAt,
+			defaultInterval: editedIntervalMinutes,
+			state: createWorkflowHeartbeatSchedulerState(),
+		});
+
+		assert.equal(
+			resumedProcess.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + launchIntervalMinutes * MINUTE_MS,
+			"the resumed run keeps both its original phase and its launch cadence",
+		);
+		resumedProcess.scheduler.dispose();
+	});
+
 	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-cadence-field");
@@ -1693,5 +1903,682 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 		await flushMicrotasks();
 		assert.equal(attempts.length, attemptsAtSuccess, "and the write stops after acknowledgement");
 		harness.scheduler.dispose();
+	});
+});
+
+describe("workflow heartbeat terminal cleanup and recovery", () => {
+	/** Every terminal status the store's own authority recognises. */
+	const TERMINAL_STATUSES = ["completed", "failed", "blocked", "skipped", "cancelled", "killed"] as const;
+
+	interface TrackingAnchorStore extends WorkflowHeartbeatAnchorStore {
+		readonly reads: string[];
+		readonly writes: string[];
+	}
+
+	/** Records which runs the scheduler read or wrote an anchor for. */
+	function trackingAnchorStore(seed?: {
+		runId: string;
+		anchorAt: number;
+		intervalMinutes?: number;
+	}): TrackingAnchorStore {
+		const stored = new Map<string, WorkflowHeartbeatLaunchRecord>();
+		if (seed !== undefined) {
+			const { runId, ...record } = seed;
+			stored.set(runId, record);
+		}
+		const reads: string[] = [];
+		const writes: string[] = [];
+		return {
+			reads,
+			writes,
+			readAnchorAt(runId) {
+				reads.push(runId);
+				return stored.get(runId);
+			},
+			async recordAnchorAt(runId, record) {
+				writes.push(runId);
+				if (!stored.has(runId)) stored.set(runId, record);
+				return true;
+			},
+		};
+	}
+
+	/** Every per-run field the scheduler owns, so a leak in any one of them fails. */
+	function heldFields(state: WorkflowHeartbeatSchedulerState, runId: string): Record<string, boolean> {
+		return {
+			scheduled: state.scheduled.has(runId),
+			pending: state.pending.has(runId),
+			awaitingParentPickup: state.awaitingParentPickup.has(runId),
+			lastEnqueuedAt: state.lastEnqueuedAt.has(runId),
+			anchorAt: state.anchorAt.has(runId),
+			anchorPersisted: state.anchorPersisted.has(runId),
+			anchorWritesPending: state.anchorWritesPending.has(runId),
+			intervalMinutes: state.intervalMinutes.has(runId),
+		};
+	}
+
+	const NOTHING_HELD: Record<string, boolean> = {
+		scheduled: false,
+		pending: false,
+		awaitingParentPickup: false,
+		lastEnqueuedAt: false,
+		anchorAt: false,
+		anchorPersisted: false,
+		anchorWritesPending: false,
+		intervalMinutes: false,
+	};
+
+	for (const status of TERMINAL_STATUSES) {
+		test(`a run that reaches ${status} keeps no timer, schedule, slot, or memo`, async () => {
+			const runId = testRunId(`heartbeat-cleanup-${status}`);
+			const store = createStore();
+			startRun(store, runId);
+			const anchorStore = trackingAnchorStore();
+			const harness = installHarness({ store, anchorStore, defaultInterval: 1 });
+
+			// One heartbeat is admitted and held, so the run owns the widest set of
+			// state it can: a held slot, its card text, a cadence memo, and an
+			// acknowledged durable anchor.
+			harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+			await flushMicrotasks();
+			assert.equal(harness.sent.length, 1);
+			assert.deepEqual(heldFields(harness.state, runId), {
+				...NOTHING_HELD,
+				pending: true,
+				awaitingParentPickup: true,
+				lastEnqueuedAt: true,
+				anchorAt: true,
+				anchorPersisted: true,
+				intervalMinutes: true,
+			});
+
+			assert.equal(store.recordRunEnd(runId, status), true, `the store accepted the ${status} transition`);
+			assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "cleanup leaves the run owning nothing");
+			assert.equal(harness.clock.live().length, 0, "no wake-up survives the run that owned it");
+
+			harness.clock.advanceBy(5 * MINUTE_MS);
+			await flushMicrotasks();
+			assert.equal(harness.sent.length, 1, "no further boundary is ever raised");
+			harness.scheduler.dispose();
+		});
+	}
+
+	test("a recoverable active block pauses scheduling without destroying an admitted heartbeat", async () => {
+		const runId = testRunId("heartbeat-active-blocked");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, anchorStore: trackingAnchorStore(), defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "one heartbeat is admitted and awaiting parent pickup");
+
+		assert.equal(
+			store.recordRunBlocked(runId, "rate limited", {
+				failureKind: "rate_limit",
+				failureCode: "rate_limited",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: "Provider rate limit reached.",
+				failedStageId: "s1",
+				resumable: true,
+			}),
+			true,
+		);
+		assert.equal(
+			isWorkflowHeartbeatTerminalRun(runSnapshot(store, runId)),
+			false,
+			"stored running status remains owned even though lifecycle notices report blocked",
+		);
+		assert.deepEqual(heldFields(harness.state, runId), {
+			...NOTHING_HELD,
+			pending: true,
+			awaitingParentPickup: true,
+			lastEnqueuedAt: true,
+			anchorAt: true,
+			anchorPersisted: true,
+			intervalMinutes: true,
+		});
+		assert.equal(harness.clock.live().length, 0, "the resumable block owns no scheduled wake-up");
+
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "no new heartbeat is raised while the run is blocked");
+
+		assert.equal(store.recordRunEnd(runId, "failed"), true, "a true terminal transition is still accepted");
+		assert.equal(
+			isWorkflowHeartbeatTerminalRun(runSnapshot(store, runId)),
+			true,
+			"the stored failed end state is terminal",
+		);
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "terminal cleanup then removes all held state");
+		harness.scheduler.dispose();
+	});
+
+	test("repeat cleanup reports already-clear, creates no state, and never throws", () => {
+		const runId = testRunId("heartbeat-cleanup-repeat");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+		assert.equal(harness.state.scheduled.size, 1, "the run owns a schedule to clear");
+
+		assert.deepEqual(harness.scheduler.clearWorkflowHeartbeats(runId), { kind: "cleared" });
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(harness.clock.live().length, 0, "the wake-up was re-derived from what is left");
+
+		assert.deepEqual(
+			harness.scheduler.clearWorkflowHeartbeats(runId),
+			{ kind: "already-clear" },
+			"a second pass has nothing to clear",
+		);
+		assert.deepEqual(
+			harness.scheduler.clearWorkflowHeartbeats(testRunId("heartbeat-cleanup-never-seen")),
+			{ kind: "already-clear" },
+			"a run the scheduler never saw is already clear rather than an error",
+		);
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "repeat cleanup created nothing");
+		assert.equal(harness.state.scheduled.size, 0, "and resurrected no schedule");
+		assert.equal(harness.clock.live().length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("an anchor write that acknowledges after cleanup marks nothing persisted", async () => {
+		const runId = testRunId("heartbeat-cleanup-late-anchor");
+		const store = createStore();
+		startRun(store, runId);
+		let acknowledge: ((stored: boolean) => void) | undefined;
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			anchorStore: {
+				readAnchorAt() {
+					return undefined;
+				},
+				recordAnchorAt() {
+					return new Promise<boolean>((resolve) => {
+						acknowledge = resolve;
+					});
+				},
+			},
+		});
+		assert.equal(harness.state.anchorWritesPending.has(runId), true, "a write is in flight");
+
+		store.recordRunEnd(runId, "completed");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+
+		acknowledge?.(true);
+		await flushMicrotasks();
+		assert.deepEqual(
+			heldFields(harness.state, runId),
+			NOTHING_HELD,
+			"a durable acknowledgement arriving after cleanup re-creates nothing",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("a send that settles after cleanup does not re-hold the run's slot", async () => {
+		const runId = testRunId("heartbeat-cleanup-late-send");
+		const store = createStore();
+		let admit: (() => void) | undefined;
+		startRun(store, runId);
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () =>
+				new Promise<void>((resolve) => {
+					admit = resolve;
+				}),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 1, "the send is with the host and cannot be recalled");
+		assert.equal(harness.state.pending.has(runId), true);
+
+		store.recordRunEnd(runId, "killed");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+
+		admit?.();
+		await flushMicrotasks();
+		assert.deepEqual(
+			heldFields(harness.state, runId),
+			NOTHING_HELD,
+			"the in-flight send settles inertly rather than re-holding a slot",
+		);
+		assert.equal(harness.clock.live().length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("a send rejected after cleanup arms no retry timer", async () => {
+		const runId = testRunId("heartbeat-cleanup-late-rejection");
+		const store = createStore();
+		let failSend: (() => void) | undefined;
+		startRun(store, runId);
+		// The sibling of the test above, differing only in how the host answers:
+		// a rejection maps to `delivered: false`, which is the path that would
+		// otherwise schedule a backoff retry for a run that is already finished.
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () =>
+				new Promise<void>((_resolve, reject) => {
+					failSend = () => reject(new Error("host rejected the heartbeat"));
+				}),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 1, "the send is with the host and cannot be recalled");
+
+		store.recordRunEnd(runId, "killed");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(harness.clock.live().length, 0, "cleanup left no timer behind");
+
+		failSend?.();
+		await flushMicrotasks();
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(
+			harness.clock.live().length,
+			0,
+			"a rejection arriving after cleanup arms no retry timer for the finished run",
+		);
+
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "and nothing is re-sent");
+		harness.scheduler.dispose();
+	});
+
+	test("a run re-dispatched under the same id never receives the boundary cleanup dropped", async () => {
+		const runId = testRunId("heartbeat-cleanup-same-id-redispatch");
+		const store = createStore();
+		let failSend: (() => void) | undefined;
+		startRun(store, runId);
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () =>
+				new Promise<void>((_resolve, reject) => {
+					failSend = () => reject(new Error("host rejected the heartbeat"));
+				}),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		const droppedBoundary = harness.sent[0]?.details.scheduledAt;
+		assert.equal(droppedBoundary, STARTED_AT + MINUTE_MS);
+
+		// A durable resume reclaims the original run id: the run goes terminal,
+		// leaves the store, and comes back running under the same id. A retry
+		// still holding the old identity would pass the live guard this time.
+		store.recordRunEnd(runId, "completed");
+		store.removeRun(runId);
+		startRun(store, runId, { startedAt: harness.clock.now() });
+
+		failSend?.();
+		await flushMicrotasks();
+		harness.clock.advanceBy(2_000);
+		await flushMicrotasks();
+		assert.deepEqual(
+			boundaries(harness.sent),
+			[...new Set(boundaries(harness.sent))],
+			"no boundary is delivered twice",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("terminal before enqueue: the due boundary is dropped and enqueue refuses it", () => {
+		const runId = testRunId("heartbeat-cleanup-terminal-before-enqueue");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+		const details: WorkflowHeartbeatEventDetails = {
+			runId,
+			scheduledAt: STARTED_AT + MINUTE_MS,
+			workflowName: "heartbeat-workflow",
+			startedAt: STARTED_AT,
+			intervalMinutes: 1,
+		};
+
+		// The boundary comes due, and the run finishes before the armed wake-up
+		// ever runs.
+		harness.clock.advanceWithoutFiring(STARTED_AT + MINUTE_MS + 10);
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS, "the boundary is owed");
+		store.recordRunEnd(runId, "failed", undefined, "boom");
+
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "cleanup drops the owed boundary");
+		assert.equal(harness.clock.live().length, 0, "and its wake-up");
+		harness.clock.fireDue();
+		assert.equal(harness.sent.length, 0);
+		assert.deepEqual(
+			harness.scheduler.enqueueWorkflowHeartbeat(details),
+			{ kind: "suppressed", reason: "terminal" },
+			"a boundary handed in directly is still refused",
+		);
+		assert.equal(harness.sent.length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("terminal after enqueue, while the identity waits behind another run", async () => {
+		const store = createStore();
+		const tied = [testRunId("heartbeat-cleanup-queued-a"), testRunId("heartbeat-cleanup-queued-b")].sort();
+		const [firstId, secondId] = [tied[0] as string, tied[1] as string];
+		startRun(store, firstId);
+		startRun(store, secondId);
+		let admitFirst: (() => void) | undefined;
+		// The first identity is admitted but unresolved, so the second is enqueued
+		// and sits in the delivery queue with no attempt of its own yet.
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: (details) =>
+				details.runId === firstId
+					? new Promise<void>((resolve) => {
+							admitFirst = resolve;
+						})
+					: undefined,
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.deepEqual(runIds(harness.sent), [firstId], "the second identity is queued, not yet attempted");
+		assert.equal(harness.state.pending.has(secondId), true);
+
+		store.recordRunEnd(secondId, "cancelled");
+		assert.deepEqual(heldFields(harness.state, secondId), NOTHING_HELD);
+
+		admitFirst?.();
+		await flushMicrotasks();
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		await flushMicrotasks();
+		assert.deepEqual(runIds(harness.sent), [firstId], "the queued identity of a terminal run is never processed");
+		harness.scheduler.dispose();
+	});
+
+	test("terminal after admission: the held slot is released and a late consumption arms nothing", () => {
+		const runId = testRunId("heartbeat-cleanup-terminal-after-admission");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		const identity = identityOf(harness.sent[0]);
+		assert.deepEqual(harness.state.awaitingParentPickup.get(runId), identity, "the card is admitted and unread");
+
+		store.recordRunEnd(runId, "skipped");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "the slot is released by cleanup");
+		assert.equal(harness.clock.live().length, 0);
+
+		// The parent may still read the admitted card afterwards; that signal must
+		// release nothing and re-arm nothing.
+		harness.scheduler.notifyHeartbeatConsumed(identity);
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(harness.clock.live().length, 0, "a late consumption re-arms no cadence");
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		assert.equal(harness.sent.length, 1);
+		harness.scheduler.dispose();
+	});
+
+	test("recovery discards a stale durable anchor without reading or writing it", () => {
+		const runId = testRunId("heartbeat-recovery-stale-anchor");
+		const store = createStore();
+		// The durable-reopen shape: a fresh process, and the run reappears in the
+		// store already terminal.
+		store.recordRunStart({
+			id: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			status: "completed",
+			stages: [],
+			startedAt: STARTED_AT,
+		});
+		const anchorStore = trackingAnchorStore({ runId, anchorAt: STARTED_AT, intervalMinutes: 1 });
+		const harness = installHarness({
+			store,
+			anchorStore,
+			defaultInterval: 1,
+			startAt: STARTED_AT + 10 * MINUTE_MS,
+		});
+
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "no schedule is rebuilt for a terminal run");
+		assert.deepEqual(anchorStore.reads, [], "the stale anchor is never read");
+		assert.deepEqual(anchorStore.writes, [], "and never rewritten");
+		assert.equal(harness.clock.live().length, 0);
+
+		harness.clock.advanceBy(10 * MINUTE_MS);
+		assert.equal(harness.sent.length, 0, "no missed boundary is replayed");
+		harness.scheduler.dispose();
+	});
+
+	test("recovery discards queued records left over for terminal and vanished runs", () => {
+		const terminalId = testRunId("heartbeat-recovery-stale-terminal");
+		const vanishedId = testRunId("heartbeat-recovery-vanished");
+		const store = createStore();
+		store.recordRunStart({
+			id: terminalId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			status: "failed",
+			stages: [],
+			startedAt: STARTED_AT,
+		});
+		// State carried across a scheduler reinstall: a held slot, an unread card,
+		// a delivered boundary, and cadence memos, for runs that no longer qualify.
+		const state = createWorkflowHeartbeatSchedulerState();
+		for (const runId of [terminalId, vanishedId]) {
+			const identity = { runId, scheduledAt: STARTED_AT + MINUTE_MS };
+			state.pending.set(runId, identity);
+			state.awaitingParentPickup.set(runId, identity);
+			state.lastEnqueuedAt.set(runId, STARTED_AT + MINUTE_MS);
+			state.anchorAt.set(runId, STARTED_AT);
+			state.anchorPersisted.add(runId);
+			state.anchorWritesPending.add(runId);
+			state.intervalMinutes.set(runId, 1);
+			state.scheduled.set(runId, {
+				runId,
+				scheduledAt: STARTED_AT + 2 * MINUTE_MS,
+				workflowName: "heartbeat-workflow",
+				startedAt: STARTED_AT,
+				intervalMinutes: 1,
+			});
+		}
+		const harness = installHarness({ store, state, defaultInterval: 1, startAt: STARTED_AT + 10 * MINUTE_MS });
+
+		assert.deepEqual(heldFields(harness.state, terminalId), NOTHING_HELD, "the terminal run's records are discarded");
+		assert.deepEqual(heldFields(harness.state, vanishedId), NOTHING_HELD, "so are those of a run the store lost");
+		assert.equal(harness.clock.live().length, 0, "nothing is armed for either");
+
+		harness.clock.advanceBy(10 * MINUTE_MS);
+		assert.equal(harness.sent.length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("cleaning up one run leaves an active held slot and a paused run's floor intact", () => {
+		const store = createStore();
+		const activeId = testRunId("heartbeat-cleanup-bystander-active");
+		const pausedId = testRunId("heartbeat-cleanup-bystander-paused");
+		const endingId = testRunId("heartbeat-cleanup-bystander-ending");
+		for (const runId of [activeId, pausedId, endingId]) startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 3, "all three heartbeat once");
+		store.recordRunPaused(pausedId, harness.clock.now());
+
+		store.recordRunEnd(endingId, "completed");
+		assert.deepEqual(heldFields(harness.state, endingId), NOTHING_HELD);
+		assert.deepEqual(
+			harness.state.pending.get(activeId),
+			{ runId: activeId, scheduledAt: STARTED_AT + MINUTE_MS },
+			"the active run keeps the slot it is still holding",
+		);
+		const activeIdentity = identityOf(harness.sent.find((send) => send.details.runId === activeId));
+		assert.deepEqual(
+			harness.state.awaitingParentPickup.get(activeId),
+			activeIdentity,
+			"and the exact identity it is holding",
+		);
+		assert.equal(
+			harness.state.lastEnqueuedAt.get(pausedId),
+			STARTED_AT + MINUTE_MS,
+			"the paused run keeps the floor that stops it re-raising a delivered boundary",
+		);
+		assert.equal(harness.state.intervalMinutes.get(pausedId), 1);
+		harness.scheduler.dispose();
+	});
+});
+
+describe("workflow heartbeat consumed-message identity", () => {
+	const HEARTBEAT_ENTRY_ID = "entry-heartbeat";
+	const RECONCILIATION_TYPE = "atomic:protected-streaming-reconciliation";
+
+	const entries: SessionEntry[] = [
+		{
+			id: HEARTBEAT_ENTRY_ID,
+			type: "custom_message",
+			customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+			details: {
+				runId: "run-under-test",
+				scheduledAt: STARTED_AT + MINUTE_MS,
+				workflowName: "heartbeat-workflow",
+				startedAt: STARTED_AT,
+				intervalMinutes: 1,
+			},
+		},
+		{
+			id: "entry-other-extension",
+			type: "custom_message",
+			customType: "someone-else:notice",
+			details: { runId: "not-a-heartbeat-run" },
+		},
+	];
+
+	function reconciliationFor(intentEntryId: unknown): unknown {
+		return {
+			message: {
+				role: "custom",
+				customType: RECONCILIATION_TYPE,
+				content: [{ type: "text", text: "♥ Workflow …" }],
+				details: { protectedReconciliationOf: intentEntryId },
+			},
+		};
+	}
+
+	test("a well-formed reconciliation resolves its exact identity from details, never from the text", () => {
+		assert.deepEqual(workflowHeartbeatConsumedIdentity(reconciliationFor(HEARTBEAT_ENTRY_ID), entries), {
+			runId: "run-under-test",
+			scheduledAt: STARTED_AT + MINUTE_MS,
+		});
+	});
+
+	test("everything that is not a workflow heartbeat's reconciliation resolves to undefined", () => {
+		const cases: { readonly name: string; readonly event: unknown }[] = [
+			{ name: "a non-object event", event: "message_end" },
+			{ name: "an event with no message", event: {} },
+			{ name: "an assistant message", event: { message: { role: "assistant", content: "hello" } } },
+			{
+				name: "a custom message of another type",
+				event: { message: { role: "custom", customType: "someone-else:notice", details: {} } },
+			},
+			{
+				name: "a reconciliation with no intent pointer",
+				event: { message: { role: "custom", customType: RECONCILIATION_TYPE, details: {} } },
+			},
+			{ name: "a reconciliation whose intent pointer is not a string", event: reconciliationFor(42) },
+			{ name: "a reconciliation naming an entry that is not there", event: reconciliationFor("entry-missing") },
+			{
+				name: "a reconciliation naming another extension's custom message",
+				event: reconciliationFor("entry-other-extension"),
+			},
+		];
+		for (const { name, event } of cases) {
+			assert.equal(workflowHeartbeatConsumedIdentity(event, entries), undefined, name);
+		}
+	});
+
+	test("no session entries means no identity, so the handler has nothing to decide", () => {
+		assert.equal(workflowHeartbeatConsumedIdentity(reconciliationFor(HEARTBEAT_ENTRY_ID), undefined), undefined);
+	});
+
+	test("a heartbeat entry carrying no usable exact identity resolves to undefined", () => {
+		const malformed: SessionEntry[] = [
+			{ id: HEARTBEAT_ENTRY_ID, type: "custom_message", customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE },
+			{
+				id: "entry-numeric-run",
+				type: "custom_message",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				details: { runId: 7, scheduledAt: STARTED_AT + MINUTE_MS },
+			},
+			{
+				id: "entry-missing-schedule",
+				type: "custom_message",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				details: { runId: "run-under-test" },
+			},
+			{
+				id: "entry-string-schedule",
+				type: "custom_message",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				details: { runId: "run-under-test", scheduledAt: "later" },
+			},
+		];
+		for (const entry of malformed) {
+			assert.equal(workflowHeartbeatConsumedIdentity(reconciliationFor(entry.id), malformed), undefined);
+		}
+	});
+
+	test("a stale boundary is invalid even when a current run reuses the same id", () => {
+		const oldIdentity: WorkflowHeartbeatIdentity = {
+			runId: "run-under-test",
+			scheduledAt: STARTED_AT + MINUTE_MS,
+		};
+		const resumedIdentity: WorkflowHeartbeatIdentity = {
+			runId: oldIdentity.runId,
+			scheduledAt: STARTED_AT + 3 * MINUTE_MS,
+		};
+		assert.deepEqual(
+			workflowHeartbeatContextInvalidation(
+				reconciliationFor(HEARTBEAT_ENTRY_ID),
+				entries,
+				(identity) =>
+					identity.runId === resumedIdentity.runId && identity.scheduledAt === resumedIdentity.scheduledAt,
+			),
+			{
+				message: {
+					role: "custom",
+					customType: RECONCILIATION_TYPE,
+					content: [{ type: "text", text: "♥ Workflow …" }],
+					details: { protectedReconciliationOf: HEARTBEAT_ENTRY_ID },
+					excludeFromContext: true,
+				},
+			},
+			"same run id does not transfer ownership to an old scheduled boundary",
+		);
+	});
+	test("the invalidation fires for a terminal or absent run and leaves a live one alone", () => {
+		const event = reconciliationFor(HEARTBEAT_ENTRY_ID);
+		assert.equal(
+			workflowHeartbeatContextInvalidation(event, entries, () => true),
+			undefined,
+			"a run that still owns its heartbeat is not touched",
+		);
+
+		assert.deepEqual(
+			workflowHeartbeatContextInvalidation(event, entries, () => false),
+			{
+				message: {
+					role: "custom",
+					customType: RECONCILIATION_TYPE,
+					content: [{ type: "text", text: "♥ Workflow …" }],
+					details: { protectedReconciliationOf: HEARTBEAT_ENTRY_ID },
+					excludeFromContext: true,
+				},
+			},
+			"every original key survives, because the host replaces by deleting the target's keys first",
+		);
+	});
+
+	test("a message that is not a heartbeat is never replaced, whatever the run predicate says", () => {
+		const foreign = { message: { role: "custom", customType: "someone-else:notice", details: {} } };
+		assert.equal(
+			workflowHeartbeatContextInvalidation(foreign, entries, () => false),
+			undefined,
+		);
 	});
 });
