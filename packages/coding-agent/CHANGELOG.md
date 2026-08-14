@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.14-alpha.1] - 2026-08-14
+
 ### Fixed
 
 - **The whole transcript stays readable while the `ask_user_question` dialog is open** ([#2378](https://github.com/bastani-inc/atomic/issues/2378)). The dialog used to mount inline in the fullscreen dock, where it is a flex sibling of the transcript viewport, so a tall side-by-side questionnaire took the transcript's rows: on a 200×40 terminal the viewport collapsed from 34 rows to 6, and because the page step is derived from that viewport, `PageUp` crawled two lines at a time through a six-line window. The dialog is now pinned to the bottom as an overlay, which is not measured into the layout, so the transcript keeps its full viewport height and full page step — a single `PageUp` moves a full page and `Home` reaches the top of the scrollback. The overlay is also bounded so at least six transcript rows always survive on a short terminal, and the rows it does cover are added back to the transcript's scroll extent, so scrolling to the end raises the newest output into the visible strip instead of leaving it stranded behind the dialog. Transcript page, Home/End, and wheel input remain available while the questionnaire's Notes editor is active. Notes keeps text and edit keys, and the dialog still owns arrows, `enter`, `tab`, `space`, `esc`, clicks, and selection.
