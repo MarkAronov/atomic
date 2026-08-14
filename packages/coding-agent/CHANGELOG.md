@@ -6,6 +6,10 @@
 
 - Added a clickable, centered jump-to-bottom indicator above the fullscreen input dock when the transcript is scrolled away from the live end; it displays the live `tui.altScreen.bottom` key binding and supports mouse activation ([#2361](https://github.com/bastani-inc/atomic/issues/2361)).
 
+### Removed
+
+- Removed the Ctrl+X shortcut for copying the last agent message; the `/copy` slash command still copies the last agent message to the clipboard and confirms in the status line.
+
 ### Fixed
 
 - Fixed a stall where a message queued during a turn was shown in the transcript but never answered, leaving the session idle until you typed another message. Escape and Ctrl+C hold queued work by pausing the agent's own steering and follow-up queues, but a message the agent loop has already polled is no longer in either queue: it is written straight into the transcript, so the interrupt cancelled its reply and nothing scheduled a new one. This was most visible after answering an `ask_user_question` questionnaire, which admits the queued message and immediately opens the request the interrupt then cancels. An admitted message whose reply was cancelled before it produced any output now receives that reply, and a message you send while that reply is still streaming is delivered as soon as it finishes. Queued messages that are still held are unchanged: Escape still restores them to the editor and leaves the session paused, and a reply that had already streamed some output is never restarted ([#2362](https://github.com/bastani-inc/atomic/issues/2362)).

@@ -356,7 +356,7 @@ declare module "./interactive-mode-base.ts" {
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;
 		handleImportCommand(text: string): Promise<void>;
 		handleShareCommand(): Promise<void>;
-		handleCopyCommand(options?: { flashConfirmation?: boolean }): Promise<void>;
+		handleCopyCommand(): Promise<void>;
 		handleNameCommand(text: string): void;
 		handleSessionCommand(): void;
 		handleChangelogCommand(): void;
