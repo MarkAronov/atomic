@@ -153,6 +153,8 @@ function installHarness(opts: {
 	startAt?: number;
 	intervals?: Readonly<Record<string, number>>;
 	defaultInterval?: number;
+	/** Full control over the live registry answer, for reload/discovery cases. */
+	resolveInterval?: (workflowName: string) => number | undefined;
 	lateFireMs?: number;
 	/**
 	 * Milliseconds after an admitted send at which the parent consumes the card
@@ -179,7 +181,10 @@ function installHarness(opts: {
 		timers: clock.timerApi,
 		parentAvailabilityReported: opts.parentAvailabilityReported ?? true,
 		...(opts.anchorStore === undefined ? {} : { anchorStore: opts.anchorStore }),
-		resolveIntervalMinutes: (name) => opts.intervals?.[name] ?? opts.defaultInterval,
+		resolveIntervalMinutes: (name) =>
+			opts.resolveInterval !== undefined
+				? opts.resolveInterval(name)
+				: (opts.intervals?.[name] ?? opts.defaultInterval),
 		sendMessage: (message, options) => {
 			const captured = message as unknown as {
 				customType: string;
@@ -808,16 +813,69 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a workflow whose definition is unavailable schedules nothing", () => {
+	test("a workflow whose definition was never resolvable schedules nothing", () => {
 		const runId = testRunId("heartbeat-unknown-definition");
 		const store = createStore();
 		startRun(store, runId, { name: "deleted-workflow" });
+		// Never resolvable, so no cadence was ever memoized for this run.
 		const harness = installHarness({ store, intervals: {} });
 
 		assert.equal(harness.state.scheduled.size, 0);
 		assert.equal(harness.clock.live().length, 0);
 		harness.clock.advanceBy(10 * MINUTE_MS);
 		assert.equal(harness.sent.length, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("a run keeps its launch cadence when its definition changes or disappears mid-run", () => {
+		const runId = testRunId("heartbeat-launch-cadence");
+		const store = createStore();
+		startRun(store, runId, { name: "reloadable" });
+		// The registry is live: `/workflow reload`, a rename, an edit, or a delete
+		// all change what it answers. An in-flight run keeps the cadence its own
+		// definition was authored with, the way the executor keeps its own `def`.
+		let published: number | undefined = 1;
+		const harness = installHarness({ store, resolveInterval: () => published });
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS);
+
+		// Deleted mid-run.
+		published = undefined;
+		store.recordNotice({ id: runId, level: "info", message: "reloaded", createdAt: 1 });
+		assert.equal(
+			harness.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + MINUTE_MS,
+			"a deleted definition does not stop an already-enabled run",
+		);
+
+		// Edited mid-run to a different cadence, and to a disable.
+		published = 30;
+		store.recordNotice({ id: runId, level: "info", message: "edited", createdAt: 2 });
+		published = 0;
+		store.recordNotice({ id: runId, level: "info", message: "disabled", createdAt: 3 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.deepEqual(
+			boundaries(harness.sent),
+			[STARTED_AT + MINUTE_MS],
+			"the launch cadence still fires its boundary",
+		);
+		assert.equal(harness.state.intervalMinutes.get(runId), 1, "the memo holds the launch value");
+		harness.scheduler.dispose();
+	});
+
+	test("a run observed before discovery finishes picks its cadence up on a later pass", () => {
+		const runId = testRunId("heartbeat-late-discovery");
+		const store = createStore();
+		startRun(store, runId, { name: "warming-up" });
+		// Only a successful resolution memoizes, so an unresolvable first pass must
+		// not freeze the run as permanently unschedulable.
+		let published: number | undefined;
+		const harness = installHarness({ store, resolveInterval: () => published });
+		assert.equal(harness.state.scheduled.size, 0, "nothing is armed while discovery is still warming up");
+
+		published = 1;
+		store.recordNotice({ id: runId, level: "info", message: "discovery settled", createdAt: 1 });
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS);
 		harness.scheduler.dispose();
 	});
 
@@ -864,11 +922,15 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 });
 
 describe("workflow heartbeat durable cadence anchor", () => {
-	function recordingAnchorStore(seed?: { runId: string; anchorAt: number }): WorkflowHeartbeatAnchorStore & {
+	function recordingAnchorStore(opts?: {
+		seed?: { runId: string; anchorAt: number };
+		/** Models the no-progress guard: the write is refused until this flips. */
+		acceptWrites?: () => boolean;
+	}): WorkflowHeartbeatAnchorStore & {
 		readonly writes: { runId: string; anchorAt: number }[];
 	} {
 		const stored = new Map<string, number>();
-		if (seed !== undefined) stored.set(seed.runId, seed.anchorAt);
+		if (opts?.seed !== undefined) stored.set(opts.seed.runId, opts.seed.anchorAt);
 		const writes: { runId: string; anchorAt: number }[] = [];
 		return {
 			writes,
@@ -877,7 +939,9 @@ describe("workflow heartbeat durable cadence anchor", () => {
 			},
 			recordAnchorAt(runId, anchorAt) {
 				writes.push({ runId, anchorAt });
+				if (opts?.acceptWrites !== undefined && !opts.acceptWrites()) return false;
 				if (!stored.has(runId)) stored.set(runId, anchorAt);
+				return true;
 			},
 		};
 	}
@@ -909,6 +973,75 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
+	test("the anchor is written at schedule time, long before the first boundary", () => {
+		const runId = testRunId("heartbeat-anchor-early");
+		const store = createStore();
+		startRun(store, runId);
+		const anchorStore = recordingAnchorStore();
+		// Installing already schedules boundary 1; nothing has been delivered yet.
+		const harness = installHarness({ store, anchorStore, defaultInterval: 15 });
+
+		assert.equal(harness.sent.length, 0, "no heartbeat has been raised");
+		assert.deepEqual(
+			anchorStore.writes,
+			[{ runId, anchorAt: STARTED_AT }],
+			"the anchor is already persisted, so a resume before boundary 1 stays on the series",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("the anchor write retries until durable progress exists, then stops", () => {
+		const runId = testRunId("heartbeat-anchor-retry");
+		const store = createStore();
+		startRun(store, runId);
+		// Models the no-progress guard inside `recordWorkflowHeartbeatAnchor`: the
+		// write is refused until the run has a durable checkpoint of its own.
+		let hasProgress = false;
+		const anchorStore = recordingAnchorStore({ acceptWrites: () => hasProgress });
+		const harness = installHarness({ store, anchorStore, defaultInterval: 1 });
+
+		store.recordNotice({ id: runId, level: "info", message: "still no progress", createdAt: 1 });
+		assert.equal(anchorStore.readAnchorAt(runId), undefined, "nothing is persisted while the guard refuses");
+		assert.ok(anchorStore.writes.length >= 2, "the write is retried rather than abandoned");
+
+		hasProgress = true;
+		store.recordNotice({ id: runId, level: "info", message: "progress landed", createdAt: 2 });
+		assert.equal(anchorStore.readAnchorAt(runId), STARTED_AT, "the anchor lands on the first pass after progress");
+		const attemptsAtSuccess = anchorStore.writes.length;
+
+		store.recordNotice({ id: runId, level: "info", message: "more churn", createdAt: 3 });
+		store.recordNotice({ id: runId, level: "info", message: "yet more churn", createdAt: 4 });
+		assert.equal(anchorStore.writes.length, attemptsAtSuccess, "and the durable call stops after the first success");
+		harness.scheduler.dispose();
+	});
+
+	test("a run resumed before its first boundary still lands on the original series", () => {
+		const runId = testRunId("heartbeat-anchor-resume-before-first");
+		const originalStart = STARTED_AT;
+		// The run gained durable progress, then paused or crashed before boundary 1
+		// and was durably resumed: same run id, freshly minted `startedAt`.
+		const resumedStartedAt = originalStart + 7 * MINUTE_MS;
+		const store = createStore();
+		startRun(store, runId, { startedAt: resumedStartedAt });
+		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: originalStart } });
+		const harness = installHarness({
+			store,
+			anchorStore,
+			startAt: resumedStartedAt,
+			defaultInterval: 15,
+		});
+
+		const next = harness.state.scheduled.get(runId)?.scheduledAt;
+		assert.ok(next !== undefined);
+		assert.equal(
+			(next - originalStart) % (15 * MINUTE_MS),
+			0,
+			"the next boundary is on the original series, not on the resumed start time",
+		);
+		assert.equal(next, originalStart + 15 * MINUTE_MS);
+		harness.scheduler.dispose();
+	});
+
 	test("a durable resume with a fresh startedAt stays on the original cadence", () => {
 		const runId = testRunId("heartbeat-anchor-durable-resume");
 		// A durable resume re-dispatches under the original workflow id but mints a
@@ -916,7 +1049,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		const resumedStartedAt = STARTED_AT + 5 * MINUTE_MS + 20_000;
 		const store = createStore();
 		startRun(store, runId, { startedAt: resumedStartedAt });
-		const anchorStore = recordingAnchorStore({ runId, anchorAt: STARTED_AT });
+		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT } });
 		const harness = installHarness({
 			store,
 			anchorStore,
@@ -950,7 +1083,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		startRun(store, runId, { startedAt: STARTED_AT });
 		// A record can only move the anchor back to the original start, never
 		// forward, so a bogus later value cannot shift the cadence.
-		const anchorStore = recordingAnchorStore({ runId, anchorAt: STARTED_AT + 10 * MINUTE_MS });
+		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT + 10 * MINUTE_MS } });
 		const harness = installHarness({ store, anchorStore, defaultInterval: 1 });
 
 		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS);

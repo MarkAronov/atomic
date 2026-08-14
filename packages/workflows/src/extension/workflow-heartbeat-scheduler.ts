@@ -85,6 +85,18 @@ export interface WorkflowHeartbeatSchedulerState {
 	readonly lastEnqueuedAt: Map<string, number>;
 	/** Resolved cadence anchor per run, memoized after its first durable read. */
 	readonly anchorAt: Map<string, number>;
+	/** Runs whose cadence anchor is already persisted, so the write stops retrying. */
+	readonly anchorPersisted: Set<string>;
+	/**
+	 * Cadence each run launched with, captured the first time it resolved.
+	 *
+	 * An in-flight run keeps the interval its own definition was authored with.
+	 * Re-reading the live registry every pass would let a mid-run `/workflow
+	 * reload`, rename, edit, or delete change or stop an already-enabled run —
+	 * and nothing else in the system lets a reload reach a run in flight, because
+	 * the executor closes over its own definition for the life of the run.
+	 */
+	readonly intervalMinutes: Map<string, number>;
 }
 
 export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedulerState {
@@ -94,6 +106,8 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 		awaitingParentPickup: new Map<string, string>(),
 		lastEnqueuedAt: new Map<string, number>(),
 		anchorAt: new Map<string, number>(),
+		anchorPersisted: new Set<string>(),
+		intervalMinutes: new Map<string, number>(),
 	};
 }
 
@@ -103,6 +117,8 @@ export function resetWorkflowHeartbeatSchedulerState(state: WorkflowHeartbeatSch
 	state.awaitingParentPickup.clear();
 	state.lastEnqueuedAt.clear();
 	state.anchorAt.clear();
+	state.anchorPersisted.clear();
+	state.intervalMinutes.clear();
 }
 
 export interface WorkflowHeartbeatSchedulerOptions {
@@ -141,8 +157,12 @@ export interface WorkflowHeartbeatSchedulerOptions {
 export interface WorkflowHeartbeatAnchorStore {
 	/** The run's persisted original start time, when one was recorded. */
 	readAnchorAt(runId: string): number | undefined;
-	/** Persist the run's cadence anchor. Write-once; later calls are no-ops. */
-	recordAnchorAt(runId: string, anchorAt: number): void;
+	/**
+	 * Persist the run's cadence anchor. Write-once; later calls are no-ops.
+	 * Returns whether the anchor is durably readable afterwards, so the caller can
+	 * stop retrying.
+	 */
+	recordAnchorAt(runId: string, anchorAt: number): boolean;
 }
 
 export interface WorkflowHeartbeatScheduler {
@@ -361,6 +381,14 @@ export function installWorkflowHeartbeatScheduler(
 		const anchorAt = resolveAnchorAt(run);
 		const scheduledAt = nextWorkflowHeartbeatBoundary(anchorAt, intervalMinutes, floor);
 		if (scheduledAt === undefined) return { kind: "disabled" };
+		// Persist the cadence anchor here rather than at the first delivery. A run
+		// that gains durable progress and then pauses, quits, or crashes before its
+		// first boundary would otherwise have no record, and a durable resume —
+		// which reclaims the original run id but remints `startedAt` — would put it
+		// on a fresh series. The write is a no-op until the run has durable progress
+		// of its own, and any such progress bumps the store, so this runs on the
+		// first refresh after the run becomes resumable.
+		persistAnchorOnce(run.id, anchorAt);
 		state.scheduled.set(run.id, {
 			runId: run.id,
 			scheduledAt,
@@ -391,15 +419,6 @@ export function installWorkflowHeartbeatScheduler(
 		const identity: WorkflowHeartbeatIdentity = { runId: payload.runId, scheduledAt: payload.scheduledAt };
 		state.pending.set(payload.runId, identity);
 		state.lastEnqueuedAt.set(payload.runId, payload.scheduledAt);
-		// Persist the cadence anchor, best-effort and write-once. Only a run that
-		// actually heartbeats gets a record, so a disabled workflow never writes
-		// one. The seam is declared best-effort, so a store that fails degrades to
-		// the derived cadence here rather than at every call site.
-		try {
-			anchorStore?.recordAnchorAt(payload.runId, payload.startedAt);
-		} catch {
-			// A durable backend that is not ready must not stop a heartbeat.
-		}
 		delivery.deliver(payload);
 		return { kind: "enqueued", identity };
 	};
@@ -443,7 +462,7 @@ export function installWorkflowHeartbeatScheduler(
 			// that window does not retro-fit a new cadence onto an owed boundary.
 			const owed = state.scheduled.get(run.id);
 			if (owed !== undefined && owed.scheduledAt <= now()) continue;
-			const intervalMinutes = resolveRunIntervalMinutes(options.resolveIntervalMinutes, run.name);
+			const intervalMinutes = resolveRunIntervalMinutes(state, options.resolveIntervalMinutes, run);
 			if (intervalMinutes === undefined) {
 				state.scheduled.delete(run.id);
 				continue;
@@ -483,6 +502,24 @@ export function installWorkflowHeartbeatScheduler(
 		const anchorAt = stored === undefined ? run.startedAt : Math.min(stored, run.startedAt);
 		state.anchorAt.set(run.id, anchorAt);
 		return anchorAt;
+	}
+
+	/**
+	 * Write the run's cadence anchor at most once per process, best-effort.
+	 *
+	 * `recordAnchorAt` is itself a no-op until the run has durable progress of its
+	 * own, so this is called on every schedule pass until it succeeds and then
+	 * never again. Bounding it matters because a schedule pass runs on every store
+	 * invalidation for every running run.
+	 */
+	function persistAnchorOnce(runId: string, anchorAt: number): void {
+		if (anchorStore === undefined || state.anchorPersisted.has(runId)) return;
+		try {
+			if (anchorStore.recordAnchorAt(runId, anchorAt)) state.anchorPersisted.add(runId);
+		} catch {
+			// A durable backend that is not ready must not stop a heartbeat; the
+			// next pass retries.
+		}
 	}
 
 	const processDue = (): void => {
@@ -539,16 +576,31 @@ function earliestScheduled(state: WorkflowHeartbeatSchedulerState): WorkflowHear
 	return earliest;
 }
 
+/**
+ * The cadence for a run: the one it launched with, resolved from its definition
+ * the first time and memoized thereafter.
+ *
+ * Only a successful resolution memoizes, so a run observed during startup
+ * warmup — before discovery has finished — picks its cadence up on a later pass
+ * rather than being frozen as unresolvable. Once resolved, a `/workflow reload`,
+ * rename, edit, or delete cannot change or stop that run.
+ */
 function resolveRunIntervalMinutes(
+	state: WorkflowHeartbeatSchedulerState,
 	resolve: (workflowName: string) => number | undefined,
-	workflowName: string,
+	run: WorkflowHeartbeatRun,
 ): number | undefined {
-	const intervalMinutes = resolve(workflowName);
+	const memoized = state.intervalMinutes.get(run.id);
+	if (memoized !== undefined) return memoized;
+	const intervalMinutes = resolve(run.name);
 	if (intervalMinutes === undefined) return undefined;
 	// The authoring door already rejected negative and non-finite values; a
-	// definition that is missing or unreadable schedules nothing rather than
-	// failing a background pass.
+	// definition that is missing, unreadable, or disabled schedules nothing rather
+	// than failing a background pass. Those two cases are indistinguishable here,
+	// which is why editing a live workflow from a positive cadence to `0` leaves
+	// an in-flight run on its launch cadence.
 	if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return undefined;
+	state.intervalMinutes.set(run.id, intervalMinutes);
 	return intervalMinutes;
 }
 

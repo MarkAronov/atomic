@@ -124,10 +124,11 @@ save "first-heartbeat"
 
 # 4. One interval later, a second card. Recurrence, not a one-shot notice.
 #
-# The first heartbeat holds its slot until the parent reports settling its turn,
-# with no deadline behind it — so this step is the load-bearing check that the
-# host's `agent_settled` really reaches the extension. If it never did, no
-# second card would ever appear and this wait would fail rather than pass late.
+# The first heartbeat holds its slot until its card is consumed into the
+# conversation, with no deadline behind it — so this step is the load-bearing
+# check that the host's `message_end` consumption signal reaches the extension.
+# A failure here means that signal did not arrive; it does not mean a turn
+# failed to settle, which is a weaker event this cadence deliberately ignores.
 await_count "WORKFLOW HEARTBEAT" 2 "the second heartbeat card one interval later" 200
 save "second-heartbeat"
 

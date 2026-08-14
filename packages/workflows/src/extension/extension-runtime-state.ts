@@ -69,9 +69,11 @@ function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 		},
 		recordAnchorAt(runId, anchorAt) {
 			try {
-				recordWorkflowHeartbeatAnchor(getDurableBackend(), { runId, anchorAt, now: Date.now() });
+				return recordWorkflowHeartbeatAnchor(getDurableBackend(), { runId, anchorAt, now: Date.now() });
 			} catch {
-				// A backend that is not ready must not break a background pass.
+				// A backend that is not ready must not break a background pass; the
+				// caller retries on the next schedule pass.
+				return false;
 			}
 		},
 	};
