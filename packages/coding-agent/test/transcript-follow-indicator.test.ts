@@ -202,14 +202,42 @@ describe("handleUrlActivation", () => {
 		expect(openUrl).not.toHaveBeenCalled();
 	});
 
-	test("accepts case-insensitive internal schemes", () => {
+	test("normalizes a case-insensitive internal scheme before forwarding it", () => {
 		const onInternalUiAction = vi.fn();
 		const openUrl = vi.fn();
 
 		handleUrlActivation("ATOMIC-UI://transcript/jump-to-end", { onInternalUiAction, openUrl });
 
-		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith("ATOMIC-UI://transcript/jump-to-end");
+		expect(onInternalUiAction).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
 		expect(openUrl).not.toHaveBeenCalled();
+	});
+
+	test("offers a mixed-case activation to an overlay as the canonical URL", () => {
+		const onInternalUiAction = vi.fn();
+		const overlayInput = vi.fn(() => true);
+		let tui: TuiAltScreen;
+		tui = createInteractiveTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+			onInternalUiAction,
+			onOverlayInternalUiAction: (url) => handleFocusedOverlayInternalUiAction(tui, url),
+		}) as TuiAltScreen;
+		const overlay = tui.showOverlay({
+			render: () => [],
+			invalidate: () => {},
+			handleInput: overlayInput,
+			handlesInternalUiAction: true,
+		});
+		const openUrl = Reflect.get(tui, "openUrl");
+		if (typeof openUrl !== "function") throw new Error("fullscreen TUI did not expose its URL handler");
+
+		openUrl("ATOMIC-UI://transcript/jump-to-end");
+
+		expect(overlayInput).toHaveBeenCalledExactlyOnceWith(TRANSCRIPT_JUMP_TO_END_URL);
+		expect(onInternalUiAction).not.toHaveBeenCalled();
+		overlay.hide();
+		tui.stop();
 	});
 	test.each(["atomic-ui://[", "atomic-ui://a[b", "atomic-ui://tra nscript/jump-to-end", "ATOMIC-UI://tra nscript/x"])(
 		"drops malformed internal URLs without invoking either handler: %s",

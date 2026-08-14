@@ -118,7 +118,9 @@ export function handleUrlActivation(url: string, handlers: UrlActivationHandlers
 	if (url.slice(0, internalUiScheme.length).toLowerCase() === internalUiScheme) {
 		const schemeEnd = url.indexOf(":");
 		const normalizedInternalUrl = `${url.slice(0, schemeEnd).toLowerCase()}${url.slice(schemeEnd)}`;
-		if (normalizedInternalUrl === TRANSCRIPT_JUMP_TO_END_URL) routeInternalUiAction(url, handlers);
+		// Forward the normalized URL: overlay-side matching is exact, so a
+		// mixed-case scheme must not reach an overlay as an unrecognized string.
+		if (normalizedInternalUrl === TRANSCRIPT_JUMP_TO_END_URL) routeInternalUiAction(normalizedInternalUrl, handlers);
 		return;
 	}
 
