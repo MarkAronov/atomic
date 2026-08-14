@@ -78,12 +78,21 @@ export function readWorkflowHeartbeatAnchor(
 }
 
 /**
- * Persist what a run launched with, once. Returns whether the record is readable
- * afterwards — the backend silently drops a checkpoint for a workflow it has
- * never registered, so the return value is a read-back rather than an
- * assumption.
+ * Persist what a run launched with, once.
+ *
+ * Uses `recordAdditiveCheckpointBestEffort` rather than the synchronous
+ * `recordCheckpoint`, because the DBOS backend updates its in-memory mirror
+ * *before* the real write is queued: a synchronous read-back therefore proves
+ * only that the mirror holds the row, and would let a rejected storage write be
+ * remembered as a success that is never retried. The best-effort path awaits
+ * `recordStepOutput` and updates the mirror only after it resolves, and turns a
+ * storage rejection into `false` instead of a fatal flush error.
+ *
+ * Returns `true` only when the record is durably written *and* readable — the
+ * backend silently drops a checkpoint for a workflow it has never registered,
+ * so the read-back stays as well.
  */
-export function recordWorkflowHeartbeatAnchor(
+export async function recordWorkflowHeartbeatAnchor(
 	backend: DurableWorkflowBackend,
 	record: {
 		readonly runId: string;
@@ -91,7 +100,7 @@ export function recordWorkflowHeartbeatAnchor(
 		readonly intervalMinutes: number;
 		readonly now: number;
 	},
-): boolean {
+): Promise<boolean> {
 	if (!Number.isFinite(record.anchorAt)) return false;
 	// A run launched with heartbeats disabled writes no record at all, so this
 	// path is never reached for a non-positive cadence. Guarding it here keeps
@@ -115,6 +124,7 @@ export function recordWorkflowHeartbeatAnchor(
 		// which the foreign-liveness window reads.
 		completedAt: record.now,
 	};
-	backend.recordCheckpoint(checkpoint);
+	const stored = await backend.recordAdditiveCheckpointBestEffort(checkpoint);
+	if (!stored) return false;
 	return readWorkflowHeartbeatAnchor(backend, record.runId) !== undefined;
 }

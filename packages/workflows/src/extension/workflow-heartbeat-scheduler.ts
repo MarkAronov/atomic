@@ -85,8 +85,10 @@ export interface WorkflowHeartbeatSchedulerState {
 	readonly lastEnqueuedAt: Map<string, number>;
 	/** Resolved cadence anchor per run, memoized after its first durable read. */
 	readonly anchorAt: Map<string, number>;
-	/** Runs whose cadence anchor is already persisted, so the write stops retrying. */
+	/** Runs whose launch record is durably acknowledged, so the write stops retrying. */
 	readonly anchorPersisted: Set<string>;
+	/** Runs with a launch-record write in flight, so at most one is outstanding. */
+	readonly anchorWritesPending: Set<string>;
 	/**
 	 * Cadence each run launched with, captured the first time it resolved.
 	 *
@@ -107,6 +109,7 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 		lastEnqueuedAt: new Map<string, number>(),
 		anchorAt: new Map<string, number>(),
 		anchorPersisted: new Set<string>(),
+		anchorWritesPending: new Set<string>(),
 		intervalMinutes: new Map<string, number>(),
 	};
 }
@@ -118,6 +121,7 @@ export function resetWorkflowHeartbeatSchedulerState(state: WorkflowHeartbeatSch
 	state.lastEnqueuedAt.clear();
 	state.anchorAt.clear();
 	state.anchorPersisted.clear();
+	state.anchorWritesPending.clear();
 	state.intervalMinutes.clear();
 }
 
@@ -170,7 +174,7 @@ export interface WorkflowHeartbeatAnchorStore {
 	 * Returns whether the record is durably readable afterwards, so the caller can
 	 * stop retrying. Never called for a non-positive cadence.
 	 */
-	recordAnchorAt(runId: string, record: WorkflowHeartbeatLaunchRecord): boolean;
+	recordAnchorAt(runId: string, record: WorkflowHeartbeatLaunchRecord): Promise<boolean>;
 }
 
 export interface WorkflowHeartbeatScheduler {
@@ -564,10 +568,20 @@ export function installWorkflowHeartbeatScheduler(
 	/**
 	 * Write what the run launched with, at most once per process, best-effort.
 	 *
+	 * The write is asynchronous and its result is only trusted once the durable
+	 * backend acknowledges it. The DBOS backend updates its in-memory mirror
+	 * before the real write is queued, so a synchronous read-back would mark a
+	 * rejected storage write as persisted and never retry it.
+	 *
 	 * `recordAnchorAt` is itself a no-op until the run has durable progress of its
-	 * own, so this is called on every schedule pass until it succeeds and then
-	 * never again. Bounding it matters because a schedule pass runs on every store
-	 * invalidation for every running run.
+	 * own, so this is called on every schedule pass until it is acknowledged and
+	 * then never again. Bounding it matters because a schedule pass runs on every
+	 * store invalidation for every running run; `anchorWritesPending` keeps at
+	 * most one write in flight per run while a pass is waiting.
+	 *
+	 * A failure clears only the pending marker and leaves the retry to the next
+	 * natural schedule pass. It deliberately does not call `refresh()`, which
+	 * would turn a persistently failing backend into a retry loop.
 	 *
 	 * Only reached for a positive cadence, because `scheduleWorkflowHeartbeats`
 	 * returns `disabled` above this point — so a run launched with heartbeats off
@@ -575,13 +589,26 @@ export function installWorkflowHeartbeatScheduler(
 	 * criterion "disabled (0) creates no timer or record" requires.
 	 */
 	function persistLaunchRecordOnce(runId: string, anchorAt: number, intervalMinutes: number): void {
-		if (anchorStore === undefined || state.anchorPersisted.has(runId)) return;
+		if (anchorStore === undefined) return;
+		if (state.anchorPersisted.has(runId) || state.anchorWritesPending.has(runId)) return;
+		state.anchorWritesPending.add(runId);
+		let write: Promise<boolean>;
 		try {
-			if (anchorStore.recordAnchorAt(runId, { anchorAt, intervalMinutes })) state.anchorPersisted.add(runId);
+			write = Promise.resolve(anchorStore.recordAnchorAt(runId, { anchorAt, intervalMinutes }));
 		} catch {
-			// A durable backend that is not ready must not stop a heartbeat; the
-			// next pass retries.
+			// A backend that throws synchronously must not stop a heartbeat.
+			state.anchorWritesPending.delete(runId);
+			return;
 		}
+		void write.then(
+			(acknowledged) => {
+				state.anchorWritesPending.delete(runId);
+				if (acknowledged) state.anchorPersisted.add(runId);
+			},
+			() => {
+				state.anchorWritesPending.delete(runId);
+			},
+		);
 	}
 
 	const processDue = (): void => {

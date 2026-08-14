@@ -48,8 +48,19 @@ export function workflowHeartbeatIdentityKey(identity: { runId: string; schedule
 }
 
 /**
- * Owns one heartbeat identity's admission with capped-backoff retry. Every
- * retry re-sends the identical `WorkflowHeartbeatEventDetails`, so the
+ * Owns heartbeat admission: one identity at a time, in the order handed over,
+ * with capped-backoff retry.
+ *
+ * **Why the queue exists.** The scheduler sorts a due batch by `scheduledAt`
+ * then `runId` and hands identities over in that order, but sorting only
+ * controls the order attempts *start*. If the first identity's send is rejected
+ * it enters backoff, and a later identity admitted in the meantime reaches the
+ * parent first — the observed order becomes B, A. Admission order is what the
+ * ordering rule is about, so the queue holds later identities until the head
+ * reaches a terminal result: admitted, suppressed by its guard, or out of
+ * attempts.
+ *
+ * Every retry re-sends the identical `WorkflowHeartbeatEventDetails`, so the
  * `runId + scheduledAt` identity is reused rather than re-derived from the
  * retry's own clock. Deliberately separate from `createLifecycleNoticeDelivery`:
  * that helper is hard-typed to lifecycle notices and its exact retry/handover
@@ -57,33 +68,48 @@ export function workflowHeartbeatIdentityKey(identity: { runId: string; schedule
  */
 export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDeliveryOptions): WorkflowHeartbeatDelivery {
 	const retryTimers = new Set<WorkflowHeartbeatTimerHandle>();
-	const attempts = new Map<string, number>();
+	const queue: WorkflowHeartbeatEventDetails[] = [];
+	let attempt = 0;
+	let running = false;
 	let active = true;
 
-	const deliver = (details: WorkflowHeartbeatEventDetails): void => {
-		if (!active) return;
-		const key = workflowHeartbeatIdentityKey(details);
+	/** Finish the head identity and start the next one, in handover order. */
+	const settleHead = (details: WorkflowHeartbeatEventDetails, delivered: boolean): void => {
+		queue.shift();
+		attempt = 0;
+		running = false;
+		options.onSettled(details, delivered);
+		runHead();
+	};
+
+	const runHead = (): void => {
+		if (!active || running) return;
+		const details = queue[0];
+		if (details === undefined) return;
+		// The live guard runs immediately before every attempt, including the
+		// first attempt of an identity that waited behind another one — the run
+		// may have finished or paused while it queued.
 		if (options.canDeliver !== undefined && !options.canDeliver(details)) {
 			// Suppressed rather than sent, and never retried: the run's state is the
-			// reason, and no amount of backoff changes it.
-			attempts.delete(key);
-			options.onSettled(details, false);
+			// reason, and no amount of backoff changes it. Later identities proceed.
+			settleHead(details, false);
 			return;
 		}
-		const attempt = (attempts.get(key) ?? 0) + 1;
-		attempts.set(key, attempt);
+		running = true;
+		attempt += 1;
+		const thisAttempt = attempt;
 		const settle = (delivered: boolean): void => {
-			if (delivered || attempt >= WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS || !active) {
-				attempts.delete(key);
-				options.onSettled(details, delivered);
+			if (delivered || thisAttempt >= WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS || !active) {
+				settleHead(details, delivered);
 				return;
 			}
+			running = false;
 			const handle = options.timers.setTimeout(
 				() => {
 					retryTimers.delete(handle);
-					if (active) deliver(details);
+					runHead();
 				},
-				Math.min(20 * 2 ** (attempt - 1), 1_000),
+				Math.min(20 * 2 ** (thisAttempt - 1), 1_000),
 			);
 			handle.unref?.();
 			retryTimers.add(handle);
@@ -93,13 +119,19 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 		else void result.then(settle);
 	};
 
+	const deliver = (details: WorkflowHeartbeatEventDetails): void => {
+		if (!active) return;
+		queue.push(details);
+		runHead();
+	};
+
 	return {
 		deliver,
 		dispose() {
 			active = false;
 			for (const handle of retryTimers) options.timers.clearTimeout(handle);
 			retryTimers.clear();
-			attempts.clear();
+			queue.length = 0;
 			// An in-flight send is left to settle on its own; `active` keeps it from
 			// starting a further retry.
 		},

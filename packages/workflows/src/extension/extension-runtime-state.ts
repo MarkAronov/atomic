@@ -67,9 +67,9 @@ function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 				return undefined;
 			}
 		},
-		recordAnchorAt(runId, record) {
+		async recordAnchorAt(runId, record) {
 			try {
-				return recordWorkflowHeartbeatAnchor(getDurableBackend(), {
+				return await recordWorkflowHeartbeatAnchor(getDurableBackend(), {
 					runId,
 					anchorAt: record.anchorAt,
 					// The scheduler only records a positive cadence; a run launched

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { DbosDurableBackend, type DbosSdkHandle } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { createInMemoryTestBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	readWorkflowHeartbeatAnchor,
@@ -26,6 +27,7 @@ import {
 	type WorkflowHeartbeatEventDetails,
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 import { testRunId } from "../helpers/run-id.js";
+import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -702,6 +704,109 @@ describe("workflow heartbeat delivery", () => {
 		harness.scheduler.dispose();
 	});
 
+	test("a retry does not let a later heartbeat reach the parent first", async () => {
+		const store = createStore();
+		const tied = [testRunId("heartbeat-fifo-a"), testRunId("heartbeat-fifo-b")].sort();
+		const [runA, runB] = [tied[0] as string, tied[1] as string];
+		startRun(store, runA, { name: "fifo" });
+		startRun(store, runB, { name: "fifo" });
+		// A is first in sorted order and its first attempt is rejected. Sorting
+		// alone only controls the order attempts start: without a FIFO admission
+		// queue B would be admitted during A's backoff and reach the parent first.
+		const attempted: string[] = [];
+		const admitted: string[] = [];
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: (details) => {
+				attempted.push(details.runId);
+				if (details.runId === runA && attempted.filter((id) => id === runA).length === 1) {
+					return Promise.reject(new Error("parent rejected the first attempt"));
+				}
+				admitted.push(details.runId);
+				return undefined;
+			},
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS);
+		await flushMicrotasks();
+		assert.deepEqual(attempted, [runA], "B waits behind A rather than overtaking it during the backoff");
+		assert.deepEqual(admitted, [], "and nothing has reached the parent yet");
+
+		harness.clock.advanceBy(20);
+		await flushMicrotasks();
+		assert.deepEqual(attempted, [runA, runA, runB], "A retries with its own identity, then B starts");
+		assert.deepEqual(admitted, [runA, runB], "parent admission order is the sorted order");
+		harness.scheduler.dispose();
+	});
+
+	test("an exhausted identity releases the queue for the next one", async () => {
+		const store = createStore();
+		const tied = [testRunId("heartbeat-fifo-exhaust-a"), testRunId("heartbeat-fifo-exhaust-b")].sort();
+		const [runA, runB] = [tied[0] as string, tied[1] as string];
+		startRun(store, runA, { name: "fifo" });
+		startRun(store, runB, { name: "fifo" });
+		const attempted: string[] = [];
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: (details) => {
+				attempted.push(details.runId);
+				return details.runId === runA ? Promise.reject(new Error("always fails")) : undefined;
+			},
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS);
+		for (let attempt = 0; attempt < WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+			await flushMicrotasks();
+			harness.clock.advanceBy(1_000);
+		}
+		await flushMicrotasks();
+
+		assert.equal(
+			attempted.filter((id) => id === runA).length,
+			WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS,
+			"A is capped at the attempt limit",
+		);
+		assert.deepEqual(
+			attempted.slice(WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS),
+			[runB],
+			"and B proceeds only after A's last attempt, rather than being stranded",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("an identity whose run goes terminal while queued is skipped without blocking the next", async () => {
+		const store = createStore();
+		const tied = [testRunId("heartbeat-fifo-guard-a"), testRunId("heartbeat-fifo-guard-b")].sort();
+		const [runA, runB] = [tied[0] as string, tied[1] as string];
+		startRun(store, runA, { name: "fifo" });
+		startRun(store, runB, { name: "fifo" });
+		const attempted: string[] = [];
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: (details) => {
+				attempted.push(details.runId);
+				if (details.runId === runA) {
+					// B finishes while it is still waiting behind A.
+					store.recordRunEnd(runB, "completed");
+					return Promise.reject(new Error("A fails once"));
+				}
+				return undefined;
+			},
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS);
+		await flushMicrotasks();
+		harness.clock.advanceBy(20);
+		await flushMicrotasks();
+
+		assert.deepEqual(attempted, [runA, runA], "B is guarded at the head of the queue and never sent");
+		assert.equal(harness.state.pending.has(runB), false, "and its slot is released rather than stuck");
+		harness.scheduler.dispose();
+	});
+
 	test("a child workflow run never heartbeats the parent chat", () => {
 		const parentId = testRunId("heartbeat-parent");
 		const childId = testRunId("heartbeat-child");
@@ -975,7 +1080,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 			readAnchorAt(runId) {
 				return stored.get(runId);
 			},
-			recordAnchorAt(runId, record) {
+			async recordAnchorAt(runId, record) {
 				writes.push({ runId, ...record });
 				if (opts?.acceptWrites !== undefined && !opts.acceptWrites()) return false;
 				if (!stored.has(runId)) stored.set(runId, record);
@@ -1028,7 +1133,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("the anchor write retries until durable progress exists, then stops", () => {
+	test("the anchor write retries until durable progress exists, then stops", async () => {
 		const runId = testRunId("heartbeat-anchor-retry");
 		const store = createStore();
 		startRun(store, runId);
@@ -1038,12 +1143,17 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		const anchorStore = recordingAnchorStore({ acceptWrites: () => hasProgress });
 		const harness = installHarness({ store, anchorStore, defaultInterval: 1 });
 
+		// The write is awaited now, so each attempt has to settle before the next
+		// pass may start another: at most one write per run is ever in flight.
+		await flushMicrotasks();
 		store.recordNotice({ id: runId, level: "info", message: "still no progress", createdAt: 1 });
+		await flushMicrotasks();
 		assert.equal(anchorStore.readAnchorAt(runId), undefined, "nothing is persisted while the guard refuses");
 		assert.ok(anchorStore.writes.length >= 2, "the write is retried rather than abandoned");
 
 		hasProgress = true;
 		store.recordNotice({ id: runId, level: "info", message: "progress landed", createdAt: 2 });
+		await flushMicrotasks();
 		assert.equal(
 			anchorStore.readAnchorAt(runId)?.anchorAt,
 			STARTED_AT,
@@ -1053,6 +1163,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 
 		store.recordNotice({ id: runId, level: "info", message: "more churn", createdAt: 3 });
 		store.recordNotice({ id: runId, level: "info", message: "yet more churn", createdAt: 4 });
+		await flushMicrotasks();
 		assert.equal(anchorStore.writes.length, attemptsAtSuccess, "and the durable call stops after the first success");
 		harness.scheduler.dispose();
 	});
@@ -1277,13 +1388,13 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		});
 	}
 
-	test("a run with no durable progress of its own is never made to look resumable", () => {
+	test("a run with no durable progress of its own is never made to look resumable", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-no-progress");
 		registerRun(backend, runId);
 
 		assert.equal(
-			recordWorkflowHeartbeatAnchor(backend, {
+			await recordWorkflowHeartbeatAnchor(backend, {
 				runId,
 				anchorAt: STARTED_AT,
 				intervalMinutes: 1,
@@ -1302,13 +1413,13 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		);
 	});
 
-	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", () => {
+	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-cadence-field");
 		registerRun(backend, runId);
 		recordProgress(backend, runId);
 
-		recordWorkflowHeartbeatAnchor(backend, {
+		await recordWorkflowHeartbeatAnchor(backend, {
 			runId,
 			anchorAt: STARTED_AT,
 			intervalMinutes: 7,
@@ -1353,7 +1464,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 
 		// And the writer refuses a non-positive cadence outright.
 		assert.equal(
-			recordWorkflowHeartbeatAnchor(backend, {
+			await recordWorkflowHeartbeatAnchor(backend, {
 				runId: testRunId("heartbeat-anchor-zero-cadence"),
 				anchorAt: STARTED_AT,
 				intervalMinutes: 0,
@@ -1363,14 +1474,14 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		);
 	});
 
-	test("many boundaries produce exactly one row, and the first anchor stands", () => {
+	test("many boundaries produce exactly one row, and the first anchor stands", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-one-row");
 		registerRun(backend, runId);
 		recordProgress(backend, runId);
 
 		for (let boundary = 1; boundary <= 3; boundary += 1) {
-			recordWorkflowHeartbeatAnchor(backend, {
+			await recordWorkflowHeartbeatAnchor(backend, {
 				runId,
 				anchorAt: STARTED_AT + boundary,
 				intervalMinutes: 1,
@@ -1391,7 +1502,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		);
 	});
 
-	test("the record stamps write time, so it cannot walk liveness backwards", () => {
+	test("the record stamps write time, so it cannot walk liveness backwards", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-liveness");
 		registerRun(backend, runId);
@@ -1400,7 +1511,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 
 		const writeTime = before + 10 * MINUTE_MS;
 		// The anchor is far in the past; only the write time may reach `updatedAt`.
-		recordWorkflowHeartbeatAnchor(backend, {
+		await recordWorkflowHeartbeatAnchor(backend, {
 			runId,
 			anchorAt: before - 10 * MINUTE_MS,
 			intervalMinutes: 1,
@@ -1412,12 +1523,12 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		assert.ok(after >= before, "handle liveness never moves backwards");
 	});
 
-	test("the anchor record produces no graph node in durable reconstruction", () => {
+	test("the anchor record produces no graph node in durable reconstruction", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-reconstruction");
 		registerRun(backend, runId);
 		recordProgress(backend, runId);
-		recordWorkflowHeartbeatAnchor(backend, {
+		await recordWorkflowHeartbeatAnchor(backend, {
 			runId,
 			anchorAt: STARTED_AT,
 			intervalMinutes: 1,
@@ -1433,5 +1544,124 @@ describe("workflow heartbeat anchor checkpoint", () => {
 			"the reserved anchor is filtered out rather than surfacing as a cached tool node",
 		);
 		assert.ok(toolNames.includes("some-tool"), "ordinary tool checkpoints still reconstruct");
+	});
+});
+
+describe("workflow heartbeat anchor durable acknowledgement", () => {
+	/** A DBOS-backed run with one ordinary checkpoint, so the no-progress guard passes. */
+	function dbosRunWithProgress(sdk: DbosSdkHandle, runId: string): DbosDurableBackend {
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			createdAt: STARTED_AT,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "tool",
+			workflowId: runId,
+			checkpointId: "progress-1",
+			name: "some-tool",
+			argsHash: "some-tool",
+			output: { ok: true },
+			completedAt: STARTED_AT,
+		});
+		return backend;
+	}
+
+	test("a rejected DBOS write is not acknowledged, and a later pass persists it", async () => {
+		const runId = testRunId("heartbeat-anchor-dbos-ack");
+		const sdk = createMockSdk();
+		let failNextAnchorWrite = true;
+		const baseRecord = sdk.recordStepOutput;
+		const flakySdk: DbosSdkHandle = {
+			...sdk,
+			async recordStepOutput(workflowId, stepName, output) {
+				if (stepName === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME && failNextAnchorWrite) {
+					failNextAnchorWrite = false;
+					throw new Error("dbos write failed");
+				}
+				await baseRecord(workflowId, stepName, output);
+			},
+		};
+		const backend = dbosRunWithProgress(flakySdk, runId);
+
+		// The DBOS backend writes its in-memory mirror before queueing the real
+		// write, so a synchronous read-back would call this a success. It is not.
+		assert.equal(
+			await recordWorkflowHeartbeatAnchor(backend, {
+				runId,
+				anchorAt: STARTED_AT,
+				intervalMinutes: 1,
+				now: STARTED_AT,
+			}),
+			false,
+			"a rejected storage write is not acknowledged",
+		);
+		// A fresh process, reading DBOS alone, must not find the anchor.
+		assert.equal(
+			readWorkflowHeartbeatAnchor(new DbosDurableBackend(flakySdk), runId),
+			undefined,
+			"nothing was durably stored",
+		);
+
+		// The next pass retries, and this time the storage write succeeds.
+		assert.equal(
+			await recordWorkflowHeartbeatAnchor(backend, {
+				runId,
+				anchorAt: STARTED_AT,
+				intervalMinutes: 1,
+				now: STARTED_AT,
+			}),
+			true,
+		);
+		const hydrated = new DbosDurableBackend(flakySdk);
+		await hydrated.hydrateWorkflow(runId);
+		assert.deepEqual(readWorkflowHeartbeatAnchor(hydrated, runId), {
+			anchorAt: STARTED_AT,
+			intervalMinutes: 1,
+		});
+	});
+
+	test("the scheduler only marks a run persisted once the backend acknowledges", async () => {
+		const runId = testRunId("heartbeat-anchor-ack-state");
+		const store = createStore();
+		startRun(store, runId);
+		let acknowledge = false;
+		const attempts: string[] = [];
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			anchorStore: {
+				readAnchorAt() {
+					return undefined;
+				},
+				async recordAnchorAt(id) {
+					attempts.push(id);
+					return acknowledge;
+				},
+			},
+		});
+
+		await flushMicrotasks();
+		assert.equal(harness.state.anchorPersisted.has(runId), false, "an unacknowledged write is not persisted");
+		assert.equal(harness.state.anchorWritesPending.has(runId), false, "and its pending marker is cleared");
+		const attemptsBefore = attempts.length;
+
+		store.recordNotice({ id: runId, level: "info", message: "another pass", createdAt: 1 });
+		await flushMicrotasks();
+		assert.ok(attempts.length > attemptsBefore, "the next natural pass retries");
+
+		acknowledge = true;
+		store.recordNotice({ id: runId, level: "info", message: "backend recovered", createdAt: 2 });
+		await flushMicrotasks();
+		assert.equal(harness.state.anchorPersisted.has(runId), true, "acknowledgement is what marks it persisted");
+
+		const attemptsAtSuccess = attempts.length;
+		store.recordNotice({ id: runId, level: "info", message: "more churn", createdAt: 3 });
+		await flushMicrotasks();
+		assert.equal(attempts.length, attemptsAtSuccess, "and the write stops after acknowledgement");
+		harness.scheduler.dispose();
 	});
 });
