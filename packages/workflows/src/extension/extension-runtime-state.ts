@@ -44,6 +44,7 @@ import {
 	resetWorkflowHeartbeatSchedulerState,
 	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatScheduler,
+	workflowHeartbeatConsumedContent,
 } from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
@@ -167,9 +168,19 @@ export function createWorkflowExtensionRuntimeState(
 			sendMessage: sendWorkflowNotificationMessage,
 		});
 	};
-	// The parent chat reports finishing a turn and draining its queued messages.
-	// That is the only public signal that an admitted heartbeat has actually been
-	// picked up, so it is what releases a held pending slot.
+	// `message_end` is the host's injection signal: agent-core emits it at the
+	// moment a message enters the conversation. That is what releases a held
+	// heartbeat slot.
+	//
+	// The turn-settled event is deliberately not used. The host emits it from the
+	// prompt cycle's `finally` whether or not the queued messages were drained, so
+	// pausing the queue mid-turn would release a slot whose card is still parked
+	// and let the next boundary stack a second card behind it. `message_end` never
+	// fires for a parked card. The visible display card is published on the
+	// session-listener channel only, so an extension sees the hidden
+	// reconciliation at consumption and never the card at admission — there is no
+	// ambiguity to disambiguate. Proven end to end against a real `AgentSession`
+	// in test/unit/workflow-heartbeat-parent-pickup.test.ts.
 	//
 	// Registered exactly once, at construction: `pi.on` has no unsubscribe, so a
 	// per-install registration would accumulate a handler on every notification
@@ -178,11 +189,14 @@ export function createWorkflowExtensionRuntimeState(
 	//
 	// The same condition decides whether the scheduler holds a slot at all, so the
 	// registration and the option can never disagree: a host that reports no
-	// availability would leave a held slot with nothing to release it.
+	// consumption would leave a held slot with nothing to release it.
 	const parentAvailabilityReported = typeof pi.on === "function";
 	if (parentAvailabilityReported) {
-		pi.on?.("agent_settled", () => {
-			workflowHeartbeatScheduler?.notifyParentAvailable();
+		// Returns nothing: a `message_end` handler that returns a message must
+		// return the same role, and this handler only observes.
+		pi.on?.("message_end", (event) => {
+			const content = workflowHeartbeatConsumedContent(event);
+			if (content !== undefined) workflowHeartbeatScheduler?.notifyHeartbeatConsumed(content);
 		});
 	}
 	/**

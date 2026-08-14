@@ -79,8 +79,8 @@ export interface WorkflowHeartbeatSchedulerState {
 	readonly scheduled: Map<string, WorkflowHeartbeatEventDetails>;
 	/** Outstanding heartbeat per run — in flight, or admitted and awaiting pickup. */
 	readonly pending: Map<string, WorkflowHeartbeatIdentity>;
-	/** Runs whose heartbeat the host admitted and the parent has not picked up. */
-	readonly awaitingParentPickup: Set<string>;
+	/** Content of each admitted heartbeat the parent has not consumed yet, by run. */
+	readonly awaitingParentPickup: Map<string, string>;
 	/** Most recently enqueued boundary per run, so a boundary is never re-raised. */
 	readonly lastEnqueuedAt: Map<string, number>;
 	/** Resolved cadence anchor per run, memoized after its first durable read. */
@@ -91,7 +91,7 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 	return {
 		scheduled: new Map<string, WorkflowHeartbeatEventDetails>(),
 		pending: new Map<string, WorkflowHeartbeatIdentity>(),
-		awaitingParentPickup: new Set<string>(),
+		awaitingParentPickup: new Map<string, string>(),
 		lastEnqueuedAt: new Map<string, number>(),
 		anchorAt: new Map<string, number>(),
 	};
@@ -114,16 +114,16 @@ export interface WorkflowHeartbeatSchedulerOptions {
 	 */
 	readonly resolveIntervalMinutes: (workflowName: string) => number | undefined;
 	/**
-	 * Whether the host reports parent availability, by routing its `agent_settled`
-	 * event to `notifyParentAvailable()`.
+	 * Whether the host reports heartbeat consumption, by routing its `message_end`
+	 * event to `notifyHeartbeatConsumed()`.
 	 *
 	 * The host resolves `sendMessage` when the card is admitted into the parent's
-	 * queue, not when the parent reads it. When availability is reported, an
-	 * admitted heartbeat holds its slot until pickup, with no deadline — that is
-	 * what "retain exactly one pending event" requires, and a deadline of any
-	 * length would breach it. When it is not reported nothing could ever release
-	 * the slot, so an admitted heartbeat releases it at once rather than silencing
-	 * the run.
+	 * queue, not when the parent reads it. When consumption is reported, an
+	 * admitted heartbeat holds its slot until the card is actually injected into
+	 * the conversation, with no deadline — that is what "retain exactly one
+	 * pending event" requires, and a deadline of any length would breach it. When
+	 * it is not reported nothing could ever release the slot, so an admitted
+	 * heartbeat releases it at once rather than silencing the run.
 	 */
 	readonly parentAvailabilityReported?: boolean;
 	/** Persisted cadence anchor, best-effort. Omitted disables the durable record. */
@@ -151,11 +151,15 @@ export interface WorkflowHeartbeatScheduler {
 	/** Queue one due heartbeat for the parent chat without interrupting it. */
 	enqueueWorkflowHeartbeat(payload: WorkflowHeartbeatEventDetails): WorkflowHeartbeatEnqueueResult;
 	/**
-	 * The parent chat finished a turn and drained its queued messages, so an
-	 * admitted heartbeat has been picked up. Releases every held pending slot and
-	 * re-arms each run at its first future boundary — never at a missed one.
+	 * The parent chat consumed a heartbeat card: the host injected it into the
+	 * conversation. Releases that run's held slot and re-arms it at its first
+	 * future boundary — never at a missed one.
+	 *
+	 * Consumption, not turn completion, is the release condition. The host emits
+	 * its turn-settled event even when a paused queue held the card back, so
+	 * releasing on that would let a second card stack behind a parked first one.
 	 */
-	notifyParentAvailable(): void;
+	notifyHeartbeatConsumed(content: string): void;
 	readonly state: WorkflowHeartbeatSchedulerState;
 	dispose(): void;
 }
@@ -304,29 +308,40 @@ export function installWorkflowHeartbeatScheduler(
 				return;
 			}
 			if (!parentAvailabilityReported) {
-				// This host reports no pickup signal, so nothing could ever release a
-				// held slot. Releasing on admission is the only choice that keeps the
-				// run heartbeating at all.
+				// This host reports no consumption signal, so nothing could ever
+				// release a held slot. Releasing on admission is the only choice that
+				// keeps the run heartbeating at all.
 				state.pending.delete(details.runId);
 				refresh();
 				return;
 			}
 			// The host resolves `sendMessage` once the card is admitted into the
-			// parent's queue, not once the parent reads it. Releasing the slot here
-			// would let the next boundary stack a second card behind the first, so
-			// the slot is held — with no deadline — until the parent reports picking
-			// it up. The cadence pauses rather than stacking.
-			state.awaitingParentPickup.add(details.runId);
+			// parent's queue, not once the parent reads it — and its turn-settled
+			// event fires even when a paused queue held the card back. Releasing on
+			// either would let the next boundary stack a second card behind the
+			// first, so the slot is held — with no deadline — until the card is
+			// actually consumed into the conversation. The cadence pauses rather
+			// than stacking.
+			//
+			// The match key is the exact text this scheduler authored: the host's
+			// hidden reconciliation copies `content` verbatim, and the visible card
+			// never reaches extensions at all, so there is no admission/consumption
+			// ambiguity to disambiguate.
+			state.awaitingParentPickup.set(details.runId, formatWorkflowHeartbeatNoticeText(details));
 			refresh();
 		},
 	});
 
-	const notifyParentAvailable = (): void => {
+	const notifyHeartbeatConsumed = (content: string): void => {
 		if (!active || state.awaitingParentPickup.size === 0) return;
-		for (const runId of [...state.awaitingParentPickup]) {
+		let released = false;
+		for (const [runId, held] of [...state.awaitingParentPickup]) {
+			if (held !== content) continue;
 			state.awaitingParentPickup.delete(runId);
 			state.pending.delete(runId);
+			released = true;
 		}
+		if (!released) return;
 		// `refresh()` re-arms from `max(now, lastEnqueuedAt)`, so the cadence
 		// resumes at the first future boundary and never at a missed one.
 		refresh();
@@ -494,7 +509,7 @@ export function installWorkflowHeartbeatScheduler(
 	return {
 		scheduleWorkflowHeartbeats,
 		enqueueWorkflowHeartbeat,
-		notifyParentAvailable,
+		notifyHeartbeatConsumed,
 		state,
 		dispose() {
 			active = false;
@@ -545,4 +560,30 @@ function warnWorkflowHeartbeatSendFailure(error: unknown): void {
 	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
 	const message = error instanceof Error ? error.message : String(error);
 	console.warn("[workflows] workflow heartbeat send failed", message);
+}
+
+/**
+ * The text of a consumed custom message, narrowed from an untyped host
+ * `message_end` payload.
+ *
+ * The workflows-side `on` handler is typed `(event?: unknown, ctx?) => unknown`,
+ * so the payload is narrowed here rather than cast. Both the string and the
+ * normalized part-array content shapes are accepted, because the host may have
+ * normalized the message before it is injected.
+ */
+export function workflowHeartbeatConsumedContent(event: unknown): string | undefined {
+	if (typeof event !== "object" || event === null) return undefined;
+	const message = (event as { message?: unknown }).message;
+	if (typeof message !== "object" || message === null) return undefined;
+	const candidate = message as { role?: unknown; content?: unknown };
+	if (candidate.role !== "custom") return undefined;
+	if (typeof candidate.content === "string") return candidate.content;
+	if (!Array.isArray(candidate.content)) return undefined;
+	let text = "";
+	for (const part of candidate.content) {
+		if (typeof part !== "object" || part === null) continue;
+		const piece = part as { type?: unknown; text?: unknown };
+		if (piece.type === "text" && typeof piece.text === "string") text += piece.text;
+	}
+	return text.length === 0 ? undefined : text;
 }

@@ -15,6 +15,7 @@ import {
 	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatScheduler,
 	type WorkflowHeartbeatSchedulerState,
+	workflowHeartbeatConsumedContent,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -154,12 +155,12 @@ function installHarness(opts: {
 	defaultInterval?: number;
 	lateFireMs?: number;
 	/**
-	 * Milliseconds after an admitted send at which the parent reports picking the
-	 * card up. Omitted means the parent never reports it, which is how the
-	 * busy-parent cases are expressed.
+	 * Milliseconds after an admitted send at which the parent consumes the card
+	 * into the conversation. Omitted means it is never consumed, which is how the
+	 * busy-parent and paused-queue cases are expressed.
 	 */
-	parentSettleDelayMs?: number;
-	/** Defaults to true: the shipped host always routes `agent_settled`. */
+	parentConsumeDelayMs?: number;
+	/** Defaults to true: the shipped host always routes `message_end`. */
 	parentAvailabilityReported?: boolean;
 	anchorStore?: WorkflowHeartbeatAnchorStore;
 	state?: WorkflowHeartbeatSchedulerState;
@@ -195,9 +196,13 @@ function installHarness(opts: {
 			});
 			// The real host resolves this call once the card is admitted into the
 			// parent's queue, not once the parent reads it — so the default return
-			// is an immediate resolve, and pickup is a separate later signal.
-			if (opts.parentSettleDelayMs !== undefined) {
-				clock.timerApi.setTimeout(() => installed?.notifyParentAvailable(), opts.parentSettleDelayMs);
+			// is an immediate resolve, and consumption is a separate later signal
+			// carrying the exact content the host injected.
+			if (opts.parentConsumeDelayMs !== undefined) {
+				clock.timerApi.setTimeout(
+					() => installed?.notifyHeartbeatConsumed(captured.content),
+					opts.parentConsumeDelayMs,
+				);
 			}
 			return opts.send?.(captured.details, sent) as undefined;
 		},
@@ -275,7 +280,7 @@ describe("workflow heartbeat cadence", () => {
 			store,
 			defaultInterval: 1,
 			lateFireMs: 5_000,
-			parentSettleDelayMs: 1_000,
+			parentConsumeDelayMs: 1_000,
 		});
 
 		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS + 15_000);
@@ -373,7 +378,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("the parent reporting availability releases the slot and resumes at the first future boundary", () => {
+	test("consuming the card releases the slot and resumes at the first future boundary", () => {
 		const runId = testRunId("heartbeat-parent-available");
 		const store = createStore();
 		startRun(store, runId);
@@ -382,11 +387,11 @@ describe("workflow heartbeat cadence", () => {
 		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
 		assert.equal(harness.sent.length, 1);
 
-		// Pickup happens after boundary 2 would have been due, so boundary 2 is a
-		// missed boundary and must never be raised.
+		// Consumption happens after boundary 2 would have been due, so boundary 2
+		// is a missed boundary and must never be raised.
 		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 30_000);
-		harness.scheduler.notifyParentAvailable();
-		assert.equal(harness.state.pending.size, 0, "the slot is free once the parent picked the card up");
+		harness.scheduler.notifyHeartbeatConsumed(harness.sent[0]?.content ?? "");
+		assert.equal(harness.state.pending.size, 0, "the slot is free once the card was consumed");
 		assert.equal(
 			harness.state.scheduled.get(runId)?.scheduledAt,
 			STARTED_AT + 3 * MINUTE_MS,
@@ -398,7 +403,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a parent that never picks a heartbeat up keeps the slot rather than stacking a second card", () => {
+	test("a parent that never consumes a heartbeat keeps the slot rather than stacking a second card", () => {
 		const runId = testRunId("heartbeat-no-pickup");
 		const store = createStore();
 		startRun(store, runId);
@@ -416,15 +421,64 @@ describe("workflow heartbeat cadence", () => {
 		assert.equal(harness.state.pending.size, 1);
 		assert.equal(harness.state.awaitingParentPickup.size, 1);
 		assert.equal(harness.state.scheduled.size, 0, "the cadence pauses rather than stacking");
-
-		// Pickup, whenever it comes, resumes at the first future boundary only.
-		harness.scheduler.notifyParentAvailable();
+		// Consumption, whenever it comes, resumes at the first future boundary only.
+		harness.scheduler.notifyHeartbeatConsumed(harness.sent[0]?.content ?? "");
 		harness.clock.advanceTo(STARTED_AT + 6 * MINUTE_MS + 5_000);
 		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 6 * MINUTE_MS]);
 		harness.scheduler.dispose();
 	});
 
-	test("a host that reports no parent availability releases on admission instead of going silent", () => {
+	test("a signal that is not this run's consumed card never releases its slot", () => {
+		const runId = testRunId("heartbeat-wrong-consumption");
+		const otherId = testRunId("heartbeat-wrong-consumption-other");
+		const store = createStore();
+		startRun(store, runId, { name: "held" });
+		startRun(store, otherId, { name: "other" });
+		const harness = installHarness({ store, intervals: { held: 1, other: 5 } });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 1, "only the 1-minute run has heartbeated");
+		const heldContent = harness.sent[0]?.content ?? "";
+
+		// A turn-settled-shaped nudge carries no content of ours, and another run's
+		// card is not this run's. Neither may release the held slot: releasing on a
+		// signal that is not consumption is exactly the defect this guards.
+		harness.scheduler.notifyHeartbeatConsumed("");
+		harness.scheduler.notifyHeartbeatConsumed("some unrelated assistant text");
+		harness.scheduler.notifyHeartbeatConsumed(`${heldContent} (a near miss)`);
+		assert.equal(harness.state.pending.size, 1, "the slot is still held");
+		assert.equal(harness.state.awaitingParentPickup.get(runId), heldContent);
+
+		harness.clock.advanceTo(STARTED_AT + 4 * MINUTE_MS);
+		assert.deepEqual(
+			boundaries(harness.sent),
+			[STARTED_AT + MINUTE_MS],
+			"and no second card stacks behind the unconsumed first",
+		);
+
+		harness.scheduler.notifyHeartbeatConsumed(heldContent);
+		assert.equal(harness.state.pending.size, 0, "the exact consumed content releases it");
+		harness.scheduler.dispose();
+	});
+
+	test("workflowHeartbeatConsumedContent narrows only a custom message's text", () => {
+		assert.equal(workflowHeartbeatConsumedContent(undefined), undefined);
+		assert.equal(workflowHeartbeatConsumedContent({}), undefined);
+		assert.equal(workflowHeartbeatConsumedContent({ message: { role: "assistant", content: "hi" } }), undefined);
+		assert.equal(workflowHeartbeatConsumedContent({ message: { role: "custom", content: "hi" } }), "hi");
+		assert.equal(
+			workflowHeartbeatConsumedContent({
+				message: { role: "custom", content: [{ type: "text", text: "one" }, { type: "image" }, { text: "no" }] },
+			}),
+			"one",
+		);
+		assert.equal(
+			workflowHeartbeatConsumedContent({ message: { role: "custom", content: [{ type: "image" }] } }),
+			undefined,
+			"an empty extraction is not a match key",
+		);
+	});
+	test("a host that reports no consumption releases on admission instead of going silent", () => {
 		const runId = testRunId("heartbeat-no-availability-signal");
 		const store = createStore();
 		startRun(store, runId);
@@ -525,7 +579,7 @@ describe("workflow heartbeat cadence", () => {
 		const runId = testRunId("heartbeat-restart-durability");
 		const store = createStore();
 		startRun(store, runId);
-		const first = installHarness({ store, defaultInterval: 1, parentSettleDelayMs: 1_000 });
+		const first = installHarness({ store, defaultInterval: 1, parentConsumeDelayMs: 1_000 });
 		first.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 10_000);
 		assert.deepEqual(boundaries(first.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 2 * MINUTE_MS]);
 		first.scheduler.dispose();
@@ -540,7 +594,7 @@ describe("workflow heartbeat cadence", () => {
 			startAt: STARTED_AT + 2 * MINUTE_MS + 40_000,
 			defaultInterval: 1,
 			state: createWorkflowHeartbeatSchedulerState(),
-			parentSettleDelayMs: 1_000,
+			parentConsumeDelayMs: 1_000,
 		});
 
 		assert.equal(
@@ -647,7 +701,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		// The restore shape: the run's persisted start time is 3.5 intervals ago.
 		const restartNow = STARTED_AT + 3 * MINUTE_MS + 30_000;
 		startRun(store, runId, { startedAt: STARTED_AT });
-		const harness = installHarness({ store, startAt: restartNow, defaultInterval: 1, parentSettleDelayMs: 1_000 });
+		const harness = installHarness({ store, startAt: restartNow, defaultInterval: 1, parentConsumeDelayMs: 1_000 });
 
 		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + 4 * MINUTE_MS);
 		harness.clock.advanceTo(STARTED_AT + 5 * MINUTE_MS);
@@ -839,7 +893,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 			store,
 			anchorStore,
 			intervals: { enabled: 1, disabled: 0 },
-			parentSettleDelayMs: 1_000,
+			parentConsumeDelayMs: 1_000,
 		});
 
 		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 5_000);
@@ -868,7 +922,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 			anchorStore,
 			startAt: resumedStartedAt,
 			defaultInterval: 1,
-			parentSettleDelayMs: 1_000,
+			parentConsumeDelayMs: 1_000,
 		});
 
 		assert.equal(
@@ -920,7 +974,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 			store,
 			anchorStore: throwingStore,
 			defaultInterval: 1,
-			parentSettleDelayMs: 1_000,
+			parentConsumeDelayMs: 1_000,
 		});
 
 		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 5_000);
