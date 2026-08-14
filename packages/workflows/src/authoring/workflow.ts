@@ -17,6 +17,7 @@ import type {
 	WorkflowOutputsFromSchemas,
 	WorkflowProvidedInputsFromSchemas,
 } from "../shared/workflow-authoring-types.js";
+import { DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES } from "../shared/workflow-heartbeat-contract.js";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
 export type {
@@ -26,7 +27,6 @@ export type {
 } from "../shared/workflow-authoring-types.js";
 
 const BRANDED_WORKFLOW_DEFINITIONS = new WeakSet<object>();
-export const DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES = 15;
 
 export type AuthoredWorkflowSpec<
 	TInputs extends WorkflowInputSchemaMap = Record<never, never>,

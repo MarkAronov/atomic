@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
+	DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
 	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 	type WorkflowHeartbeatEvent,
 	type WorkflowHeartbeatEventDetails,
 	type WorkflowHeartbeatIdentity,
-} from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+} from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 
 function minimalWorkflow(heartbeatIntervalMinutes?: number) {
 	return workflow({
@@ -23,6 +24,7 @@ describe("workflow heartbeat authoring contract", () => {
 		const definition = minimalWorkflow();
 
 		assert.equal(definition.heartbeatIntervalMinutes, 15);
+		assert.equal(DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES, 15);
 	});
 
 	test("preserves 0 as the disabled interval", () => {

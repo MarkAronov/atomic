@@ -25,13 +25,6 @@ import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workfl
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
 
-export {
-	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
-	type WorkflowHeartbeatEvent,
-	type WorkflowHeartbeatEventDetails,
-	type WorkflowHeartbeatIdentity,
-} from "../shared/workflow-heartbeat-contract.js";
-
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
 

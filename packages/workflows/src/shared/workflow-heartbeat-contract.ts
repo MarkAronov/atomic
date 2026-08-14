@@ -1,3 +1,6 @@
+/** Cadence used when a workflow definition omits `heartbeatIntervalMinutes`. */
+export const DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES = 15;
+
 export const WORKFLOW_HEARTBEAT_CUSTOM_TYPE = "workflows:workflow-heartbeat";
 
 /** Stable identity for one scheduled boundary of a workflow run. */
