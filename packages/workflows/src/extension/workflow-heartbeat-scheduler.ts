@@ -511,8 +511,9 @@ export function installWorkflowHeartbeatScheduler(
 		// first boundary would otherwise have no record, and a durable resume —
 		// which reclaims the original run id but remints `startedAt` — would put it
 		// on a fresh series. The write is a no-op until the run has durable progress
-		// of its own, and any such progress bumps the store, so this runs on the
-		// first refresh after the run becomes resumable.
+		// of its own. Active progress is retried on later store refreshes; the forced
+		// pause/quit checkpoint covers its already-paused edge at the recorder that
+		// creates that progress (`engine/run-durable-stage-session.ts`).
 		persistLaunchRecordOnce(run.id, anchorAt, intervalMinutes);
 		state.scheduled.set(run.id, {
 			runId: run.id,

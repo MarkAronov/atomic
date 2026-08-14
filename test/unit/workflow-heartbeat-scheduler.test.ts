@@ -8,6 +8,7 @@ import {
 	recordWorkflowHeartbeatAnchor,
 	WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
 } from "../../packages/workflows/src/durable/workflow-heartbeat-anchor.js";
+import { createDurableStageSessionRecorder } from "../../packages/workflows/src/engine/run-durable-stage-session.js";
 import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
@@ -1447,6 +1448,109 @@ describe("workflow heartbeat anchor checkpoint", () => {
 			[],
 			"a running run with no progress stays non-resumable",
 		);
+	});
+
+	test("a pause that creates the first durable progress preserves the original cadence on resume", async () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-anchor-first-progress-during-pause");
+		const intervalMinutes = 15;
+		const pauseAt = STARTED_AT + 5 * MINUTE_MS;
+		registerRun(backend, runId);
+
+		const anchorStore: WorkflowHeartbeatAnchorStore = {
+			readAnchorAt(id) {
+				return readWorkflowHeartbeatAnchor(backend, id);
+			},
+			recordAnchorAt(id, record) {
+				return recordWorkflowHeartbeatAnchor(backend, {
+					runId: id,
+					anchorAt: record.anchorAt,
+					intervalMinutes: record.intervalMinutes ?? 0,
+					now: pauseAt,
+				});
+			},
+		};
+
+		const originalStore = createStore();
+		startRun(originalStore, runId);
+		const originalProcess = installHarness({
+			store: originalStore,
+			anchorStore,
+			defaultInterval: intervalMinutes,
+		});
+		await flushMicrotasks();
+		assert.equal(readWorkflowHeartbeatAnchor(backend, runId), undefined, "no progress means no anchor yet");
+
+		// Stage control publishes the paused state before forcing its session
+		// durability boundary. This checkpoint is the run's first resumable
+		// progress, after the scheduler has stopped scheduling the paused run.
+		originalStore.recordRunPaused(runId, pauseAt);
+		backend.setWorkflowStatus(runId, "paused");
+		const recordPausedStageSession = createDurableStageSessionRecorder({
+			runId,
+			deps: {
+				workflowId: runId,
+				backend,
+				nextCheckpointId: () => "unused-tool-checkpoint",
+				nextReplayKey: () => "stage:paused:1",
+				now: () => pauseAt,
+			},
+			runSnapshot: runSnapshot(originalStore, runId),
+			heartbeatIntervalMinutes: intervalMinutes,
+		});
+		await recordPausedStageSession(
+			runId,
+			{
+				id: "paused-stage",
+				name: "paused-stage",
+				replayKey: "stage:paused:1",
+				status: "paused",
+				parentIds: [],
+				toolEvents: [],
+				startedAt: STARTED_AT + 1_000,
+				pausedAt: pauseAt,
+				sessionId: "paused-session",
+				sessionFile: "/tmp/paused-session.jsonl",
+			},
+			{ forceDurable: true },
+		);
+		assert.ok(
+			backend.listResumableWorkflows().some((candidate) => candidate.workflowId === runId),
+			"the forced pause checkpoint makes the run resumable",
+		);
+		assert.deepEqual(
+			readWorkflowHeartbeatAnchor(backend, runId),
+			{ anchorAt: STARTED_AT, intervalMinutes },
+			"the forced durability boundary carries the original launch anchor and cadence",
+		);
+		originalProcess.scheduler.dispose();
+
+		// A durable resume re-registers the same workflow id with a freshly minted
+		// startedAt. The next process must still derive from the original series.
+		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			createdAt: resumedStartedAt,
+			status: "running",
+		});
+		const resumedStore = createStore();
+		startRun(resumedStore, runId, { startedAt: resumedStartedAt });
+		const resumedProcess = installHarness({
+			store: resumedStore,
+			anchorStore,
+			startAt: resumedStartedAt,
+			defaultInterval: intervalMinutes,
+			state: createWorkflowHeartbeatSchedulerState(),
+		});
+
+		assert.equal(
+			resumedProcess.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + intervalMinutes * MINUTE_MS,
+			"the resumed run stays on its original cadence instead of anchoring to its fresh startedAt",
+		);
+		resumedProcess.scheduler.dispose();
 	});
 
 	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", async () => {
