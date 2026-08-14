@@ -56,16 +56,43 @@ export interface WorkflowHeartbeatSuppressed {
 export type WorkflowHeartbeatEnqueueResult = WorkflowHeartbeatEnqueued | WorkflowHeartbeatSuppressed;
 
 /**
- * Derived scheduler state. There is no separate durable record: the cadence is
- * a pure function of the already-persisted `RunSnapshot.startedAt` and the
- * frozen `heartbeatIntervalMinutes`, so a restart recomputes it exactly rather
- * than reading a second, divergable copy of the same truth.
+ * Attempts a held pending slot survives, expressed in cadence intervals, when
+ * the parent never reports becoming available again. The host resolves
+ * `sendMessage` on *admission*, so a settled send only proves the card reached
+ * the parent's queue, not that the parent read it; the slot is therefore held
+ * until `notifyParentAvailable()` fires. Without a cap, a host that never
+ * reports settling would silence a run forever. With it, the worst case
+ * degrades to one extra queued heartbeat rather than silence.
+ */
+export const WORKFLOW_HEARTBEAT_MAX_PENDING_HOLD_INTERVALS = 1;
+
+/**
+ * Derived scheduler state. There is deliberately no separate durable schedule
+ * record, because every input it would hold is already persisted and restored
+ * by an existing authority:
+ *
+ * - the anchor is `RunSnapshot.startedAt`, a required `number`
+ *   (`shared/store-types.ts`) written through `workflow.run.start`
+ *   (`shared/persistence-session-entries.ts`) and restored verbatim on every
+ *   branch of `shared/persistence-restore.ts` as `startedAt: run.startTs`;
+ * - the cadence is `heartbeatIntervalMinutes`, validated and frozen at the
+ *   authoring door (`authoring/workflow.ts`).
+ *
+ * A boundary is a pure function of those two, so a restart recomputes the
+ * identical series and picks the first future boundary on it. A stored copy
+ * would be the parallel source of truth the objective forbids, and would need
+ * the queued-event invalidation the spec assigns to slice 3. Restoring
+ * `pending` across a process exit would be worse than useless: the host session
+ * and its queue are gone, so re-delivering would backfill a missed boundary,
+ * which the spec forbids.
  */
 export interface WorkflowHeartbeatSchedulerState {
 	/** Next due boundary per enabled active run. At most one entry per run. */
 	readonly scheduled: Map<string, WorkflowHeartbeatEventDetails>;
-	/** In-flight heartbeat per run. At most one entry per run. */
+	/** Outstanding heartbeat per run — in flight, or admitted and awaiting pickup. */
 	readonly pending: Map<string, WorkflowHeartbeatIdentity>;
+	/** When an admitted-but-unpicked-up pending slot is released regardless. */
+	readonly pendingHoldExpiresAt: Map<string, number>;
 	/** Most recently enqueued boundary per run, so a boundary is never re-raised. */
 	readonly lastEnqueuedAt: Map<string, number>;
 }
@@ -74,6 +101,7 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 	return {
 		scheduled: new Map<string, WorkflowHeartbeatEventDetails>(),
 		pending: new Map<string, WorkflowHeartbeatIdentity>(),
+		pendingHoldExpiresAt: new Map<string, number>(),
 		lastEnqueuedAt: new Map<string, number>(),
 	};
 }
@@ -81,6 +109,7 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 export function resetWorkflowHeartbeatSchedulerState(state: WorkflowHeartbeatSchedulerState): void {
 	state.scheduled.clear();
 	state.pending.clear();
+	state.pendingHoldExpiresAt.clear();
 	state.lastEnqueuedAt.clear();
 }
 
@@ -102,6 +131,12 @@ export interface WorkflowHeartbeatScheduler {
 	scheduleWorkflowHeartbeats(run: WorkflowHeartbeatRun, intervalMinutes: number): WorkflowHeartbeatScheduleResult;
 	/** Queue one due heartbeat for the parent chat without interrupting it. */
 	enqueueWorkflowHeartbeat(payload: WorkflowHeartbeatEventDetails): WorkflowHeartbeatEnqueueResult;
+	/**
+	 * The parent chat finished a turn and drained its queued messages, so an
+	 * admitted heartbeat has been picked up. Releases every held pending slot and
+	 * re-arms each run at its first future boundary — never at a missed one.
+	 */
+	notifyParentAvailable(): void;
 	readonly state: WorkflowHeartbeatSchedulerState;
 	dispose(): void;
 }
@@ -190,16 +225,54 @@ export function installWorkflowHeartbeatScheduler(
 		}
 	};
 
+	/**
+	 * Live re-check taken before every attempt, retries included. The two
+	 * objective-named guards are the pre-process batch read and the pre-enqueue
+	 * read; this one keeps the second guard true across the retry window, where
+	 * the run could otherwise reach a terminal state between attempt 1 and
+	 * attempt 5 and still be sent. Invalidating a heartbeat the host has already
+	 * admitted into its queue is slice 3's door (issue #1975), and no public host
+	 * seam exposes it.
+	 */
+	const canDeliverWorkflowHeartbeat = (details: WorkflowHeartbeatEventDetails): boolean => {
+		const run = findRun(readGraphStoreSnapshot(options.store), details.runId);
+		return run !== undefined && isWorkflowHeartbeatEligibleRun(run);
+	};
+
 	const delivery = createWorkflowHeartbeatDelivery({
 		emit,
 		timers,
-		onSettled: (details) => {
-			if (state.pending.get(details.runId)?.scheduledAt === details.scheduledAt) {
+		canDeliver: canDeliverWorkflowHeartbeat,
+		onSettled: (details, delivered) => {
+			if (state.pending.get(details.runId)?.scheduledAt !== details.scheduledAt) return;
+			if (!delivered) {
+				// Nothing reached the parent's queue, so the slot is free at once.
 				state.pending.delete(details.runId);
+				state.pendingHoldExpiresAt.delete(details.runId);
+				refresh();
+				return;
 			}
+			// The host resolves `sendMessage` once the card is admitted into the
+			// parent's queue, not once the parent reads it. Releasing the slot here
+			// would let the next boundary stack a second heartbeat behind the first,
+			// so the slot is held until `notifyParentAvailable()`, capped so a host
+			// that never reports settling degrades to one extra queued card rather
+			// than permanent silence.
+			state.pendingHoldExpiresAt.set(details.runId, workflowHeartbeatHoldExpiry(details, now()));
 			refresh();
 		},
 	});
+
+	const notifyParentAvailable = (): void => {
+		if (!active || state.pendingHoldExpiresAt.size === 0) return;
+		for (const runId of [...state.pendingHoldExpiresAt.keys()]) {
+			state.pendingHoldExpiresAt.delete(runId);
+			state.pending.delete(runId);
+		}
+		// `refresh()` re-arms from `max(now, lastEnqueuedAt)`, so the cadence
+		// resumes at the first future boundary and never at a missed one.
+		refresh();
+	};
 
 	const scheduleWorkflowHeartbeats = (
 		run: WorkflowHeartbeatRun,
@@ -251,10 +324,12 @@ export function installWorkflowHeartbeatScheduler(
 			timerHandle = undefined;
 		}
 		if (!active) return;
-		const next = earliestScheduled(state);
-		if (next === undefined) return;
+		// One globally-next-due wake-up covers both kinds of deadline: the next
+		// cadence boundary and the next held-slot expiry.
+		const nextAt = nextWorkflowHeartbeatWakeUp(state);
+		if (nextAt === undefined) return;
 		// One globally-next-due wake-up, not one recurring timer per run.
-		const delay = Math.min(Math.max(1, Math.ceil(next.scheduledAt - now())), MAX_TIMER_DELAY_MS);
+		const delay = Math.min(Math.max(1, Math.ceil(nextAt - now())), MAX_TIMER_DELAY_MS);
 		const handle = timers.setTimeout(() => {
 			timerHandle = undefined;
 			processDue();
@@ -293,6 +368,13 @@ export function installWorkflowHeartbeatScheduler(
 	const processDue = (): void => {
 		if (!active) return;
 		const at = now();
+		// A held slot whose cap has elapsed is released first, so the cadence
+		// resumes in the same pass rather than waiting for another wake-up.
+		for (const [runId, expiresAt] of [...state.pendingHoldExpiresAt]) {
+			if (expiresAt > at) continue;
+			state.pendingHoldExpiresAt.delete(runId);
+			state.pending.delete(runId);
+		}
 		const due = [...state.scheduled.values()]
 			.filter((details) => details.scheduledAt <= at)
 			.sort(compareWorkflowHeartbeatOrder);
@@ -314,6 +396,7 @@ export function installWorkflowHeartbeatScheduler(
 	return {
 		scheduleWorkflowHeartbeats,
 		enqueueWorkflowHeartbeat,
+		notifyParentAvailable,
 		state,
 		dispose() {
 			active = false;
@@ -335,12 +418,31 @@ export function compareWorkflowHeartbeatOrder(a: WorkflowHeartbeatIdentity, b: W
 	return a.runId < b.runId ? -1 : 1;
 }
 
-function earliestScheduled(state: WorkflowHeartbeatSchedulerState): WorkflowHeartbeatEventDetails | undefined {
+/**
+ * The single next deadline the scheduler must wake for: the earliest cadence
+ * boundary, or the earliest held-slot expiry, whichever comes first.
+ */
+function nextWorkflowHeartbeatWakeUp(state: WorkflowHeartbeatSchedulerState): number | undefined {
 	let earliest: WorkflowHeartbeatEventDetails | undefined;
 	for (const details of state.scheduled.values()) {
 		if (earliest === undefined || compareWorkflowHeartbeatOrder(details, earliest) < 0) earliest = details;
 	}
-	return earliest;
+	let nextAt = earliest?.scheduledAt;
+	for (const expiresAt of state.pendingHoldExpiresAt.values()) {
+		if (nextAt === undefined || expiresAt < nextAt) nextAt = expiresAt;
+	}
+	return nextAt;
+}
+
+/**
+ * When an admitted heartbeat's pending slot is released even though the parent
+ * never reported becoming available. One cadence interval, so the cap scales
+ * with the workflow's own cadence rather than with a fixed wall-clock guess.
+ */
+function workflowHeartbeatHoldExpiry(details: WorkflowHeartbeatEventDetails, at: number): number {
+	const holdMs = details.intervalMinutes * MS_PER_MINUTE * WORKFLOW_HEARTBEAT_MAX_PENDING_HOLD_INTERVALS;
+	if (!Number.isFinite(holdMs) || holdMs <= 0) return at;
+	return at + holdMs;
 }
 
 function resolveRunIntervalMinutes(

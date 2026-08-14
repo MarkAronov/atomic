@@ -26,6 +26,12 @@ export const WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS = 5;
 
 interface WorkflowHeartbeatDeliveryOptions {
 	readonly emit: (details: WorkflowHeartbeatEventDetails) => boolean | Promise<boolean>;
+	/**
+	 * Live re-check taken immediately before every attempt, the retries included.
+	 * A run that reached a terminal state between attempt 1 and attempt 5 must not
+	 * be sent, so the guard belongs on the attempt rather than on the enqueue.
+	 */
+	readonly canDeliver?: (details: WorkflowHeartbeatEventDetails) => boolean;
 	/** Called exactly once per identity, after success or after attempts are exhausted. */
 	readonly onSettled: (details: WorkflowHeartbeatEventDetails, delivered: boolean) => void;
 	readonly timers: WorkflowHeartbeatTimerApi;
@@ -57,6 +63,13 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 	const deliver = (details: WorkflowHeartbeatEventDetails): void => {
 		if (!active) return;
 		const key = workflowHeartbeatIdentityKey(details);
+		if (options.canDeliver !== undefined && !options.canDeliver(details)) {
+			// Suppressed rather than sent, and never retried: the run's state is the
+			// reason, and no amount of backoff changes it.
+			attempts.delete(key);
+			options.onSettled(details, false);
+			return;
+		}
 		const attempt = (attempts.get(key) ?? 0) + 1;
 		attempts.set(key, attempt);
 		const settle = (delivered: boolean): void => {

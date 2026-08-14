@@ -123,7 +123,12 @@ await "WORKFLOW HEARTBEAT" "the first heartbeat card in the main chat" 150
 save "first-heartbeat"
 
 # 4. One interval later, a second card. Recurrence, not a one-shot notice.
-await_count "WORKFLOW HEARTBEAT" 2 "the second heartbeat card one interval later" 150
+#
+# The slot holding the first heartbeat is released when the parent reports
+# settling its turn; if that signal never arrives, the one-interval hold cap
+# releases it instead and the second card lands a boundary later. The window
+# below covers both outcomes.
+await_count "WORKFLOW HEARTBEAT" 2 "the second heartbeat card one interval later" 200
 save "second-heartbeat"
 
 # 5. Guard the handover: assert the markers in the pane shape the caller reads.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS } from "../../packages/workflows/src/extension/workflow-heartbeat-delivery.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
@@ -116,6 +117,12 @@ function installHarness(opts: {
 	intervals?: Readonly<Record<string, number>>;
 	defaultInterval?: number;
 	lateFireMs?: number;
+	/**
+	 * Milliseconds after an admitted send at which the parent reports settling.
+	 * Omitted means the parent never reports becoming available, which is how
+	 * the busy-parent and hold-cap cases are expressed.
+	 */
+	parentSettleDelayMs?: number;
 	state?: WorkflowHeartbeatSchedulerState;
 	send?: (details: WorkflowHeartbeatEventDetails, sent: readonly CapturedSend[]) => Promise<void> | undefined;
 }): Harness {
@@ -124,6 +131,7 @@ function installHarness(opts: {
 	clock.lateFireMs = opts.lateFireMs ?? 0;
 	const sent: CapturedSend[] = [];
 	const state = opts.state ?? createWorkflowHeartbeatSchedulerState();
+	let installed: WorkflowHeartbeatScheduler | undefined;
 	const scheduler = installWorkflowHeartbeatScheduler({
 		store,
 		state,
@@ -144,10 +152,22 @@ function installHarness(opts: {
 				details: captured.details,
 				options: options as Record<string, unknown> | undefined,
 			});
+			// The real host resolves this call once the card is admitted into the
+			// parent's queue, not once the parent reads it — so the default return
+			// is an immediate resolve, and pickup is a separate later signal.
+			if (opts.parentSettleDelayMs !== undefined) {
+				clock.timerApi.setTimeout(() => installed?.notifyParentAvailable(), opts.parentSettleDelayMs);
+			}
 			return opts.send?.(captured.details, sent) as undefined;
 		},
 	});
+	installed = scheduler;
 	return { store, clock, sent, state, scheduler };
+}
+
+/** Let already-resolved promise callbacks in the delivery chain run. */
+async function flushMicrotasks(): Promise<void> {
+	for (let i = 0; i < 4; i += 1) await Promise.resolve();
 }
 
 function startRun(
@@ -208,8 +228,14 @@ describe("workflow heartbeat cadence", () => {
 		startRun(store, runId);
 		// Real timers fire late. Because boundaries are anchored to the persisted
 		// start time rather than to the previous delivery, a late wake-up must not
-		// drag the following boundary with it.
-		const harness = installHarness({ store, defaultInterval: 1, lateFireMs: 5_000 });
+		// drag the following boundary with it. The parent picks each card up a
+		// second after it is admitted, which is what frees the next boundary.
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			lateFireMs: 5_000,
+			parentSettleDelayMs: 1_000,
+		});
 
 		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS + 15_000);
 		assert.deepEqual(boundaries(harness.sent), [
@@ -262,6 +288,65 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
+	test("an admitted-but-unread heartbeat keeps its slot, so a later boundary is skipped not stacked", () => {
+		const runId = testRunId("heartbeat-admitted-not-read");
+		const store = createStore();
+		startRun(store, runId);
+		// The real host resolves `sendMessage` on admission into the parent's
+		// queue, so a settled send is not evidence the parent read the card. With
+		// no pickup signal the slot must stay occupied.
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + 90_000);
+		assert.equal(harness.sent.length, 1, "one admitted heartbeat, not two queued behind each other");
+		assert.deepEqual(harness.state.pending.get(runId), { runId, scheduledAt: STARTED_AT + MINUTE_MS });
+		assert.equal(harness.state.scheduled.size, 0, "no boundary is armed while one is outstanding");
+		harness.scheduler.dispose();
+	});
+
+	test("the parent reporting availability releases the slot and resumes at the first future boundary", () => {
+		const runId = testRunId("heartbeat-parent-available");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 1);
+
+		// Pickup happens after boundary 2 would have been due, so boundary 2 is a
+		// missed boundary and must never be raised.
+		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 30_000);
+		harness.scheduler.notifyParentAvailable();
+		assert.equal(harness.state.pending.size, 0, "the slot is free once the parent picked the card up");
+		assert.equal(
+			harness.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + 3 * MINUTE_MS,
+			"the cadence resumes at the first future boundary, not at the missed one",
+		);
+
+		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS + 5_000);
+		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 3 * MINUTE_MS]);
+		harness.scheduler.dispose();
+	});
+
+	test("a parent that never reports availability resumes the cadence rather than going silent", () => {
+		const runId = testRunId("heartbeat-hold-cap");
+		const store = createStore();
+		startRun(store, runId);
+		// No pickup signal ever arrives. The hold cap of one cadence interval is
+		// what keeps this from silencing the run forever.
+		const harness = installHarness({ store, defaultInterval: 1 });
+
+		harness.clock.advanceTo(STARTED_AT + 3 * MINUTE_MS + 30_000);
+		assert.deepEqual(
+			boundaries(harness.sent),
+			[STARTED_AT + MINUTE_MS, STARTED_AT + 3 * MINUTE_MS],
+			"the held slot expires one interval later and the cadence resumes at the next future boundary",
+		);
+		assert.ok(harness.sent.length < 4, "the skipped boundary is dropped rather than replayed once the hold expires");
+		harness.scheduler.dispose();
+	});
+
 	test("a retry reuses the same runId + scheduledAt identity", async () => {
 		const runId = testRunId("heartbeat-retry-identity");
 		const store = createStore();
@@ -283,6 +368,97 @@ describe("workflow heartbeat cadence", () => {
 		assert.equal(harness.sent[1]?.details.scheduledAt, STARTED_AT + MINUTE_MS);
 		assert.equal(harness.sent[1]?.details.runId, runId);
 		harness.scheduler.dispose();
+	});
+
+	test("a run that goes terminal between retry attempts is not sent again", async () => {
+		const runId = testRunId("heartbeat-terminal-between-retries");
+		const store = createStore();
+		startRun(store, runId);
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () => Promise.reject(new Error("parent busy")),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "attempt 1 was sent");
+
+		// The run finishes inside the backoff window. The retry must re-read live
+		// status rather than replay the identity it captured at enqueue time.
+		store.recordRunEnd(runId, "completed");
+		harness.clock.advanceBy(1_000);
+		await flushMicrotasks();
+
+		assert.equal(harness.sent.length, 1, "the terminal run is suppressed instead of retried");
+		assert.equal(harness.state.pending.size, 0, "the suppressed identity releases its slot");
+		assert.equal(harness.state.pendingHoldExpiresAt.size, 0);
+		harness.scheduler.dispose();
+	});
+
+	test("a delivery that never reaches the parent releases the slot instead of wedging the cadence", async () => {
+		const runId = testRunId("heartbeat-delivery-exhausted");
+		const store = createStore();
+		startRun(store, runId);
+		// Every attempt fails, so nothing is ever queued in the host. Once the
+		// attempts are exhausted the slot must free rather than silence the run.
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () => Promise.reject(new Error("send failed")),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS);
+		for (let attempt = 0; attempt < WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+			await flushMicrotasks();
+			harness.clock.advanceBy(1_000);
+		}
+		await flushMicrotasks();
+
+		assert.equal(harness.sent.length, WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS, "attempts are capped");
+		assert.equal(harness.state.pending.size, 0, "an undelivered identity does not hold the slot");
+		assert.equal(harness.state.pendingHoldExpiresAt.size, 0, "nothing is held, because nothing was admitted");
+		assert.ok(
+			(harness.state.scheduled.get(runId)?.scheduledAt ?? 0) > harness.clock.now(),
+			"the cadence is re-armed at a future boundary",
+		);
+		harness.scheduler.dispose();
+	});
+
+	test("a restarted process rebuilds the identical cadence from the restored run alone", () => {
+		const runId = testRunId("heartbeat-restart-durability");
+		const store = createStore();
+		startRun(store, runId);
+		const first = installHarness({ store, defaultInterval: 1, parentSettleDelayMs: 1_000 });
+		first.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 10_000);
+		assert.deepEqual(boundaries(first.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 2 * MINUTE_MS]);
+		first.scheduler.dispose();
+
+		// Restart: a brand-new store, a brand-new scheduler, and brand-new state.
+		// The only thing carried across is what `persistence-restore` actually
+		// restores — the run snapshot with its original `startedAt`.
+		const restoredStore = createStore();
+		startRun(restoredStore, runId, { startedAt: STARTED_AT });
+		const restarted = installHarness({
+			store: restoredStore,
+			startAt: STARTED_AT + 2 * MINUTE_MS + 40_000,
+			defaultInterval: 1,
+			state: createWorkflowHeartbeatSchedulerState(),
+			parentSettleDelayMs: 1_000,
+		});
+
+		assert.equal(
+			restarted.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + 3 * MINUTE_MS,
+			"the rebuilt schedule is the next boundary on the original series",
+		);
+		restarted.clock.advanceTo(STARTED_AT + 4 * MINUTE_MS + 10_000);
+		assert.deepEqual(
+			boundaries(restarted.sent),
+			[STARTED_AT + 3 * MINUTE_MS, STARTED_AT + 4 * MINUTE_MS],
+			"no boundary the first process already raised is re-raised, and none is backfilled",
+		);
+		restarted.scheduler.dispose();
 	});
 });
 
@@ -375,7 +551,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		// The restore shape: the run's persisted start time is 3.5 intervals ago.
 		const restartNow = STARTED_AT + 3 * MINUTE_MS + 30_000;
 		startRun(store, runId, { startedAt: STARTED_AT });
-		const harness = installHarness({ store, startAt: restartNow, defaultInterval: 1 });
+		const harness = installHarness({ store, startAt: restartNow, defaultInterval: 1, parentSettleDelayMs: 1_000 });
 
 		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + 4 * MINUTE_MS);
 		harness.clock.advanceTo(STARTED_AT + 5 * MINUTE_MS);

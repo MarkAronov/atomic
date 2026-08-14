@@ -155,6 +155,19 @@ export function createWorkflowExtensionRuntimeState(
 			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
 		});
 	};
+	// The parent chat reports finishing a turn and draining its queued messages.
+	// That is the only public signal that an admitted heartbeat has actually been
+	// picked up, so it is what releases a held pending slot.
+	//
+	// Registered exactly once, at construction: `pi.on` has no unsubscribe, so a
+	// per-install registration would accumulate a handler on every notification
+	// cycle. The mutable scheduler reference is what routes the signal to the
+	// current installation, and a `null` reference makes it a no-op.
+	if (typeof pi.on === "function") {
+		pi.on("agent_settled", () => {
+			workflowHeartbeatScheduler?.notifyParentAvailable();
+		});
+	}
 
 	const hostStageSessionDir: { current: string | undefined } = { current: undefined };
 	const resolveDefaultStageSessionDir = (): string | undefined => hostStageSessionDir.current;
