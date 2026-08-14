@@ -19,7 +19,10 @@ import {
 	type WorkflowHeartbeatScheduler,
 	type WorkflowHeartbeatSchedulerState,
 	workflowHeartbeatConsumedContent,
+	workflowHeartbeatConsumedRunId,
+	workflowHeartbeatContextInvalidation,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
+import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
@@ -2154,5 +2157,120 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		);
 		assert.equal(harness.state.intervalMinutes.get(pausedId), 1);
 		harness.scheduler.dispose();
+	});
+});
+
+describe("workflow heartbeat consumed-message identity", () => {
+	const HEARTBEAT_ENTRY_ID = "entry-heartbeat";
+	const RECONCILIATION_TYPE = "atomic:protected-streaming-reconciliation";
+
+	const entries: SessionEntry[] = [
+		{
+			id: HEARTBEAT_ENTRY_ID,
+			type: "custom_message",
+			customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+			details: {
+				runId: "run-under-test",
+				scheduledAt: STARTED_AT + MINUTE_MS,
+				workflowName: "heartbeat-workflow",
+				startedAt: STARTED_AT,
+				intervalMinutes: 1,
+			},
+		},
+		{
+			id: "entry-other-extension",
+			type: "custom_message",
+			customType: "someone-else:notice",
+			details: { runId: "not-a-heartbeat-run" },
+		},
+	];
+
+	function reconciliationFor(intentEntryId: unknown): unknown {
+		return {
+			message: {
+				role: "custom",
+				customType: RECONCILIATION_TYPE,
+				content: [{ type: "text", text: "♥ Workflow …" }],
+				details: { protectedReconciliationOf: intentEntryId },
+			},
+		};
+	}
+
+	test("a well-formed reconciliation resolves its run id from details, never from the text", () => {
+		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor(HEARTBEAT_ENTRY_ID), entries), "run-under-test");
+	});
+
+	test("everything that is not a workflow heartbeat's reconciliation resolves to undefined", () => {
+		const cases: { readonly name: string; readonly event: unknown }[] = [
+			{ name: "a non-object event", event: "message_end" },
+			{ name: "an event with no message", event: {} },
+			{ name: "an assistant message", event: { message: { role: "assistant", content: "hello" } } },
+			{
+				name: "a custom message of another type",
+				event: { message: { role: "custom", customType: "someone-else:notice", details: {} } },
+			},
+			{
+				name: "a reconciliation with no intent pointer",
+				event: { message: { role: "custom", customType: RECONCILIATION_TYPE, details: {} } },
+			},
+			{ name: "a reconciliation whose intent pointer is not a string", event: reconciliationFor(42) },
+			{ name: "a reconciliation naming an entry that is not there", event: reconciliationFor("entry-missing") },
+			{
+				name: "a reconciliation naming another extension's custom message",
+				event: reconciliationFor("entry-other-extension"),
+			},
+		];
+		for (const { name, event } of cases) {
+			assert.equal(workflowHeartbeatConsumedRunId(event, entries), undefined, name);
+		}
+	});
+
+	test("no session entries means no identity, so the handler has nothing to decide", () => {
+		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor(HEARTBEAT_ENTRY_ID), undefined), undefined);
+	});
+
+	test("a heartbeat entry carrying no usable run id resolves to undefined", () => {
+		const malformed: SessionEntry[] = [
+			{ id: HEARTBEAT_ENTRY_ID, type: "custom_message", customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE },
+			{
+				id: "entry-numeric-run",
+				type: "custom_message",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				details: { runId: 7 },
+			},
+		];
+		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor(HEARTBEAT_ENTRY_ID), malformed), undefined);
+		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor("entry-numeric-run"), malformed), undefined);
+	});
+
+	test("the invalidation fires for a terminal or absent run and leaves a live one alone", () => {
+		const event = reconciliationFor(HEARTBEAT_ENTRY_ID);
+		assert.equal(
+			workflowHeartbeatContextInvalidation(event, entries, () => true),
+			undefined,
+			"a run that still owns its heartbeat is not touched",
+		);
+
+		assert.deepEqual(
+			workflowHeartbeatContextInvalidation(event, entries, () => false),
+			{
+				message: {
+					role: "custom",
+					customType: RECONCILIATION_TYPE,
+					content: [{ type: "text", text: "♥ Workflow …" }],
+					details: { protectedReconciliationOf: HEARTBEAT_ENTRY_ID },
+					excludeFromContext: true,
+				},
+			},
+			"every original key survives, because the host replaces by deleting the target's keys first",
+		);
+	});
+
+	test("a message that is not a heartbeat is never replaced, whatever the run predicate says", () => {
+		const foreign = { message: { role: "custom", customType: "someone-else:notice", details: {} } };
+		assert.equal(
+			workflowHeartbeatContextInvalidation(foreign, entries, () => false),
+			undefined,
+		);
 	});
 });

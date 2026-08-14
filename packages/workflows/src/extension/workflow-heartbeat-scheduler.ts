@@ -1,3 +1,4 @@
+import type { SessionEntry } from "../shared/persistence-restore.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
@@ -202,9 +203,11 @@ export interface WorkflowHeartbeatScheduler {
 	 * `already-clear` and cannot resurrect a schedule.
 	 *
 	 * What it cannot do is withdraw a card the host has already admitted into the
-	 * parent's queue: no extension-facing seam exposes that, so a race that gets
-	 * that far converges on suppression instead — the run's slot is released, and
-	 * a later consumption signal for it releases and re-arms nothing.
+	 * parent's queue: no extension-facing seam exposes that. That one is caught at
+	 * the other end instead — {@link workflowHeartbeatContextInvalidation} runs
+	 * when the parent reads the card and keeps a finished run's heartbeat out of
+	 * the model's context. Locally, the run's slot is released and a later
+	 * consumption signal for it releases and re-arms nothing.
 	 */
 	clearWorkflowHeartbeats(runId: string): WorkflowHeartbeatClearResult;
 	/**
@@ -382,9 +385,11 @@ export function installWorkflowHeartbeatScheduler(
 	 * read; this one keeps the second guard true across the retry window, where
 	 * the run could otherwise reach a terminal state between attempt 1 and
 	 * attempt 5 and still be sent. A card the host has already admitted into its
-	 * queue is the parent's to read: terminal cleanup (issue #1975) discards the
-	 * identities still waiting here, but no public host seam withdraws an admitted
-	 * one, so that race converges on suppression instead.
+	 * queue is past this guard: terminal cleanup (issue #1975) discards the
+	 * identities still waiting here, and no host seam withdraws an admitted one,
+	 * so that one is caught later instead — see
+	 * {@link workflowHeartbeatContextInvalidation}, which runs when the parent
+	 * reads the card.
 	 */
 	const canDeliverWorkflowHeartbeat = (details: WorkflowHeartbeatEventDetails): boolean => {
 		const run = findRun(readGraphStoreSnapshot(options.store), details.runId);
@@ -898,4 +903,85 @@ export function workflowHeartbeatConsumedContent(event: unknown): string | undef
 		if (part.type === "text" && part.text !== undefined) text += part.text;
 	}
 	return text.length === 0 ? undefined : text;
+}
+
+/**
+ * Host custom type of the hidden twin queued alongside a protected card.
+ *
+ * Declared locally rather than imported: `packages/workflows` never imports
+ * `packages/coding-agent` source, the same reason `"message_end"` and
+ * `deliverAs: "steer"` are string literals here.
+ *
+ * cross-ref: packages/coding-agent/src/core/agent-session-persistent-custom-messages.ts
+ */
+const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
+
+/**
+ * The run whose heartbeat this consumed message belongs to, or `undefined` when
+ * it is not a heartbeat at all.
+ *
+ * The parent's queue holds a *hidden reconciliation*, not the visible card: the
+ * card is committed to the transcript at admission with `excludeFromContext`,
+ * and the twin carries `details.protectedReconciliationOf` naming the card's
+ * session entry. Resolving the run means following that pointer into the
+ * session entries and reading the entry's own `details.runId` — structural, so
+ * it never parses rendered text and never matches a custom message that some
+ * other extension happens to word similarly.
+ *
+ * Returns `undefined` for every message that is not a workflow heartbeat's
+ * reconciliation, including when no session manager is available, so the caller
+ * has nothing to decide in that case.
+ */
+export function workflowHeartbeatConsumedRunId(
+	event: unknown,
+	entries: readonly SessionEntry[] | undefined,
+): string | undefined {
+	if (entries === undefined || typeof event !== "object" || event === null) return undefined;
+	const message = (event as { message?: unknown }).message;
+	if (typeof message !== "object" || message === null) return undefined;
+	const candidate = message as { role?: unknown; customType?: unknown; details?: unknown };
+	if (candidate.role !== "custom" || candidate.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) return undefined;
+	if (typeof candidate.details !== "object" || candidate.details === null) return undefined;
+	const intentEntryId = (candidate.details as { protectedReconciliationOf?: unknown }).protectedReconciliationOf;
+	if (typeof intentEntryId !== "string") return undefined;
+	const intent = entries.find((entry) => entry.id === intentEntryId);
+	if (intent?.customType !== WORKFLOW_HEARTBEAT_CUSTOM_TYPE) return undefined;
+	if (typeof intent.details !== "object" || intent.details === null) return undefined;
+	const runId = (intent.details as { runId?: unknown }).runId;
+	return typeof runId === "string" ? runId : undefined;
+}
+
+/**
+ * The `message_end` replacement that invalidates a heartbeat whose run no longer
+ * owns it, or `undefined` to leave the message exactly as the host produced it.
+ *
+ * Terminal cleanup reaches everything the scheduler owns, but the parent's queue
+ * is the host's: once `sendMessage` resolves, the visible card is committed to
+ * the transcript and a hidden reconciliation is queued behind it, and no host
+ * seam withdraws either. Consumption is the last moment before that steer joins
+ * the model's context, and a `message_end` handler may return a replacement of
+ * the same role — so this is where a heartbeat for a finished or forgotten run
+ * is invalidated (issue #1975).
+ *
+ * `excludeFromContext` rather than rewritten text: the host includes a custom
+ * message in the provider request only when that flag is not `true`, so setting
+ * it removes the steer from the model's view outright instead of putting
+ * different words in the parent's context. The visible card is deliberately
+ * untouched — it is already in the user's scrollback, already excluded from
+ * context itself, and rewriting a transcript after the fact would be worse than
+ * leaving a true record of what was raised.
+ *
+ * Every key of the original message is carried over: the host replaces by
+ * deleting each key of the target before assigning, so an omitted one is lost.
+ */
+export function workflowHeartbeatContextInvalidation(
+	event: unknown,
+	entries: readonly SessionEntry[] | undefined,
+	isRunOwned: (runId: string) => boolean,
+): { readonly message: Record<string, unknown> } | undefined {
+	const runId = workflowHeartbeatConsumedRunId(event, entries);
+	if (runId === undefined || isRunOwned(runId)) return undefined;
+	const message = (event as { message?: Record<string, unknown> }).message;
+	if (message === undefined) return undefined;
+	return { message: { ...message, excludeFromContext: true } };
 }
