@@ -68,6 +68,40 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 });
 
 /**
+ * No package script may write a workspace selector after `npm run <script>`.
+ *
+ * Bun rewrites the literal `npm run` prefix inside a package script to
+ * `bun run`, and `bun run` has no `--workspace`/`--workspaces`: it forwards the
+ * flag to the script as a positional argument. `npm run typecheck
+ * --workspace=@bastani/atomic` therefore re-entered the *root* `typecheck`
+ * under Bun, appending one more copy of the flag on every pass, and recursed
+ * until it was killed -- so `bun run check` and `bun run typecheck` were
+ * unusable while `npm run check` passed.
+ *
+ * Writing the selector before the `run` verb (`npm --workspace=X run Y`) does
+ * not match Bun's prefix rewrite, so both runtimes reach npm's real workspace
+ * resolution. This asserts the ordering, which is the part Bun keys on.
+ */
+test("workspace selectors precede the run verb so Bun cannot rewrite them", async () => {
+	const manifests = [
+		"package.json",
+		...(await readdir(join(root, "packages"))).map((p) => `packages/${p}/package.json`),
+	];
+	for (const relative of manifests) {
+		const path = join(root, relative);
+		if (!existsSync(path)) continue;
+		const manifest = (await readJson(path)) as { scripts?: Record<string, string> };
+		for (const [name, command] of Object.entries(manifest.scripts ?? {})) {
+			assert.doesNotMatch(
+				command,
+				/\bnpm run\s+\S+\s+--workspaces?\b/u,
+				`${relative} script "${name}" puts a workspace selector after the run verb, which Bun turns into a positional argument: ${command}`,
+			);
+		}
+	}
+});
+
+/**
  * SQLite selectors must keep working on both runtimes, and their tests must
  * keep asserting on both.
  *
