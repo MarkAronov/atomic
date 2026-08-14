@@ -1,32 +1,70 @@
-│ TOOLS                                                                                                                                                                                                │
-│ ● park-tool       running   8m 11s                                                                                                                                                                   │
-│                                                                                                                                                                                                      │
-│ ▸ workflow interrupt   id=42316462-0b19-40b1-b9c1-12a0aa8723f9    cancel                                                                                                                             │
+
+╭ WORKFLOW HEARTBEAT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ♥ Workflow "hb-slice3-throwaway" is still running                                                                                                                                                    │
+│ workflow  hb-slice3-throwaway                                                                                                                                                                        │
+│ run       e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                       │
+│ cadence   1-minute                                                                                                                                                                                   │
+│ elapsed   3m                                                                                                                                                                                         │
+│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Run 42316462 at 3m: unchanged. park-tool still the only node, running since start; no stages, no prompts. On goal, continuing.
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dLjefuyhwxkJKE9B9M"}   
 
- Separately: if park-tool is not expected to be long-running, this is the point where it looks parked rather than working. Want me to quit the run?
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dLuQYwzQqXyTjkeZrS"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dMDrpBnKWp2xbPJNt2"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dMqUh3uJ6YbLVDRhfn"}   
+
+workflow: list retained runs                      
+╭ RUN hb-slice3-throwaway  ● running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      hb-slice3-throwaway                                                                                                                                                                    │
+│ state         ● running                                                                                                                                                                              │
+│ mode          single                                                                                                                                                                                 │
+│ started       12:15:06                                                                                                                                                                               │
+│ elapsed       7m 40s                                                                                                                                                                                 │
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ● park-tool       running   7m 40s                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=e889dbc3-cb2e-4ea7-b54f-32e1b7702f05    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 ╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ Workflow "hb-slice3-throwaway" completed                                                                                                                                                           │
 │ workflow  hb-slice3-throwaway                                                                                                                                                                        │
-│ run       42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                       │
+│ run       e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                       │
 │ launched  user                                                                                                                                                                                       │
 │ duration  3m 20s                                                                                                                                                                                     │
-│ ▸ /workflow status 42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                              │
+│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-workflow: list retained runs
+ No action needed—keep it running.                
+
+ State: 3 minutes elapsed; park-tool is still active with no error. Next: wait for the completion notice.                                                                                               
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dNUqFKyoCpfptcePPj"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dNfFKTt5wYXs2XLQXi"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dP1ftjJdMuqmybvBBW"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dPd29MXHvNUwXvxKiN"}   
+
+ Thinking...                                      
+
+workflow: list retained runs                      
 ╭ RUN hb-slice3-throwaway  ✓ completed ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ run id  42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                         │
+│ run id  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                         │
 │                                                                                                                                                                                                      │
 │ workflow      hb-slice3-throwaway                                                                                                                                                                    │
 │ state         ✓ completed                                                                                                                                                                            │
 │ mode          single                                                                                                                                                                                 │
-│ started       11:04:41                                                                                                                                                                               │
-│ ended         11:08:01                                                                                                                                                                               │
+│ started       12:15:06                                                                                                                                                                               │
+│ ended         12:18:26                                                                                                                                                                               │
 │ duration      3m 20s                                                                                                                                                                                 │
 │                                                                                                                                                                                                      │
 │ TOOLS                                                                                                                                                                                                │
@@ -35,16 +73,18 @@ workflow: list retained runs
 │ ARTIFACTS                                                                                                                                                                                            │
 │ result        {"parked":"parked-until-timeout"}                                                                                                                                                      │
 │                                                                                                                                                                                                      │
-│ ▸ workflow status id=42316462-0b19-40b1-b9c1-12a0aa8723f9    inspect retained state                                                                                                                  │
+│ ▸ workflow status id=e889dbc3-cb2e-4ea7-b54f-32e1b7702f05    inspect retained state                                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Run 42316462 completed in 3m20s. One tool node park-tool finished with result "parked-until-timeout"; no model stages ran. Run result: { parked: "parked-until-timeout" }.
+ Thinking...                                      
 
- Next: nothing pending. Tell me the real task if this was a placeholder run.
+ No action needed—the workflow completed successfully.                                              
 
-                                                                                                                                ↑19k • ↓1.3k • R412k • W6.0k • CH98.6% • $0.373 (sub) • 4.4%/1.0M (auto)
+ Result: park-tool returned parked-until-timeout after 3 minutes 20 seconds.                        
+
+                                                                                                                                         ↑30k • ↓626 • R191k • CH97.2% • $0.528 (sub) • 2.6%/1.0M (auto)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯
+❯                                                 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-(anthropic) claude-opus-5 high • ~/Documents/projects/atomic-hb-slice3 (feat/workflow-heartbeat-cleanup)
-● ADHD Mode • MCP: 0/1 servers
+(anthropic) claude-opus-5 high • ~/Documents/projects/atomic-hb-slice3 (feat/workflow-heartbeat-cleanup)                                                                                                
+● ADHD Mode • MCP: 0/1 servers                    

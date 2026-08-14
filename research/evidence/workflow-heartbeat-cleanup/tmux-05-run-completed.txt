@@ -1,50 +1,50 @@
-│                                                                                                                                                                                                      │
-│ ▸ workflow interrupt   id=42316462-0b19-40b1-b9c1-12a0aa8723f9    cancel                                                                                                                             │
+│ elapsed   3m                                                                                                                                                                                         │
+│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- Run 42316462 at 3m: unchanged. park-tool still the only node, running since start; no stages, no prompts. On goal, continuing.
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dLjefuyhwxkJKE9B9M"}   
 
- Separately: if park-tool is not expected to be long-running, this is the point where it looks parked rather than working. Want me to quit the run?
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dLuQYwzQqXyTjkeZrS"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dMDrpBnKWp2xbPJNt2"}   
+
+ Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_011Ce2dMqUh3uJ6YbLVDRhfn"}   
+
+workflow: list retained runs                      
+╭ RUN hb-slice3-throwaway  ● running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      hb-slice3-throwaway                                                                                                                                                                    │
+│ state         ● running                                                                                                                                                                              │
+│ mode          single                                                                                                                                                                                 │
+│ started       12:15:06                                                                                                                                                                               │
+│ elapsed       3m 19s                                                                                                                                                                                 │
+│                                                                                                                                                                                                      │
+│ TOOLS                                                                                                                                                                                                │
+│ ● park-tool       running   3m 19s                                                                                                                                                                   │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=e889dbc3-cb2e-4ea7-b54f-32e1b7702f05    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ Workflow "hb-slice3-throwaway" completed                                                                                                                                                           │
 │ workflow  hb-slice3-throwaway                                                                                                                                                                        │
-│ run       42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                       │
+│ run       e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                       │
 │ launched  user                                                                                                                                                                                       │
 │ duration  3m 20s                                                                                                                                                                                     │
-│ ▸ /workflow status 42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                              │
+│ ▸ /workflow status e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-workflow: list retained runs
-╭ RUN hb-slice3-throwaway  ✓ completed ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ run id  42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                         │
-│                                                                                                                                                                                                      │
-│ workflow      hb-slice3-throwaway                                                                                                                                                                    │
-│ state         ✓ completed                                                                                                                                                                            │
-│ mode          single                                                                                                                                                                                 │
-│ started       11:04:41                                                                                                                                                                               │
-│ ended         11:08:01                                                                                                                                                                               │
-│ duration      3m 20s                                                                                                                                                                                 │
-│                                                                                                                                                                                                      │
-│ TOOLS                                                                                                                                                                                                │
-│ ✓ park-tool       completed 3m 20s                                                                                                                                                                   │
-│                                                                                                                                                                                                      │
-│ ARTIFACTS                                                                                                                                                                                            │
-│ result        {"parked":"parked-until-timeout"}                                                                                                                                                      │
-│                                                                                                                                                                                                      │
-│ ▸ workflow status id=42316462-0b19-40b1-b9c1-12a0aa8723f9    inspect retained state                                                                                                                  │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ∀ Charging the crystals...                       
 
- ∀ Consecrating the callbacks...
-
-                                                                                                                                 ↑11k • ↓993 • R326k • W5.2k • CH98.8% • $0.273 (sub) • 4.3%/1.0M (auto)
+                                                                                                                                                    ↑27k • ↓371 • R93k • $0.385 (sub) • 9.1%/272k (auto)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯
+❯                                                 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-esc to interrupt
-● ADHD Mode • MCP: 0/1 servers
+esc to interrupt                                  
+● ADHD Mode • MCP: 0/1 servers                    
 
 ╭ BACKGROUND  1 run  ✓ 1 complete ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   ✓  42316462-0b19-40b1-b9c1-12a0aa8723f9                                                                                                                                                            │
+│   ✓  e889dbc3-cb2e-4ea7-b54f-32e1b7702f05                                                                                                                                                            │
 │     hb-slice3-throwaway · complete · 3m 20s                                                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
