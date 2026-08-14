@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The whole transcript stays readable while the `ask_user_question` dialog is open** ([#2378](https://github.com/bastani-inc/atomic/issues/2378)). The dialog used to mount inline in the fullscreen dock, where it is a flex sibling of the transcript viewport, so a tall side-by-side questionnaire took the transcript's rows: on a 200×40 terminal the viewport collapsed from 34 rows to 6, and because the page step is derived from that viewport, `PageUp` crawled two lines at a time through a six-line window. The dialog is now pinned to the bottom as an overlay, which is not measured into the layout, so the transcript keeps its full viewport height and full page step — a single `PageUp` moves a full page and `Home` reaches the top of the scrollback. The overlay is also bounded so at least six transcript rows always survive on a short terminal, and the rows it does cover are added back to the transcript's scroll extent, so scrolling to the end raises the newest output into the visible strip instead of leaving it stranded behind the dialog. Transcript page, Home/End, and wheel input remain available while the questionnaire's Notes editor is active. Notes keeps text and edit keys, and the dialog still owns arrows, `enter`, `tab`, `space`, `esc`, clicks, and selection.
+- **The active questionnaire row stays visible on a short terminal.** Bounding a tall dialog has to drop rows, and dropping them from a fixed head cropped away the control you were using: at 80 columns a single-select option disappeared as the arrow keys moved down, multi-select choices plus their Next and Submit rows vanished, and the focused Notes input was hidden. The dialog now keeps a window around every active row, including single- and multi-select choices, Next, Submit, Cancel, inline sentinels, and focused text inputs.
+
+### Added
+
+- `ctx.ui.custom()` accepts `reserveTranscriptRows` for bottom-anchored overlay mounts. A blocking dialog sets it to be height-bounded against the terminal and to have its covered transcript-bottom suffix added to the scroll extent. Numeric and percentage `maxHeight` limits are applied before active-row windowing, so the focused control is not removed by a second fixed-head crop. Top and bottom margins are included in the overlay geometry, and concurrent overlays share the connected covered suffix instead of adding duplicate padding. Mount and resize height changes settle through one automatic repaint. A hidden overlay reserves nothing, and the reserve returns when it becomes visible again; handle-based, closed, or raw host removal releases the exact registration. Reserving overlays require a bottom anchor and reject `row` or a nonzero `offsetY`; leave the option unset for an overlay meant to take the screen, such as the workflow graph.
+- `OVERLAY_ACTIVE_ROW_MARKER` is exported for components mounted that way. Embed it in the line you most need kept — the selected row of a list — and the bound places what it keeps around that row instead of taking a fixed head. It is a zero-width APC sequence the host strips before painting, so it never reaches the terminal.
+
 ## [0.9.13] - 2026-08-13
 
 Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

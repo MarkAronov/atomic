@@ -5,6 +5,13 @@ import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } 
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
 import { TerminalModeController } from "./terminal-mode-controller.ts";
 
+export type RemoteComponentRuntime = Pick<
+	IsolatedInteractiveRuntime,
+	"onEngineMessage" | "onGenerationEnded" | "sendEngineCommand"
+>;
+
+export type RemoteComponentUI = Pick<ExtensionUIContext, "custom" | "requestRender" | "setWidget">;
+
 interface MountedRemoteComponent {
 	component: RemoteComponent;
 	done: (result: JsonValue | undefined) => void;
@@ -43,13 +50,13 @@ class RemoteComponent implements Component {
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
-	private readonly runtime: IsolatedInteractiveRuntime;
+	private readonly runtime: RemoteComponentRuntime;
 	private readonly requestRender: () => void;
 	private readonly getRows: () => number;
 
 	constructor(
 		componentId: string,
-		runtime: IsolatedInteractiveRuntime,
+		runtime: RemoteComponentRuntime,
 		requestRender: () => void,
 		getRows: () => number,
 		handlesInternalUiAction = false,
@@ -176,14 +183,10 @@ export class RemoteComponentController {
 	private readonly terminalModes: TerminalModeController;
 	private readonly unsubscribeTuiRendererReplaced: () => void;
 
-	private readonly runtime: IsolatedInteractiveRuntime;
-	private readonly ui: ExtensionUIContext;
+	private readonly runtime: RemoteComponentRuntime;
+	private readonly ui: RemoteComponentUI;
 
-	constructor(
-		runtime: IsolatedInteractiveRuntime,
-		ui: ExtensionUIContext,
-		tuiRendererLifecycle: TuiRendererLifecycle,
-	) {
+	constructor(runtime: RemoteComponentRuntime, ui: RemoteComponentUI, tuiRendererLifecycle: TuiRendererLifecycle) {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.terminalModes = new TerminalModeController(() => tuiRendererLifecycle.isFullscreen());
@@ -300,6 +303,7 @@ export class RemoteComponentController {
 					message.widgetPlacement,
 					message.handlesCtrlC === true,
 					message.handlesInternalUiAction === true,
+					message.reserveTranscriptRows === true,
 				);
 				break;
 			case "engine_custom_close":
@@ -340,6 +344,7 @@ export class RemoteComponentController {
 		widgetPlacement?: "aboveEditor" | "belowEditor",
 		handlesCtrlC = false,
 		handlesInternalUiAction = false,
+		reserveTranscriptRows = false,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -391,6 +396,7 @@ export class RemoteComponentController {
 					overlay,
 					deferInlineCustomUiFocus,
 					handlesInternalUiAction,
+					reserveTranscriptRows,
 					overlayOptions: overlayOptions(options),
 					onHandle: (handle) => {
 						if (mounted) mounted.handle = handle;

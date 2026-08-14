@@ -72,6 +72,7 @@ export type InteractiveEngineMessage =
 			deferInlineCustomUiFocus?: boolean;
 			handlesCtrlC?: boolean;
 			handlesInternalUiAction?: boolean;
+			reserveTranscriptRows?: boolean;
 			overlayOptions?: SerializableOverlayOptions;
 			widgetKey?: string;
 			widgetPlacement?: "aboveEditor" | "belowEditor";
@@ -356,6 +357,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						deferInlineCustomUiFocus: value.deferInlineCustomUiFocus === true,
 						handlesCtrlC: value.handlesCtrlC === true,
 						handlesInternalUiAction: value.handlesInternalUiAction === true,
+						reserveTranscriptRows: value.reserveTranscriptRows === true,
 						overlayOptions: isJsonObject(value.overlayOptions)
 							? (value.overlayOptions as SerializableOverlayOptions)
 							: undefined,

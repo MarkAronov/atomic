@@ -45,6 +45,13 @@ interface TuiAltScreenMouseInternals {
 }
 
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
+
+export function isOverlayMounted(tui: TUI, component: Component): boolean {
+	const internals = tui as unknown as Partial<TuiOverlayInternals>;
+	return (
+		Array.isArray(internals.overlayStack) && internals.overlayStack.some((entry) => entry.component === component)
+	);
+}
 export function getFocusedOverlay(tui: InteractiveTui): Component | undefined {
 	const focused = tui.getFocusedComponent();
 	if (!focused) return undefined;
@@ -174,6 +181,19 @@ function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
 		return undefined;
 	}
 	return sequences;
+}
+
+/** Whether every report in a mouse chunk is a vertical wheel event. */
+export function isMouseWheelInput(data: string): boolean {
+	const sequences = parseMouseSequences(data);
+	return (
+		sequences !== undefined &&
+		sequences.length > 0 &&
+		sequences.every(({ button }) => {
+			const direction = button & 3;
+			return (button & 64) !== 0 && (direction === 0 || direction === 1);
+		})
+	);
 }
 
 function isLeftMouseButton(sequence: ParsedMouseSequence): boolean {
