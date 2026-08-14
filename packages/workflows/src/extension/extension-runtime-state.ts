@@ -1,8 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
-import {
-	readWorkflowHeartbeatScheduleRecord,
-	recordWorkflowHeartbeatScheduleCheckpoint,
-} from "../durable/workflow-heartbeat-schedule.js";
+import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
@@ -45,8 +42,8 @@ import {
 	createWorkflowHeartbeatSchedulerState,
 	installWorkflowHeartbeatScheduler,
 	resetWorkflowHeartbeatSchedulerState,
+	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatScheduler,
-	type WorkflowHeartbeatScheduleStore,
 } from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
@@ -54,26 +51,24 @@ import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.j
 import { type WorkflowReloadReport, workflowReloadDiagnostics } from "./workflow-reload-report.js";
 
 /**
- * Best-effort durable schedule store for workflow heartbeats.
+ * Best-effort durable cadence-anchor store for workflow heartbeats.
  *
  * `getDurableBackend()` throws `DbosNotReadyError` until a backend exists, and
  * the scheduler installs at `session_start`, before any workflow has run — so
- * both sides swallow failure and fall back to the derived cadence. Nothing
- * behavioral depends on the record: it is read only as a monotone floor on a
- * boundary that has already passed.
+ * both sides swallow failure and fall back to the run's own `startedAt`.
  */
-function durableWorkflowHeartbeatScheduleStore(): WorkflowHeartbeatScheduleStore {
+function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 	return {
-		readLastScheduledAt(runId) {
+		readAnchorAt(runId) {
 			try {
-				return readWorkflowHeartbeatScheduleRecord(getDurableBackend(), runId)?.scheduledAt;
+				return readWorkflowHeartbeatAnchor(getDurableBackend(), runId);
 			} catch {
 				return undefined;
 			}
 		},
-		recordScheduled(record) {
+		recordAnchorAt(runId, anchorAt) {
 			try {
-				recordWorkflowHeartbeatScheduleCheckpoint(getDurableBackend(), record);
+				recordWorkflowHeartbeatAnchor(getDurableBackend(), { runId, anchorAt, now: Date.now() });
 			} catch {
 				// A backend that is not ready must not break a background pass.
 			}
@@ -206,7 +201,7 @@ export function createWorkflowExtensionRuntimeState(
 			sendMessage: sendWorkflowNotificationMessage,
 			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
 			parentAvailabilityReported,
-			scheduleStore: durableWorkflowHeartbeatScheduleStore(),
+			anchorStore: durableWorkflowHeartbeatAnchorStore(),
 		});
 	};
 

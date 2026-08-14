@@ -58,18 +58,21 @@ export type WorkflowHeartbeatEnqueueResult = WorkflowHeartbeatEnqueued | Workflo
 /**
  * Scheduler state.
  *
- * The cadence itself is derived, never stored twice: a boundary is a pure
- * function of `RunSnapshot.startedAt` — a required `number`
- * (`shared/store-types.ts`) written through `workflow.run.start`
- * (`shared/persistence-session-entries.ts`) and restored verbatim on every
- * branch of `shared/persistence-restore.ts` — and the `heartbeatIntervalMinutes`
- * frozen at the authoring door. A restart recomputes the identical series.
+ * The cadence is derived, never stored twice: a boundary is a pure function of
+ * the run's original start time and the `heartbeatIntervalMinutes` frozen at the
+ * authoring door. Session restore already preserves the start time verbatim
+ * (`shared/persistence-restore.ts`).
  *
- * The durable record in `durable/workflow-heartbeat-schedule.ts` persists only
- * the last boundary raised, and is read back only as a monotone floor, so it
- * cannot move a boundary. `pending` is deliberately never persisted: after a
- * process exit the host session and its queue are gone, so re-delivering that
- * identity would backfill a missed boundary, which the spec forbids.
+ * One durable record exists, and only because one input is genuinely not
+ * derivable: a durable resume re-dispatches under the original workflow id but
+ * mints a fresh `RunSnapshot.startedAt`, so the original start survives nowhere
+ * else. `durable/workflow-heartbeat-anchor.ts` carries it, write-once, and is
+ * read as `min(run.startedAt, anchorAt)` — it can only restore the original
+ * anchor, never advance it.
+ *
+ * `pending` is deliberately never persisted: after a process exit the host
+ * session and its queue are gone, so re-delivering that identity would backfill
+ * a missed boundary, which the spec forbids.
  */
 export interface WorkflowHeartbeatSchedulerState {
 	/** Next due boundary per enabled active run. At most one entry per run. */
@@ -80,6 +83,8 @@ export interface WorkflowHeartbeatSchedulerState {
 	readonly awaitingParentPickup: Set<string>;
 	/** Most recently enqueued boundary per run, so a boundary is never re-raised. */
 	readonly lastEnqueuedAt: Map<string, number>;
+	/** Resolved cadence anchor per run, memoized after its first durable read. */
+	readonly anchorAt: Map<string, number>;
 }
 
 export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedulerState {
@@ -88,6 +93,7 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 		pending: new Map<string, WorkflowHeartbeatIdentity>(),
 		awaitingParentPickup: new Set<string>(),
 		lastEnqueuedAt: new Map<string, number>(),
+		anchorAt: new Map<string, number>(),
 	};
 }
 
@@ -96,6 +102,7 @@ export function resetWorkflowHeartbeatSchedulerState(state: WorkflowHeartbeatSch
 	state.pending.clear();
 	state.awaitingParentPickup.clear();
 	state.lastEnqueuedAt.clear();
+	state.anchorAt.clear();
 }
 
 export interface WorkflowHeartbeatSchedulerOptions {
@@ -119,22 +126,23 @@ export interface WorkflowHeartbeatSchedulerOptions {
 	 * the run.
 	 */
 	readonly parentAvailabilityReported?: boolean;
-	/** Persisted schedule floor, best-effort. Omitted disables the durable record. */
-	readonly scheduleStore?: WorkflowHeartbeatScheduleStore;
+	/** Persisted cadence anchor, best-effort. Omitted disables the durable record. */
+	readonly anchorStore?: WorkflowHeartbeatAnchorStore;
 	readonly state?: WorkflowHeartbeatSchedulerState;
 	readonly now?: () => number;
 	readonly timers?: WorkflowHeartbeatTimerApi;
 }
 
 /**
- * Durable schedule seam. Both sides are best-effort: a backend that is not ready
- * must degrade to the derived cadence rather than fail a background pass.
+ * Durable cadence-anchor seam. Both sides are best-effort: a backend that is not
+ * ready must degrade to the run's own `startedAt` rather than fail a background
+ * pass.
  */
-export interface WorkflowHeartbeatScheduleStore {
-	/** Last boundary durably recorded for a run, used only as a monotone floor. */
-	readLastScheduledAt(runId: string): number | undefined;
-	/** Persist the boundary just raised. Never called for a non-positive interval. */
-	recordScheduled(record: { runId: string; scheduledAt: number; intervalMinutes: number }): void;
+export interface WorkflowHeartbeatAnchorStore {
+	/** The run's persisted original start time, when one was recorded. */
+	readAnchorAt(runId: string): number | undefined;
+	/** Persist the run's cadence anchor. Write-once; later calls are no-ops. */
+	recordAnchorAt(runId: string, anchorAt: number): void;
 }
 
 export interface WorkflowHeartbeatScheduler {
@@ -235,7 +243,7 @@ export function installWorkflowHeartbeatScheduler(
 	const timers = options.timers ?? defaultWorkflowHeartbeatTimerApi;
 	const send = options.sendMessage;
 	const parentAvailabilityReported = options.parentAvailabilityReported === true;
-	const scheduleStore = options.scheduleStore;
+	const anchorStore = options.anchorStore;
 	let active = true;
 	let timerHandle: WorkflowHeartbeatTimerHandle | undefined;
 
@@ -333,18 +341,19 @@ export function installWorkflowHeartbeatScheduler(
 		if (intervalMinutes <= 0) return { kind: "disabled" };
 		if (run.status !== "running") return { kind: "disabled" };
 		// Recovery and resume both land here: the floor is `now`, so missed
-		// boundaries are skipped rather than replayed. The durable record only
-		// raises that floor to a boundary already raised in an earlier process,
-		// and a restored value is always in the past, so it can suppress a repeat
-		// but can never move a boundary.
-		const floor = Math.max(now(), lastEnqueuedFloor(run.id));
-		const scheduledAt = nextWorkflowHeartbeatBoundary(run.startedAt, intervalMinutes, floor);
+		// boundaries are skipped rather than replayed.
+		const floor = Math.max(now(), state.lastEnqueuedAt.get(run.id) ?? Number.NEGATIVE_INFINITY);
+		const anchorAt = resolveAnchorAt(run);
+		const scheduledAt = nextWorkflowHeartbeatBoundary(anchorAt, intervalMinutes, floor);
 		if (scheduledAt === undefined) return { kind: "disabled" };
 		state.scheduled.set(run.id, {
 			runId: run.id,
 			scheduledAt,
 			workflowName: run.name,
-			startedAt: run.startedAt,
+			// The anchor, not the snapshot's own `startedAt`: after a durable
+			// resume those differ, and the payload must stay consistent with the
+			// series the boundary came from.
+			startedAt: anchorAt,
 			intervalMinutes,
 		});
 		return { kind: "scheduled", scheduledAt };
@@ -361,22 +370,18 @@ export function installWorkflowHeartbeatScheduler(
 		// One pending event per run, and the oldest one wins: a newer boundary is
 		// not enqueued while an identity is still in flight.
 		if (state.pending.has(payload.runId)) return { kind: "suppressed", reason: "duplicate" };
-		if (lastEnqueuedFloor(payload.runId) >= payload.scheduledAt) {
+		if ((state.lastEnqueuedAt.get(payload.runId) ?? Number.NEGATIVE_INFINITY) >= payload.scheduledAt) {
 			return { kind: "suppressed", reason: "duplicate" };
 		}
 		const identity: WorkflowHeartbeatIdentity = { runId: payload.runId, scheduledAt: payload.scheduledAt };
 		state.pending.set(payload.runId, identity);
 		state.lastEnqueuedAt.set(payload.runId, payload.scheduledAt);
-		// Best-effort durable schedule record: one per run, only for a positive
-		// interval, carrying the boundary just raised. The seam is declared
-		// best-effort, so a store that fails degrades to the derived cadence here
-		// rather than at every call site.
+		// Persist the cadence anchor, best-effort and write-once. Only a run that
+		// actually heartbeats gets a record, so a disabled workflow never writes
+		// one. The seam is declared best-effort, so a store that fails degrades to
+		// the derived cadence here rather than at every call site.
 		try {
-			scheduleStore?.recordScheduled({
-				runId: payload.runId,
-				scheduledAt: payload.scheduledAt,
-				intervalMinutes: payload.intervalMinutes,
-			});
+			anchorStore?.recordAnchorAt(payload.runId, payload.startedAt);
 		} catch {
 			// A durable backend that is not ready must not stop a heartbeat.
 		}
@@ -415,6 +420,14 @@ export function installWorkflowHeartbeatScheduler(
 				state.scheduled.delete(run.id);
 				continue;
 			}
+			// An entry that already came due is owed and is kept as it is. Re-deriving
+			// it here would floor at `now` and silently advance it to the following
+			// boundary, so any ordinary store mutation landing between a boundary and
+			// its armed callback would drop that heartbeat. A sticky entry carries the
+			// `intervalMinutes` captured when it was derived, so a workflow reload in
+			// that window does not retro-fit a new cadence onto an owed boundary.
+			const owed = state.scheduled.get(run.id);
+			if (owed !== undefined && owed.scheduledAt <= now()) continue;
 			const intervalMinutes = resolveRunIntervalMinutes(options.resolveIntervalMinutes, run.name);
 			if (intervalMinutes === undefined) {
 				state.scheduled.delete(run.id);
@@ -432,20 +445,29 @@ export function installWorkflowHeartbeatScheduler(
 	};
 
 	/**
-	 * Floor for the next boundary of a run: the last boundary this process
-	 * raised, or the durably recorded one when this process has raised none yet.
-	 * Always in the past, so it can only ever suppress an already-raised
-	 * boundary — never move one.
+	 * The run's cadence anchor: its original start time. A durable resume mints a
+	 * fresh `RunSnapshot.startedAt` under the original workflow id, so the
+	 * persisted anchor is what keeps the resumed run on its original series.
+	 * Taking the minimum means the record can only restore the original anchor,
+	 * never advance it.
+	 *
+	 * A failed-run continuation legitimately starts a new series: it carries a
+	 * fresh run id, and the slice-1 identity is `runId + scheduledAt`, so it is a
+	 * different run and reads no anchor of its own.
 	 */
-	function lastEnqueuedFloor(runId: string): number {
-		const local = state.lastEnqueuedAt.get(runId);
-		if (local !== undefined) return local;
+	function resolveAnchorAt(run: WorkflowHeartbeatRun): number {
+		const cached = state.anchorAt.get(run.id);
+		if (cached !== undefined) return Math.min(cached, run.startedAt);
+		let stored: number | undefined;
 		try {
-			return scheduleStore?.readLastScheduledAt(runId) ?? Number.NEGATIVE_INFINITY;
+			stored = anchorStore?.readAnchorAt(run.id);
 		} catch {
-			// A durable backend that is not ready falls back to the derived cadence.
-			return Number.NEGATIVE_INFINITY;
+			// A durable backend that is not ready falls back to the live start time.
+			stored = undefined;
 		}
+		const anchorAt = stored === undefined ? run.startedAt : Math.min(stored, run.startedAt);
+		state.anchorAt.set(run.id, anchorAt);
+		return anchorAt;
 	}
 
 	const processDue = (): void => {

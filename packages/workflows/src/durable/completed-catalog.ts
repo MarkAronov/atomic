@@ -23,6 +23,17 @@ import {
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
 import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME } from "./run-timing.js";
+import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
+
+/**
+ * Reserved run-level tool checkpoints that carry no graph node. They round-trip
+ * through the durable envelope like any tool checkpoint, so reconstruction has
+ * to skip them or they surface as phantom cached tool nodes.
+ */
+function isReservedRunCheckpointHash(argsHash: string): boolean {
+	return argsHash === RUN_TIMING_CHECKPOINT_NAME || argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME;
+}
+
 import {
 	directChildTopologyError,
 	groupByDurableStageKey,
@@ -218,7 +229,7 @@ function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): Reconstruc
 			stageByReplayKey.set(checkpoint.replayKey, mergeStageDraft(existing, checkpoint, sequence));
 			return;
 		}
-		if (checkpoint.kind !== "tool" || checkpoint.argsHash === RUN_TIMING_CHECKPOINT_NAME) return;
+		if (checkpoint.kind !== "tool" || isReservedRunCheckpointHash(checkpoint.argsHash)) return;
 		if (!firstToolSequenceByHash.has(checkpoint.argsHash)) {
 			firstToolSequenceByHash.set(checkpoint.argsHash, sequence);
 		}
@@ -390,7 +401,7 @@ function runSnapshotsFromCheckpoints(
 		const supportedNonGraphState = checkpoints.every(
 			(checkpoint) =>
 				checkpoint.kind === "ui" ||
-				(checkpoint.kind === "tool" && checkpoint.argsHash === RUN_TIMING_CHECKPOINT_NAME),
+				(checkpoint.kind === "tool" && isReservedRunCheckpointHash(checkpoint.argsHash)),
 		);
 		if (policy.failClosed && supportedNonGraphState) {
 			return [emptyGraphRun(rootRunId, rootRunName, fallbackCompletedAt)];
