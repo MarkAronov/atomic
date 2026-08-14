@@ -1,0 +1,139 @@
+import type { WorkflowHeartbeatEventDetails } from "../shared/workflow-heartbeat-contract.js";
+
+/** Timer seam so the scheduler and its retries are testable without real waiting. */
+export interface WorkflowHeartbeatTimerHandle {
+	unref?: () => void;
+}
+
+export interface WorkflowHeartbeatTimerApi {
+	setTimeout(handler: () => void, delayMs: number): WorkflowHeartbeatTimerHandle;
+	clearTimeout(handle: WorkflowHeartbeatTimerHandle): void;
+}
+
+export const defaultWorkflowHeartbeatTimerApi: WorkflowHeartbeatTimerApi = {
+	setTimeout: (handler, delayMs) => setTimeout(handler, delayMs) as WorkflowHeartbeatTimerHandle,
+	clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * Attempts a single heartbeat identity is given before its pending slot is
+ * released. A heartbeat is a periodic nudge, not an exactly-once terminal
+ * notice: retrying forever would hold the run's one pending slot and silence
+ * every later boundary on the cadence. Releasing the slot lets the next future
+ * boundary arm normally.
+ */
+export const WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS = 5;
+
+interface WorkflowHeartbeatDeliveryOptions {
+	readonly emit: (details: WorkflowHeartbeatEventDetails) => boolean | Promise<boolean>;
+	/**
+	 * Live re-check taken immediately before every attempt, the retries included.
+	 * A run that reached a terminal state between attempt 1 and attempt 5 must not
+	 * be sent, so the guard belongs on the attempt rather than on the enqueue.
+	 */
+	readonly canDeliver?: (details: WorkflowHeartbeatEventDetails) => boolean;
+	/** Called exactly once per identity, after success or after attempts are exhausted. */
+	readonly onSettled: (details: WorkflowHeartbeatEventDetails, delivered: boolean) => void;
+	readonly timers: WorkflowHeartbeatTimerApi;
+}
+
+export interface WorkflowHeartbeatDelivery {
+	deliver(details: WorkflowHeartbeatEventDetails): void;
+	dispose(): void;
+}
+
+/** Stable delivery key for one boundary: the slice-1 `runId + scheduledAt` identity. */
+export function workflowHeartbeatIdentityKey(identity: { runId: string; scheduledAt: number }): string {
+	return `${identity.runId}:${identity.scheduledAt}`;
+}
+
+/**
+ * Owns heartbeat admission: one identity at a time, in the order handed over,
+ * with capped-backoff retry.
+ *
+ * **Why the queue exists.** The scheduler sorts a due batch by `scheduledAt`
+ * then `runId` and hands identities over in that order, but sorting only
+ * controls the order attempts *start*. If the first identity's send is rejected
+ * it enters backoff, and a later identity admitted in the meantime reaches the
+ * parent first — the observed order becomes B, A. Admission order is what the
+ * ordering rule is about, so the queue holds later identities until the head
+ * reaches a terminal result: admitted, suppressed by its guard, or out of
+ * attempts.
+ *
+ * Every retry re-sends the identical `WorkflowHeartbeatEventDetails`, so the
+ * `runId + scheduledAt` identity is reused rather than re-derived from the
+ * retry's own clock. Deliberately separate from `createLifecycleNoticeDelivery`:
+ * that helper is hard-typed to lifecycle notices and its exact retry/handover
+ * semantics are pinned by existing tests.
+ */
+export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDeliveryOptions): WorkflowHeartbeatDelivery {
+	const retryTimers = new Set<WorkflowHeartbeatTimerHandle>();
+	const queue: WorkflowHeartbeatEventDetails[] = [];
+	let attempt = 0;
+	let running = false;
+	let active = true;
+
+	/** Finish the head identity and start the next one, in handover order. */
+	const settleHead = (details: WorkflowHeartbeatEventDetails, delivered: boolean): void => {
+		queue.shift();
+		attempt = 0;
+		running = false;
+		options.onSettled(details, delivered);
+		runHead();
+	};
+
+	const runHead = (): void => {
+		if (!active || running) return;
+		const details = queue[0];
+		if (details === undefined) return;
+		// The live guard runs immediately before every attempt, including the
+		// first attempt of an identity that waited behind another one — the run
+		// may have finished or paused while it queued.
+		if (options.canDeliver !== undefined && !options.canDeliver(details)) {
+			// Suppressed rather than sent, and never retried: the run's state is the
+			// reason, and no amount of backoff changes it. Later identities proceed.
+			settleHead(details, false);
+			return;
+		}
+		running = true;
+		attempt += 1;
+		const thisAttempt = attempt;
+		const settle = (delivered: boolean): void => {
+			if (delivered || thisAttempt >= WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS || !active) {
+				settleHead(details, delivered);
+				return;
+			}
+			running = false;
+			const handle = options.timers.setTimeout(
+				() => {
+					retryTimers.delete(handle);
+					runHead();
+				},
+				Math.min(20 * 2 ** (thisAttempt - 1), 1_000),
+			);
+			handle.unref?.();
+			retryTimers.add(handle);
+		};
+		const result = options.emit(details);
+		if (typeof result === "boolean") settle(result);
+		else void result.then(settle);
+	};
+
+	const deliver = (details: WorkflowHeartbeatEventDetails): void => {
+		if (!active) return;
+		queue.push(details);
+		runHead();
+	};
+
+	return {
+		deliver,
+		dispose() {
+			active = false;
+			for (const handle of retryTimers) options.timers.clearTimeout(handle);
+			retryTimers.clear();
+			queue.length = 0;
+			// An in-flight send is left to settle on its own; `active` keeps it from
+			// starting a further retry.
+		},
+	};
+}

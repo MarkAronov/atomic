@@ -1,3 +1,5 @@
+import { getDurableBackend } from "../durable/factory.js";
+import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
@@ -35,10 +37,54 @@ import {
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "./runtime.js";
 import { createStatusWriter, type StatusWriter } from "./status-writer.js";
+import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.js";
+import {
+	createWorkflowHeartbeatSchedulerState,
+	installWorkflowHeartbeatScheduler,
+	resetWorkflowHeartbeatSchedulerState,
+	type WorkflowHeartbeatAnchorStore,
+	type WorkflowHeartbeatScheduler,
+	workflowHeartbeatConsumedContent,
+} from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
 import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.js";
 import { type WorkflowReloadReport, workflowReloadDiagnostics } from "./workflow-reload-report.js";
+
+/**
+ * Best-effort durable cadence-anchor store for workflow heartbeats.
+ *
+ * `getDurableBackend()` throws `DbosNotReadyError` until a backend exists, and
+ * the scheduler installs at `session_start`, before any workflow has run — so
+ * both sides swallow failure and fall back to the run's own `startedAt`.
+ */
+function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
+	return {
+		readAnchorAt(runId) {
+			try {
+				return readWorkflowHeartbeatAnchor(getDurableBackend(), runId);
+			} catch {
+				return undefined;
+			}
+		},
+		async recordAnchorAt(runId, record) {
+			try {
+				return await recordWorkflowHeartbeatAnchor(getDurableBackend(), {
+					runId,
+					anchorAt: record.anchorAt,
+					// The scheduler only records a positive cadence; a run launched
+					// disabled never reaches this seam.
+					intervalMinutes: record.intervalMinutes ?? 0,
+					now: Date.now(),
+				});
+			} catch {
+				// A backend that is not ready must not break a background pass; the
+				// caller retries on the next schedule pass.
+				return false;
+			}
+		},
+	};
+}
 
 export interface WorkflowExtensionRuntimeState {
 	persistenceRef: { current: WorkflowPersistencePort | undefined };
@@ -48,6 +94,7 @@ export interface WorkflowExtensionRuntimeState {
 	discoveryRef: { current: DiscoveryResult | null };
 	lifecycleNotificationState: ReturnType<typeof createWorkflowLifecycleNotificationState>;
 	hilAnswerNotificationState: ReturnType<typeof createWorkflowHilAnswerNotificationState>;
+	workflowHeartbeatSchedulerState: ReturnType<typeof createWorkflowHeartbeatSchedulerState>;
 	/** Seed lifecycle notification state before completed historical snapshots are inserted. */
 	beforeRestoreCompleted(snapshots: readonly RunSnapshot[]): void;
 	runtimeForContext(ctx?: PiModelContext): ExtensionRuntime;
@@ -83,10 +130,12 @@ export function createWorkflowExtensionRuntimeState(
 	let statusWriterRef: StatusWriter = createStatusWriter(store, runtimeConfigRef.current);
 	let lifecycleNotificationsUnsubscribe: (() => void) | null = null;
 	let hilAnswerNotificationsUnsubscribe: (() => void) | null = null;
+	let workflowHeartbeatScheduler: WorkflowHeartbeatScheduler | null = null;
 	let notificationsActive = false;
 	let notificationGeneration = 0;
 	const lifecycleNotificationState = createWorkflowLifecycleNotificationState();
 	const hilAnswerNotificationState = createWorkflowHilAnswerNotificationState();
+	const workflowHeartbeatSchedulerState = createWorkflowHeartbeatSchedulerState();
 	const beforeRestoreCompleted = (snapshots: readonly RunSnapshot[]): void => {
 		seedWorkflowLifecycleNotificationState(lifecycleNotificationState, {
 			...readGraphStoreSnapshot(store),
@@ -102,6 +151,7 @@ export function createWorkflowExtensionRuntimeState(
 			: undefined;
 	registerLifecycleNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
 	registerHilAnswerNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
+	registerWorkflowHeartbeatRenderer({ rendererHost: pi, registerMessageRenderer });
 	const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
 		typeof pi.sendMessage === "function" ? (message, options) => pi.sendMessage!(message, options) : undefined;
 	const reinstallLifecycleNotifications = (): void => {
@@ -125,6 +175,56 @@ export function createWorkflowExtensionRuntimeState(
 			stageUiBroker,
 			state: hilAnswerNotificationState,
 			sendMessage: sendWorkflowNotificationMessage,
+		});
+	};
+	// `message_end` is the host's injection signal: agent-core emits it at the
+	// moment a message enters the conversation. That is what releases a held
+	// heartbeat slot.
+	//
+	// The turn-settled event is deliberately not used. The host emits it from the
+	// prompt cycle's `finally` whether or not the queued messages were drained, so
+	// pausing the queue mid-turn would release a slot whose card is still parked
+	// and let the next boundary stack a second card behind it. `message_end` never
+	// fires for a parked card. The visible display card is published on the
+	// session-listener channel only, so an extension sees the hidden
+	// reconciliation at consumption and never the card at admission — there is no
+	// ambiguity to disambiguate. Proven end to end against a real `AgentSession`
+	// in test/unit/workflow-heartbeat-parent-pickup.test.ts.
+	//
+	// Registered exactly once, at construction: `pi.on` has no unsubscribe, so a
+	// per-install registration would accumulate a handler on every notification
+	// cycle. The mutable scheduler reference is what routes the signal to the
+	// current installation, and a `null` reference makes it a no-op.
+	//
+	// The same condition decides whether the scheduler holds a slot at all, so the
+	// registration and the option can never disagree: a host that reports no
+	// consumption would leave a held slot with nothing to release it.
+	const parentAvailabilityReported = typeof pi.on === "function";
+	if (parentAvailabilityReported) {
+		// Returns nothing: a `message_end` handler that returns a message must
+		// return the same role, and this handler only observes.
+		pi.on?.("message_end", (event) => {
+			const content = workflowHeartbeatConsumedContent(event);
+			if (content !== undefined) workflowHeartbeatScheduler?.notifyHeartbeatConsumed(content);
+		});
+	}
+	/**
+	 * Workflow heartbeats share the lifecycle-notice lifetime: they are armed
+	 * while notifications are active and disposed with them. The cadence itself
+	 * comes from the live registry, so a workflow reload is picked up without a
+	 * reinstall.
+	 */
+	const reinstallWorkflowHeartbeatScheduler = (): void => {
+		workflowHeartbeatScheduler?.dispose();
+		workflowHeartbeatScheduler = null;
+		if (!notificationsActive) return;
+		workflowHeartbeatScheduler = installWorkflowHeartbeatScheduler({
+			store,
+			state: workflowHeartbeatSchedulerState,
+			sendMessage: sendWorkflowNotificationMessage,
+			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
+			parentAvailabilityReported,
+			anchorStore: durableWorkflowHeartbeatAnchorStore(),
 		});
 	};
 
@@ -425,6 +525,7 @@ export function createWorkflowExtensionRuntimeState(
 		discoveryRef,
 		lifecycleNotificationState,
 		hilAnswerNotificationState,
+		workflowHeartbeatSchedulerState,
 		beforeRestoreCompleted,
 		runtimeForContext,
 		resetWorkflowDiscoveryForSession,
@@ -442,6 +543,10 @@ export function createWorkflowExtensionRuntimeState(
 			notificationsActive = active;
 			reinstallLifecycleNotifications();
 			reinstallHilAnswerNotifications();
+			// A fresh host session restarts the cadence from each run's persisted
+			// start time; prior-session schedule and pending state cannot apply.
+			if (!active) resetWorkflowHeartbeatSchedulerState(workflowHeartbeatSchedulerState);
+			reinstallWorkflowHeartbeatScheduler();
 		},
 		updateHostStageSessionDir(sessionManager) {
 			try {
