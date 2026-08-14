@@ -33,14 +33,24 @@ export function createDurableStageSessionRecorder(
 				await recordRunTimingCheckpointAsync(input.deps.backend, input.runSnapshot, {
 					debounce: options?.forceDurable !== true,
 				});
-				// A forced pause/quit capture can be the first checkpoint that makes
-				// the run resumable. The run is already published as paused then, so
-				// the heartbeat scheduler will not get another active schedule pass in
-				// which to retry its no-progress-guarded launch-record write. Persist
-				// it at this durability boundary, after ordinary progress exists and
-				// while the live run still owns the original start and launch cadence.
+				// Any checkpoint above can be the first one that makes the run
+				// resumable, and the scheduler's own launch-record write is
+				// asynchronous and best-effort: it is guarded against runs with no
+				// durable progress, so it can only be issued *after* resumability
+				// already exists. A process that exits inside that window leaves a
+				// resumable run with no record of what it launched with, and the next
+				// process then reads a freshly minted `startedAt` and whatever cadence
+				// the definition currently declares — shifting both phase and cadence
+				// under a run already in flight.
+				//
+				// Awaiting the write here closes that window: the record is durable
+				// before this checkpoint is acknowledged to its caller. It is
+				// write-once and returns early once present, so later passes cost one
+				// mirror read. A forced pause/quit capture additionally has no further
+				// active schedule pass to retry in, which is why this must not be
+				// limited to the ordinary path either.
 				const intervalMinutes = input.heartbeatIntervalMinutes;
-				if (options?.forceDurable === true && Number.isFinite(intervalMinutes * 60_000)) {
+				if (Number.isFinite(intervalMinutes * 60_000)) {
 					await recordWorkflowHeartbeatAnchor(input.deps.backend, {
 						runId: input.runId,
 						anchorAt: input.runSnapshot.startedAt,

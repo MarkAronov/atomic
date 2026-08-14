@@ -1553,6 +1553,106 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		resumedProcess.scheduler.dispose();
 	});
 
+	test("an ordinary first checkpoint persists the anchor even when the scheduler's write never lands", async () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-anchor-first-progress-crash-race");
+		const launchIntervalMinutes = 15;
+		const checkpointAt = STARTED_AT + 5 * MINUTE_MS;
+		registerRun(backend, runId);
+
+		// The scheduler's own launch-record write is asynchronous and best-effort.
+		// This store models the process exiting while that write is still in
+		// flight: it is issued, never acknowledged, and its result is lost.
+		let schedulerWrites = 0;
+		const strandedAnchorStore: WorkflowHeartbeatAnchorStore = {
+			readAnchorAt(id) {
+				return readWorkflowHeartbeatAnchor(backend, id);
+			},
+			recordAnchorAt() {
+				schedulerWrites += 1;
+				return new Promise<boolean>(() => {});
+			},
+		};
+
+		const originalStore = createStore();
+		startRun(originalStore, runId);
+		const originalProcess = installHarness({
+			store: originalStore,
+			anchorStore: strandedAnchorStore,
+			defaultInterval: launchIntervalMinutes,
+		});
+		await flushMicrotasks();
+		assert.equal(readWorkflowHeartbeatAnchor(backend, runId), undefined, "no progress means no anchor yet");
+
+		// An ordinary stage-session checkpoint — no pause, no forced durability.
+		// This is the first progress that makes the run resumable, and it is the
+		// window the launch record has to survive.
+		const recordStageSession = createDurableStageSessionRecorder({
+			runId,
+			deps: {
+				workflowId: runId,
+				backend,
+				nextCheckpointId: () => "unused-tool-checkpoint",
+				nextReplayKey: () => "stage:running:1",
+				now: () => checkpointAt,
+			},
+			runSnapshot: runSnapshot(originalStore, runId),
+			heartbeatIntervalMinutes: launchIntervalMinutes,
+		});
+		await recordStageSession(runId, {
+			id: "running-stage",
+			name: "running-stage",
+			replayKey: "stage:running:1",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+			startedAt: STARTED_AT + 1_000,
+			sessionId: "running-session",
+			sessionFile: "/tmp/running-session.jsonl",
+		});
+
+		assert.ok(
+			backend.listResumableWorkflows().some((candidate) => candidate.workflowId === runId),
+			"the ordinary checkpoint makes the run resumable",
+		);
+		assert.deepEqual(
+			readWorkflowHeartbeatAnchor(backend, runId),
+			{ anchorAt: STARTED_AT, intervalMinutes: launchIntervalMinutes },
+			"the launch record is durable by the time that checkpoint is acknowledged",
+		);
+		assert.ok(schedulerWrites >= 0, "the scheduler's own write is irrelevant once the boundary owns it");
+		originalProcess.scheduler.dispose();
+
+		// The crash is followed by a durable resume under the same id with a fresh
+		// startedAt, and the definition has since been edited to a new cadence.
+		// Neither may reach a run that is already in flight.
+		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
+		const editedIntervalMinutes = 30;
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "heartbeat-workflow",
+			inputs: {},
+			createdAt: resumedStartedAt,
+			status: "running",
+		});
+		const resumedStore = createStore();
+		startRun(resumedStore, runId, { startedAt: resumedStartedAt });
+		const resumedProcess = installHarness({
+			store: resumedStore,
+			anchorStore: strandedAnchorStore,
+			startAt: resumedStartedAt,
+			defaultInterval: editedIntervalMinutes,
+			state: createWorkflowHeartbeatSchedulerState(),
+		});
+
+		assert.equal(
+			resumedProcess.state.scheduled.get(runId)?.scheduledAt,
+			STARTED_AT + launchIntervalMinutes * MINUTE_MS,
+			"the resumed run keeps both its original phase and its launch cadence",
+		);
+		resumedProcess.scheduler.dispose();
+	});
+
 	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-cadence-field");
