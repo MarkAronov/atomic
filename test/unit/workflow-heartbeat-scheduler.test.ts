@@ -1886,6 +1886,82 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
+	test("a send rejected after cleanup arms no retry timer", async () => {
+		const runId = testRunId("heartbeat-cleanup-late-rejection");
+		const store = createStore();
+		let failSend: (() => void) | undefined;
+		startRun(store, runId);
+		// The sibling of the test above, differing only in how the host answers:
+		// a rejection maps to `delivered: false`, which is the path that would
+		// otherwise schedule a backoff retry for a run that is already finished.
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () =>
+				new Promise<void>((_resolve, reject) => {
+					failSend = () => reject(new Error("host rejected the heartbeat"));
+				}),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		assert.equal(harness.sent.length, 1, "the send is with the host and cannot be recalled");
+
+		store.recordRunEnd(runId, "killed");
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(harness.clock.live().length, 0, "cleanup left no timer behind");
+
+		failSend?.();
+		await flushMicrotasks();
+		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
+		assert.equal(
+			harness.clock.live().length,
+			0,
+			"a rejection arriving after cleanup arms no retry timer for the finished run",
+		);
+
+		harness.clock.advanceBy(5 * MINUTE_MS);
+		await flushMicrotasks();
+		assert.equal(harness.sent.length, 1, "and nothing is re-sent");
+		harness.scheduler.dispose();
+	});
+
+	test("a run re-dispatched under the same id never receives the boundary cleanup dropped", async () => {
+		const runId = testRunId("heartbeat-cleanup-same-id-redispatch");
+		const store = createStore();
+		let failSend: (() => void) | undefined;
+		startRun(store, runId);
+		const harness = installHarness({
+			store,
+			defaultInterval: 1,
+			send: () =>
+				new Promise<void>((_resolve, reject) => {
+					failSend = () => reject(new Error("host rejected the heartbeat"));
+				}),
+		});
+
+		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
+		const droppedBoundary = harness.sent[0]?.details.scheduledAt;
+		assert.equal(droppedBoundary, STARTED_AT + MINUTE_MS);
+
+		// A durable resume reclaims the original run id: the run goes terminal,
+		// leaves the store, and comes back running under the same id. A retry
+		// still holding the old identity would pass the live guard this time.
+		store.recordRunEnd(runId, "completed");
+		store.removeRun(runId);
+		startRun(store, runId, { startedAt: harness.clock.now() });
+
+		failSend?.();
+		await flushMicrotasks();
+		harness.clock.advanceBy(2_000);
+		await flushMicrotasks();
+		assert.deepEqual(
+			boundaries(harness.sent),
+			[...new Set(boundaries(harness.sent))],
+			"no boundary is delivered twice",
+		);
+		harness.scheduler.dispose();
+	});
+
 	test("terminal before enqueue: the due boundary is dropped and enqueue refuses it", () => {
 		const runId = testRunId("heartbeat-cleanup-terminal-before-enqueue");
 		const store = createStore();

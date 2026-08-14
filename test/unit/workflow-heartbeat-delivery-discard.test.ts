@@ -154,6 +154,108 @@ describe("workflow heartbeat delivery discard", () => {
 		delivery.dispose();
 	});
 
+	test("a send rejected after discard arms no retry timer and is never re-attempted", async () => {
+		const runId = testRunId("discard-late-rejection");
+		const timers = fakeTimers();
+		let terminal = false;
+		let reject: ((delivered: boolean) => void) | undefined;
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			canDeliver: () => !terminal,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return new Promise<boolean>((resolve) => {
+					reject = resolve;
+				});
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		delivery.deliver(details(runId, 60_000));
+		terminal = true;
+		assert.equal(delivery.discard(runId), false, "the in-flight send is still spared");
+		assert.equal(timers.live().length, 0, "and cleanup left no timer behind");
+
+		// The host rejects the send *after* the run was discarded. Retrying it
+		// would arm a backoff timer owned by a run whose cleanup already finished,
+		// which is the one thing cleanup promises cannot happen.
+		reject?.(false);
+		await flushMicrotasks();
+		assert.equal(timers.live().length, 0, "no retry timer survives the run that owned it");
+		assert.deepEqual(settled, [{ runId, delivered: false }], "the identity settles once, as undelivered");
+
+		timers.fireAll();
+		assert.deepEqual(attempted, [runId], "and it is never attempted a second time");
+		delivery.dispose();
+	});
+
+	test("discarding one run leaves another run's in-flight head free to retry", async () => {
+		const clearedId = testRunId("discard-isolation-cleared");
+		const busyId = testRunId("discard-isolation-busy");
+		const timers = fakeTimers();
+		let reject: ((delivered: boolean) => void) | undefined;
+		const attempted: string[] = [];
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return new Promise<boolean>((resolve) => {
+					reject = resolve;
+				});
+			},
+			onSettled: () => {},
+		});
+
+		delivery.deliver(details(busyId, 60_000));
+		// Cleanup runs for every terminal run, including ones with nothing queued.
+		// Invalidating the in-flight head on any discard — a global epoch counter
+		// would — kills a retry that belongs to a run still perfectly alive.
+		assert.equal(delivery.discard(clearedId), false, "the unrelated run had nothing queued");
+
+		reject?.(false);
+		await flushMicrotasks();
+		assert.equal(timers.live().length, 1, "the busy run keeps its own backoff timer");
+		timers.fireAll();
+		assert.deepEqual(attempted, [busyId, busyId], "and retries normally");
+		delivery.dispose();
+	});
+
+	test("the invalidation does not outlive the head it was recorded for", async () => {
+		const discardedId = testRunId("discard-flag-first");
+		const laterId = testRunId("discard-flag-second");
+		const timers = fakeTimers();
+		let reject: ((delivered: boolean) => void) | undefined;
+		const attempted: string[] = [];
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				return new Promise<boolean>((resolve) => {
+					reject = resolve;
+				});
+			},
+			onSettled: () => {},
+		});
+
+		delivery.deliver(details(discardedId, 60_000));
+		delivery.deliver(details(laterId, 60_000));
+		assert.equal(delivery.discard(discardedId), false, "the in-flight head is spared");
+
+		// The spared head settles without a retry, which hands over to the next
+		// identity. That one belongs to a live run and must retry normally.
+		reject?.(false);
+		await flushMicrotasks();
+		assert.deepEqual(attempted, [discardedId, laterId], "the next identity started");
+		assert.equal(timers.live().length, 0, "no timer from the discarded head");
+
+		reject?.(false);
+		await flushMicrotasks();
+		assert.equal(timers.live().length, 1, "the fresh head gets its own backoff timer");
+		delivery.dispose();
+	});
+
 	test("discarding a run with nothing queued reports false and changes nothing", () => {
 		const runId = testRunId("discard-unknown");
 		const otherId = testRunId("discard-unknown-other");
