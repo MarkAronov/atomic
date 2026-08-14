@@ -13,6 +13,7 @@ import type {
 	WorkflowPersistencePort,
 	WorkflowRuntimeConfig,
 } from "../shared/types.js";
+import type { WorkflowHeartbeatIdentity } from "../shared/workflow-heartbeat-contract.js";
 import {
 	type ConfigLoadResult,
 	loadWorkflowConfig,
@@ -45,7 +46,7 @@ import {
 	resetWorkflowHeartbeatSchedulerState,
 	type WorkflowHeartbeatAnchorStore,
 	type WorkflowHeartbeatScheduler,
-	workflowHeartbeatConsumedContent,
+	workflowHeartbeatConsumedIdentity,
 	workflowHeartbeatContextInvalidation,
 } from "./workflow-heartbeat-scheduler.js";
 import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
@@ -209,16 +210,15 @@ export function createWorkflowExtensionRuntimeState(
 		// all sit before `sendMessage`, so a heartbeat the host has already
 		// admitted is beyond them. Consumption is the final moment before its
 		// steer joins the model's context, and `message_end` may return a
-		// replacement of the same role, so a heartbeat whose run has since
-		// finished — or that this process no longer knows about — is excluded from
-		// context here rather than steering the parent about a run that is over.
+		// replacement of the same role, so a heartbeat whose run has finished,
+		// vanished, or no longer owns that exact scheduled identity is excluded
+		// from context rather than steering the parent about stale work.
 		//
 		// `absent` counts as much as `terminal`. A card recovered at the restart
-		// door is consumed just after `session_start` cleared the store, so its
-		// run is normally absent rather than terminal — and that card names a
-		// boundary raised by a previous process, which the no-backfill rule
-		// forbids replaying. A run still active in this process is in the store,
-		// so its own cadence is untouched.
+		// door is consumed just after `session_start` cleared the store, so its run
+		// is normally absent. A durable resume may instead reuse the run id, but its
+		// future pending boundary has a different `scheduledAt`. Both cases fail
+		// exact pending ownership and preserve the no-backfill rule.
 		pi.on?.("message_end", (event, ctx) => {
 			// The host hands the session manager to the handler on its context; the
 			// top-level `pi.sessionManager` is not populated in every host, so the
@@ -226,18 +226,19 @@ export function createWorkflowExtensionRuntimeState(
 			// against a real `AgentSession` in
 			// test/unit/workflow-heartbeat-parent-pickup.test.ts.
 			const entries = (ctx?.sessionManager ?? pi.sessionManager)?.getEntries?.();
-			const invalidation = workflowHeartbeatContextInvalidation(event, entries, isWorkflowHeartbeatRunOwned);
+			const invalidation = workflowHeartbeatContextInvalidation(event, entries, isWorkflowHeartbeatIdentityOwned);
 			if (invalidation !== undefined) return invalidation;
-			const content = workflowHeartbeatConsumedContent(event);
-			if (content !== undefined) workflowHeartbeatScheduler?.notifyHeartbeatConsumed(content);
+			const identity = workflowHeartbeatConsumedIdentity(event, entries);
+			if (identity !== undefined) workflowHeartbeatScheduler?.notifyHeartbeatConsumed(identity);
 			return undefined;
 		});
 	}
 
-	/** Whether a run still owns a heartbeat that already reached the parent. */
-	function isWorkflowHeartbeatRunOwned(runId: string): boolean {
-		const run = store.runs().find((candidate) => candidate.id === runId);
-		return run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
+	/** Whether this exact identity is still pending for a current nonterminal run. */
+	function isWorkflowHeartbeatIdentityOwned(identity: WorkflowHeartbeatIdentity): boolean {
+		const pending = workflowHeartbeatSchedulerState.pending.get(identity.runId);
+		const run = store.runs().find((candidate) => candidate.id === identity.runId);
+		return pending?.scheduledAt === identity.scheduledAt && run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
 	}
 
 	/**

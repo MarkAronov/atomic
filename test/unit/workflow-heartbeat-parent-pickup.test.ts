@@ -5,11 +5,15 @@ import type { MessageEndEventResult } from "../../packages/coding-agent/src/core
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import {
 	isWorkflowHeartbeatTerminalRun,
-	workflowHeartbeatConsumedContent,
+	workflowHeartbeatConsumedIdentity,
 	workflowHeartbeatContextInvalidation,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
 import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import {
+	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+	type WorkflowHeartbeatIdentity,
+} from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 
 /**
  * Host-level regression for the heartbeat pickup signal (issue #1975).
@@ -41,7 +45,7 @@ describe("workflow heartbeat parent pickup signal", () => {
 
 	interface ObservedEvents {
 		readonly settled: number[];
-		readonly consumed: string[];
+		readonly consumed: WorkflowHeartbeatIdentity[];
 	}
 
 	async function createObservingHarness(): Promise<{ harness: Harness; observed: ObservedEvents }> {
@@ -52,11 +56,14 @@ describe("workflow heartbeat parent pickup signal", () => {
 					pi.on("agent_settled", () => {
 						observed.settled.push(observed.consumed.length);
 					});
-					pi.on("message_end", (event) => {
-						// The production narrowing, so this regression exercises the
-						// same path the extension wires up rather than a test-local copy.
-						const content = workflowHeartbeatConsumedContent(event);
-						if (content !== undefined) observed.consumed.push(content);
+					pi.on("message_end", (event, ctx) => {
+						// The production narrowing, including the typed intent lookup, so a
+						// foreign custom message with copied text cannot report consumption.
+						const identity = workflowHeartbeatConsumedIdentity(
+							event,
+							ctx.sessionManager.getEntries() as readonly SessionEntry[],
+						);
+						if (identity !== undefined) observed.consumed.push(identity);
 					});
 				},
 			],
@@ -71,7 +78,7 @@ describe("workflow heartbeat parent pickup signal", () => {
 	async function sendHeartbeatCard(harness: Harness, text: string): Promise<void> {
 		await harness.session.sendCustomMessage(
 			{
-				customType: "workflows:workflow-heartbeat",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 				content: [{ type: "text", text }],
 				display: true,
 				details: { runId: "probe-run", scheduledAt: 1, workflowName: "probe", startedAt: 0, intervalMinutes: 1 },
@@ -126,8 +133,8 @@ describe("workflow heartbeat parent pickup signal", () => {
 		await harness.session.prompt("explicit resume driver");
 
 		assert.ok(
-			observed.consumed.includes(HEARTBEAT_TEXT),
-			`the restored card is consumed and reaches extensions verbatim; saw ${JSON.stringify(observed.consumed)}`,
+			observed.consumed.some((identity) => identity.runId === "probe-run" && identity.scheduledAt === 1),
+			`the restored card is consumed with its exact identity; saw ${JSON.stringify(observed.consumed)}`,
 		);
 	});
 
@@ -138,12 +145,38 @@ describe("workflow heartbeat parent pickup signal", () => {
 		// On an idle parent the send resolves at admission and the triggered turn
 		// continues in the background, so wait for the turn rather than for the send.
 		await sendHeartbeatCard(harness, HEARTBEAT_TEXT);
-		await waitFor(() => observed.consumed.includes(HEARTBEAT_TEXT));
+		await waitFor(() =>
+			observed.consumed.some((identity) => identity.runId === "probe-run" && identity.scheduledAt === 1),
+		);
 
 		assert.ok(
-			observed.consumed.includes(HEARTBEAT_TEXT),
-			`an idle parent runs the triggered turn and consumes the card; saw ${JSON.stringify(observed.consumed)}`,
+			observed.consumed.some((identity) => identity.runId === "probe-run" && identity.scheduledAt === 1),
+			`an idle parent consumes the exact heartbeat identity; saw ${JSON.stringify(observed.consumed)}`,
 		);
+	});
+
+	test("a foreign custom message with identical text reports no heartbeat consumption", async () => {
+		const { harness, observed } = await createObservingHarness();
+		harness.setResponses([
+			fauxAssistantMessage("acknowledged heartbeat"),
+			fauxAssistantMessage("acknowledged foreign message"),
+			fauxAssistantMessage("spare"),
+		]);
+
+		await sendHeartbeatCard(harness, HEARTBEAT_TEXT);
+		await waitFor(() => observed.consumed.length === 1);
+		await harness.session.sendCustomMessage(
+			{
+				customType: "someone-else:notice",
+				content: [{ type: "text", text: HEARTBEAT_TEXT }],
+				display: true,
+				details: { runId: "probe-run", scheduledAt: 1 },
+			},
+			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
+		);
+		await waitFor(() => observed.settled.length >= 2);
+
+		assert.deepEqual(observed.consumed, [{ runId: "probe-run", scheduledAt: 1 }]);
 	});
 });
 
@@ -181,7 +214,10 @@ describe("workflow heartbeat context invalidation", () => {
 	 * `extension-runtime-state.ts` calls, over the same store authority — rather
 	 * than a test-local reimplementation of it.
 	 */
-	async function createInvalidatingHarness(store: ReturnType<typeof createStore>): Promise<{
+	async function createInvalidatingHarness(
+		store: ReturnType<typeof createStore>,
+		pending: ReadonlyMap<string, WorkflowHeartbeatIdentity> = new Map(),
+	): Promise<{
 		harness: Harness;
 		contexts: string[];
 	}> {
@@ -190,17 +226,16 @@ describe("workflow heartbeat context invalidation", () => {
 			extensionFactories: [
 				(pi) => {
 					pi.on("message_end", (event, ctx) => {
-						// The same seams the extension uses: the session manager the host
-						// hands to the handler, and the store's own terminal authority.
-						// Both casts cross the package boundary `packages/workflows`
-						// deliberately never imports across — it declares structural
-						// equivalents of the host's session entry and message-end result.
 						const invalidation = workflowHeartbeatContextInvalidation(
 							event,
 							ctx.sessionManager.getEntries() as readonly SessionEntry[],
-							(runId) => {
-								const run = store.runs().find((candidate) => candidate.id === runId);
-								return run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
+							(identity) => {
+								const run = store.runs().find((candidate) => candidate.id === identity.runId);
+								return (
+									pending.get(identity.runId)?.scheduledAt === identity.scheduledAt &&
+									run !== undefined &&
+									!isWorkflowHeartbeatTerminalRun(run)
+								);
 							},
 						);
 						return invalidation as MessageEndEventResult | undefined;
@@ -228,14 +263,15 @@ describe("workflow heartbeat context invalidation", () => {
 		return contexts.filter((context) => context.includes(encoded)).length;
 	}
 
-	function startRun(store: ReturnType<typeof createStore>, id: string): void {
-		store.recordRunStart({ id, name: "probe", inputs: {}, status: "running", stages: [], startedAt: 0 });
+	function startRun(store: ReturnType<typeof createStore>, id: string, startedAt = 0): void {
+		store.recordRunStart({ id, name: "probe", inputs: {}, status: "running", stages: [], startedAt });
 	}
 
 	test("a card parked while its run becomes recoverably blocked still reaches the model", async () => {
 		const store = createStore();
 		startRun(store, RUN_ID);
-		const { harness, contexts } = await createInvalidatingHarness(store);
+		const pending = new Map<string, WorkflowHeartbeatIdentity>([[RUN_ID, { runId: RUN_ID, scheduledAt: 1 }]]);
+		const { harness, contexts } = await createInvalidatingHarness(store, pending);
 		await harness.session.bindExtensions({ shutdownHandler: () => {} });
 
 		const started = Promise.withResolvers<void>();
@@ -295,7 +331,8 @@ describe("workflow heartbeat context invalidation", () => {
 	test("a card parked past its run's terminal state never reaches the model", async () => {
 		const store = createStore();
 		startRun(store, RUN_ID);
-		const { harness, contexts } = await createInvalidatingHarness(store);
+		const pending = new Map<string, WorkflowHeartbeatIdentity>([[RUN_ID, { runId: RUN_ID, scheduledAt: 1 }]]);
+		const { harness, contexts } = await createInvalidatingHarness(store, pending);
 		await harness.session.bindExtensions({ shutdownHandler: () => {} });
 
 		const started = Promise.withResolvers<void>();
@@ -322,18 +359,15 @@ describe("workflow heartbeat context invalidation", () => {
 		const active = harness.session.prompt("start a streaming turn");
 		await started.promise;
 
-		// Admitted into the parent's queue mid-turn, then parked.
 		await harness.session.sendCustomMessage(
 			{
-				customType: "workflows:workflow-heartbeat",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 				content: [{ type: "text", text: HEARTBEAT_TEXT }],
 				display: true,
 				details: heartbeatDetails(),
 			},
 			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
 		);
-		// A second custom message from a different extension, parked alongside it,
-		// so the negative control travels the identical path.
 		await harness.session.sendCustomMessage(
 			{ customType: "someone-else:notice", content: [{ type: "text", text: FOREIGN_TEXT }], display: true },
 			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
@@ -342,8 +376,6 @@ describe("workflow heartbeat context invalidation", () => {
 		await harness.session.abort();
 		await active;
 
-		// The run finishes while its card sits in the parent's queue. Terminal
-		// cleanup runs here and cannot reach that card.
 		store.recordRunEnd(RUN_ID, "completed");
 
 		await harness.session.resumeQueuedMessages();
@@ -359,12 +391,75 @@ describe("workflow heartbeat context invalidation", () => {
 			0,
 			"the terminal run's heartbeat never enters the model's context",
 		);
-		// The user's scrollback is deliberately not rewritten.
 		assert.ok(
 			harness.sessionManager
 				.getEntries()
-				.some((entry) => entry.type === "custom_message" && entry.customType === "workflows:workflow-heartbeat"),
+				.some((entry) => entry.type === "custom_message" && entry.customType === WORKFLOW_HEARTBEAT_CUSTOM_TYPE),
 			"the visible card remains in the transcript as a true record of what was raised",
+		);
+	});
+
+	test("an old admitted heartbeat stays invalid after same-id durable resume", async () => {
+		const store = createStore();
+		startRun(store, RUN_ID);
+		const pending = new Map<string, WorkflowHeartbeatIdentity>([[RUN_ID, { runId: RUN_ID, scheduledAt: 1 }]]);
+		const { harness, contexts } = await createInvalidatingHarness(store, pending);
+		await harness.session.bindExtensions({ shutdownHandler: () => {} });
+
+		const started = Promise.withResolvers<void>();
+		harness.setResponses([
+			async (context, options) => {
+				recordContext(contexts, context);
+				started.resolve();
+				await new Promise<void>((resolve) => {
+					if (options?.signal?.aborted) resolve();
+					else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return fauxAssistantMessage("interrupted");
+			},
+			(context) => {
+				recordContext(contexts, context);
+				return fauxAssistantMessage("after durable resume");
+			},
+			(context) => {
+				recordContext(contexts, context);
+				return fauxAssistantMessage("spare");
+			},
+		]);
+
+		const active = harness.session.prompt("start a streaming turn");
+		await started.promise;
+		await harness.session.sendCustomMessage(
+			{
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				content: [{ type: "text", text: HEARTBEAT_TEXT }],
+				display: true,
+				details: heartbeatDetails(),
+			},
+			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
+		);
+		await harness.session.sendCustomMessage(
+			{ customType: "someone-else:notice", content: [{ type: "text", text: FOREIGN_TEXT }], display: true },
+			{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
+		);
+		harness.session.pauseQueuedMessages();
+		await harness.session.abort();
+		await active;
+
+		store.recordRunEnd(RUN_ID, "failed");
+		pending.delete(RUN_ID);
+		store.removeRun(RUN_ID);
+		startRun(store, RUN_ID, 2);
+		pending.set(RUN_ID, { runId: RUN_ID, scheduledAt: 3 });
+
+		await harness.session.resumeQueuedMessages();
+		await harness.session.prompt("drive the resumed queue");
+
+		assert.ok(contextsCarrying(contexts, FOREIGN_TEXT) > 0, "the parked queue drained after resume");
+		assert.equal(
+			contextsCarrying(contexts, HEARTBEAT_TEXT),
+			0,
+			"the resumed run's later identity cannot revive the old admitted heartbeat",
 		);
 	});
 

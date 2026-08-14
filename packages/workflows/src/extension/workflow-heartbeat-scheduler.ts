@@ -90,8 +90,8 @@ export interface WorkflowHeartbeatSchedulerState {
 	readonly scheduled: Map<string, WorkflowHeartbeatEventDetails>;
 	/** Outstanding heartbeat per run — in flight, or admitted and awaiting pickup. */
 	readonly pending: Map<string, WorkflowHeartbeatIdentity>;
-	/** Content of each admitted heartbeat the parent has not consumed yet, by run. */
-	readonly awaitingParentPickup: Map<string, string>;
+	/** Exact identity of each admitted heartbeat the parent has not consumed yet, by run. */
+	readonly awaitingParentPickup: Map<string, WorkflowHeartbeatIdentity>;
 	/** Most recently enqueued boundary per run, so a boundary is never re-raised. */
 	readonly lastEnqueuedAt: Map<string, number>;
 	/** Resolved cadence anchor per run, memoized after its first durable read. */
@@ -116,7 +116,7 @@ export function createWorkflowHeartbeatSchedulerState(): WorkflowHeartbeatSchedu
 	return {
 		scheduled: new Map<string, WorkflowHeartbeatEventDetails>(),
 		pending: new Map<string, WorkflowHeartbeatIdentity>(),
-		awaitingParentPickup: new Map<string, string>(),
+		awaitingParentPickup: new Map<string, WorkflowHeartbeatIdentity>(),
 		lastEnqueuedAt: new Map<string, number>(),
 		anchorAt: new Map<string, number>(),
 		anchorPersisted: new Set<string>(),
@@ -211,15 +211,16 @@ export interface WorkflowHeartbeatScheduler {
 	 */
 	clearWorkflowHeartbeats(runId: string): WorkflowHeartbeatClearResult;
 	/**
-	 * The parent chat consumed a heartbeat card: the host injected it into the
-	 * conversation. Releases that run's held slot and re-arms it at its first
-	 * future boundary — never at a missed one.
+	 * The parent chat consumed this exact heartbeat identity: the host injected
+	 * its typed reconciliation into the conversation. Releases only that run's
+	 * matching held slot and re-arms it at its first future boundary — never at a
+	 * missed one.
 	 *
 	 * Consumption, not turn completion, is the release condition. The host emits
 	 * its turn-settled event even when a paused queue held the card back, so
 	 * releasing on that would let a second card stack behind a parked first one.
 	 */
-	notifyHeartbeatConsumed(content: string): void;
+	notifyHeartbeatConsumed(identity: WorkflowHeartbeatIdentity): void;
 	readonly state: WorkflowHeartbeatSchedulerState;
 	dispose(): void;
 }
@@ -408,7 +409,8 @@ export function installWorkflowHeartbeatScheduler(
 		timers,
 		canDeliver: canDeliverWorkflowHeartbeat,
 		onSettled: (details, delivered) => {
-			if (state.pending.get(details.runId)?.scheduledAt !== details.scheduledAt) return;
+			const identity = state.pending.get(details.runId);
+			if (identity?.scheduledAt !== details.scheduledAt) return;
 			if (!delivered) {
 				// Nothing reached the parent's queue, so the slot is free at once.
 				state.pending.delete(details.runId);
@@ -432,11 +434,10 @@ export function installWorkflowHeartbeatScheduler(
 			// actually consumed into the conversation. The cadence pauses rather
 			// than stacking.
 			//
-			// The match key is the exact text this scheduler authored: the host's
-			// hidden reconciliation copies `content` verbatim, and the visible card
-			// never reaches extensions at all, so there is no admission/consumption
-			// ambiguity to disambiguate.
-			state.awaitingParentPickup.set(details.runId, formatWorkflowHeartbeatNoticeText(details));
+			// The exact scheduled identity is retained until the host injects the
+			// typed hidden reconciliation. Rendered text is display-only and never
+			// decides slot ownership or release.
+			state.awaitingParentPickup.set(details.runId, identity);
 			refresh();
 		},
 	});
@@ -479,16 +480,13 @@ export function installWorkflowHeartbeatScheduler(
 		return { kind: "cleared" };
 	};
 
-	const notifyHeartbeatConsumed = (content: string): void => {
-		if (!active || state.awaitingParentPickup.size === 0) return;
-		let released = false;
-		for (const [runId, held] of [...state.awaitingParentPickup]) {
-			if (held !== content) continue;
-			state.awaitingParentPickup.delete(runId);
-			state.pending.delete(runId);
-			released = true;
-		}
-		if (!released) return;
+	const notifyHeartbeatConsumed = (identity: WorkflowHeartbeatIdentity): void => {
+		if (!active) return;
+		const held = state.awaitingParentPickup.get(identity.runId);
+		const pending = state.pending.get(identity.runId);
+		if (held?.scheduledAt !== identity.scheduledAt || pending?.scheduledAt !== identity.scheduledAt) return;
+		state.awaitingParentPickup.delete(identity.runId);
+		state.pending.delete(identity.runId);
 		// `refresh()` re-arms from `max(now, lastEnqueuedAt)`, so the cadence
 		// resumes at the first future boundary and never at a missed one.
 		refresh();
@@ -839,32 +837,27 @@ function warnWorkflowHeartbeatUnschedulableInterval(intervalMinutes: number): vo
 	);
 }
 
-/** One normalized content part of a host message. */
-interface HostMessagePart {
-	readonly type: string;
-	readonly text?: string;
-}
-
-/** A host message as far as heartbeat consumption is concerned. */
-interface HostMessage {
+/**
+ * A host message as far as heartbeat consumption is concerned.
+ *
+ * `details` stays a record because its contents differ per custom type and are
+ * validated by the reader that knows which type it asked for.
+ */
+interface HostCustomMessage {
 	readonly role: string;
-	readonly content: string | readonly HostMessagePart[];
+	readonly customType?: string;
+	readonly details?: Record<string, unknown>;
+	/** The message exactly as the host produced it, for key-preserving replacement. */
+	readonly raw: Record<string, unknown>;
 }
 
 /** The `message_end` payload the workflows-side handler receives. */
 interface HostMessageEndEvent {
-	readonly message: HostMessage;
+	readonly message: HostCustomMessage;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
-}
-
-function asHostMessagePart(value: unknown): HostMessagePart | undefined {
-	if (!isRecord(value)) return undefined;
-	const { type, text } = value;
-	if (typeof type !== "string") return undefined;
-	return typeof text === "string" ? { type, text } : { type };
 }
 
 /**
@@ -872,44 +865,24 @@ function asHostMessagePart(value: unknown): HostMessagePart | undefined {
  *
  * The handler signature is `(event?: unknown, ctx?) => unknown`, so `unknown` is
  * the honest type of what arrives; it is validated once here and every consumer
- * downstream reads a declared type instead of re-casting. A payload that does
- * not match is rejected exactly as before rather than trusted because a type
- * claims a shape.
+ * downstream reads a declared type instead of re-casting at each field. A
+ * payload that does not match is rejected exactly as before rather than trusted
+ * because a type claims a shape.
  */
 function asHostMessageEndEvent(event: unknown): HostMessageEndEvent | undefined {
 	if (!isRecord(event)) return undefined;
 	const message = event.message;
 	if (!isRecord(message)) return undefined;
-	const { role, content } = message;
+	const { role, customType, details } = message;
 	if (typeof role !== "string") return undefined;
-	if (typeof content === "string") return { message: { role, content } };
-	if (!Array.isArray(content)) return undefined;
-	const parts: HostMessagePart[] = [];
-	for (const part of content) {
-		const parsed = asHostMessagePart(part);
-		if (parsed !== undefined) parts.push(parsed);
-	}
-	return { message: { role, content: parts } };
-}
-
-/**
- * The text of a consumed custom message, narrowed from an untyped host
- * `message_end` payload.
- *
- * Both the string and the normalized part-array content shapes are accepted,
- * because the host may have normalized the message before it is injected.
- */
-export function workflowHeartbeatConsumedContent(event: unknown): string | undefined {
-	const parsed = asHostMessageEndEvent(event);
-	if (parsed === undefined) return undefined;
-	const { role, content } = parsed.message;
-	if (role !== "custom") return undefined;
-	if (typeof content === "string") return content;
-	let text = "";
-	for (const part of content) {
-		if (part.type === "text" && part.text !== undefined) text += part.text;
-	}
-	return text.length === 0 ? undefined : text;
+	return {
+		message: {
+			role,
+			...(typeof customType === "string" ? { customType } : {}),
+			...(isRecord(details) ? { details } : {}),
+			raw: message,
+		},
+	};
 }
 
 /**
@@ -924,38 +897,32 @@ export function workflowHeartbeatConsumedContent(event: unknown): string | undef
 const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
 
 /**
- * The run whose heartbeat this consumed message belongs to, or `undefined` when
- * it is not a heartbeat at all.
+ * The exact heartbeat identity this consumed message belongs to, or
+ * `undefined` when it is not a heartbeat reconciliation.
  *
- * The parent's queue holds a *hidden reconciliation*, not the visible card: the
- * card is committed to the transcript at admission with `excludeFromContext`,
- * and the twin carries `details.protectedReconciliationOf` naming the card's
- * session entry. Resolving the run means following that pointer into the
- * session entries and reading the entry's own `details.runId` — structural, so
- * it never parses rendered text and never matches a custom message that some
- * other extension happens to word similarly.
- *
- * Returns `undefined` for every message that is not a workflow heartbeat's
- * reconciliation, including when no session manager is available, so the caller
- * has nothing to decide in that case.
+ * The parent's queue holds a hidden reconciliation whose
+ * `details.protectedReconciliationOf` points to the visible intent entry.
+ * Identity comes only from a typed `workflows:workflow-heartbeat` intent, never
+ * from rendered text or from another extension's custom message.
  */
-export function workflowHeartbeatConsumedRunId(
+export function workflowHeartbeatConsumedIdentity(
 	event: unknown,
 	entries: readonly SessionEntry[] | undefined,
-): string | undefined {
-	if (entries === undefined || typeof event !== "object" || event === null) return undefined;
-	const message = (event as { message?: unknown }).message;
-	if (typeof message !== "object" || message === null) return undefined;
-	const candidate = message as { role?: unknown; customType?: unknown; details?: unknown };
-	if (candidate.role !== "custom" || candidate.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) return undefined;
-	if (typeof candidate.details !== "object" || candidate.details === null) return undefined;
-	const intentEntryId = (candidate.details as { protectedReconciliationOf?: unknown }).protectedReconciliationOf;
+): WorkflowHeartbeatIdentity | undefined {
+	if (entries === undefined) return undefined;
+	const parsed = asHostMessageEndEvent(event);
+	if (parsed === undefined) return undefined;
+	const { role, customType, details } = parsed.message;
+	if (role !== "custom" || customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) return undefined;
+	if (details === undefined) return undefined;
+	const intentEntryId = details.protectedReconciliationOf;
 	if (typeof intentEntryId !== "string") return undefined;
 	const intent = entries.find((entry) => entry.id === intentEntryId);
 	if (intent?.customType !== WORKFLOW_HEARTBEAT_CUSTOM_TYPE) return undefined;
-	if (typeof intent.details !== "object" || intent.details === null) return undefined;
-	const runId = (intent.details as { runId?: unknown }).runId;
-	return typeof runId === "string" ? runId : undefined;
+	if (!isRecord(intent.details)) return undefined;
+	const { runId, scheduledAt } = intent.details;
+	if (typeof runId !== "string" || typeof scheduledAt !== "number") return undefined;
+	return { runId, scheduledAt };
 }
 
 /**
@@ -967,8 +934,8 @@ export function workflowHeartbeatConsumedRunId(
  * the transcript and a hidden reconciliation is queued behind it, and no host
  * seam withdraws either. Consumption is the last moment before that steer joins
  * the model's context, and a `message_end` handler may return a replacement of
- * the same role — so this is where a heartbeat for a finished or forgotten run
- * is invalidated (issue #1975).
+ * the same role — so this is where a heartbeat whose exact identity is no longer
+ * owned is invalidated (issue #1975).
  *
  * `excludeFromContext` rather than rewritten text: the host includes a custom
  * message in the provider request only when that flag is not `true`, so setting
@@ -984,11 +951,11 @@ export function workflowHeartbeatConsumedRunId(
 export function workflowHeartbeatContextInvalidation(
 	event: unknown,
 	entries: readonly SessionEntry[] | undefined,
-	isRunOwned: (runId: string) => boolean,
+	isIdentityOwned: (identity: WorkflowHeartbeatIdentity) => boolean,
 ): { readonly message: Record<string, unknown> } | undefined {
-	const runId = workflowHeartbeatConsumedRunId(event, entries);
-	if (runId === undefined || isRunOwned(runId)) return undefined;
-	const message = (event as { message?: Record<string, unknown> }).message;
-	if (message === undefined) return undefined;
-	return { message: { ...message, excludeFromContext: true } };
+	const identity = workflowHeartbeatConsumedIdentity(event, entries);
+	if (identity === undefined || isIdentityOwned(identity)) return undefined;
+	const parsed = asHostMessageEndEvent(event);
+	if (parsed === undefined) return undefined;
+	return { message: { ...parsed.message.raw, excludeFromContext: true } };
 }

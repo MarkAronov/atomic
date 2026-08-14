@@ -19,8 +19,7 @@ import {
 	type WorkflowHeartbeatLaunchRecord,
 	type WorkflowHeartbeatScheduler,
 	type WorkflowHeartbeatSchedulerState,
-	workflowHeartbeatConsumedContent,
-	workflowHeartbeatConsumedRunId,
+	workflowHeartbeatConsumedIdentity,
 	workflowHeartbeatContextInvalidation,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
 import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
@@ -29,6 +28,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import {
 	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 	type WorkflowHeartbeatEventDetails,
+	type WorkflowHeartbeatIdentity,
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
@@ -221,7 +221,11 @@ function installHarness(opts: {
 			// carrying the exact content the host injected.
 			if (opts.parentConsumeDelayMs !== undefined) {
 				clock.timerApi.setTimeout(
-					() => installed?.notifyHeartbeatConsumed(captured.content),
+					() =>
+						installed?.notifyHeartbeatConsumed({
+							runId: captured.details.runId,
+							scheduledAt: captured.details.scheduledAt,
+						}),
 					opts.parentConsumeDelayMs,
 				);
 			}
@@ -265,6 +269,11 @@ function boundaries(sent: readonly CapturedSend[]): number[] {
 
 function runIds(sent: readonly CapturedSend[]): string[] {
 	return sent.map((send) => send.details.runId);
+}
+
+function identityOf(send: CapturedSend | undefined): WorkflowHeartbeatIdentity {
+	assert.ok(send !== undefined, "expected a captured heartbeat");
+	return { runId: send.details.runId, scheduledAt: send.details.scheduledAt };
 }
 
 describe("workflow heartbeat cadence", () => {
@@ -436,7 +445,7 @@ describe("workflow heartbeat cadence", () => {
 		// Consumption happens after boundary 2 would have been due, so boundary 2
 		// is a missed boundary and must never be raised.
 		harness.clock.advanceTo(STARTED_AT + 2 * MINUTE_MS + 30_000);
-		harness.scheduler.notifyHeartbeatConsumed(harness.sent[0]?.content ?? "");
+		harness.scheduler.notifyHeartbeatConsumed(identityOf(harness.sent[0]));
 		assert.equal(harness.state.pending.size, 0, "the slot is free once the card was consumed");
 		assert.equal(
 			harness.state.scheduled.get(runId)?.scheduledAt,
@@ -468,13 +477,13 @@ describe("workflow heartbeat cadence", () => {
 		assert.equal(harness.state.awaitingParentPickup.size, 1);
 		assert.equal(harness.state.scheduled.size, 0, "the cadence pauses rather than stacking");
 		// Consumption, whenever it comes, resumes at the first future boundary only.
-		harness.scheduler.notifyHeartbeatConsumed(harness.sent[0]?.content ?? "");
+		harness.scheduler.notifyHeartbeatConsumed(identityOf(harness.sent[0]));
 		harness.clock.advanceTo(STARTED_AT + 6 * MINUTE_MS + 5_000);
 		assert.deepEqual(boundaries(harness.sent), [STARTED_AT + MINUTE_MS, STARTED_AT + 6 * MINUTE_MS]);
 		harness.scheduler.dispose();
 	});
 
-	test("a signal that is not this run's consumed card never releases its slot", () => {
+	test("only the exact consumed identity releases its run's slot", () => {
 		const runId = testRunId("heartbeat-wrong-consumption");
 		const otherId = testRunId("heartbeat-wrong-consumption-other");
 		const store = createStore();
@@ -484,46 +493,39 @@ describe("workflow heartbeat cadence", () => {
 
 		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
 		assert.equal(harness.sent.length, 1, "only the 1-minute run has heartbeated");
-		const heldContent = harness.sent[0]?.content ?? "";
+		const heldIdentity = identityOf(harness.sent[0]);
 
-		// A turn-settled-shaped nudge carries no content of ours, and another run's
-		// card is not this run's. Neither may release the held slot: releasing on a
-		// signal that is not consumption is exactly the defect this guards.
-		harness.scheduler.notifyHeartbeatConsumed("");
-		harness.scheduler.notifyHeartbeatConsumed("some unrelated assistant text");
-		harness.scheduler.notifyHeartbeatConsumed(`${heldContent} (a near miss)`);
-		assert.equal(harness.state.pending.size, 1, "the slot is still held");
-		assert.equal(harness.state.awaitingParentPickup.get(runId), heldContent);
+		harness.scheduler.notifyHeartbeatConsumed({ runId: otherId, scheduledAt: heldIdentity.scheduledAt });
+		harness.scheduler.notifyHeartbeatConsumed({ runId, scheduledAt: heldIdentity.scheduledAt + MINUTE_MS });
+		assert.equal(harness.state.pending.size, 1, "a different run or boundary leaves the slot held");
+		assert.deepEqual(harness.state.awaitingParentPickup.get(runId), heldIdentity);
 
 		harness.clock.advanceTo(STARTED_AT + 4 * MINUTE_MS);
 		assert.deepEqual(
 			boundaries(harness.sent),
 			[STARTED_AT + MINUTE_MS],
-			"and no second card stacks behind the unconsumed first",
+			"no second card stacks behind the unconsumed identity",
 		);
 
-		harness.scheduler.notifyHeartbeatConsumed(heldContent);
-		assert.equal(harness.state.pending.size, 0, "the exact consumed content releases it");
+		harness.scheduler.notifyHeartbeatConsumed(heldIdentity);
+		assert.equal(harness.state.pending.size, 0, "the exact consumed identity releases it");
 		harness.scheduler.dispose();
 	});
 
-	test("workflowHeartbeatConsumedContent narrows only a custom message's text", () => {
-		assert.equal(workflowHeartbeatConsumedContent(undefined), undefined);
-		assert.equal(workflowHeartbeatConsumedContent({}), undefined);
-		assert.equal(workflowHeartbeatConsumedContent({ message: { role: "assistant", content: "hi" } }), undefined);
-		assert.equal(workflowHeartbeatConsumedContent({ message: { role: "custom", content: "hi" } }), "hi");
+	test("custom text without a typed heartbeat entry reports no consumed identity", () => {
 		assert.equal(
-			workflowHeartbeatConsumedContent({
-				message: { role: "custom", content: [{ type: "text", text: "one" }, { type: "image" }, { text: "no" }] },
-			}),
-			"one",
+			workflowHeartbeatConsumedIdentity({ message: { role: "custom", content: "same rendered text" } }, []),
+			undefined,
 		);
 		assert.equal(
-			workflowHeartbeatConsumedContent({ message: { role: "custom", content: [{ type: "image" }] } }),
+			workflowHeartbeatConsumedIdentity(
+				{ message: { role: "custom", content: [{ type: "text", text: "same rendered text" }] } },
+				[],
+			),
 			undefined,
-			"an empty extraction is not a match key",
 		);
 	});
+
 	test("a host that reports no consumption releases on admission instead of going silent", () => {
 		const runId = testRunId("heartbeat-no-availability-signal");
 		const store = createStore();
@@ -2092,8 +2094,8 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		const harness = installHarness({ store, defaultInterval: 1 });
 
 		harness.clock.advanceTo(STARTED_AT + MINUTE_MS + 5_000);
-		const content = harness.sent[0]?.content ?? "";
-		assert.equal(harness.state.awaitingParentPickup.get(runId), content, "the card is admitted and unread");
+		const identity = identityOf(harness.sent[0]);
+		assert.deepEqual(harness.state.awaitingParentPickup.get(runId), identity, "the card is admitted and unread");
 
 		store.recordRunEnd(runId, "skipped");
 		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD, "the slot is released by cleanup");
@@ -2101,7 +2103,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 
 		// The parent may still read the admitted card afterwards; that signal must
 		// release nothing and re-arm nothing.
-		harness.scheduler.notifyHeartbeatConsumed(content);
+		harness.scheduler.notifyHeartbeatConsumed(identity);
 		assert.deepEqual(heldFields(harness.state, runId), NOTHING_HELD);
 		assert.equal(harness.clock.live().length, 0, "a late consumption re-arms no cadence");
 		harness.clock.advanceBy(5 * MINUTE_MS);
@@ -2156,8 +2158,9 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		// a delivered boundary, and cadence memos, for runs that no longer qualify.
 		const state = createWorkflowHeartbeatSchedulerState();
 		for (const runId of [terminalId, vanishedId]) {
-			state.pending.set(runId, { runId, scheduledAt: STARTED_AT + MINUTE_MS });
-			state.awaitingParentPickup.set(runId, "stale card");
+			const identity = { runId, scheduledAt: STARTED_AT + MINUTE_MS };
+			state.pending.set(runId, identity);
+			state.awaitingParentPickup.set(runId, identity);
 			state.lastEnqueuedAt.set(runId, STARTED_AT + MINUTE_MS);
 			state.anchorAt.set(runId, STARTED_AT);
 			state.anchorPersisted.add(runId);
@@ -2201,8 +2204,12 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 			{ runId: activeId, scheduledAt: STARTED_AT + MINUTE_MS },
 			"the active run keeps the slot it is still holding",
 		);
-		const activeCard = harness.sent.find((send) => send.details.runId === activeId)?.content;
-		assert.equal(harness.state.awaitingParentPickup.get(activeId), activeCard, "and the card text it is holding");
+		const activeIdentity = identityOf(harness.sent.find((send) => send.details.runId === activeId));
+		assert.deepEqual(
+			harness.state.awaitingParentPickup.get(activeId),
+			activeIdentity,
+			"and the exact identity it is holding",
+		);
 		assert.equal(
 			harness.state.lastEnqueuedAt.get(pausedId),
 			STARTED_AT + MINUTE_MS,
@@ -2249,8 +2256,11 @@ describe("workflow heartbeat consumed-message identity", () => {
 		};
 	}
 
-	test("a well-formed reconciliation resolves its run id from details, never from the text", () => {
-		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor(HEARTBEAT_ENTRY_ID), entries), "run-under-test");
+	test("a well-formed reconciliation resolves its exact identity from details, never from the text", () => {
+		assert.deepEqual(workflowHeartbeatConsumedIdentity(reconciliationFor(HEARTBEAT_ENTRY_ID), entries), {
+			runId: "run-under-test",
+			scheduledAt: STARTED_AT + MINUTE_MS,
+		});
 	});
 
 	test("everything that is not a workflow heartbeat's reconciliation resolves to undefined", () => {
@@ -2274,28 +2284,69 @@ describe("workflow heartbeat consumed-message identity", () => {
 			},
 		];
 		for (const { name, event } of cases) {
-			assert.equal(workflowHeartbeatConsumedRunId(event, entries), undefined, name);
+			assert.equal(workflowHeartbeatConsumedIdentity(event, entries), undefined, name);
 		}
 	});
 
 	test("no session entries means no identity, so the handler has nothing to decide", () => {
-		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor(HEARTBEAT_ENTRY_ID), undefined), undefined);
+		assert.equal(workflowHeartbeatConsumedIdentity(reconciliationFor(HEARTBEAT_ENTRY_ID), undefined), undefined);
 	});
 
-	test("a heartbeat entry carrying no usable run id resolves to undefined", () => {
+	test("a heartbeat entry carrying no usable exact identity resolves to undefined", () => {
 		const malformed: SessionEntry[] = [
 			{ id: HEARTBEAT_ENTRY_ID, type: "custom_message", customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE },
 			{
 				id: "entry-numeric-run",
 				type: "custom_message",
 				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
-				details: { runId: 7 },
+				details: { runId: 7, scheduledAt: STARTED_AT + MINUTE_MS },
+			},
+			{
+				id: "entry-missing-schedule",
+				type: "custom_message",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				details: { runId: "run-under-test" },
+			},
+			{
+				id: "entry-string-schedule",
+				type: "custom_message",
+				customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+				details: { runId: "run-under-test", scheduledAt: "later" },
 			},
 		];
-		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor(HEARTBEAT_ENTRY_ID), malformed), undefined);
-		assert.equal(workflowHeartbeatConsumedRunId(reconciliationFor("entry-numeric-run"), malformed), undefined);
+		for (const entry of malformed) {
+			assert.equal(workflowHeartbeatConsumedIdentity(reconciliationFor(entry.id), malformed), undefined);
+		}
 	});
 
+	test("a stale boundary is invalid even when a current run reuses the same id", () => {
+		const oldIdentity: WorkflowHeartbeatIdentity = {
+			runId: "run-under-test",
+			scheduledAt: STARTED_AT + MINUTE_MS,
+		};
+		const resumedIdentity: WorkflowHeartbeatIdentity = {
+			runId: oldIdentity.runId,
+			scheduledAt: STARTED_AT + 3 * MINUTE_MS,
+		};
+		assert.deepEqual(
+			workflowHeartbeatContextInvalidation(
+				reconciliationFor(HEARTBEAT_ENTRY_ID),
+				entries,
+				(identity) =>
+					identity.runId === resumedIdentity.runId && identity.scheduledAt === resumedIdentity.scheduledAt,
+			),
+			{
+				message: {
+					role: "custom",
+					customType: RECONCILIATION_TYPE,
+					content: [{ type: "text", text: "♥ Workflow …" }],
+					details: { protectedReconciliationOf: HEARTBEAT_ENTRY_ID },
+					excludeFromContext: true,
+				},
+			},
+			"same run id does not transfer ownership to an old scheduled boundary",
+		);
+	});
 	test("the invalidation fires for a terminal or absent run and leaves a live one alone", () => {
 		const event = reconciliationFor(HEARTBEAT_ENTRY_ID);
 		assert.equal(
