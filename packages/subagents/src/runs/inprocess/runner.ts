@@ -25,6 +25,11 @@ import {
 } from "@bastani/atomic-natives";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agent-types.ts";
+import {
+	buildSkillInjection,
+	isSubagentOrchestrationSkillSelector,
+	resolveSkillsFromCatalog,
+} from "../../agents/skills.ts";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
 import {
 	getSubagentCodexFastModeSettings,
@@ -42,7 +47,7 @@ import {
 } from "../../shared/types.ts";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.ts";
 import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.ts";
-import { createInProcessChildPromptBehavior } from "./prompt-behavior.ts";
+import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.ts";
 
 export type ChildStatus = NativeAgentStatus;
 export type ContinuationReason = "intercom-coordination";
@@ -168,8 +173,12 @@ export interface AttemptSignals {
 }
 
 export type AttemptStats = SessionStats;
+export interface AttemptSkillReport {
+	readonly skills?: readonly string[];
+	readonly skillsWarning?: string;
+}
 
-export type AttemptOutcome =
+export type AttemptOutcome = (
 	| {
 			readonly status: "ok";
 			readonly output: string;
@@ -211,7 +220,9 @@ export type AttemptOutcome =
 			readonly sessionFile?: string;
 			readonly model?: string;
 			readonly thinking?: string;
-	  };
+	  }
+) &
+	AttemptSkillReport;
 
 export interface ResultEnvelope {
 	readonly path: string;
@@ -797,6 +808,7 @@ export class SubagentControlRuntime {
 		let termination: TerminationCauseName | undefined;
 		let terminating: Promise<void> | undefined;
 		let unsubscribe: (() => void) | undefined;
+		let skillReport: AttemptSkillReport = {};
 		const terminate = async (cause: TerminationCauseName): Promise<void> => {
 			if (terminating) return terminating;
 			termination = cause;
@@ -848,7 +860,25 @@ export class SubagentControlRuntime {
 					}),
 				);
 				await resourceLoader.reload();
+				const selectedSkills = resolveSkillsFromCatalog(
+					[...admitted.policy.skills],
+					resourceLoader.getSkillCatalog(),
+					admitted.policy.cwd,
+				);
+				skillReport = {
+					...(selectedSkills.resolved.length > 0
+						? { skills: selectedSkills.resolved.map((skill) => skill.name) }
+						: {}),
+					...(selectedSkills.missing.length > 0
+						? { skillsWarning: `Skills not found: ${selectedSkills.missing.join(", ")}` }
+						: {}),
+				};
+				if (selectedSkills.missing.some(isSubagentOrchestrationSkillSelector)) {
+					throw new Error("Skills not found: subagent");
+				}
+				const skillInjection = buildSkillInjection(selectedSkills.resolved);
 				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
+				const systemPromptTransform = createInProcessChildSystemPromptTransform(admitted.policy, skillInjection);
 				created = {
 					session: (
 						await createAgentSession({
@@ -866,7 +896,7 @@ export class SubagentControlRuntime {
 							settingsManager,
 							orchestrationContext: admitted.spec.parent?.orchestrationContext,
 							subagentPolicy: admitted.policy,
-							systemPromptTransform: promptBehavior.systemPromptTransform,
+							systemPromptTransform,
 							initialContextTransform: promptBehavior.initialContextTransform,
 						})
 					).session,
@@ -980,6 +1010,7 @@ export class SubagentControlRuntime {
 					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+					...skillReport,
 				};
 			return {
 				status,
@@ -991,6 +1022,7 @@ export class SubagentControlRuntime {
 				...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 				...(status === "error" && attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+				...skillReport,
 			};
 		} catch (error) {
 			const stats = statsFor(session, admitted.identity.path);
@@ -1011,6 +1043,7 @@ export class SubagentControlRuntime {
 						sessionFile: session?.sessionFile,
 						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+						...skillReport,
 					}
 				: {
 						status,
@@ -1022,6 +1055,7 @@ export class SubagentControlRuntime {
 						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 						...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+						...skillReport,
 					};
 		} finally {
 			signals.abort.removeEventListener("abort", abortListener);

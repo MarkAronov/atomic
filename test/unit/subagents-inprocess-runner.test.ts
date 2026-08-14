@@ -22,6 +22,8 @@ import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
 import { sleep } from "../helpers/runtime.ts";
 
+const LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS = 120_000;
+
 function sampleAgent(): AgentConfig {
 	return {
 		name: "analysis",
@@ -95,6 +97,42 @@ test("in-process child loading includes bundled subagent resources", () => {
 	const stageWorkflowsPath = stagePaths.find((source) => basename(packagePath(source)) === "workflows");
 	assert.deepEqual(stageWorkflowsPath, { source: packagePath(workflowsPath), extensions: [] });
 });
+
+test(
+	"a live in-process child resolves qualified skills and reports missing selectors",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-skill-catalog-"));
+		const agentDir = join(root, "agent");
+		const userSkillDir = join(agentDir, "skills", "tdd");
+		const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+		mkdirSync(userSkillDir, { recursive: true });
+		writeFileSync(
+			join(userSkillDir, "SKILL.md"),
+			"---\nname: tdd\ndescription: User TDD\n---\n\nUser-only TDD body\n",
+			"utf-8",
+		);
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+		clearSubagentControls();
+		try {
+			const result = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+				cwd: root,
+				runId: "live-qualified-skill",
+				sessionDir: join(root, "sessions"),
+				testSession: false,
+				skills: ["tdd@builtin", "missing-skill"],
+			});
+
+			assert.deepEqual(result.skills, ["tdd@builtin"]);
+			assert.equal(result.skillsWarning, "Skills not found: missing-skill");
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+			clearSubagentControls();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
+);
 
 test("admission resolves restricted child management and explicit fanout policy", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-policy-"));

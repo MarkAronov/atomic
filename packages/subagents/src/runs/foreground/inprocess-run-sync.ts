@@ -129,6 +129,8 @@ function resultFromOutcome(
 				? { attemptedModels: [...outcome.attemptedModels] }
 				: {}
 			: {}),
+		...(outcome.skills?.length ? { skills: [...outcome.skills] } : {}),
+		...(outcome.skillsWarning ? { skillsWarning: outcome.skillsWarning } : {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
 		progress: progressFor(agent, task, outcome, startedAt, fastModeEnabled),

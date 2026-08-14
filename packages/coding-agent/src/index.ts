@@ -180,8 +180,17 @@ export type {
 	ResourceCollision,
 	ResourceDiagnostic,
 	ResourceLoader,
+	SkillCandidate,
+	SkillCatalog,
+	SkillCatalogCommand,
+	SkillResolution,
 } from "./core/resource-loader.ts";
-export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+export {
+	buildSkillCatalog,
+	DefaultResourceLoader,
+	getSkillCatalog,
+	loadProjectContextFiles,
+} from "./core/resource-loader.ts";
 export { nextRetryDecision, type RetryDecision, type RetryPolicySettings } from "./core/retry-policy.ts";
 // SDK for programmatic usage
 export {

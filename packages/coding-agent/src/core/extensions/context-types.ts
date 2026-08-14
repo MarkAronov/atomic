@@ -5,6 +5,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
+import type { SkillCatalog } from "../skill-catalog.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
@@ -161,6 +162,8 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** Current loader-owned skill candidates and exact selector resolver. */
+	getSkillCatalog?(): SkillCatalog;
 }
 
 /**

@@ -6,6 +6,7 @@
 
 - Agent frontmatter accepts YAML array-form `tools` — flow sequences (`tools: [read, bash]`) and block sequences (`tools:` followed by `- read` lines) — as well as the comma-separated string form, and both spellings produce the same tool set. Frontmatter parses through the same YAML-backed parser Atomic exports, so legal multi-line flow sequences and zero-indent block lists work, and sequence values where a scalar belongs are ignored rather than stringified.
 - Extra frontmatter fields round-trip losslessly through the YAML emitter when agent files are rewritten. Hand-joined flow sequences previously corrupted items containing `#`, commas, brackets, colons, quotes, or boolean-like strings, and a rewritten file could fail YAML parsing so the agent silently disappeared from later scans; sequences now serialize as block collections with hostile keys quoted.
+- In-process children resolve `skills` through the live loader catalog, so source-qualified selectors such as `tdd@builtin` inject the shadowed candidate instead of the precedence winner. Missing or ambiguous selectors are reported on the child result. The parent-only `subagent` orchestration skill remains unavailable, including qualified aliases such as `subagent@builtin` ([#2328](https://github.com/bastani-inc/atomic/issues/2328)).
 
 ### Fixed
 
