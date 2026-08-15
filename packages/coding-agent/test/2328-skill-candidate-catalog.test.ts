@@ -229,6 +229,68 @@ describe("issue #2328 skill candidate catalog", () => {
 		).toEqual([userPath, builtin.skillPath]);
 	});
 
+	it("uses the effective skills override object throughout the catalog", async () => {
+		const userPath = join(agentDir, "skills", "tdd", "SKILL.md");
+		writeSkill(userPath, "tdd", "User TDD", "User body");
+		const builtin = createPackage("override-replacement-builtin", "tdd", "Builtin body");
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			builtinPackagePaths: [builtin.root],
+			skillsOverride: (base) => ({
+				...base,
+				skills: base.skills.map((skill) =>
+					skill.name === "tdd" ? { ...skill, description: "Configured TDD" } : skill,
+				),
+			}),
+		});
+
+		await loader.reload();
+
+		const catalog = loader.getSkillCatalog();
+		expect(loader.getSkills().skills[0]?.description).toBe("Configured TDD");
+		expect(catalog.resolve("tdd")).toMatchObject({
+			ok: true,
+			candidate: { skill: { filePath: userPath, description: "Configured TDD" } },
+		});
+		expect(catalog.resolve("tdd@user")).toMatchObject({
+			ok: true,
+			candidate: { skill: { filePath: userPath, description: "Configured TDD" } },
+		});
+		expect(catalog.commands.find((command) => command.name === "tdd")?.description).toBe("Configured TDD");
+		expect(catalog.modelSkills().find((skill) => skill.name === "tdd@user")?.description).toBe("Configured TDD");
+	});
+
+	it("reconciles an override through a symlink without duplicate candidates", async () => {
+		const userPath = join(agentDir, "skills", "tdd", "SKILL.md");
+		const aliasPath = join(tempDir, "tdd-alias.md");
+		writeSkill(userPath, "tdd", "User TDD", "User body");
+		symlinkSync(userPath, aliasPath);
+		const builtin = createPackage("override-alias-builtin", "tdd", "Builtin body");
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			builtinPackagePaths: [builtin.root],
+			skillsOverride: (base) => ({
+				...base,
+				skills: base.skills.map((skill) =>
+					skill.name === "tdd" ? { ...skill, filePath: aliasPath, description: "Aliased TDD" } : skill,
+				),
+			}),
+		});
+
+		await loader.reload();
+
+		const catalog = loader.getSkillCatalog();
+		const tddCandidates = catalog.candidates.filter((candidate) => candidate.skill.name === "tdd");
+		expect(tddCandidates).toHaveLength(2);
+		expect(new Set(tddCandidates.map((candidate) => candidate.id)).size).toBe(2);
+		expect(catalog.resolve("tdd")).toMatchObject({
+			ok: true,
+			candidate: { skill: { filePath: aliasPath, description: "Aliased TDD" } },
+		});
+	});
+
 	it("dedupes same-file aliases before cataloging candidates", async () => {
 		const skillPath = join(tempDir, "source", "aliased", "SKILL.md");
 		const aliasPath = join(tempDir, "alias.md");

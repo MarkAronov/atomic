@@ -171,7 +171,29 @@ function buildQualifiedSelectors(group: readonly CandidateDraft[]): {
 }
 
 export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonly Skill[]): SkillCatalog {
-	const drafts: CandidateDraft[] = allSkills.map((skill) => ({ id: candidateId(skill), skill, selector: skill.name }));
+	const candidateSkills: Skill[] = [];
+	const candidateIndexByPath = new Map<string, number>();
+	for (const skill of allSkills) {
+		const canonicalPath = canonicalizePath(skill.filePath);
+		if (candidateIndexByPath.has(canonicalPath)) continue;
+		candidateIndexByPath.set(canonicalPath, candidateSkills.length);
+		candidateSkills.push(skill);
+	}
+	for (const winner of winners ?? []) {
+		const canonicalPath = canonicalizePath(winner.filePath);
+		const candidateIndex = candidateIndexByPath.get(canonicalPath);
+		if (candidateIndex === undefined) {
+			candidateIndexByPath.set(canonicalPath, candidateSkills.length);
+			candidateSkills.push(winner);
+		} else {
+			candidateSkills[candidateIndex] = winner;
+		}
+	}
+	const drafts: CandidateDraft[] = candidateSkills.map((skill) => ({
+		id: candidateId(skill),
+		skill,
+		selector: skill.name,
+	}));
 	const groups = new Map<string, CandidateDraft[]>();
 	for (const candidate of drafts) {
 		const group = groups.get(candidate.skill.name) ?? [];
@@ -190,10 +212,12 @@ export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonl
 	for (const winner of winnerList) {
 		const group = groups.get(winner.name);
 		if (!group?.length) continue;
-		const winnerCandidate =
-			group.find((candidate) => canonicalizePath(candidate.skill.filePath) === canonicalizePath(winner.filePath)) ??
-			group[0];
-		if (!winnerCandidate) continue;
+		const winnerCandidate = group.find(
+			(candidate) => canonicalizePath(candidate.skill.filePath) === canonicalizePath(winner.filePath),
+		);
+		if (!winnerCandidate) {
+			throw new Error(`Skill catalog winner "${winner.name}" is not represented by a candidate`);
+		}
 		resolutions.set(winner.name, [winnerCandidate]);
 		commands.push({
 			name: winner.name,

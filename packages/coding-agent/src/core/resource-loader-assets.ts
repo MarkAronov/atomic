@@ -47,10 +47,6 @@ function applySkillsResult(
 	state.skills = resolvedSkills.skills.map(withSourceInfo);
 	const retainedNames = new Set(state.skills.map((skill) => skill.name));
 	const candidates = skillsResult.candidates.map(withSourceInfo).filter((skill) => retainedNames.has(skill.name));
-	const candidatePaths = new Set(candidates.map((skill) => skill.filePath));
-	for (const skill of state.skills) {
-		if (!candidatePaths.has(skill.filePath)) candidates.push(skill);
-	}
 	state.skillCatalog = buildSkillCatalog(candidates, state.skills);
 	state.skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, state.skillCatalog);
 }

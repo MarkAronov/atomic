@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseSkillBlock } from "../src/core/agent-session.ts";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { buildSkillCatalog } from "../src/core/skill-catalog.ts";
 import type { Skill } from "../src/core/skills.ts";
@@ -66,6 +66,23 @@ describe("issue #2328 exact skill command resolution", () => {
 		expect(harness.session.systemPrompt).toContain("<name>tdd@user</name>");
 		expect(harness.session.systemPrompt).toContain("<name>tdd@builtin</name>");
 		expect(harness.session.systemPrompt).not.toContain("skill_");
+	});
+
+	it("represents a configured winner that was not in the discovered candidates", () => {
+		const tempDir = join(tmpdir(), `atomic-2328-winner-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+		const original = skill(join(tempDir, "original", "SKILL.md"), "user", "Original body");
+		const builtin = skill(join(tempDir, "builtin", "SKILL.md"), "builtin", "Builtin body");
+		const configured = skill(join(tempDir, "configured", "SKILL.md"), "user", "Configured body");
+		const catalog = buildSkillCatalog([original, builtin], [configured]);
+
+		expect(catalog.candidates).toHaveLength(3);
+		expect(catalog.resolve("tdd")).toMatchObject({
+			ok: true,
+			candidate: { skill: { filePath: configured.filePath, description: "user TDD" } },
+		});
+		expect(catalog.commands.find((command) => command.name === "tdd")?.skill.filePath).toBe(configured.filePath);
 	});
 
 	it("reports every qualified lookup failure without falling back to the bare winner", async () => {
@@ -152,8 +169,11 @@ describe("issue #2328 exact skill command resolution", () => {
 				.map((command) => command.name),
 		).toEqual(expected);
 
+		const runtimeHost = Object.create(AgentSessionRuntime.prototype, {
+			services: { value: { agentDir } },
+		}) as AgentSessionRuntime;
 		const handler = createRpcCommandHandler({
-			runtimeHost: { services: { agentDir } } as unknown as AgentSessionRuntime,
+			runtimeHost,
 			getSession: () => harness.session,
 			rebindSession: async () => {},
 			output: () => {},
