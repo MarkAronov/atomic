@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- `open-claude-design` review rounds now use a schema-backed two-outcome record: `decision` is `approve` or `revise`, with one entry per user note, one entry per accepted live change, and an optional annotated screenshot path. Every round is written to `<artifact_dir>/feedback/iteration-N.json` with the schema fields plus `meta.iteration`, `meta.stage_name`, and `meta.captured_at`; the readable `iteration-N.md` copy and annotated-snapshot copies remain available ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- The refinement loop consumes the structured feedback result in memory, while passing the durable JSON path to the next `generate-*` stage in `reads` and naming it as the authoritative review record ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
+### Fixed
+
+- Fixed `open-claude-design` exporting a stale preview after a live review that asked for changes. The stage's schema-backed structured answer now drives the next `generate-*` round, and a finalized structured result is protected from continuation displacement ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- An approval carrying user notes or accepted live changes is treated as `revise`, so captured work is never discarded. A failed feedback-record write clears any stale record and surfaces the error instead of allowing an earlier outcome to be reused ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- A revision requested in the final review round is applied before export. `max_refinements` bounds review rounds, not the work those reviews request, and `approved_for_export` remains `false` when that final requested revision is applied ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
 ## [0.9.14-alpha.1] - 2026-08-14
 
 ### Added

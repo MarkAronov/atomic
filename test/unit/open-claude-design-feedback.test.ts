@@ -1,20 +1,29 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Value } from "typebox/value";
 import { afterEach, describe, test } from "vitest";
 import {
 	assertUserAnnotationsThreaded,
 	buildUserAnnotationsSection,
-	extractAnnotatedSnapshot,
-	extractLiveChanges,
-	extractUserNotes,
+	feedbackArtifactPath,
 	persistPreviewFeedback,
+	previewFeedbackSchema,
 	toPreviewFeedback,
 	userAnnotationsBlock,
 } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
+
+function structuredResult(payload: object, text = "stage prose is not feedback data") {
+	return { text, structured: payload };
+}
+
+function declaredTopLevel(artifactPath: string): Record<string, unknown> {
+	const { meta: _meta, ...declared } = JSON.parse(readFileSync(artifactPath, "utf8"));
+	return declared;
+}
 
 describe("open-claude-design feedback threading (#1464)", () => {
 	const tempDirs: string[] = [];
@@ -25,138 +34,77 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		}
 	});
 
-	test("extracts user_notes across markdown label styles", () => {
-		const colonBlock = [
-			"display_method: playwright-cli",
-			"user_notes:",
-			"- Simplify the hero background.",
-			"- Match the Apple website polish.",
-			"next_action_hint: refine",
-		].join("\n");
-		assert.match(extractUserNotes(colonBlock) ?? "", /Simplify the hero background/);
-		assert.match(extractUserNotes(colonBlock) ?? "", /Apple website/);
-
-		const headingBlock = [
-			"## display_method",
-			"playwright-cli",
-			"## user_notes",
-			"The masthead text is too light; fix contrast.",
-			"## next_action_hint",
-			"refine",
-		].join("\n");
-		assert.match(extractUserNotes(headingBlock) ?? "", /too light/);
-
-		const inlineBold = "**user_notes:** The copy button font is too generic.";
-		assert.match(extractUserNotes(inlineBold) ?? "", /too generic/);
-
-		const backtick = "`user_notes`: keep the CTA, polish everything else.";
-		assert.match(extractUserNotes(backtick) ?? "", /keep the CTA/);
-	});
-
-	test("treats placeholder / missing notes as absent", () => {
-		assert.equal(extractUserNotes("user_notes: none"), undefined);
-		assert.equal(extractUserNotes("user_notes: (not available)"), undefined);
-		assert.equal(extractUserNotes("user_notes: N/A"), undefined);
-		assert.equal(extractUserNotes("display_method: manual\npreview_path: /tmp/x.html"), undefined);
-		assert.equal(extractUserNotes(""), undefined);
-		// A one-character real note must survive (no longer treated as a placeholder).
-		assert.equal(extractUserNotes("user_notes: a"), "a");
-	});
-
-	test("extracts the annotated_snapshot path", () => {
-		const text = ["user_notes: simplify the hero", "annotated_snapshot: .playwright-cli/annotations-test.png"].join(
-			"\n",
-		);
-		assert.equal(extractAnnotatedSnapshot(text), ".playwright-cli/annotations-test.png");
-	});
-
-	test("captures and threads live_changes from an impeccable live QA session", () => {
-		const liveText = [
-			"display_method: live",
-			"preview_path: /tmp/preview.html",
-			"live_changes:",
-			"- Accepted variant 2 for the hero: tighter density, committed accent.",
-			"- Accepted a new footer layout.",
-			"user_notes: none",
-			"next_action_hint: proceed",
-		].join("\n");
-		// live_changes parses even when user_notes is the `none` placeholder.
-		assert.match(extractLiveChanges(liveText) ?? "", /Accepted variant 2 for the hero/);
-		assert.match(extractLiveChanges(liveText) ?? "", /new footer layout/);
-		assert.equal(extractUserNotes(liveText), undefined);
-
+	test("threads structured user notes and accepted live changes into the next generate stage", () => {
 		const feedback = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: { text: liveText },
+			result: structuredResult({
+				decision: "revise",
+				user_notes: ["Simplify the hero background.", "Match the Apple website polish."],
+				live_changes: ["Accepted variant 2 for the hero."],
+			}),
 		});
-		assert.match(feedback.liveChanges ?? "", /tighter density/);
-
-		// Accepted live variants thread into the user-annotations block so the
-		// generate stage honors them even with no typed notes.
 		const block = userAnnotationsBlock([feedback]);
 		assert.equal(block.hasNotes, true);
+		assert.match(block.text, /Simplify the hero background/);
+		assert.match(block.text, /Apple website/);
 		assert.match(block.text, /Accepted live variants\/edits/);
-		assert.match(block.text, /tighter density/);
-	});
+		assert.match(block.text, /Accepted variant 2 for the hero/);
 
-	test("buildUserAnnotationsSection orders latest feedback first", () => {
-		const first = toPreviewFeedback({
-			iteration: 0,
-			stageName: "user-feedback-1",
-			result: { text: "user_notes: simplify the hero background" },
-		});
-		const second = toPreviewFeedback({
-			iteration: 1,
-			stageName: "user-feedback-1",
-			result: { text: "user_notes: now fix the footer spacing" },
-		});
-		const section = buildUserAnnotationsSection([first, second]);
-		assert.ok(section.indexOf("footer spacing") < section.indexOf("simplify the hero"));
-	});
-
-	test("userAnnotationsBlock falls back when no notes captured", () => {
-		const empty = userAnnotationsBlock([
-			toPreviewFeedback({
-				iteration: 0,
-				stageName: "user-feedback-1",
-				result: { text: "display_method: manual fallback" },
-			}),
-		]);
-		assert.equal(empty.hasNotes, false);
-		assert.match(empty.text, /No interactive user annotations were captured/);
-	});
-
-	test("assertUserAnnotationsThreaded throws when notes are dropped", () => {
-		const feedback = toPreviewFeedback({
-			iteration: 0,
-			stageName: "user-feedback-1",
-			result: { text: "user_notes: simplify the hero background" },
-		});
-		// Threaded prompt -> no throw.
 		assert.doesNotThrow(() =>
-			assertUserAnnotationsThreaded("context includes: simplify the hero background", [feedback], "generate-2"),
+			assertUserAnnotationsThreaded(
+				"brief includes: Simplify the hero background.\nMatch the Apple website polish.\nAccepted variant 2 for the hero.",
+				[feedback],
+				"generate-2",
+			),
 		);
-		// Missing notes -> throws a clear workflow error.
 		assert.throws(
 			() => assertUserAnnotationsThreaded("nothing relevant", [feedback], "generate-2"),
 			/were not threaded into the refinement context/,
 		);
 	});
 
-	test("assertUserAnnotationsThreaded also enforces accepted live-change threading", () => {
+	test("buildUserAnnotationsSection orders latest feedback first", () => {
+		const first = toPreviewFeedback({
+			iteration: 0,
+			stageName: "user-feedback-1",
+			result: structuredResult({
+				decision: "revise",
+				user_notes: ["Simplify the hero background."],
+				live_changes: [],
+			}),
+		});
+		const second = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult({ decision: "revise", user_notes: ["Fix the footer spacing."], live_changes: [] }),
+		});
+		const section = buildUserAnnotationsSection([first, second]);
+		assert.ok(section.toLowerCase().indexOf("footer spacing") < section.toLowerCase().indexOf("simplify the hero"));
+	});
+
+	test("userAnnotationsBlock falls back when no annotations are captured", () => {
+		const empty = userAnnotationsBlock([
+			toPreviewFeedback({
+				iteration: 0,
+				stageName: "user-feedback-1",
+				result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+			}),
+		]);
+		assert.equal(empty.hasNotes, false);
+		assert.match(empty.text, /No interactive user annotations were captured/);
+	});
+
+	test("assertUserAnnotationsThreaded enforces accepted live-change threading", () => {
 		const feedback = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: {
-				text: [
-					"display_method: live",
-					"live_changes: Accepted variant 2 for the hero (committed accent).",
-					"user_notes: none",
-				].join("\n"),
-			},
+			result: structuredResult({
+				decision: "revise",
+				user_notes: [],
+				live_changes: ["Accepted variant 2 for the hero (committed accent)."],
+			}),
 		});
-		// Threaded live changes -> no throw.
 		assert.doesNotThrow(() =>
 			assertUserAnnotationsThreaded(
 				"brief includes: Accepted variant 2 for the hero (committed accent).",
@@ -164,37 +112,49 @@ describe("open-claude-design feedback threading (#1464)", () => {
 				"generate-2",
 			),
 		);
-		// Dropped live changes -> throws, even though there are no typed notes.
 		assert.throws(
 			() => assertUserAnnotationsThreaded("nothing relevant", [feedback], "generate-2"),
 			/accepted live variants .* were not threaded/,
 		);
 	});
 
-	test("persistPreviewFeedback writes durable artifacts only when notes exist", () => {
+	test("persistPreviewFeedback writes the durable record on every round", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-feedback-"));
 		tempDirs.push(dir);
 		const withNotes = toPreviewFeedback({
 			iteration: 0,
 			stageName: "user-feedback-1",
-			result: { text: "user_notes: simplify the hero background" },
+			result: structuredResult({
+				decision: "revise",
+				user_notes: ["Simplify the hero background."],
+				live_changes: [],
+			}),
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: withNotes });
 		const mdPath = join(dir, "feedback", "iteration-0.md");
-		const jsonPath = join(dir, "feedback", "iteration-0.json");
+		const jsonPath = feedbackArtifactPath(dir, 0);
 		assert.ok(existsSync(mdPath));
-		assert.match(readFileSync(mdPath, "utf8"), /simplify the hero background/);
+		assert.match(readFileSync(mdPath, "utf8"), /Simplify the hero background/);
 		const json = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(json.hasUserNotes, true);
+		assert.deepEqual(json.user_notes, ["Simplify the hero background."]);
+		assert.deepEqual(json.live_changes, []);
+		assert.equal(json.decision, "revise");
+		assert.deepEqual(Object.keys(json.meta).sort(), ["captured_at", "iteration", "stage_name"]);
+		assert.equal(json.meta.stage_name, "user-feedback-1");
+		assert.equal(Value.Check(previewFeedbackSchema, declaredTopLevel(jsonPath)), true);
 
-		// No-notes feedback writes nothing.
-		const noNotes = toPreviewFeedback({
+		const approval = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: { text: "display_method: manual fallback" },
+			result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
 		});
-		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: noNotes });
-		assert.equal(existsSync(join(dir, "feedback", "iteration-1.md")), false);
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approval });
+		assert.ok(existsSync(join(dir, "feedback", "iteration-1.md")));
+		const approvalJson = JSON.parse(readFileSync(feedbackArtifactPath(dir, 1), "utf8"));
+		assert.equal(approvalJson.decision, "approve");
+		assert.deepEqual(approvalJson.user_notes, []);
+		assert.deepEqual(approvalJson.live_changes, []);
+		assert.equal(Value.Check(previewFeedbackSchema, declaredTopLevel(feedbackArtifactPath(dir, 1))), true);
 	});
 
 	test("persistPreviewFeedback persists live_changes-only feedback", () => {
@@ -203,20 +163,16 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		const liveOnly = toPreviewFeedback({
 			iteration: 2,
 			stageName: "user-feedback-2",
-			result: {
-				text: [
-					"display_method: live",
-					"live_changes: Accepted variant 1 for the pricing table.",
-					"user_notes: none",
-				].join("\n"),
-			},
+			result: structuredResult({
+				decision: "revise",
+				user_notes: [],
+				live_changes: ["Accepted variant 1 for the pricing table."],
+			}),
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: liveOnly });
-		const jsonPath = join(dir, "feedback", "iteration-2.json");
-		assert.ok(existsSync(jsonPath));
-		const json = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(json.hasLiveChanges, true);
-		assert.equal(json.hasUserNotes, false);
+		const json = JSON.parse(readFileSync(feedbackArtifactPath(dir, 2), "utf8"));
+		assert.deepEqual(json.live_changes, ["Accepted variant 1 for the pricing table."]);
+		assert.deepEqual(json.user_notes, []);
 	});
 
 	test("persistPreviewFeedback copies the annotated snapshot artifact", () => {
@@ -228,9 +184,12 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		const feedback = toPreviewFeedback({
 			iteration: 0,
 			stageName: "user-feedback-1",
-			result: {
-				text: ["user_notes: simplify the hero", `annotated_snapshot: ${snapshot}`].join("\n"),
-			},
+			result: structuredResult({
+				decision: "revise",
+				user_notes: ["Simplify the hero."],
+				live_changes: [],
+				annotated_snapshot: snapshot,
+			}),
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback });
 		assert.ok(existsSync(join(dir, "feedback", "iteration-0-annotations.png")));
@@ -246,14 +205,147 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		const feedback = toPreviewFeedback({
 			iteration: 0,
 			stageName: "user-feedback-1",
-			result: {
-				text: ["user_notes: simplify the hero", `annotated_snapshot: ${snapshot}`].join("\n"),
-			},
+			result: structuredResult({
+				decision: "revise",
+				user_notes: ["Simplify the hero."],
+				live_changes: [],
+				annotated_snapshot: snapshot,
+			}),
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback });
-		// The out-of-tree snapshot must NOT be copied into the feedback dir...
 		assert.equal(existsSync(join(dir, "feedback", "iteration-0-annotations.png")), false);
-		// ...but the notes themselves are still persisted.
 		assert.ok(existsSync(join(dir, "feedback", "iteration-0.md")));
+	});
+});
+
+describe("open-claude-design structured feedback deliverable (#2401)", () => {
+	test("declares the structured final-answer schema the stage must return", () => {
+		assert.equal(previewFeedbackSchema.additionalProperties, false);
+		assert.deepEqual(Object.keys(previewFeedbackSchema.properties).sort(), [
+			"annotated_snapshot",
+			"decision",
+			"live_changes",
+			"user_notes",
+		]);
+		for (const property of Object.values(previewFeedbackSchema.properties)) {
+			assert.equal(typeof property.description, "string");
+		}
+		assert.deepEqual(previewFeedbackSchema.required, ["decision", "user_notes", "live_changes"]);
+	});
+
+	test("uses the structured payload rather than the stage text", () => {
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult(
+				{
+					decision: "revise",
+					user_notes: ["The hero background is too busy."],
+					live_changes: ["Accepted variant 2 for the pricing table."],
+					annotated_snapshot: ".playwright-cli/annotations-1.png",
+				},
+				"The stage's final prose does not determine the review outcome.",
+			),
+		});
+		assert.equal(feedback.decision, "revise");
+		assert.equal(feedback.userNotes, "The hero background is too busy.");
+		assert.equal(feedback.liveChanges, "Accepted variant 2 for the pricing table.");
+		assert.equal(feedback.annotatedSnapshot, ".playwright-cli/annotations-1.png");
+		assert.doesNotMatch(feedback.text, /final prose/);
+	});
+
+	test("coerces approval carrying captured work to revise", () => {
+		const notes = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult({
+				decision: "approve",
+				user_notes: ["Fix the masthead contrast."],
+				live_changes: [],
+			}),
+		});
+		assert.equal(notes.decision, "revise");
+		assert.equal(notes.userNotes, "Fix the masthead contrast.");
+
+		const liveOnly = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult({
+				decision: "approve",
+				user_notes: [],
+				live_changes: ["Accepted the tighter density."],
+			}),
+		});
+		assert.equal(liveOnly.decision, "revise");
+		assert.equal(liveOnly.liveChanges, "Accepted the tighter density.");
+
+		const clean = toPreviewFeedback({
+			iteration: 2,
+			stageName: "user-feedback-2",
+			result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+		});
+		assert.equal(clean.decision, "approve");
+	});
+
+	test("writes only schema fields plus the small round metadata block", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult({
+				decision: "revise",
+				user_notes: ["The hero background is too busy.", "Tighten the footer."],
+				live_changes: ["Accepted variant 2 for the pricing table."],
+			}),
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback });
+		const artifact = JSON.parse(readFileSync(feedbackArtifactPath(dir, 1), "utf8"));
+		assert.deepEqual(Object.keys(artifact).sort(), ["decision", "live_changes", "meta", "user_notes"]);
+		assert.deepEqual(artifact.user_notes, ["The hero background is too busy.", "Tighten the footer."]);
+		assert.deepEqual(artifact.live_changes, ["Accepted variant 2 for the pricing table."]);
+		assert.deepEqual(Object.keys(artifact.meta).sort(), ["captured_at", "iteration", "stage_name"]);
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("persistPreviewFeedback throws instead of leaving a stale round readable", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		const artifactPath = feedbackArtifactPath(dir, 1);
+		const approval = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult({ decision: "approve", user_notes: [], live_changes: [] }),
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approval });
+		assert.equal(existsSync(artifactPath), true);
+
+		const revise = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: structuredResult({ decision: "revise", user_notes: ["The hero needs work."], live_changes: [] }),
+		});
+		const unwritable = {
+			...revise,
+			get decision(): never {
+				throw new Error("simulated durable-write failure");
+			},
+		};
+		assert.throws(
+			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: unwritable }),
+			(error: Error) =>
+				/failed to write the feedback deliverable/.test(error.message) &&
+				error.message.includes(artifactPath) &&
+				error.message.includes("user-feedback-1"),
+		);
+		assert.equal(existsSync(artifactPath), false, "the stale approval must not survive a failed write");
+
+		mkdirSync(artifactPath, { recursive: true });
+		assert.throws(
+			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise }),
+			(error: Error) =>
+				/failed to write the feedback deliverable/.test(error.message) && error.message.includes(artifactPath),
+		);
+		rmSync(artifactPath, { recursive: true, force: true });
+		assert.equal(existsSync(artifactPath), false);
+		rmSync(dir, { recursive: true, force: true });
 	});
 });

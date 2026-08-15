@@ -3,13 +3,57 @@
  *
  * The `user-feedback-*` stages capture Playwright annotation feedback (user
  * notes + annotated snapshot) from the user. This module is the durable carrier
- * for that feedback: it parses the feedback-stage output, persists it as a
- * workflow artifact, and renders the user annotations that the next `generate-*`
- * stage must honor. cross-ref: issue #1464.
+ * for that feedback: it persists the structured stage result as a workflow
+ * artifact and renders the user annotations that the next `generate-*` stage
+ * must honor. cross-ref: issue #1464.
+ *
+ * The stage declares `previewFeedbackSchema` as its structured output, so the
+ * feedback round finalizes as a schema-validated value rather than as prose a
+ * later resume-continuation turn can replace. Every round is persisted as
+ * `<artifactDir>/feedback/iteration-N.json`.
+ * cross-ref: issue #2401.
  */
 
-import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, dirname, join, resolve, sep } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { Type, type Static } from "typebox";
+import type { WorkflowSerializableValue } from "../src/shared/types.js";
+
+/**
+ * The structured final answer the `user-feedback-*` stages must return. Used as
+ * the stage `schema`, which both finalizes the stage result and shapes the
+ * durable per-round artifact.
+ */
+export const previewFeedbackSchema = Type.Object(
+  {
+    decision: Type.Union([Type.Literal("approve"), Type.Literal("revise")], {
+      description:
+        "`revise` whenever the user asked for anything at all; `approve` only when the user wants the preview exported unchanged.",
+    }),
+    user_notes: Type.Array(Type.String(), {
+      description: "Every note the user typed or dictated, verbatim, one entry per note. Empty when the user typed nothing.",
+    }),
+    live_changes: Type.Array(Type.String(), {
+      description: "Every variant or edit the user accepted during the live review, one entry per accepted change.",
+    }),
+    annotated_snapshot: Type.Optional(
+      Type.String({ description: "Path to the annotated screenshot captured during the review, when one exists." }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/** The validated structured payload a `user-feedback-*` stage returns. */
+export type PreviewFeedbackPayload = Static<typeof previewFeedbackSchema>;
+
+/** The only outcomes a structured feedback round can produce. */
+export type PreviewFeedbackDecision = "approve" | "revise";
+
+/** Per-entry captured values plus the joined block consumers read. */
+type CapturedEntries = {
+  readonly entries: readonly string[];
+  readonly joined: string;
+};
 
 /** A single captured user-feedback round. */
 export type PreviewFeedback = {
@@ -17,156 +61,92 @@ export type PreviewFeedback = {
   readonly iteration: number;
   /** Originating stage name, e.g. `user-feedback-1`. */
   readonly stageName: string;
-  /** Full markdown result text emitted by the user-feedback stage. */
+  /** Human-readable structured feedback written beside the durable record. */
   readonly text: string;
-  /** Extracted user annotation notes when the user actually annotated. */
+  /** Explicit round outcome; drives the refinement loop. */
+  readonly decision: PreviewFeedbackDecision;
+  /** Captured user annotation notes when the user actually annotated. */
   readonly userNotes?: string;
-  /** Extracted annotated-snapshot artifact path when one was captured. */
+  /** One entry per note; `userNotes` is these joined. */
+  readonly userNoteEntries?: readonly string[];
+  /** Captured annotated-snapshot artifact path when one exists. */
   readonly annotatedSnapshot?: string;
-  /** Extracted summary of the variants/edits the user accepted in the live QA session. */
+  /** Captured summary of the variants/edits accepted during the live review. */
   readonly liveChanges?: string;
+  /** One entry per accepted change; `liveChanges` is these joined. */
+  readonly liveChangeEntries?: readonly string[];
   /** ISO timestamp when the feedback was captured. */
   readonly capturedAt: string;
 };
 
-type PreviewResultLike = { readonly text?: string };
+type PreviewResultLike = {
+  readonly structured?: WorkflowSerializableValue;
+};
 
-/**
- * Field labels the user-feedback stages are instructed to emit, stored in
- * canonical (alphanumeric-only, lowercase) form. Used to bound multi-line value
- * extraction (a value ends when the next known field starts).
- */
-const FIELD_LABELS = new Set<string>([
-  "displaymethod",
-  "previewpath",
-  "previewfileurl",
-  "annotatedsnapshot",
-  "usernotes",
-  "livechanges",
-  "nextactionhint",
-  "manualopeninstructions",
-  "specpath",
-]);
-
-const PLACEHOLDER_TOKENS = new Set<string>([
-  "none",
-  "na",
-  "null",
-  "undefined",
-  "notavailable",
-  "unavailable",
-  "notcaptured",
-  "nonotes",
-  "nousernotes",
-  "nofeedback",
-  "noannotations",
-  "nonecaptured",
-  "tbd",
-  "pending",
-]);
-
-function isPlaceholderValue(value: string): boolean {
-  const compact = value
-    .replace(/\//g, "")
-    .replace(/[\s().,*_`~–—\-:]/g, "")
-    .toLowerCase();
-  if (compact.length === 0) return true;
-  return PLACEHOLDER_TOKENS.has(compact);
+/** Keep the structured entries together for prompt rendering and persistence. */
+function captureEntries(entries: readonly string[]): CapturedEntries | undefined {
+  return entries.length === 0 ? undefined : { entries: [...entries], joined: entries.join("\n") };
 }
 
-/** Canonicalize a label to lowercase alphanumerics so `user_notes`, `User Notes`,
- * and `**user_notes**` all compare equal. */
-function canonicalLabel(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+type CapturedFields = Pick<
+  PreviewFeedback,
+  "userNotes" | "userNoteEntries" | "annotatedSnapshot" | "liveChanges" | "liveChangeEntries"
+>;
+
+function capturedFields(args: {
+  readonly notes: CapturedEntries | undefined;
+  readonly changes: CapturedEntries | undefined;
+  readonly annotatedSnapshot: string | undefined;
+}): CapturedFields {
+  return {
+    ...(args.notes !== undefined ? { userNotes: args.notes.joined, userNoteEntries: args.notes.entries } : {}),
+    ...(args.annotatedSnapshot !== undefined ? { annotatedSnapshot: args.annotatedSnapshot } : {}),
+    ...(args.changes !== undefined ? { liveChanges: args.changes.joined, liveChangeEntries: args.changes.entries } : {}),
+  };
 }
 
-/** Normalize a candidate label line into a canonical key (or undefined). */
-function labelOf(line: string): string | undefined {
-  const stripped = line
-    .replace(/^\s*#{1,6}\s+/, "")
-    .replace(/^\s*[-*+]\s+/, "")
-    .replace(/^\s*\d+\.\s+/, "");
-  const colonIdx = stripped.indexOf(":");
-  const candidate = colonIdx >= 0 ? stripped.slice(0, colonIdx) : stripped;
-  const key = canonicalLabel(candidate);
-  return key.length > 0 ? key : undefined;
-}
-
-/** Inline value following a `label:` on the same line. */
-function inlineValueOf(line: string): string {
-  const stripped = line
-    .replace(/^\s*#{1,6}\s+/, "")
-    .replace(/^\s*[-*+]\s+/, "")
-    .replace(/^\s*\d+\.\s+/, "");
-  const colonIdx = stripped.indexOf(":");
-  if (colonIdx < 0) return "";
-  return stripped.slice(colonIdx + 1).replace(/[`*]/g, "").trim();
-}
-
-function isHorizontalRule(line: string): boolean {
-  return /^\s*([-*_])(\s*\1){2,}\s*$/.test(line);
-}
-
-/**
- * Extract the value of a labeled field (e.g. `user_notes`) from a user-feedback
- * markdown blob, tolerating heading / bullet / bold / backtick label styles and
- * multi-line values that run until the next known field label or a rule.
- */
-export function extractField(text: string, field: string): string | undefined {
-  if (text.trim().length === 0) return undefined;
-  const target = canonicalLabel(field);
-  const lines = text.split(/\r?\n/);
-  let collecting = false;
-  const collected: string[] = [];
-  for (const line of lines) {
-    if (collecting) {
-      const label = labelOf(line);
-      if (label !== undefined && label !== target && FIELD_LABELS.has(label)) break;
-      if (isHorizontalRule(line)) break;
-      collected.push(line);
-      continue;
-    }
-    if (labelOf(line) === target) {
-      const inline = inlineValueOf(line);
-      if (inline.length > 0) collected.push(inline);
-      collecting = true;
-    }
+/** Render the structured answer as the human-readable per-round transcript copy. */
+function structuredFeedbackText(payload: PreviewFeedbackPayload): string {
+  const lines = [`decision: ${payload.decision}`, "user_notes:"];
+  lines.push(...payload.user_notes.map((note) => `- ${note}`));
+  lines.push("live_changes:");
+  lines.push(...payload.live_changes.map((change) => `- ${change}`));
+  if (payload.annotated_snapshot !== undefined) {
+    lines.push(`annotated_snapshot: ${payload.annotated_snapshot}`);
   }
-  const value = collected.join("\n").trim();
-  if (value.length === 0 || isPlaceholderValue(value)) return undefined;
-  return value;
+  return lines.join("\n");
 }
 
-export function extractUserNotes(text: string): string | undefined {
-  return extractField(text, "user_notes");
-}
-
-export function extractAnnotatedSnapshot(text: string): string | undefined {
-  return extractField(text, "annotated_snapshot");
-}
-
-export function extractLiveChanges(text: string): string | undefined {
-  return extractField(text, "live_changes");
-}
-
-/** Build a PreviewFeedback record from a (possibly missing) stage result. */
+/**
+ * Build a PreviewFeedback record from the schema-backed stage result.
+ *
+ * The stage runner guarantees that a resolved schema-backed stage has called
+ * `structured_output` with a schema-valid value. The structured payload is the
+ * sole source for this record; no prose fallback or second validation path is
+ * needed. cross-ref: issue #2401.
+ */
 export function toPreviewFeedback(input: {
   readonly iteration: number;
   readonly stageName: string;
-  readonly result: PreviewResultLike | undefined;
+  readonly result: PreviewResultLike;
 }): PreviewFeedback {
-  const text = (input.result?.text ?? "").trim();
-  const userNotes = extractUserNotes(text);
-  const annotatedSnapshot = extractAnnotatedSnapshot(text);
-  const liveChanges = extractLiveChanges(text);
+  const payload = input.result.structured as PreviewFeedbackPayload;
+  const notes = captureEntries(payload.user_notes);
+  const changes = captureEntries(payload.live_changes);
+  const snapshot = payload.annotated_snapshot;
+  const capturedWork = payload.user_notes.length > 0 || payload.live_changes.length > 0;
+
   return {
     iteration: input.iteration,
     stageName: input.stageName,
-    text,
+    text: structuredFeedbackText(payload),
+    decision: payload.decision === "approve" && capturedWork ? "revise" : payload.decision,
     capturedAt: new Date().toISOString(),
-    ...(userNotes !== undefined ? { userNotes } : {}),
-    ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
-    ...(liveChanges !== undefined ? { liveChanges } : {}),
+    ...capturedFields({
+      notes,
+      changes,
+      annotatedSnapshot: snapshot,
+    }),
   };
 }
 
@@ -178,15 +158,8 @@ export function hasMeaningfulLiveChanges(feedback: PreviewFeedback): boolean {
   return typeof feedback.liveChanges === "string" && feedback.liveChanges.length > 0;
 }
 
-/** Whether a feedback round carries any meaningful user signal: typed notes or accepted live variants. */
-export function hasMeaningfulFeedback(feedback: PreviewFeedback): boolean {
-  return hasMeaningfulUserNotes(feedback) || hasMeaningfulLiveChanges(feedback);
-}
-
 function feedbackLabel(feedback: PreviewFeedback): string {
-  return feedback.iteration === 0
-    ? "the initial preview"
-    : "the live design review";
+  return feedback.iteration === 0 ? "the initial preview" : "the live design review";
 }
 
 /**
@@ -201,10 +174,7 @@ export function buildUserAnnotationsSection(history: readonly PreviewFeedback[])
   return [...withFeedback]
     .reverse()
     .map((feedback) => {
-      const lines = [
-        `### User annotations from ${feedbackLabel(feedback)}`,
-        "",
-      ];
+      const lines = [`### User annotations from ${feedbackLabel(feedback)}`, ""];
       if (hasMeaningfulUserNotes(feedback)) {
         lines.push(feedback.userNotes ?? "");
       }
@@ -316,11 +286,54 @@ function copyAnnotationArtifacts(
   }
 }
 
+/** Path of the durable per-round feedback artifact. */
+export function feedbackArtifactPath(artifactDir: string, iteration: number): string {
+  return join(artifactDir, "feedback", `iteration-${iteration}.json`);
+}
+
+/** The durable record written beside the human-readable markdown copy. */
+type PreviewFeedbackArtifact = PreviewFeedbackPayload & {
+  readonly meta: {
+    readonly iteration: number;
+    readonly stage_name: string;
+    readonly captured_at: string;
+  };
+};
+
+function toEntries(entries: readonly string[] | undefined, joined: string | undefined): string[] {
+  if (entries !== undefined) return [...entries];
+  return joined === undefined ? [] : [joined];
+}
+
+function toArtifact(feedback: PreviewFeedback): PreviewFeedbackArtifact {
+  return {
+    decision: feedback.decision,
+    user_notes: toEntries(feedback.userNoteEntries, feedback.userNotes),
+    live_changes: toEntries(feedback.liveChangeEntries, feedback.liveChanges),
+    ...(feedback.annotatedSnapshot !== undefined ? { annotated_snapshot: feedback.annotatedSnapshot } : {}),
+    meta: {
+      iteration: feedback.iteration,
+      stage_name: feedback.stageName,
+      captured_at: feedback.capturedAt,
+    },
+  };
+}
+
+/** Drop a file a failed write left behind before reporting the failure. */
+function discardStaleFile(path: string): void {
+  try {
+    if (existsSync(path)) rmSync(path, { force: true });
+  } catch {
+    /* the caller still reports the failed write */
+  }
+}
+
 /**
- * Persist captured annotations as durable workflow artifacts under
- * `<artifactDir>/feedback/`. Only writes when the user actually provided
- * annotations (notes or an annotated snapshot). Best-effort: never throws.
- * cross-ref: issue #1464 fix (5).
+ * Persist the round as durable workflow artifacts under `<artifactDir>/feedback/`.
+ * The JSON record is written on every round, including approvals. A failed JSON
+ * write clears the path and throws, so an earlier round cannot remain readable
+ * as this round's outcome. The markdown transcript and annotated-snapshot
+ * copies remain best-effort. cross-ref: issue #1464 fix (5), issue #2401.
  */
 export function persistPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -328,32 +341,24 @@ export function persistPreviewFeedback(input: {
   readonly feedback: PreviewFeedback;
 }): void {
   const { feedback } = input;
-  if (
-    !hasMeaningfulUserNotes(feedback) &&
-    !hasMeaningfulLiveChanges(feedback) &&
-    feedback.annotatedSnapshot === undefined
-  ) {
-    return;
-  }
+  const feedbackDir = join(input.artifactDir, "feedback");
+  const slug = `iteration-${feedback.iteration}`;
+  const artifactPath = feedbackArtifactPath(input.artifactDir, feedback.iteration);
   try {
-    const feedbackDir = join(input.artifactDir, "feedback");
     mkdirSync(feedbackDir, { recursive: true });
-    const slug = `iteration-${feedback.iteration}`;
-    writeFileSync(join(feedbackDir, `${slug}.md`), `${feedback.text}\n`);
-    writeFileSync(
-      join(feedbackDir, `${slug}.json`),
-      `${JSON.stringify(
-        {
-          ...feedback,
-          hasUserNotes: hasMeaningfulUserNotes(feedback),
-          hasLiveChanges: hasMeaningfulLiveChanges(feedback),
-        },
-        null,
-        2,
-      )}\n`,
+    writeFileSync(artifactPath, `${JSON.stringify(toArtifact(feedback), null, 2)}\n`);
+  } catch (error) {
+    discardStaleFile(artifactPath);
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `open-claude-design ${feedback.stageName}: failed to write the feedback deliverable at ${artifactPath}: ${reason}`,
     );
-    copyAnnotationArtifacts(feedbackDir, slug, feedback, input.workflowCwd);
-  } catch {
-    /* best-effort durability; never block the workflow */
   }
+  const markdownPath = join(feedbackDir, `${slug}.md`);
+  try {
+    writeFileSync(markdownPath, `${feedback.text}\n`);
+  } catch {
+    discardStaleFile(markdownPath);
+  }
+  copyAnnotationArtifacts(feedbackDir, slug, feedback, input.workflowCwd);
 }

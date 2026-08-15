@@ -7,8 +7,9 @@ import {
 } from "./open-claude-design-utils.js";
 import {
   assertUserAnnotationsThreaded,
-  hasMeaningfulFeedback,
+  feedbackArtifactPath,
   persistPreviewFeedback,
+  previewFeedbackSchema,
   toPreviewFeedback,
   userAnnotationsBlock,
   type PreviewFeedback,
@@ -69,13 +70,25 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
   let latestDesign = "";
   let latestGenerateSessionFile: string | undefined;
   let latestUserFeedbackSessionFile: string | undefined;
+  /** Captured work waiting for a `generate-*` round to apply it (issue #2401). */
   let pendingFeedback: PreviewFeedback | undefined;
+  /** Durable artifact the pending feedback was reloaded from (issue #2401). */
+  let pendingFeedbackArtifact: string | undefined;
   let approvedForExport = false;
   let refinementCount = 0;
 
-  for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
+  /**
+   * Run one `generate-*` round, applying whatever revision is pending. The
+   * pending revision is cleared once the round that applies it has run, so
+   * `pendingFeedback` always names captured work no generate round has seen
+   * yet — which is what lets the loop's exit check find a revision the last
+   * review round requested. cross-ref: issue #2401.
+   */
+  const runGenerateRound = async (iteration: number): Promise<void> => {
+    const feedback = pendingFeedback;
+    const feedbackArtifactFile = pendingFeedbackArtifact;
     const generateStageName = `generate-${iteration}`;
-    const generatePrompt = pendingFeedback === undefined
+    const generatePrompt = feedback === undefined
       ? buildInitialGeneratePrompt({
           prompt,
           outputType,
@@ -92,10 +105,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
           referencesFile,
           latestDesign,
           importContext,
-          feedback: pendingFeedback,
+          feedback,
+          feedbackArtifactFile,
         });
-    if (pendingFeedback !== undefined) {
-      assertUserAnnotationsThreaded(generatePrompt, [pendingFeedback], generateStageName);
+    if (feedback !== undefined) {
+      assertUserAnnotationsThreaded(generatePrompt, [feedback], generateStageName);
     }
 
     // Large research context travels by artifact file (`reads` + explicit
@@ -105,8 +119,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // word-capped prior design summary inline.
     const generated = await designContext.task(generateStageName, {
       prompt: generatePrompt,
-      reads: [designContextFile, referencesFile],
-      ...(pendingFeedback === undefined
+      reads:
+        feedbackArtifactFile === undefined
+          ? [designContextFile, referencesFile]
+          : [designContextFile, referencesFile, feedbackArtifactFile],
+      ...(feedback === undefined
         ? {}
         : { previous: { name: "current-design", text: latestDesign } }),
       ...designModelConfig,
@@ -115,6 +132,12 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     latestDesign = generated.text;
     latestGenerateSessionFile = generated.sessionFile ?? latestGenerateSessionFile;
     refinementCount = iteration;
+    pendingFeedback = undefined;
+    pendingFeedbackArtifact = undefined;
+  };
+
+  for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
+    await runGenerateRound(iteration);
 
     // Deterministic live-review gate (issue #2060): the user-feedback stage
     // waits on a browser long-poll that never sets `awaiting_input`, so raise
@@ -143,9 +166,13 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // early when the browser is unavailable, and the stage prompt requires a
     // degraded non-empty report instead of failing. What rejects here is
     // model/infra failure — provider errors, fallback exhaustion, broken
-    // session forks — and that must never be laundered into approval. Only a
-    // resolved result with no meaningful notes means the user approved.
-    const userFeedbackResult = await designContext.task(`user-feedback-${iteration}`, {
+    // session forks — and that must never be laundered into approval.
+    //
+    // The stage declares `previewFeedbackSchema`, so the round finalizes as a
+    // schema-validated structured answer that a later resume-continuation turn
+    // cannot displace (issue #2401).
+    const feedbackStageName = `user-feedback-${iteration}`;
+    const userFeedbackResult = await designContext.task(feedbackStageName, {
       prompt: buildLivePreviewDisplayPrompt({
         previewPath,
         previewFileUrl,
@@ -153,24 +180,36 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
         iteration,
         maxRefinements,
       }),
+      schema: previewFeedbackSchema,
       ...designModelConfig,
       ...forkContinuationOptions(latestUserFeedbackSessionFile),
     });
 
     latestUserFeedbackSessionFile =
       userFeedbackResult.sessionFile ?? latestUserFeedbackSessionFile;
-    const feedback = toPreviewFeedback({
-      iteration,
-      stageName: `user-feedback-${iteration}`,
-      result: userFeedbackResult,
+    const feedback = toPreviewFeedback({ iteration, stageName: feedbackStageName, result: userFeedbackResult });
+    const artifactPath = feedbackArtifactPath(artifactDir, iteration);
+    persistPreviewFeedback({
+      artifactDir,
+      workflowCwd,
+      feedback,
     });
-    persistPreviewFeedback({ artifactDir, workflowCwd, feedback });
 
-    if (!hasMeaningfulFeedback(feedback)) {
+    // The structured result drives this loop in memory. The durable artifact
+    // remains the authoritative record the next generate stage reads.
+    if (feedback.decision === "approve") {
       approvedForExport = true;
       break;
     }
     pendingFeedback = feedback;
+    pendingFeedbackArtifact = artifactPath;
+  }
+
+  // A revision the final review round asked for still has to be applied. The
+  // loop bound caps review rounds, not the work they requested: returning here
+  // would export the preview the user just asked to change (issue #2401).
+  if (pendingFeedback !== undefined) {
+    await runGenerateRound(maxRefinements + 1);
   }
 
   return { latestDesign, approvedForExport, refinementCount };
@@ -240,6 +279,8 @@ function buildGenerateRevisionPrompt(args: {
   readonly latestDesign: string;
   readonly importContext: string;
   readonly feedback: PreviewFeedback;
+  /** Durable per-round feedback deliverable this brief was rendered from (issue #2401). */
+  readonly feedbackArtifactFile?: string;
 }): string {
   const annotations = userAnnotationsBlock([args.feedback]);
   return taggedPrompt([
@@ -254,6 +295,14 @@ function buildGenerateRevisionPrompt(args: {
     ["reference_context", args.importContext],
     ["reference_precedence", REFERENCE_PRECEDENCE],
     ["preview_artifact_path", args.previewPath],
+    ...(args.feedbackArtifactFile === undefined
+      ? []
+      : ([
+          [
+            "user_feedback_record",
+            `Read the file at ${args.feedbackArtifactFile}. It is the authoritative record of this review round — the durable deliverable the feedback stage returned — and <user_feedback> below is rendered from it. Where the two ever disagree, the file wins.`,
+          ],
+        ] as const)),
     ["user_feedback", annotations.text],
     ["current_design_summary", args.latestDesign],
     ["html_rules", HTML_PREVIEW_RULES],
@@ -266,7 +315,7 @@ function buildGenerateRevisionPrompt(args: {
     [
       "instructions",
       [
-        "Read the current HTML at preview_artifact_path. Treat <user_feedback> as the only refinement brief; do not invent critique, screenshot, audit, or gate findings.",
+        "Read the current HTML at preview_artifact_path. Treat <user_feedback> and the user_feedback_record file as the only refinement brief; do not invent critique, screenshot, audit, or gate findings.",
         "Address every user note and accepted live change visibly, or identify its DESIGN.md/reference-precedence conflict in the summary.",
         `Overwrite ${args.previewPath} with one revised self-contained HTML file; do not branch or create extra previews.`,
         "Preserve strong decisions unless feedback requires change; add no unrelated features or abstractions.",
