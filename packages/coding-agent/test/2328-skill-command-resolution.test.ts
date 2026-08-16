@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseSkillBlock } from "../src/core/agent-session.ts";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
+import type { AgentSessionServices } from "../src/core/agent-session-services.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { buildSkillCatalog } from "../src/core/skill-catalog.ts";
 import type { Skill } from "../src/core/skills.ts";
@@ -169,9 +170,14 @@ describe("issue #2328 exact skill command resolution", () => {
 				.map((command) => command.name),
 		).toEqual(expected);
 
-		const runtimeHost = Object.create(AgentSessionRuntime.prototype, {
-			services: { value: { agentDir } },
-		}) as AgentSessionRuntime;
+		const unusedRuntimeFactory: CreateAgentSessionRuntimeFactory = async () => {
+			throw new Error("unused runtime factory");
+		};
+		const runtimeHost = new AgentSessionRuntime(
+			harness.session,
+			{ cwd, agentDir, settingsManager: harness.settingsManager, resourceLoader: loader } as AgentSessionServices,
+			unusedRuntimeFactory,
+		);
 		const handler = createRpcCommandHandler({
 			runtimeHost,
 			getSession: () => harness.session,
