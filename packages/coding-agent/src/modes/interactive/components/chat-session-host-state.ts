@@ -81,10 +81,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	 * rendered as its tail alone.
 	 *
 	 * On by default: while the reader is following a live stream, the rows far
-	 * above the cursor cost layout work nobody is reading. A caller that must
-	 * see the whole entry — a find box searching this transcript — turns it off
-	 * for as long as it needs the rows, because a corpus missing the head of
-	 * the stream would report a match that is plainly on the screen as absent.
+	 * above the cursor cost layout work nobody is reading.
 	 */
 	streamingTailWindowEnabled = true;
 

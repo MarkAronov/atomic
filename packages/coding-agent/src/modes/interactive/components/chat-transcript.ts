@@ -317,19 +317,17 @@ export class ScrollableComponentViewport implements Component {
 	 * Park the viewport with `row` as its first visible row.
 	 *
 	 * The absolute counterpart of `scrollBy`, for a caller that already knows
-	 * which row it wants on screen — transcript search revealing a match it
-	 * found outside the current window.
+	 * which row it wants on screen.
 	 *
 	 * The request is *also* recorded for the next render, and that is the half
 	 * that matters. `scrollFromBottom` is a distance from the bottom, so the
 	 * row it names moves whenever the stack grows; and the render that follows
 	 * re-derives the offset from the previous frame's layout to hold a
 	 * scrolled-up reader's content still, which would drag this request back
-	 * with it. A caller who has just measured rows the last render never saw —
-	 * every live search — would otherwise be answered with the old layout's
-	 * clamp and the old frame's anchor. The next render resolves the row
-	 * against the layout it actually paints; any other scroll before then
-	 * withdraws the request.
+	 * with it. A caller who has just measured rows the last render never saw
+	 * would otherwise be answered with the old layout's clamp and the old
+	 * frame's anchor. The next render resolves the row against the layout it
+	 * actually paints; any other scroll before then withdraws the request.
 	 */
 	scrollTo(row: number): void {
 		const requestedRow = Number.isNaN(row) ? 0 : Math.max(0, Math.floor(row));

@@ -47,11 +47,6 @@ async function registerIsolatedTests(): Promise<void> {
 
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
-		// Stage-chat search seams. Nothing here opens a find box, so these need
-		// only exist; the matcher itself is covered by its own tests.
-		findSearchMatches: () => [],
-		getSearchMatchKey: () => "",
-		highlightSearchMatchRow: (line: string) => line,
 		TranscriptFollowIndicator: TestComponent,
 		TRANSCRIPT_JUMP_TO_END_URL: "atomic-ui://transcript/jump-to-end",
 		keyHint: (key: string) => key,
