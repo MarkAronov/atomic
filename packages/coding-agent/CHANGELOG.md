@@ -60,6 +60,7 @@
 - Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
 - Pinned managed fd downloads on darwin/x64 to 10.3.0, matching upstream pi's known-good archive for that host ([#8708](https://github.com/earendil-works/pi/issues/8708)).
 - Fixed model catalog refresh errors in the `/model` selector rendering without the blank line used by the corresponding success status.
+- A rejected `edit` no longer hands back a snapshot tag that authorizes the same edit on retry. Building the rejection recorded the file's current content in the session's snapshot store and reported that tag in the error, so re-sending the identical edit with the reported tag was accepted even though the model had never read the changed file, silently overwriting whatever the other writer had just put there. The rejection now reports the tag without recording it, so the retry is rejected again and the model must re-read first. Drift recovery for tags the session did record is unchanged ([#2329](https://github.com/bastani-inc/atomic/issues/2329)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
