@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.14-alpha.2] - 2026-08-17
+
 ### Added
 
 - Agent frontmatter accepts YAML array-form `tools` — flow sequences (`tools: [read, bash]`) and block sequences (`tools:` followed by `- read` lines) — as well as the comma-separated string form, and both spellings produce the same tool set. Frontmatter parses through the same YAML-backed parser Atomic exports, so legal multi-line flow sequences and zero-indent block lists work, and sequence values where a scalar belongs are ignored rather than stringified.
