@@ -189,6 +189,8 @@ export interface StageControlRegistry {
 	get(runId: string, stageId: string): StageControlHandle | undefined;
 	/** Resolve all currently-registered chat handles for a run. */
 	forRun(runId: string): readonly StageControlHandle[];
+	/** True when this run currently has a registration map. */
+	has(runId: string): boolean;
 	/** Build a run-level control aggregate. Cheap; not memoised. */
 	run(runId: string): WorkflowRunControlHandle;
 	/**
@@ -197,6 +199,13 @@ export interface StageControlRegistry {
 	 * their subscriptions when the host store is cleared.
 	 */
 	clear(): void;
+	/**
+	 * Drop only handles detached from run-level control (`controlsDependencies`
+	 * false), disposing them through the background-dispose path. Live executor
+	 * handles that still own workflow execution stay registered. Emptied run
+	 * maps are pruned.
+	 */
+	clearDetached(): void;
 }
 
 /**
@@ -416,6 +425,9 @@ export function createStageControlRegistry(): StageControlRegistry {
 			if (!runMap) return [];
 			return [...runMap.values()].map((entry) => entry.handle);
 		},
+		has(runId: string): boolean {
+			return _byRun.has(runId);
+		},
 		run(runId: string): WorkflowRunControlHandle {
 			return makeRunHandle(runId);
 		},
@@ -424,6 +436,16 @@ export function createStageControlRegistry(): StageControlRegistry {
 			_byRun.clear();
 			for (const entry of entries) {
 				disposeEntryInBackground(entry, "atomic-workflows: stage handle dispose failed");
+			}
+		},
+		clearDetached(): void {
+			for (const [runId, runMap] of [..._byRun]) {
+				for (const [stageId, entry] of [...runMap]) {
+					if (entry.controlsDependencies) continue;
+					runMap.delete(stageId);
+					disposeEntryInBackground(entry, "atomic-workflows: detached stage handle dispose failed");
+				}
+				if (runMap.size === 0) _byRun.delete(runId);
 			}
 		},
 	};
