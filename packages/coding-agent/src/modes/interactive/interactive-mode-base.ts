@@ -77,32 +77,17 @@ const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 	"tui.altScreen.bottom",
 ] as const;
 
-/** Open and drive pi-tui's find box over the transcript. */
-const FULLSCREEN_SEARCH_ACTIONS = [
-	"tui.altScreen.search",
-	"tui.altScreen.searchNext",
-	"tui.altScreen.searchPrevious",
-	"tui.altScreen.searchClose",
-] as const;
-
-const FULLSCREEN_VIEWPORT_ACTIONS = [...FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS, ...FULLSCREEN_SEARCH_ACTIONS] as const;
+const FULLSCREEN_VIEWPORT_ACTIONS = FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS;
 
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
 }
 
 /**
- * Whether a key scrolls the transcript, as opposed to driving a search over it.
- * A reserving overlay — the `ask_user_question` dialog, an extension component
- * with `reserveTranscriptRows` — declines these so the strip above it still
- * pages and jumps (#2378), and keeps everything else.
- *
- * The search actions are deliberately excluded. Their default keys include
- * `enter`, `shift+enter`, `escape`, and `ctrl+g`, which such a dialog owns for
- * submit, cancel, and its own editing; and pi-tui acts on `searchNext`,
- * `searchPrevious`, and `searchClose` only while its find box holds focus,
- * which cannot be true while the dialog does. Releasing them would drop those
- * keys into a viewport that ignores them.
+ * Whether a key scrolls the transcript. A reserving overlay — the
+ * `ask_user_question` dialog, an extension component with
+ * `reserveTranscriptRows` — declines these so the strip above it still pages
+ * and jumps (#2378), and keeps everything else.
  */
 export function isFullscreenTranscriptScrollAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS.some((action) => keybindings.matches(data, action));
@@ -124,12 +109,9 @@ export function isFullscreenTranscriptScrollAction(data: string, keybindings: Ke
  * listener. Atomic's answer stands, because a mounted dialog that keeps its
  * selection keys must not also freeze the transcript behind it.
  *
- * **The list covers every `tui.altScreen.*` action pi-tui defines**, transcript
- * search included. A focused overlay therefore gets first refusal on
- * `ctrl+shift+f` as well as on the scroll keys, which is what keeps a search
- * scoped to the surface the reader is looking at instead of opening a find box
- * over the main transcript hidden behind it. An action a focused overlay
- * declines still reaches the transcript, so the shortcut is never simply lost.
+ * **The list covers every `tui.altScreen.*` scroll action pi-tui defines.**
+ * An action a focused overlay declines still reaches the transcript, so the
+ * shortcut is never simply lost.
  *
  * **A focused overlay with no `handleInput` is still an overlay.** The handler
  * is optional — `ExtensionCustomComponent` marks it `handleInput?` and
@@ -141,24 +123,6 @@ export function isFullscreenTranscriptScrollAction(data: string, keybindings: Ke
  * route as one that returns `false`: nothing to offer, then replay. Only a
  * focused component that is *not* an overlay keeps the shortcut, because
  * pi-tui defers nothing to it.
- *
- * **Exemption: pi-tui's find box.** `focusedIsViewportSearch` reports whether
- * the focused overlay is the transcript-search box pi-tui mounts itself, which
- * is viewport chrome rather than an application overlay. It gets no first
- * offer: input goes straight to pi-tui, which exempts its own find box from
- * native deferral, so the transcript keeps scrolling while a search is open and
- * `home`/`end` scroll rather than move the query cursor — upstream's behavior
- * exactly. Everything the viewport does not claim still falls through to the
- * find box, so typing edits the query. Callers without a find box omit it.
- *
- * **Order matters: the host thinking toggle outranks the exemption.**
- * `app.thinking.toggle` is a documented, remappable host action, and it is
- * dispatched from `onOverlayUnhandledInput`, which only the gated route runs.
- * Exempting the find box first would send that key to pi-tui instead and drop
- * the toggle for as long as a search had focus. The gated route answers it
- * before the find box sees it (`interactive-tui.ts:routeViewportInput`),
- * because the binding may be a bare letter (`docs/keybindings.md`) and pi-tui's
- * `Input` types a printable character into the query rather than rejecting it.
  */
 export function shouldHandleFullscreenViewportInput(
 	focused: Component | null,
@@ -167,15 +131,12 @@ export function shouldHandleFullscreenViewportInput(
 	isMouseInput: boolean,
 	focusedIsOverlay: boolean,
 	keybindings: KeybindingsManager,
-	focusedIsViewportSearch = false,
+	_focusedIsViewportSearch = false,
 ): boolean {
 	if (focused === editor || !focused) return true;
 	if (!focused.handleInput && !focusedIsOverlay) return true;
-	// The find box is exempt from mouse deferral too: a wheel report over the
-	// transcript scrolls it rather than reaching the query.
-	if (isMouseInput) return focusedIsViewportSearch || !focusedIsOverlay;
+	if (isMouseInput) return !focusedIsOverlay;
 	if (focusedIsOverlay && keybindings.matches(data, "app.thinking.toggle")) return false;
-	if (focusedIsViewportSearch) return true;
 	return !isFullscreenViewportAction(data, keybindings);
 }
 

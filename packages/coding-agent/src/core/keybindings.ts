@@ -62,13 +62,12 @@ declare module "@earendil-works/pi-tui" {
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
-	// pi-tui 0.84.2's transcript-search defaults (`ctrl+shift+f`, plus
-	// `enter`/`shift+enter`/`ctrl+g`/`ctrl+shift+g`/`escape` while its find box
-	// is focused) are inherited as they ship. Atomic routes every
-	// `tui.altScreen.*` action through `FULLSCREEN_VIEWPORT_ACTIONS`
-	// (`modes/interactive/interactive-mode-base.ts`), so a focused overlay is
-	// offered `ctrl+shift+f` before the viewport opens a search behind it, and
-	// the matches are themed through `searchMatchBg`/`searchMatchText`.
+	// Unbind pi-tui 0.84.2's transcript-search defaults. Atomic no longer
+	// exposes a find box over the transcript or an attached stage chat.
+	"tui.altScreen.search": { defaultKeys: [], description: "Search the rendered transcript (disabled)" },
+	"tui.altScreen.searchNext": { defaultKeys: [], description: "Select the next search match (disabled)" },
+	"tui.altScreen.searchPrevious": { defaultKeys: [], description: "Select the previous search match (disabled)" },
+	"tui.altScreen.searchClose": { defaultKeys: [], description: "Close transcript search (disabled)" },
 	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
 	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },

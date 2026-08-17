@@ -11,7 +11,6 @@ import {
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
-import { theme } from "./theme/theme.ts";
 
 interface TuiOverlayEntry {
 	component: Component;
@@ -49,16 +48,6 @@ interface TuiAltScreenMouseInternals {
 /** pi-tui 0.84.2 keeps its overlay-deferral predicate private (tui-alt-screen.d.ts:84). */
 interface TuiAltScreenViewportDeferral {
 	shouldDeferViewportInputToOverlay?(): boolean;
-}
-
-/**
- * pi-tui 0.84.2 keeps its transcript-search state private
- * (tui-alt-screen.d.ts:50). Only the focus question is read here: pi-tui's own
- * `shouldDeferViewportInputToOverlay` asks it the same way
- * (`dist/tui-alt-screen.js:379`), and a missing field reads as "no find box".
- */
-interface TuiAltScreenSearchInternals {
-	activeSearch?: { overlay?: { isFocused(): boolean } };
 }
 
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
@@ -100,15 +89,12 @@ export interface InteractiveTuiOptions {
 	 * Return false to let a focused overlay receive viewport input first.
 	 * Mouse input is deferred only while the focused component belongs to an
 	 * overlay; non-overlay focus keeps pi-tui's transcript selection path.
-	 * `focusedIsViewportSearch` marks the one overlay pi-tui mounts itself — its
-	 * find box — which is exempt so the transcript still scrolls while a search
-	 * is open.
 	 */
 	shouldHandleViewportInput?: (
 		data: string,
 		isMouseInput: boolean,
 		focusedIsOverlay: boolean,
-		focusedIsViewportSearch: boolean,
+		_focusedIsViewportSearch: boolean,
 	) => boolean;
 	/** Handle an unconsumed overlay input before replaying it to the viewport. */
 	onOverlayUnhandledInput?: (data: string) => boolean;
@@ -183,7 +169,7 @@ type ViewportInputGate = (
 	data: string,
 	isMouseInput: boolean,
 	focusedIsOverlay: boolean,
-	focusedIsViewportSearch: boolean,
+	_focusedIsViewportSearch: boolean,
 ) => boolean;
 
 const viewportInputGates = new WeakMap<AtomicTuiAltScreen, ViewportInputGate>();
@@ -318,9 +304,8 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		// replays only what the overlay declined (#2378 / PR #2381); pi-tui then
 		// defers the replay a second time and the transcript freezes behind an
 		// open dialog. Suppress the native answer for the replay alone. Input the
-		// gate never routed through the overlay — anything the gate admits to the
-		// viewport, including every key while pi-tui's own find box holds focus —
-		// keeps pi-tui's routing and its own deferral.
+		// gate never routed through the overlay keeps pi-tui's routing and its
+		// own deferral.
 		const deferral = this as unknown as TuiAltScreenViewportDeferral;
 		const deferToOverlay = deferral.shouldDeferViewportInputToOverlay?.bind(this);
 		deferral.shouldDeferViewportInputToOverlay = () => !viewportInputReplays.has(this) && deferToOverlay?.() === true;
@@ -342,17 +327,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		return tui.overlayStack.some((entry) => entry.component === this.getFocusedComponent());
 	}
 
-	/**
-	 * Whether the focused overlay is pi-tui's own transcript find box. That
-	 * overlay is viewport chrome, so it is exempt from Atomic's gate: pi-tui
-	 * exempts it from native deferral too (`dist/tui-alt-screen.js:379`), which
-	 * is what keeps the transcript scrolling while a search is open.
-	 */
-	private isFocusedViewportSearch(): boolean {
-		const { activeSearch } = this as unknown as TuiAltScreenSearchInternals;
-		return activeSearch?.overlay?.isFocused() === true;
-	}
-
 	override addInputListener(listener: TuiInputListener): () => void {
 		if (!viewportInputListeners.has(this)) {
 			viewportInputListeners.add(this);
@@ -365,8 +339,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			subscription.viewportUnsubscribe = super.addInputListener((data) => {
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
-				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), this.isFocusedViewportSearch()))
-					return undefined;
+				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay(), false)) return undefined;
 				return listener(data);
 			});
 			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);
@@ -468,7 +441,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);
 		const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
-		if (!gate || gate(data, isMouseInput, this.isFocusedOverlay(), this.isFocusedViewportSearch())) return undefined;
+		if (!gate || gate(data, isMouseInput, this.isFocusedOverlay(), false)) return undefined;
 
 		// Returning `consume` below skips pi-tui's post-listener phase. Mirror its
 		// overlay-focus repair before reading the focused component so a resize
@@ -476,19 +449,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
-		// pi-tui's find box is exempt from the gate for everything except a host
-		// action, so a chunk that reaches here while it holds focus is a host
-		// action by construction. Dispatch it before the query sees it: the
-		// binding is user-remappable to a bare letter (`docs/keybindings.md`),
-		// and pi-tui's `Input` inserts a printable character rather than
-		// rejecting it the way it rejects `ctrl+t` — so offering it first typed
-		// the key into the query and then ran the action. This is scoped to
-		// pi-tui's own chrome; an application overlay keeps first refusal on
-		// every key it is offered, host actions included.
-		if (this.isFocusedViewportSearch() && this.handleOverlayUnhandledInput(data, focused)) {
-			tui.requestImmediateRender();
-			return { consume: true };
-		}
 		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease === true)) {
 			const handleInput = focused.handleInput as (
 				data: string,
@@ -545,15 +505,6 @@ function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
 }
 
 /**
- * Style a transcript search match. Read the theme at render time rather than at
- * construction: the renderer is built before `initTheme` on some startup paths,
- * and `/theme` swaps the instance under a running session.
- */
-function styleSearchMatch(text: string): string {
-	return theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
-}
-
-/**
  * Build Atomic's fullscreen renderer, `viewportInputGate` included, without
  * consulting the environment. `createInteractiveTui` calls this whenever
  * fullscreen applies; fixtures that assert fullscreen behavior call it
@@ -567,8 +518,6 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
-			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
-			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			openUrl: (url) =>
 				handleUrlActivation(url, {
 					onOverlayInternalUiAction: options.onOverlayInternalUiAction,

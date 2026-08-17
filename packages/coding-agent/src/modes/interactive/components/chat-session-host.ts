@@ -160,10 +160,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	/**
 	 * Rows the body occupies at `width`, whether or not they are on screen.
 	 *
-	 * Pair with `renderBodyRows` to read the whole transcript — a stage-chat
-	 * search covers every row, not the window the reader is parked on. Both
-	 * measure the component stack the last `renderBody` installed, so call them
-	 * after at least one body render.
+	 * Pair with `renderBodyRows` to read the whole transcript, not only the
+	 * window the reader is parked on. Both measure the component stack the last
+	 * `renderBody` installed, so call them after at least one body render.
 	 */
 	bodyRowCount(width: number): number {
 		return this.state.bodyViewport.rowCount(width);
@@ -179,11 +178,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 *
 	 * The tail window keeps a fast-streaming turn cheap for a reader following
 	 * the bottom of the body; it also drops everything above the last 240 lines
-	 * from what `bodyRowCount` and `renderBodyRows` report. A find box open on
-	 * this transcript therefore turns it off while it is open, or it would
-	 * answer "No matches" for text the stream printed a minute ago. Returns
-	 * whether the setting changed, so the caller can invalidate the rows that
-	 * were rendered under the old rule.
+	 * from what `bodyRowCount` and `renderBodyRows` report. Returns whether the
+	 * setting changed, so the caller can invalidate the rows that were rendered
+	 * under the old rule.
 	 */
 	setStreamingTailWindowEnabled(enabled: boolean): boolean {
 		if (this.state.streamingTailWindowEnabled === enabled) return false;

@@ -143,12 +143,13 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(settingsTypes, /defaultTools\?:/u);
 	});
 
-	test("themes.md documents the search colors and --use-theme", () => {
+	test("themes.md documents leftover search colors and --use-theme", () => {
 		const themes = doc("themes.md");
 		assert.match(themes, /### Initial Theme/u);
 		assert.match(themes, /--use-theme light\/dark/u);
 		assert.match(themes, /`searchMatchBg`/u);
 		assert.match(themes, /`searchMatchText`/u);
+		assert.match(themes, /unused/iu);
 		// Fallbacks are stated where the optional tokens are described.
 		assert.match(themes, /falls back to `selectedBg`/u);
 		assert.match(themes, /falls back to `text`/u);
@@ -161,26 +162,17 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(usage, /"resume-hint"/u);
 	});
 
-	test("keybindings.md documents the search and single-line viewport actions", () => {
+	test("keybindings.md documents the single-line viewport actions and disabled search", () => {
 		const keybindings = doc("keybindings.md");
-		for (const action of [
-			"tui.altScreen.lineUp",
-			"tui.altScreen.lineDown",
-			"tui.altScreen.search",
-			"tui.altScreen.searchNext",
-			"tui.altScreen.searchPrevious",
-			"tui.altScreen.searchClose",
-		]) {
+		for (const action of ["tui.altScreen.lineUp", "tui.altScreen.lineDown"]) {
 			assert.ok(
 				keybindings.includes(`| \`${action}\``),
 				`keybindings.md must still document the ${action} viewport action row`,
 			);
 		}
-		assert.match(keybindings, /`ctrl\+shift\+f` opens a find box/u);
-		// The stage-chat cross-reference removed by 35f377fa5b belongs to this layer.
-		assert.match(keybindings, /An attached workflow stage chat does exactly that/u);
+		assert.doesNotMatch(keybindings, /\| `tui\.altScreen\.search` \|/u);
+		assert.match(keybindings, /does not ship a find-in-transcript shortcut/u);
 		assert.match(keybindings, /\[Terminal setup\]\(\/terminal-setup\)/u);
-		// The renderer reference tracks the installed version.
 		assert.match(keybindings, /pi-tui 0\.84\.2/u);
 	});
 
@@ -230,19 +222,20 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(terminal, /hover underline/u);
 	});
 
-	test("tui.md exposes the search theme tokens to extension renderers", () => {
+	test("tui.md no longer exposes unused search theme tokens as renderer colors", () => {
 		const tui = doc("tui.md");
-		assert.match(tui, /\| General \| `text`, `accent`, `muted`, `dim`, `searchMatchText` \|/u);
-		assert.match(tui, /`selectedBg`, `searchMatchBg`,/u);
+		assert.match(tui, /\| General \| `text`, `accent`, `muted`, `dim` \|/u);
+		assert.doesNotMatch(tui, /`searchMatchText`/u);
+		assert.doesNotMatch(tui, /`searchMatchBg`/u);
 	});
 
-	test("workflows docs document find-in-stage-chat", () => {
+	test("workflows docs no longer document find-in-stage-chat", () => {
 		const workflows = doc("workflows.md");
-		assert.match(workflows, /\*\*Find in stage chat\*\*/u);
-		assert.match(workflows, /whole stage transcript/u);
+		assert.doesNotMatch(workflows, /\*\*Find in stage chat\*\*/u);
+		assert.doesNotMatch(workflows, /ctrl\+shift\+f/iu);
 
 		const readme = packageFile("workflows", "README.md");
-		assert.match(readme, /Ctrl\+Shift\+F searches the attached stage chat/u);
+		assert.doesNotMatch(readme, /Ctrl\+Shift\+F searches the attached stage chat/u);
 	});
 });
 
@@ -251,7 +244,6 @@ describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
 		const unreleased = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "Unreleased");
 		const added = changelogSubsection(unreleased, "Added");
 		for (const needle of [
-			"fullscreen transcript search",
 			"`fullscreenExitOutput`",
 			"`defaultTools`",
 			"`--use-theme <name[/name]>`",
@@ -297,9 +289,10 @@ describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
 		}
 	});
 
-	test("workflows [Unreleased] carries stage-chat search", () => {
+	test("workflows [Unreleased] records removal of stage-chat search", () => {
 		const unreleased = changelogSection(packageFile("workflows", "CHANGELOG.md"), "Unreleased");
-		assert.match(unreleased, /search inside attached workflow stage chats/iu);
+		assert.match(unreleased, /Removed find-in-stage-chat/u);
+		assert.doesNotMatch(unreleased, /Added search inside attached workflow stage chats/u);
 	});
 
 	test("subagents [Unreleased] carries the pi 0.84.2 parity fixes", () => {

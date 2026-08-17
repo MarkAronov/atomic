@@ -12,8 +12,6 @@ export interface StageChatFramePlanInput {
 	readonly viewportRows: number;
 	readonly headerRows: number;
 	readonly separatorRows: number;
-	/** Rows the find bar needs while a stage-chat search is open. */
-	readonly searchRows?: number;
 	readonly pendingRows: number;
 	readonly workingRows: number;
 	readonly usageRows: number;
@@ -23,7 +21,6 @@ export interface StageChatFramePlanInput {
 
 export interface StageChatFramePlan {
 	readonly bodyRows: number;
-	readonly searchRows: number;
 	readonly pendingRows: number;
 	readonly workingRows: number;
 	readonly usageRows: number;
@@ -53,11 +50,6 @@ export function planStageChatFrame(input: StageChatFramePlanInput): StageChatFra
 	const footerRows = Math.min(Math.max(0, input.footerRows), remaining);
 	remaining -= footerRows;
 
-	// The find bar outranks the status rows: a search the reader cannot see the
-	// query or the match count of is worse than a hidden usage meter.
-	const searchRows = Math.min(Math.max(0, input.searchRows ?? 0), remaining);
-	remaining -= searchRows;
-
 	// Status rows are optional; preserve them in the same visual order as the
 	// normal chat surface after the body gives up its space.
 	const pendingRows = Math.min(Math.max(0, input.pendingRows), remaining);
@@ -69,7 +61,6 @@ export function planStageChatFrame(input: StageChatFramePlanInput): StageChatFra
 
 	return {
 		bodyRows: remaining,
-		searchRows,
 		pendingRows,
 		workingRows,
 		usageRows,

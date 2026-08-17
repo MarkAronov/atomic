@@ -27,13 +27,6 @@ import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
-	closeStageChatSearch,
-	highlightStageChatSearchRows,
-	refreshStageChatSearch,
-	renderStageChatSearchBar,
-	STAGE_CHAT_SEARCH_ROWS,
-} from "./stage-chat-search.js";
-import {
 	renderBlockedBody,
 	renderPausedBody,
 	renderPromptBody,
@@ -100,7 +93,6 @@ export class StageChatView implements Component, Focusable {
 	private mountedCustomUi!: StageChatViewContext["mountedCustomUi"];
 	private mountingRequestId!: StageChatViewContext["mountingRequestId"];
 	private promptState!: StageChatViewContext["promptState"];
-	private search!: StageChatViewContext["search"];
 	private promptEditor!: StageChatViewContext["promptEditor"];
 	private promptEditorPromptId!: StageChatViewContext["promptEditorPromptId"];
 	private promptEditorSubmitFromEnter!: StageChatViewContext["promptEditorSubmitFromEnter"];
@@ -129,21 +121,7 @@ export class StageChatView implements Component, Focusable {
 		const promptActive = !customUiActive && this.promptState !== null;
 		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
-		// A paused stage and a read-only archive hide the composer but still
-		// paint their chat rows, so they are searchable; an archived *prompt*
-		// footprint replaces those rows with the question card and is not.
-		const transcriptVisible =
-			!customUiActive && !promptActive && !blocked && !(readOnlyArchive && stage?.promptFootprint !== undefined);
-
-		// Whatever swaps the transcript out of the body takes the find box with
-		// it. A bar left painted over a body it cannot search is the one state
-		// where Escape has two plausible meanings, and the reader would have to
-		// guess which one this frame means.
-		if (!transcriptVisible) closeStageChatSearch(ctx);
-		// The find box owns the caret while it is open, so the composer paints
-		// unfocused and only one component emits a cursor.
-		const searchActive = this.search !== null;
-		this.chatHost.focused = this.focused && !searchActive;
+		this.chatHost.focused = this.focused;
 		const headerLines = renderHeader(ctx, w, stage);
 		const sepLines = [sepRule(ctx, w)];
 
@@ -169,7 +147,6 @@ export class StageChatView implements Component, Focusable {
 			usageRows: usageLines.length,
 			editorRows: customUiActive ? customUiLines.length : editorLines.length,
 			footerRows: footerLines.length,
-			searchRows: searchActive ? STAGE_CHAT_SEARCH_ROWS : 0,
 		});
 		const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
 		const visibleWorkingLines = workingLines.slice(Math.max(0, workingLines.length - plan.workingRows));
@@ -187,29 +164,7 @@ export class StageChatView implements Component, Focusable {
 			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
 			keyLabel: () => keyText("tui.altScreen.bottom"),
 		});
-		/**
-		 * Paint the transcript with the find box's answer for this frame.
-		 *
-		 * Matching runs first because it may scroll the body to reveal a match
-		 * the window does not hold, and the highlight is applied to the rows
-		 * that scroll produced. Every body that shows chat rows goes through
-		 * here — live, paused, and archived alike — so none of them can accept
-		 * the search key and then answer `No matches` for a row on the screen.
-		 */
-		let searchRefreshed = false;
-		const renderSearchableTranscript = (rows: number, indicatorSharesRows: boolean): string[] => {
-			searchRefreshed = true;
-			refreshStageChatSearch(ctx, w, {
-				transcriptRows: rows,
-				indicatorSharesTranscriptRows: indicatorSharesRows,
-			});
-			const painted = this.chatHost.renderBody(w, rows);
-			return highlightStageChatSearchRows(
-				ctx,
-				painted,
-				Math.max(0, this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom()),
-			);
-		};
+		const renderTranscript = (rows: number): string[] => this.chatHost.renderBody(w, rows);
 		if (bodyBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
@@ -224,7 +179,7 @@ export class StageChatView implements Component, Focusable {
 				bodyBudget,
 				reservedIndicatorLines,
 				() => indicator.render(w),
-				(rows) => renderSearchableTranscript(rows, false),
+				renderTranscript,
 			);
 		} else if (readOnlyArchive) {
 			reservedIndicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
@@ -235,11 +190,11 @@ export class StageChatView implements Component, Focusable {
 				stage,
 				reservedIndicatorLines,
 				() => indicator.render(w),
-				(rows) => renderSearchableTranscript(rows, false),
+				renderTranscript,
 			);
 		} else {
 			transcriptBodyActive = true;
-			bodyLines = renderSearchableTranscript(bodyBudget, true);
+			bodyLines = renderTranscript(bodyBudget);
 		}
 		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
 		const indicatorVisible = indicatorLines.length > 0;
@@ -247,38 +202,22 @@ export class StageChatView implements Component, Focusable {
 		// The indicator's row comes out of the body, and the end it comes from
 		// decides which rows the reader can reach at all. Taken off the top, the
 		// first transcript row is unpaintable: the reader is already parked as
-		// high as the viewport goes and the row is still clipped, so a search
-		// that reveals a match there counts it and shows the row under it. A body
-		// already parked at row zero therefore gives up its last row instead.
-		// Either way the body is rendered at the full budget, which is what keeps
-		// the viewport size — and the page arithmetic that reads it — stable
-		// while the indicator is visible.
+		// high as the viewport goes and the row is still clipped. A body already
+		// parked at row zero therefore gives up its last row instead. Either way
+		// the body is rendered at the full budget, which is what keeps the
+		// viewport size — and the page arithmetic that reads it — stable while
+		// the indicator is visible.
 		const parkedAtTop = this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom() <= 0;
 		const visibleBodyLines = dropBodyRow
 			? parkedAtTop
 				? bodyLines.slice(0, bodyBudget - 1)
 				: bodyLines.slice(1, bodyBudget)
 			: bodyLines.slice(0, bodyBudget);
-		// The find bar outranks the body in the frame plan, so a chat squeezed
-		// hard enough — an eight-row overlay, or a paused body whose callout
-		// takes the whole budget — paints a search box above no transcript at
-		// all and never reaches the refresh above. Matching is a property of
-		// the transcript rather than of the rows this frame can spare for it,
-		// so re-match here with a zero row budget: the same whole-transcript
-		// corpus, and no reveal, because there is nowhere to reveal onto. Left
-		// out, the bar reports the previous frame's empty array as `No
-		// matches` for a match that is really there.
-		if (searchActive && !searchRefreshed) {
-			refreshStageChatSearch(ctx, w, { transcriptRows: 0, indicatorSharesTranscriptRows: false });
-		}
-
-		const searchLines = searchActive ? renderStageChatSearchBar(ctx, w).slice(0, plan.searchRows) : [];
 		const lines = [
 			...headerLines,
 			...sepLines,
 			...visibleBodyLines,
 			...indicatorLines,
-			...searchLines,
 			...visiblePendingLines,
 			...visibleWorkingLines,
 			...visibleUsageLines,

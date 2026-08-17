@@ -61,7 +61,6 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.mountedCustomUi = null;
 	ctx.mountingRequestId = null;
 	ctx.promptState = null;
-	ctx.search = null;
 	ctx.promptEditor = null;
 	ctx.promptEditorPromptId = null;
 	ctx.promptEditorSubmitFromEnter = false;
@@ -565,7 +564,6 @@ export function disposeStageChatView(ctx: StageChatViewContext): void {
 	ctx._unsubscribeFooterData?.();
 	ctx._unsubscribeFooterData = null;
 	releaseMountedCustomUi(ctx);
-	ctx.search = null;
 	disposePromptEditor(ctx);
 	ctx._unregisterStageUiHost?.();
 	ctx._unregisterStageUiHost = null;

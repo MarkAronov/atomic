@@ -21,18 +21,12 @@ import {
 	shouldHandleFullscreenViewportInput,
 } from "../src/modes/interactive/interactive-mode-base.ts";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
-import { initTheme, loadThemeFromContent, theme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, loadThemeFromContent } from "../src/modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "../src/modes/interactive/theme/theme-schema.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
-/** Kitty-protocol `ctrl+shift+f`: pi-tui's default `tui.altScreen.search`. */
+/** Kitty-protocol `ctrl+shift+f`: pi-tui still ships this, Atomic unbinds it. */
 const CTRL_SHIFT_F = "\x1b[102;6u";
-/** `tui.altScreen.searchNext`, one of its two defaults. */
-const CTRL_G = "\x07";
-/** `tui.altScreen.searchPrevious`, in kitty form. */
-const CTRL_SHIFT_G = "\x1b[103;6u";
-/** `tui.altScreen.searchClose`, and `app.interrupt` outside a search. */
-const ESCAPE = "\x1b";
 /** Bound below to `tui.altScreen.lineUp`; pi-tui ships that action unbound. */
 const CTRL_Y = "\x19";
 /** Bound below to `tui.altScreen.lineDown`. */
@@ -44,14 +38,7 @@ const LINE_BINDINGS: KeybindingsConfig = {
 	"tui.altScreen.lineDown": "ctrl+u",
 };
 /** Every `tui.altScreen.*` action this layer added to Atomic's gate. */
-const NEW_VIEWPORT_ACTIONS = [
-	"tui.altScreen.lineUp",
-	"tui.altScreen.lineDown",
-	"tui.altScreen.search",
-	"tui.altScreen.searchNext",
-	"tui.altScreen.searchPrevious",
-	"tui.altScreen.searchClose",
-] as const;
+const NEW_VIEWPORT_ACTIONS = ["tui.altScreen.lineUp", "tui.altScreen.lineDown"] as const;
 
 const initialKeybindings = getKeybindings();
 
@@ -88,8 +75,6 @@ interface AltScreenSearchInternals {
 		matches: unknown[];
 		overlay?: { isFocused(): boolean };
 	};
-	searchMatchStyle: (text: string) => string;
-	searchCurrentMatchStyle: (text: string) => string;
 }
 
 interface Fixture {
@@ -170,11 +155,6 @@ function createFixture(options: { mountOverlay?: boolean; userBindings?: Keybind
 	return { tui, terminal, transcript, editor, overlay, stop: () => tui.stop() };
 }
 
-function type(fixture: Fixture, text: string): void {
-	for (const character of text) fixture.terminal.input(character);
-	fixture.tui.renderNow();
-}
-
 function loadDarkThemeJson(): { name: string; colors: Record<string, string | number> } {
 	return JSON.parse(readFileSync(join(getThemesDir(), "dark.json"), "utf8")) as {
 		name: string;
@@ -183,23 +163,16 @@ function loadDarkThemeJson(): { name: string; colors: Record<string, string | nu
 }
 
 /**
- * The six `tui.altScreen.*` actions pi 0.84.2 added to Atomic's surface: the two
- * single-line scroll steps from upstream `1279952d` and the four transcript
- * search actions from `00121ed9`. Upstream has no action allowlist, so there is
- * no hunk to copy — without these entries in `FULLSCREEN_VIEWPORT_ACTIONS` the
- * bindings never reach the viewport through Atomic's gate, and the feature
- * looks ported while doing nothing.
+ * Atomic keeps the two single-line scroll steps and unbinds transcript search.
  */
-describe("fullscreen transcript search routing", () => {
-	test("7913-fullscreen-search-actions-routed", () => {
+describe("fullscreen transcript search is disabled", () => {
+	test("7913-fullscreen-line-scroll-actions-routed", () => {
 		const fixture = createFixture();
 		try {
 			fixture.transcript.scrollToEnd();
 			fixture.tui.renderNow();
 			const anchored = fixture.transcript.scrollTop;
 
-			// 1 & 2 — the single-line steps reach the viewport after the focused
-			// overlay declines them.
 			fixture.terminal.input(CTRL_Y);
 			fixture.tui.renderNow();
 			expect(fixture.transcript.scrollTop).toBe(anchored - 1);
@@ -207,173 +180,59 @@ describe("fullscreen transcript search routing", () => {
 			fixture.tui.renderNow();
 			expect(fixture.transcript.scrollTop).toBe(anchored);
 			expect(fixture.overlay.handledInputs).toEqual([CTRL_Y, CTRL_U]);
-
-			// 3 — `search` opens pi-tui's find box over the transcript.
-			fixture.terminal.input(CTRL_SHIFT_F);
-			fixture.tui.renderNow();
-			expect(activeSearch(fixture), "ctrl+shift+f opened no search").toBeDefined();
-			expect(activeSearch(fixture)?.overlay?.isFocused()).toBe(true);
-
-			type(fixture, "line 1");
-			const matches = activeSearch(fixture)?.matches.length ?? 0;
-			expect(matches).toBeGreaterThan(1);
-			const first = activeSearch(fixture)?.selectedIndex ?? -1;
-			expect(first).toBeGreaterThanOrEqual(0);
-
-			// 4 — `searchNext` advances the selected match.
-			fixture.terminal.input(CTRL_G);
-			fixture.tui.renderNow();
-			const next = activeSearch(fixture)?.selectedIndex ?? -1;
-			expect(next).toBe((first + 1) % matches);
-
-			// 5 — `searchPrevious` walks back to it.
-			fixture.terminal.input(CTRL_SHIFT_G);
-			fixture.tui.renderNow();
-			expect(activeSearch(fixture)?.selectedIndex).toBe(first);
-
-			// 6 — `searchClose` dismisses the find box.
-			fixture.terminal.input(ESCAPE);
-			fixture.tui.renderNow();
-			expect(activeSearch(fixture)).toBeUndefined();
 		} finally {
 			fixture.stop();
 		}
 	});
 
-	test("every new action is gated, so a focused overlay is offered it first", () => {
+	test("ctrl+shift+f does not open a transcript search", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			fixture.terminal.input(CTRL_SHIFT_F);
+			fixture.tui.renderNow();
+			expect(activeSearch(fixture)).toBeUndefined();
+			expect(new KeybindingsManager().matches(CTRL_SHIFT_F, "tui.altScreen.search")).toBe(false);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("every remaining new action is gated, so a focused overlay is offered it first", () => {
 		const keybindings = new KeybindingsManager(LINE_BINDINGS);
 		const editor = new Text("editor", 0, 0);
 		const overlay = new DecliningOverlay();
 		const keys: Record<(typeof NEW_VIEWPORT_ACTIONS)[number], string> = {
 			"tui.altScreen.lineUp": CTRL_Y,
 			"tui.altScreen.lineDown": CTRL_U,
-			"tui.altScreen.search": CTRL_SHIFT_F,
-			"tui.altScreen.searchNext": CTRL_G,
-			"tui.altScreen.searchPrevious": CTRL_SHIFT_G,
-			"tui.altScreen.searchClose": ESCAPE,
 		};
 
 		for (const action of NEW_VIEWPORT_ACTIONS) {
 			const data = keys[action];
 			expect(keybindings.matches(data, action), `${action} does not match its key`).toBe(true);
 			expect(isFullscreenViewportAction(data, keybindings), `${action} is outside the gate`).toBe(true);
-			// A focused overlay gets first refusal, which is what keeps a stage
-			// chat's own search from opening over the main transcript behind it.
 			expect(
 				shouldHandleFullscreenViewportInput(overlay, editor, data, false, true, keybindings),
 				`${action} skips the focused overlay`,
 			).toBe(false);
-			// The main editor keeps the shortcut.
 			expect(shouldHandleFullscreenViewportInput(editor, editor, data, false, false, keybindings)).toBe(true);
 		}
 	});
 
-	/**
-	 * A reserving overlay — the `ask_user_question` dialog, or an extension
-	 * component with `reserveTranscriptRows` — declines transcript scrolling so
-	 * the strip above it still pages (#2378). The search actions must stay out of
-	 * that release set: `enter`, `shift+enter`, `escape`, and `ctrl+g` are the
-	 * dialog's own submit, cancel, and edit keys, and pi-tui drops all three
-	 * navigation actions unless its find box has focus, which it cannot have
-	 * while the dialog does.
-	 */
-	test("a reserving overlay releases scrolling but keeps the search keys", () => {
+	test("a reserving overlay releases scrolling and does not treat search keys as viewport actions", () => {
 		const keybindings = new KeybindingsManager(LINE_BINDINGS);
 
 		for (const data of [CTRL_Y, CTRL_U]) {
 			expect(isFullscreenTranscriptScrollAction(data, keybindings)).toBe(true);
 			expect(isFullscreenViewportAction(data, keybindings)).toBe(true);
 		}
-		for (const data of [CTRL_SHIFT_F, CTRL_G, CTRL_SHIFT_G, ESCAPE, "\r"]) {
-			expect(isFullscreenTranscriptScrollAction(data, keybindings), `${JSON.stringify(data)} is released`).toBe(
-				false,
-			);
-		}
-		// The gate still owns them, which is the whole point of the split.
-		for (const data of [CTRL_SHIFT_F, CTRL_G, CTRL_SHIFT_G, ESCAPE]) {
-			expect(isFullscreenViewportAction(data, keybindings)).toBe(true);
-		}
-	});
-
-	test("the transcript still scrolls while the find box has focus", () => {
-		const fixture = createFixture({ mountOverlay: false });
-		try {
-			fixture.transcript.scrollToEnd();
-			fixture.tui.renderNow();
-			const anchored = fixture.transcript.scrollTop;
-
-			fixture.terminal.input(CTRL_SHIFT_F);
-			fixture.tui.renderNow();
-			expect(activeSearch(fixture)?.overlay?.isFocused()).toBe(true);
-
-			fixture.terminal.input(CTRL_Y);
-			fixture.tui.renderNow();
-			expect(fixture.transcript.scrollTop).toBe(anchored - 1);
-			expect(activeSearch(fixture)?.query).toBe("");
-		} finally {
-			fixture.stop();
-		}
+		expect(isFullscreenTranscriptScrollAction(CTRL_SHIFT_F, keybindings)).toBe(false);
+		expect(isFullscreenViewportAction(CTRL_SHIFT_F, keybindings)).toBe(false);
 	});
 });
 
 /**
- * The match styles the renderer hands pi-tui. They read the global theme on
- * every call rather than capturing colors at construction, so `/theme` repaints
- * an open search instead of leaving it in the previous palette.
- */
-describe("fullscreen search match styling", () => {
-	test("the renderer styles matches with the theme's search colors", () => {
-		const fixture = createFixture({ mountOverlay: false });
-		try {
-			const { searchMatchStyle, searchCurrentMatchStyle } = internals(fixture);
-			const painted = theme.bg("searchMatchBg", theme.fg("searchMatchText", "hit"));
-
-			expect(searchMatchStyle("hit")).toBe(theme.underline(painted));
-			expect(searchCurrentMatchStyle("hit")).toBe(theme.bold(theme.inverse(painted)));
-			expect(searchMatchStyle("hit")).toContain(theme.getBgAnsi("searchMatchBg"));
-			expect(searchMatchStyle("hit")).toContain(theme.getFgAnsi("searchMatchText"));
-		} finally {
-			fixture.stop();
-		}
-	});
-
-	test("a theme change repaints later matches", () => {
-		const fixture = createFixture({ mountOverlay: false });
-		try {
-			const { searchMatchStyle } = internals(fixture);
-			const dark = searchMatchStyle("hit");
-
-			initTheme("light");
-			expect(searchMatchStyle("hit")).toBe(
-				theme.underline(theme.bg("searchMatchBg", theme.fg("searchMatchText", "hit"))),
-			);
-			expect(searchMatchStyle("hit")).toContain(theme.getBgAnsi("searchMatchBg"));
-			expect(searchMatchStyle("hit")).not.toBe(dark);
-		} finally {
-			fixture.stop();
-		}
-	});
-
-	test("a rendered match carries the search background", () => {
-		const fixture = createFixture({ mountOverlay: false });
-		try {
-			fixture.terminal.input(CTRL_SHIFT_F);
-			fixture.tui.renderNow();
-			fixture.terminal.writes.length = 0;
-			type(fixture, "line 42");
-
-			expect(activeSearch(fixture)?.matches.length).toBeGreaterThan(0);
-			expect(fixture.terminal.writes.join("")).toContain(theme.getBgAnsi("searchMatchBg"));
-		} finally {
-			fixture.stop();
-		}
-	});
-});
-
-/**
- * `searchMatchBg` and `searchMatchText` are optional. Every Atomic theme written
- * before they existed — including a user's own file — must keep validating and
- * keep rendering, which is what the fallbacks to `selectedBg` and `text` buy.
+ * `searchMatchBg` and `searchMatchText` remain optional leftover tokens so older
+ * theme files keep validating.
  */
 describe("search match theme colors", () => {
 	test("a theme omitting both colors still resolves them", () => {
