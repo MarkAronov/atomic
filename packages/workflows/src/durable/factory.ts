@@ -8,6 +8,7 @@ import {
 	getReadyDbosBackend,
 	getReadyDbosBackendSync,
 } from "./dbos-lifecycle.js";
+import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
 
 let injectedBackend: DurableWorkflowBackend | undefined;
 let initializedBackend: DurableWorkflowBackend | undefined;
@@ -65,12 +66,9 @@ export async function initializeDurableBackend(): Promise<DurableWorkflowBackend
 		initializing = undefined;
 	}
 	initializing ??= getReadyDbosBackend()
-		.catch((error: unknown) => {
-			// Post-shutdown initialization is a process-exit race, not a
-			// provisioning failure: fail loudly instead of silently degrading to a
-			// non-durable backend.
+		.catch(async (error: unknown) => {
 			if (error instanceof DbosShutdownError) throw error;
-			return degradeToNonDurableBackend(error);
+			return await degradeToNonDurableBackend(error);
 		})
 		.then((backend) => {
 			initializedBackend = backend;
@@ -79,12 +77,17 @@ export async function initializeDurableBackend(): Promise<DurableWorkflowBackend
 	return await initializing;
 }
 
-function degradeToNonDurableBackend(error: unknown): DurableWorkflowBackend {
-	const detail = error instanceof Error ? error.message : String(error);
+async function degradeToNonDurableBackend(error: unknown): Promise<DurableWorkflowBackend> {
+	const detail = readDbosFailureDetail(error);
+	const kind = await classifyDbosDurabilityFailure(error);
+	const restore =
+		kind === "duplicate_registration"
+			? `Restore durability by resolving the duplicate DBOS operation registration: ${detail}`
+			: `Restore durability by fixing Postgres provisioning: ${detail}`;
 	console.error(
 		"atomic-workflows: durable backend unavailable — continuing NON-DURABLY with an in-memory backend. " +
 			"Workflow runs will execute, but their state will not survive this process and `/workflow resume` " +
-			`after exit will not work. Restore durability by fixing Postgres provisioning: ${detail}`,
+			`after exit will not work. ${restore}`,
 	);
 	return new InMemoryDurableBackend();
 }

@@ -5,6 +5,7 @@ import {
 	shouldProvisionLocalDbos,
 } from "./dbos-local-postgres.js";
 import { getDbosProcessOwner, resetDbosProcessOwner } from "./dbos-process-owner.js";
+import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
 
 export type DbosLifecycleState =
 	| "uninitialized"
@@ -57,12 +58,15 @@ function owner(): ReturnType<typeof getDbosProcessOwner> {
 	return getDbosProcessOwner();
 }
 
-function durabilityFailure(action: string, error: unknown): DbosDurabilityError {
-	const detail = error instanceof Error ? error.message : String(error);
-	return new DbosDurabilityError(
-		`DBOS workflow durability ${action} failed: ${detail}. Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.`,
-		error instanceof Error ? { cause: error } : undefined,
-	);
+async function durabilityFailure(action: string, error: unknown): Promise<DbosDurabilityError> {
+	const detail = readDbosFailureDetail(error);
+	const kind = await classifyDbosDurabilityFailure(error);
+	const guidance =
+		kind === "duplicate_registration"
+			? "A duplicate DBOS operation registration caused this failure; changing the database URL will not resolve it."
+			: "Set DBOS_SYSTEM_DATABASE_URL to an existing Postgres when local provisioning is unavailable.";
+	const cause = error instanceof Error ? { cause: error } : undefined;
+	return new DbosDurabilityError(`DBOS workflow durability ${action} failed: ${detail}. ${guidance}`, cause);
 }
 
 export async function configureDbosOnce(): Promise<ConfiguredDbosDurability> {
@@ -74,8 +78,8 @@ export async function configureDbosOnce(): Promise<ConfiguredDbosDurability> {
 			slot.state = "configured";
 			return value;
 		})
-		.catch((error: unknown) => {
-			slot.failure = durabilityFailure("configuration", error);
+		.catch(async (error: unknown) => {
+			slot.failure = await durabilityFailure("configuration", error);
 			slot.state = "failed";
 			throw slot.failure;
 		});
@@ -106,10 +110,10 @@ export async function launchDbosOnce(): Promise<void> {
 					slot.state = "ready";
 					return;
 				} catch (provisionError) {
-					slot.failure = durabilityFailure("local Postgres startup", provisionError);
+					slot.failure = await durabilityFailure("local Postgres startup", provisionError);
 				}
 			} else {
-				slot.failure = durabilityFailure("launch", error);
+				slot.failure = await durabilityFailure("launch", error);
 			}
 			slot.state = "failed";
 			throw slot.failure;
@@ -148,8 +152,8 @@ export async function shutdownDbos(): Promise<void> {
 		await durability.backend.flush();
 		await durability.shutdown();
 		slot.state = "shut_down";
-	})().catch((error: unknown) => {
-		slot.failure = durabilityFailure("shutdown", error);
+	})().catch(async (error: unknown) => {
+		slot.failure = await durabilityFailure("shutdown", error);
 		slot.state = "failed";
 		throw slot.failure;
 	});
