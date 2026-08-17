@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.14-alpha.2] - 2026-08-17
+
 ### Added
 
 - Two new unbound viewport actions, `tui.altScreen.lineUp` and `tui.altScreen.lineDown`, scroll the transcript by a single line ([#2385](https://github.com/bastani-inc/atomic/issues/2385)).
@@ -24,6 +26,7 @@
 - Changed the built-in xAI default and the shipped xAI and OpenRouter workflow and subagent fallback chains from Grok 4.5 to Grok 4.6, and refreshed model-selection guidance from the latest DeepSWE v1.1 and Artificial Analysis v4.1.1 results.
 
 ### Fixed
+
 - Updated the Z.AI and Z.AI Coding Plan defaults to the catalog-valid `glm-5.3` model; direct GLM-5.3 chains use `:high`, while OpenRouter and Baseten remain documented provider-specific exceptions because their catalogs do not expose GLM-5.3 ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
 
 - Hardened hashline edits against unsafe integer anchors and oversized numeric ranges (inclusive ranges are capped at 100,000 lines before expansion), preserved hunk-looking `+TEXT` rows as literal payloads with a parser warning, omitted the synthetic terminal-newline row consistently across whole-file, truncated, and selector reads for LF and CRLF text while retaining genuine blank lines, and kept copied read output's original terminal-newline state when writing it back. Bare CR line-ending compatibility behavior is unchanged.

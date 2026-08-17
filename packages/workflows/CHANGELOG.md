@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.14-alpha.2] - 2026-08-17
+
 ### Breaking Changes
 
 - `open-claude-design` removes the `max_refinements` input, the `approved_for_export` and `refinements_completed` outputs, and the `<artifact_dir>/feedback/` feedback artifact. A run now performs one `generate-1`, an optional live review, and export; callers must stop supplying, reading, or expecting those fields and artifacts ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).

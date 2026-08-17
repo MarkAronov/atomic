@@ -7,7 +7,7 @@ import { moduleDir } from "../helpers/runtime.js";
 /**
  * L21 doc contract for the pi 0.84.2 migration: the docs must describe every
  * door the stack shipped, must never offer a renderer mode Atomic deleted, and
- * the [Unreleased] changelog sections must carry the user-visible outcome of
+ * the [0.9.14-alpha.2] changelog sections must carry the user-visible outcome of
  * L1–L20. A broken link between shipped behavior and shipped docs is exactly
  * the regression this suite exists to catch.
  */
@@ -240,9 +240,9 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 });
 
 describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
-	test("coding-agent [Unreleased] Added carries every shipped feature", () => {
-		const unreleased = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "Unreleased");
-		const added = changelogSubsection(unreleased, "Added");
+	test("coding-agent [0.9.14-alpha.2] Added carries every shipped feature", () => {
+		const released = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "0.9.14-alpha.2");
+		const added = changelogSubsection(released, "Added");
 		for (const needle of [
 			"`fullscreenExitOutput`",
 			"`defaultTools`",
@@ -253,27 +253,27 @@ describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
 			"`SessionNameState`",
 			"`getSessionNameState()`",
 		]) {
-			assert.ok(added.includes(needle), `[Unreleased] Added must mention ${needle}`);
+			assert.ok(added.includes(needle), `[0.9.14-alpha.2] Added must mention ${needle}`);
 		}
 		// A new export is new public surface, not a fix: it belongs under Added.
-		const fixed = changelogSubsection(unreleased, "Fixed");
+		const fixed = changelogSubsection(released, "Fixed");
 		assert.ok(!fixed.includes("`getSessionNameState()`"), "new SDK exports belong under ### Added");
 	});
 
-	test("coding-agent [Unreleased] Changed carries the pi 0.84.2 adoption and the Theme constructor change", () => {
-		const unreleased = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "Unreleased");
-		const changed = changelogSubsection(unreleased, "Changed");
+	test("coding-agent [0.9.14-alpha.2] Changed carries the pi 0.84.2 adoption and the Theme constructor change", () => {
+		const released = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "0.9.14-alpha.2");
+		const changed = changelogSubsection(released, "Changed");
 		assert.match(changed, /Adopted the pi 0\.84\.2 runtime/u);
 		// §5.3: the Theme constructor signature change is a public-API change and
 		// belongs under ### Changed, not ### Added.
 		assert.match(changed, /`Theme` constructor/u);
-		const added = changelogSubsection(unreleased, "Added");
+		const added = changelogSubsection(released, "Added");
 		assert.ok(!added.includes("`Theme` constructor"), "the Theme constructor change belongs under ### Changed");
 	});
 
-	test("coding-agent [Unreleased] Fixed carries the shared core defects and fullscreen repairs", () => {
-		const unreleased = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "Unreleased");
-		const fixed = changelogSubsection(unreleased, "Fixed");
+	test("coding-agent [0.9.14-alpha.2] Fixed carries the shared core defects and fullscreen repairs", () => {
+		const released = changelogSection(packageFile("coding-agent", "CHANGELOG.md"), "0.9.14-alpha.2");
+		const fixed = changelogSubsection(released, "Fixed");
 		for (const needle of [
 			"`message_update`",
 			"`usage`",
@@ -285,31 +285,35 @@ describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
 			"#7963",
 			"never-named",
 		]) {
-			assert.ok(fixed.includes(needle), `[Unreleased] Fixed must mention ${needle}`);
+			assert.ok(fixed.includes(needle), `[0.9.14-alpha.2] Fixed must mention ${needle}`);
 		}
 	});
 
-	test("workflows [Unreleased] records removal of stage-chat search", () => {
-		const unreleased = changelogSection(packageFile("workflows", "CHANGELOG.md"), "Unreleased");
-		assert.match(unreleased, /Removed find-in-stage-chat/u);
-		assert.doesNotMatch(unreleased, /Added search inside attached workflow stage chats/u);
+	test("workflows [0.9.14-alpha.2] records removal of stage-chat search", () => {
+		const released = changelogSection(packageFile("workflows", "CHANGELOG.md"), "0.9.14-alpha.2");
+		assert.match(released, /Removed find-in-stage-chat/u);
+		assert.doesNotMatch(released, /Added search inside attached workflow stage chats/u);
 	});
 
-	test("subagents [Unreleased] carries the pi 0.84.2 parity fixes", () => {
-		const unreleased = changelogSection(packageFile("subagents", "CHANGELOG.md"), "Unreleased");
-		assert.match(unreleased, /array-form `tools`/u);
-		assert.match(unreleased, /thinking level/u);
+	test("subagents [0.9.14-alpha.2] carries the pi 0.84.2 parity fixes", () => {
+		const released = changelogSection(packageFile("subagents", "CHANGELOG.md"), "0.9.14-alpha.2");
+		assert.match(released, /array-form `tools`/u);
+		assert.match(released, /thinking level/u);
 	});
 
 	test("released changelog sections still carry their original headings", () => {
 		// The full released-section freeze is enforced against git tags by
-		// test/unit/changelog.test.ts; this pins the lighter invariant that L21
-		// inserted its entries only inside [Unreleased] and reordered nothing.
+		// test/unit/changelog.test.ts; this pins descending heading order after
+		// the 0.9.14-alpha.2 notes left [Unreleased].
 		const changelog = packageFile("coding-agent", "CHANGELOG.md");
 		const unreleasedAt = changelog.indexOf("## [Unreleased]");
+		const alpha2At = changelog.indexOf("## [0.9.14-alpha.2]");
 		const alphaAt = changelog.indexOf("## [0.9.14-alpha.1]");
 		const stableAt = changelog.indexOf("## [0.9.13]");
-		assert.ok(unreleasedAt !== -1 && alphaAt !== -1 && stableAt !== -1);
-		assert.ok(unreleasedAt < alphaAt && alphaAt < stableAt, "released sections stay in descending version order");
+		assert.ok(unreleasedAt !== -1 && alpha2At !== -1 && alphaAt !== -1 && stableAt !== -1);
+		assert.ok(
+			unreleasedAt < alpha2At && alpha2At < alphaAt && alphaAt < stableAt,
+			"released sections stay in descending version order",
+		);
 	});
 });
