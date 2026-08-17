@@ -81,6 +81,7 @@ export interface DbosStepRecord {
 	readonly completedAt?: number;
 }
 
+import { getDbosProcessOwner } from "./dbos-process-owner.js";
 import { createRealDbosHandle, type DbosLogger, type DbosStatic, getAtomicExecutorId } from "./dbos-sdk-handle.js";
 // ---------------------------------------------------------------------------
 // Real SDK handle factory (lazy import, no top-level dependency)
@@ -118,23 +119,35 @@ export async function configureDbosDurableBackend(config?: {
 	readonly systemDatabaseUrl?: string;
 }): Promise<ConfiguredDbosDurability> {
 	const sdk = await importDbosSdk();
-	const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
-	sdk.setConfig({
-		name: "atomic-workflows",
-		...(url === undefined ? {} : { systemDatabaseUrl: url }),
-		runAdminServer: false,
-		// Unique per process: concurrent Atomic sessions share one database, and
-		// DBOS-level pending-workflow recovery must stay scoped to the owner.
-		executorID: getAtomicExecutorId(),
-		logger: SILENT_DBOS_LOGGER,
-	});
-	const mainWorkflow = sdk.registerWorkflow(async (_name: string, inputs: DurableInputs) => inputs, {
-		name: "atomicWorkflowHandle",
-	});
-	const checkpointWorkflow = sdk.registerWorkflow(
-		async (_workflowId: string, _stepName: string, output: WorkflowSerializableValue) => output,
-		{ name: "atomicWorkflowCheckpoint" },
-	);
+	const owner = getDbosProcessOwner();
+	const existing = owner.wrappers;
+	// The SDK forbids setConfig after launch. Recover original wrappers first.
+	if (existing === undefined) {
+		const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
+		sdk.setConfig({
+			name: "atomic-workflows",
+			...(url === undefined ? {} : { systemDatabaseUrl: url }),
+			runAdminServer: false,
+			// Unique per process: concurrent Atomic sessions share one database, and
+			// DBOS-level pending-workflow recovery must stay scoped to the owner.
+			executorID: getAtomicExecutorId(),
+			logger: SILENT_DBOS_LOGGER,
+		});
+	}
+	const mainWorkflow =
+		existing?.mainWorkflow ??
+		sdk.registerWorkflow(async (_name: string, inputs: DurableInputs) => inputs, {
+			name: "atomicWorkflowHandle",
+		});
+	const checkpointWorkflow =
+		existing?.checkpointWorkflow ??
+		sdk.registerWorkflow(
+			async (_workflowId: string, _stepName: string, output: WorkflowSerializableValue) => output,
+			{ name: "atomicWorkflowCheckpoint" },
+		);
+	if (existing === undefined) {
+		owner.wrappers = { mainWorkflow, checkpointWorkflow };
+	}
 	return {
 		backend: new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow)),
 		launch: () => sdk.launch(),
