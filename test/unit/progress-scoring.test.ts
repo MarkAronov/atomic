@@ -192,4 +192,64 @@ describe("progress-scoring", () => {
 		assert.equal(result.evidence.delta, 0);
 		assert.deepEqual(Object.keys(result), ["trend", "evidence"]);
 	});
+	test("composes score_progress curves with rising success and low-flat failure fixtures", async () => {
+		const checkpoints = [2, 3, 4, 5, 6, 7];
+		const successStub = stubContext([
+			structuredScores([
+				{ checkpoint: 2, score: 2 },
+				{ checkpoint: 3, score: 5 },
+				{ checkpoint: 4, score: 8 },
+				{ checkpoint: 5, score: 11 },
+				{ checkpoint: 6, score: 14 },
+				{ checkpoint: 7, score: 17 },
+			]),
+		]);
+		const successCurve = await score_progress(successStub.ctx, {
+			problem: "Satisfy the acceptance criteria.",
+			steps: [
+				"Observed the failing acceptance test.",
+				"Implemented the missing behavior.",
+				"Added focused regression coverage.",
+				"Ran the focused test suite.",
+				"Ran the full test suite.",
+				"Verified the generated artifacts.",
+				"Confirmed the acceptance evidence.",
+			],
+			checkpoints,
+		});
+		const successScores = successCurve.scores.filter((score): score is number => score !== null);
+		const successTrend = classify_trend(successScores);
+		assert.equal(successScores.length, checkpoints.length);
+		assert.equal(successTrend.trend, "rising");
+
+		const failureStub = stubContext([
+			structuredScores([
+				{ checkpoint: 2, score: 5 },
+				{ checkpoint: 3, score: 5 },
+				{ checkpoint: 4, score: 6 },
+				{ checkpoint: 5, score: 5 },
+				{ checkpoint: 6, score: 5 },
+				{ checkpoint: 7, score: 6 },
+			]),
+		]);
+		const failureCurve = await score_progress(failureStub.ctx, {
+			problem: "Satisfy the acceptance criteria.",
+			steps: [
+				"Observed the failing acceptance test.",
+				"Repeated the same attempted fix.",
+				"Observed the same failure again.",
+				"Rebuilt the same incorrect approach.",
+				"Observed no change in output.",
+				"Repeated the failing test.",
+				"Recorded the unchanged failure evidence.",
+			],
+			checkpoints,
+		});
+		const failureScores = failureCurve.scores.filter((score): score is number => score !== null);
+		const failureTrend = classify_trend(failureScores);
+		assert.ok(failureScores.length >= DEFAULT_TREND_WINDOW + 1);
+		assert.equal(failureTrend.evidence.delta, 0);
+		assert.equal(failureTrend.trend, "flat");
+		assert.notEqual(failureTrend.trend, "regressing");
+	});
 });
