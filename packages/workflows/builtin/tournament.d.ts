@@ -2,9 +2,15 @@ import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } fr
 
 export type TournamentCriterionInput = {
 	readonly id?: string;
-	readonly name: string;
+	readonly name?: string;
 	readonly description: string;
 };
+
+export type TournamentCriteriaInput =
+	| string
+	| Record<string, string>
+	| string[]
+	| TournamentCriterionInput[];
 
 export type TournamentRankingEntry = {
 	readonly label: string;
@@ -18,7 +24,7 @@ export type TournamentWorkflowInputs = WorkflowInputValues & {
 	readonly n_evaluations: number;
 	readonly pivots: number;
 	readonly seed: number;
-	readonly criteria?: TournamentCriterionInput[];
+	readonly criteria?: TournamentCriteriaInput;
 	readonly models?: string[];
 };
 
@@ -29,7 +35,7 @@ export type TournamentWorkflowRunInputs = WorkflowInputValues & {
 	readonly n_evaluations?: number;
 	readonly pivots?: number;
 	readonly seed?: number;
-	readonly criteria?: TournamentCriterionInput[];
+	readonly criteria?: TournamentCriteriaInput;
 	readonly models?: string[];
 };
 

@@ -215,7 +215,10 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 				kind: "number",
 			},
 			seed: { description: "Seed for the deterministic comparison schedule.", kind: "number" },
-			criteria: { description: "Optional V1 judge criteria; omitted uses the default three-criterion rubric." },
+			criteria: {
+				description:
+					"Optional V1 judge criteria; accepts a markdown rubric, record, string list, or CriterionInput list; omitted uses the default three-criterion rubric.",
+			},
 			models: { description: "Optional ordered model ids assigned round-robin to attempt slots." },
 		},
 	},

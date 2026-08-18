@@ -1,10 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, isAbsolute, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowInputValues, WorkflowRunContext, WorkflowSerializableObject, WorkflowSerializableValue, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { accumulate, plan_comparisons, rank_candidates, select_pivots, soft_win, type Preference, type ScoringJob } from "./selection-math.js";
 import { build_scoring_prompt, scoring_prompt_reads, warm_first_fan_out, type ScoringCandidate, type SharedHead } from "./verification-prompts.js";
-import { normalize_criteria, VERIFICATION_SCALE, type CriterionInput } from "./verification-criteria.js";
+import { normalize_criteria, parse_rubric, VERIFICATION_SCALE, type Criterion, type CriterionInput } from "./verification-criteria.js";
 import { DEFAULT_TOURNAMENT_CRITERIA, renderComparisonsReducerPrompt, renderTournamentAttemptPrompt } from "./tournament-prompts.js";
 import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
@@ -19,8 +19,8 @@ const JUDGE_GROUND_TRUTH_NOTE = "No external ground truth is supplied; score eac
 const JUDGE_OUTPUT_FORMAT =
 	"Return only JSON with criterion_id (string), score_a (integer 1–20 for presented slot 1), score_b (integer 1–20 for presented slot 2), and evidence (array of strings).";
 
-type TournamentCriterionInput = CriterionInput & { readonly name: string; readonly description: string };
-type TournamentInputs = WorkflowInputValues & { readonly prompt: string; readonly num_attempts: number; readonly max_concurrency: number; readonly n_evaluations: number; readonly pivots: number; readonly seed: number; readonly criteria?: readonly TournamentCriterionInput[]; readonly models?: readonly string[] };
+type TournamentCriteriaInput = string | Record<string, string> | readonly string[] | readonly CriterionInput[];
+type TournamentInputs = WorkflowInputValues & { readonly prompt: string; readonly num_attempts: number; readonly max_concurrency: number; readonly n_evaluations: number; readonly pivots: number; readonly seed: number; readonly criteria?: TournamentCriteriaInput; readonly models?: readonly string[] };
 
 type Entrant = { readonly label: string; readonly path: string; readonly body: string };
 type JudgeReport = { readonly criterion_id: string; readonly score_a: number; readonly score_b: number; readonly evidence: readonly string[] };
@@ -77,6 +77,33 @@ function stageName(job: ScoringJob): string {
 	return `judge-${job.a}-${job.b}-${job.criterionId}-r${job.rep}`;
 }
 
+function criterionSlug(id: string): string {
+	const slug = id
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 40)
+		.replace(/_+$/g, "");
+	return slug || "criterion";
+}
+
+function judgeArtifactPath(judgesDir: string, job: ScoringJob, criterionIndex: number): string {
+	const filename = `judge-${job.a}-${job.b}-c${criterionIndex}-${criterionSlug(job.criterionId)}-r${job.rep}.json`;
+	const root = resolve(judgesDir);
+	const path = resolve(judgesDir, filename);
+	const fromRoot = relative(root, path);
+	if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) {
+		throw new Error(`tournament: judge artifact escaped its directory: ${path}`);
+	}
+	return path;
+}
+
+function tournamentCriteria(input: TournamentCriteriaInput | undefined): readonly Criterion[] {
+	if (input === undefined) return normalize_criteria(DEFAULT_TOURNAMENT_CRITERIA);
+	if (typeof input === "string") return parse_rubric(input).criteria;
+	return normalize_criteria(input);
+}
+
 function modelAssignment(
 	entrants: readonly Entrant[],
 	models: readonly string[] | undefined,
@@ -120,9 +147,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 		path,
 		body: await readFile(path, "utf8"),
 	})));
-	const criteria = normalize_criteria(
-		(ctx.inputs.criteria ?? DEFAULT_TOURNAMENT_CRITERIA) as readonly CriterionInput[],
-	);
+	const criteria = tournamentCriteria(ctx.inputs.criteria);
 	const criterionIds = criteria.map((criterion) => criterion.id);
 	const plan = plan_comparisons({
 		n: entrants.length,
@@ -157,7 +182,8 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 				outputFormat: JUDGE_OUTPUT_FORMAT,
 			};
 			const name = stageName(job);
-			const path = join(judgesDir, `${name}.json`);
+			const criterionIndex = criterionIds.indexOf(job.criterionId);
+			const path = judgeArtifactPath(judgesDir, job, criterionIndex);
 			judgeArtifactPaths.push(path);
 			return {
 				job,
@@ -220,6 +246,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 				swapped: stage.job.swapped,
 				score_a: scoreA,
 				score_b: scoreB,
+				p_ab: soft_win(scoreA, scoreB),
 				judge_artifact_path: stage.path,
 			});
 		}
@@ -244,7 +271,6 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 			const meanScoreA = valid.reduce((sum, record) => sum + record.score_a, 0) / valid.length;
 			const meanScoreB = valid.reduce((sum, record) => sum + record.score_b, 0) / valid.length;
 			const p = soft_win(meanScoreA, meanScoreB);
-			for (const record of valid) record.p_ab = p;
 			pairs.push({
 				a: first.a,
 				b: first.b,
@@ -272,8 +298,10 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 		meanPreference: entry.meanPreference,
 	}));
 	const outputRanking = ranking.map(({ label, meanPreference }) => ({ label, meanPreference }));
+	const budgetPivots = Math.min(pivotCount, entrants.length);
+	// Planned units are judge jobs: scheduled directed pairs × criteria × evaluations.
 	const comparisonBudget =
-		(entrants.length + pivotCount * (entrants.length - pivotCount) + (pivotCount * (pivotCount - 1)) / 2) *
+		(entrants.length + budgetPivots * (entrants.length - budgetPivots) + (budgetPivots * (budgetPivots - 1)) / 2) *
 		criteria.length * nEvaluations;
 	const comparisonPath = join(artifactDir, "comparisons.json");
 	const assignment = modelAssignment(entrants, models);

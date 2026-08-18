@@ -38,12 +38,17 @@ export default workflow({
 			default: 0,
 			description: "Seed for the deterministic comparison schedule.",
 		}),
-		criteria: Type.Optional(Type.Array(Type.Object({
-			id: Type.Optional(Type.String()),
-			name: Type.String(),
-			description: Type.String(),
-		}, { additionalProperties: false }), {
-			description: "Optional V1 judge criteria; omitted uses the default three-criterion rubric.",
+		criteria: Type.Optional(Type.Union([
+			Type.String(),
+			Type.Record(Type.String(), Type.String()),
+			Type.Array(Type.String()),
+			Type.Array(Type.Object({
+				id: Type.Optional(Type.String()),
+				name: Type.Optional(Type.String()),
+				description: Type.String(),
+			}, { additionalProperties: true })),
+		], {
+			description: "Optional V1 judge criteria; accepts a markdown rubric, record, string list, or CriterionInput list; omitted uses the default three-criterion rubric.",
 		})),
 		models: Type.Optional(Type.Array(Type.String(), {
 			description: "Optional ordered model ids assigned round-robin to attempt slots.",

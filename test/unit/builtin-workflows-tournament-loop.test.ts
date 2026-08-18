@@ -1,9 +1,9 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
 	accumulate,
@@ -12,6 +12,7 @@ import {
 	select_pivots,
 	soft_win,
 } from "../../packages/workflows/builtin/selection-math.js";
+import { validateInputs } from "../../packages/workflows/src/runs/shared/validate-inputs.js";
 import {
 	assertOutputTypes,
 	assertWorkflowDefinition,
@@ -49,7 +50,7 @@ describe("tournament builtin", () => {
 		assert.equal(definition.inputs.num_attempts.maximum, 8);
 		assert.equal(definition.inputs.n_evaluations.minimum, 1);
 		assert.equal(definition.inputs.pivots.minimum, 1);
-		assert.equal(fieldKind(definition.inputs.criteria), "array");
+		assert.equal(fieldKind(definition.inputs.criteria), "unknown");
 		assert.equal(fieldKind(definition.inputs.models), "array");
 		assertOutputTypes(definition.outputs, {
 			result: "text",
@@ -65,12 +66,63 @@ describe("tournament builtin", () => {
 		});
 	});
 
-	function validJudgeReport(): string {
+	test("accepts every V1 criteria shape and normalizes a record in the ledger", async () => {
+		const { default: definition } = await import("../../packages/workflows/builtin/tournament.js");
+		const markdown = "# Rubric\n\n## Criteria\n### Correctness {#correctness}\nNo material errors.";
+		const criteriaInputs = [
+			markdown,
+			{ Correctness: "no material errors" },
+			["no material errors"],
+			[{ description: "no material errors" }],
+			[{ description: "no material errors", extra: "ignored by V1" }],
+			[{ id: "x", description: "no material errors" }],
+			[{ id: "x", name: "X", description: "no material errors" }],
+		];
+		for (const criteria of criteriaInputs) {
+			assert.deepEqual(
+				validateInputs(definition.inputs, { prompt: "x", criteria }),
+				[],
+				`criteria should validate: ${JSON.stringify(criteria)}`,
+			);
+		}
+		const ctx = withCwd(
+			makeMockCtx(
+				{
+					prompt: "Normalize a rubric",
+					num_attempts: 2,
+					max_concurrency: 2,
+					n_evaluations: 1,
+					pivots: 1,
+					seed: 0,
+					criteria: { Correctness: "no material errors" },
+				},
+				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
+			),
+		);
+		const output = await definition.run(ctx);
+		const ledger = JSON.parse(readFileSync(output.comparisons_path, "utf8"));
+		assert.deepEqual(ledger.params.criteria, [
+			{ id: "correctness", name: "Correctness", description: "no material errors" },
+		]);
+	});
+
+	function candidateScore(index: number): number {
+		return 20 - index * 2;
+	}
+
+	function validJudgeReport(name: string): string {
+		const match = /^judge-(\d+)-(\d+)-.*-r(\d+)$/.exec(name.replace(/-reask$/, ""));
+		assert.notEqual(match, null);
+		const first = Number(match[1]);
+		const second = Number(match[2]);
+		const repetition = Number(match[3]);
+		const slotA = repetition % 2 === 1 ? second : first;
+		const slotB = repetition % 2 === 1 ? first : second;
 		return JSON.stringify({
 			criterion_id: "correctness",
-			score_a: 18,
-			score_b: 6,
-			evidence: ["observable evidence"],
+			score_a: candidateScore(slotA),
+			score_b: candidateScore(slotB),
+			evidence: [`candidate ${slotA} over candidate ${slotB}`],
 		});
 	}
 
@@ -86,7 +138,7 @@ describe("tournament builtin", () => {
 					pivots: 1,
 					seed: 7,
 				},
-				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport() : undefined) },
+				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
 			),
 		);
 		const output = await definition.run(ctx);
@@ -165,9 +217,56 @@ describe("tournament builtin", () => {
 		);
 		assert.ok(ledger.budget.executed >= ledger.comparisons.length);
 		assert.equal(ledger.ranking.length, 4);
-		assert.equal(output.winner, ledger.ranking[0].label);
+		assert.equal(new Set(ledger.ranking.map((entry) => entry.meanPreference)).size, 4);
+		assert.equal(output.winner, "attempt-1");
 		assert.equal(output.judge_artifact_paths.length, ledger.comparisons.length);
 		assert.equal(output.attempt_artifact_paths.length, 4);
+	});
+
+	test("sanitizes criterion ids for unique contained judge artifacts", async () => {
+		const { default: definition } = await import("../../packages/workflows/builtin/tournament.js");
+		const suppliedIds = ["a/b", "../../escaped", "normal"];
+		const ctx = withCwd(
+			makeMockCtx(
+				{
+					prompt: "Audit artifact paths",
+					num_attempts: 3,
+					max_concurrency: 2,
+					n_evaluations: 1,
+					pivots: 1,
+					seed: 0,
+					criteria: suppliedIds.map((id) => ({ id, description: `criterion ${id}` })),
+				},
+				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
+			),
+		);
+		const output = await definition.run(ctx);
+		const ledger = JSON.parse(readFileSync(output.comparisons_path, "utf8"));
+		const judgeRoot = resolve(output.artifact_dir, "judges");
+		assert.equal(new Set(output.judge_artifact_paths).size, output.judge_artifact_paths.length);
+		assert.equal(output.judge_artifact_paths.length, ledger.comparisons.length);
+		for (const path of output.judge_artifact_paths) {
+			const fromRoot = relative(judgeRoot, resolve(path));
+			assert.equal(fromRoot.startsWith("..") || isAbsolute(fromRoot), false);
+			assert.equal(resolve(path).startsWith(`${judgeRoot}/`), true);
+		}
+		assert.deepEqual(new Set(ledger.comparisons.map((entry) => entry.criterion_id)), new Set(suppliedIds));
+		assert.equal(existsSync(join(output.artifact_dir, "escaped-r0.json")), false);
+	});
+
+	test("clamps planned budget when pivots exceed the candidate pool", async () => {
+		const { default: definition } = await import("../../packages/workflows/builtin/tournament.js");
+		const ctx = withCwd(
+			makeMockCtx(
+				{ prompt: "Rank a small pool", num_attempts: 3, max_concurrency: 2, n_evaluations: 1, pivots: 6, seed: 0 },
+				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
+			),
+		);
+		const output = await definition.run(ctx);
+		const ledger = JSON.parse(readFileSync(output.comparisons_path, "utf8"));
+		assert.ok(ledger.budget.planned > 0);
+		assert.ok(ledger.budget.planned >= ledger.comparisons.length);
+		assert.equal(ledger.ranking.length, 3);
 	});
 
 	test("re-asks one invalid report and excludes a fully invalid pair", async () => {
@@ -188,10 +287,10 @@ describe("tournament builtin", () => {
 							firstPair = pairPrefix;
 							return "garbage";
 						}
-						if (name === `${firstJudge}-reask`) return validJudgeReport();
+						if (name === `${firstJudge}-reask`) return validJudgeReport(name);
 						if (invalidPair === "" && pairPrefix !== firstPair) invalidPair = pairPrefix;
 						if (name.startsWith(invalidPair)) return "garbage";
-						return validJudgeReport();
+						return validJudgeReport(name);
 					},
 				},
 			),
@@ -224,14 +323,18 @@ describe("tournament builtin", () => {
 		const ctx = withCwd(
 			makeMockCtx(
 				{ prompt: "Rank fixtures", num_attempts: 3, max_concurrency: 2, n_evaluations: 2, pivots: 1, seed: 11 },
-				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport() : undefined) },
+				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
 			),
 		);
 		const output = await definition.run(ctx);
 		const ledger = JSON.parse(readFileSync(output.comparisons_path, "utf8"));
-		const swapped = ledger.comparisons.find((entry) => entry.swapped === true && entry.invalid !== true);
-		assert.equal(swapped.score_a, 6);
-		assert.equal(swapped.score_b, 18);
+		const validRows = ledger.comparisons.filter((entry) => entry.invalid !== true);
+		for (const entry of validRows) {
+			assert.equal(entry.p_ab, soft_win(entry.score_a, entry.score_b));
+		}
+		const swapped = validRows.find((entry) => entry.swapped === true);
+		assert.equal(swapped.score_a, candidateScore(swapped.a));
+		assert.equal(swapped.score_b, candidateScore(swapped.b));
 		const weights = Array.from({ length: ledger.params.n }, () => 0);
 		const counts = Array.from({ length: ledger.params.n }, () => 0);
 		const grouped = new Map();
@@ -251,6 +354,10 @@ describe("tournament builtin", () => {
 							valid.reduce((sum, entry) => sum + entry.score_a, 0) / valid.length,
 							valid.reduce((sum, entry) => sum + entry.score_b, 0) / valid.length,
 						);
+			const pair = ledger.pairs.find(
+				(entry) => entry.a === first.a && entry.b === first.b && entry.phase === first.phase,
+			);
+			assert.equal(pair.p_ab, p);
 			accumulate([{ a: first.a, b: first.b, p }], weights, counts);
 		}
 		assert.deepEqual(weights, ledger.w);
@@ -260,6 +367,8 @@ describe("tournament builtin", () => {
 			index: entry.index,
 			meanPreference: entry.meanPreference,
 		}));
+		assert.equal(new Set(ledger.ranking.map((entry) => entry.meanPreference)).size, ledger.ranking.length);
+		assert.equal(output.winner, "attempt-1");
 		assert.deepEqual(expectedRanking, ledger.ranking);
 	});
 
@@ -277,7 +386,7 @@ describe("tournament builtin", () => {
 						seed: 19,
 						models: ["model-a", "model-b"],
 					},
-					{ task: (name) => (name.startsWith("judge-") ? validJudgeReport() : undefined) },
+					{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
 				),
 			);
 			const output = await definition.run(ctx);

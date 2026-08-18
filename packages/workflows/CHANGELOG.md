@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Opened `ctx.tool` detail now matches the main-chat tool block: `Box(1,1)` inner padding, a blank row under the `$` header, full-width alignment with the orchestrator bars, unpainted canvas above and below the card, host `toolTitle`/`toolOutput` colors, a dim `ctrl+o Expand` hint, and second-resolution `Took`/`Elapsed` timing.
+- Tournament criteria now accepts every documented V1 shape, including markdown rubrics, records, string lists, and CriterionInput objects with optional ids and names.
+- Criterion ids are preserved in the ledger while judge artifact filenames are sanitized, collision-free, and contained under the artifact directory.
+- Corrected the planned comparison budget for oversized pivot counts and recorded each comparison row's own soft preference separately from pair aggregates.
 
 ## [0.9.14-alpha.3] - 2026-08-17
 
