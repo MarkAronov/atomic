@@ -2,9 +2,9 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
 import {
-	consolidateFindingsBatch,
-	type ConsolidatedFinding,
-	type ReviewConvergenceSummary,
+  consolidateFindingsBatch,
+  type ConsolidatedFinding,
+  type ReviewConvergenceSummary,
 } from "./review-convergence.js";
 import type { ReverifyAuditEntry, ReverifiableFinding } from "./goal-reverify.js";
 
@@ -42,23 +42,23 @@ export async function writeReviewArtifact(
 }
 
 export async function writeReviewRoundArtifact(
-	artifactDir: string,
-	reviews: readonly ReviewRecord[],
-	consolidatedFindings: readonly ConsolidatedFinding<ReverifiableFinding>[] = consolidateFindingsBatch(
-		reviews.map((review) => ({
-			reviewer: review.reviewer,
-			findings: review.findings,
-		})),
-	),
-	reverification: readonly ReverifyAuditEntry<ReverifiableFinding>[] = [],
+  artifactDir: string,
+  reviews: readonly ReviewRecord[],
+  consolidatedFindings: readonly ConsolidatedFinding<ReverifiableFinding>[] = consolidateFindingsBatch(
+    reviews.map((review) => ({
+      reviewer: review.reviewer,
+      findings: review.findings,
+    })),
+  ),
+  reverification: readonly ReverifyAuditEntry<ReverifiableFinding>[] = [],
 ): Promise<string> {
-	const artifactPath = join(artifactDir, "review-round-latest.json");
-	const visibleReviews = reviews.map(withoutTurn);
-	await writeFile(
-		artifactPath,
-		`${JSON.stringify({ reviews: visibleReviews, consolidated_findings: consolidatedFindings, reverification }, null, 2)}\n`,
-		{ encoding: "utf8" },
-	);
-	return artifactPath;
+  const artifactPath = join(artifactDir, "review-round-latest.json");
+  const visibleReviews = reviews.map(withoutTurn);
+  await writeFile(
+    artifactPath,
+    `${JSON.stringify({ reviews: visibleReviews, consolidated_findings: consolidatedFindings, reverification }, null, 2)}\n`,
+    { encoding: "utf8" },
+  );
+  return artifactPath;
 }
 

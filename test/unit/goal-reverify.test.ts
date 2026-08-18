@@ -13,12 +13,13 @@ import {
 	type ReverifyContext,
 	reverify_finding,
 } from "../../packages/workflows/builtin/goal-reverify.js";
-import { summarizeReviewConvergence } from "../../packages/workflows/builtin/review-convergence.js";
+import { MAX_INLINE_CANDIDATE_BYTES } from "../../packages/workflows/builtin/verification-prompts.js";
 import type {
 	WorkflowSerializableValue,
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
 } from "../../packages/workflows/src/shared/types.js";
+import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 function finding(overrides: Partial<ReverifiableFinding> = {}): ReverifiableFinding {
 	return {
@@ -131,6 +132,20 @@ describe("goal reverify scoring", () => {
 		assert.equal(result.evidence.length, 3);
 	});
 
+	test("an oversized pathless candidate defaults all repeats to confirmed", async () => {
+		const { ctx, calls } = stubContext([]);
+		const result = await reverify_finding(ctx, {
+			finding: entry({
+				body: "x".repeat(MAX_INLINE_CANDIDATE_BYTES + 1),
+				code_location: undefined,
+			}),
+			context,
+		});
+		assert.equal(result.verdict, "confirmed");
+		assert.deepEqual(result.perRepeat, [null, null, null]);
+		assert.equal(calls.length, 0);
+	});
+
 	test("a parse failure is re-asked once and the re-ask can supply the valid repeat", async () => {
 		const { ctx, calls } = stubContext([undefined, score(7), score(8), score(9)]);
 		const result = await reverify_finding(ctx, { finding: entry(), context });
@@ -174,24 +189,99 @@ describe("goal reverify scoring", () => {
 		);
 	});
 
-	test("when demotion empties blocking findings, stop_review_loop remains the only approval authority", async () => {
-		const original = entry();
-		const { ctx } = stubContext([score(5), score(6), score(4)]);
-		const result = await reverify_finding(ctx, { finding: original, context });
-		const reshaped = apply_reverify_results([original], [{ finding: original, ...result }]);
+	test("when demotion empties blocking findings, production goal run still requires stop_review_loop and persists audit evidence", async () => {
+		const mod = await import("../../packages/workflows/builtin/goal.js");
+		const findingTitle = "[P2] A concrete defect";
+		const workflowFinding = {
+			title: findingTitle,
+			body: "The cited implementation has a defect.",
+			confidence_score: 0.4,
+			objective_alignment: "consistent_with_objective",
+			priority: 2,
+			code_location: {
+				absolute_file_path: "/repo/src/file.ts",
+				line_range: { start: 1, end: 1 },
+			},
+		};
+		const review = (stopReviewLoop: boolean, findings: readonly (typeof workflowFinding)[] = []): string =>
+			JSON.stringify({
+				findings,
+				overall_correctness: stopReviewLoop ? "patch is correct" : "patch is incorrect",
+				overall_explanation: stopReviewLoop ? "No blocking findings." : "A finding remains unresolved.",
+				overall_confidence_score: 0.9,
+				goal_oracle_satisfied: stopReviewLoop,
+				requirements_traceability: [
+					{
+						requirement: "Keep the objective contract true",
+						status: stopReviewLoop ? "proven" : "missing",
+						evidence: stopReviewLoop ? "Current state proves the objective." : "The finding remains unresolved.",
+					},
+				],
+				receipt_assessment: "Mock reviewer evidence.",
+				verification_remaining: stopReviewLoop ? "none" : "The finding remains unresolved.",
+				stop_review_loop: stopReviewLoop,
+				reviewer_error: null,
+			});
+		const scoreByStage: Record<string, number> = {
+			"reverify-1": 5,
+			"reverify-2": 6,
+			"reverify-3": 4,
+		};
+		const ctx = makeMockCtx(
+			{
+				objective: "Keep the objective contract true.",
+				max_turns: 1,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "completion-reviewer-1") return review(true);
+					if (name === "evidence-reviewer-1") return review(false);
+					if (name === "risk-reviewer-1") return review(false, [workflowFinding]);
+					const score = scoreByStage[name];
+					if (score !== undefined) {
+						return {
+							text: `Re-verification score ${score}.`,
+							structured: { score, evidence: [`Observed score ${score}.`] },
+						};
+					}
+					return undefined;
+				},
+			},
+		);
+
+		const result = await mod.default.run(ctx);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(ctx.calls.task.filter((name) => name.startsWith("reverify-")).length, 3);
+
+		const ledger = JSON.parse(await readFile(String(result.ledger_path), "utf8")) as {
+			readonly reverification: readonly {
+				readonly verdict: string;
+				readonly meanScore: number;
+				readonly perRepeat: readonly (number | null)[];
+				readonly evidence: readonly string[];
+			}[];
+			readonly reviews: readonly { readonly findings: readonly { readonly title: string }[] }[];
+			readonly decisions: readonly { readonly stopReviewLoop: boolean }[];
+		};
+		assert.equal(ledger.decisions[0]?.stopReviewLoop, false);
 		assert.equal(
-			reshaped.batch.every((item) => item.blocking === false),
+			ledger.reviews.flatMap((record) => record.findings).some((item) => item.title === findingTitle),
 			true,
 		);
-		const round = summarizeReviewConvergence({
-			parsed: true,
-			approved: false,
-			stopReviewLoop: false,
-			nextAction: "implementation",
-			diagnostics: [],
-		});
-		assert.equal(round.stopReviewLoop, false);
-		assert.equal(round.approved, false);
+		assert.equal(ledger.reverification.length, 1);
+		assert.equal(ledger.reverification[0]?.verdict, "demoted");
+		assert.equal(ledger.reverification[0]?.meanScore, 5);
+		assert.deepEqual(ledger.reverification[0]?.perRepeat, [5, 6, 4]);
+		assert.equal(ledger.reverification[0]?.evidence.length, 3);
+
+		const round = JSON.parse(await readFile(String(result.review_report_path), "utf8")) as {
+			readonly consolidated_findings: readonly { readonly blocking: boolean }[];
+		};
+		assert.equal(round.consolidated_findings[0]?.blocking, false);
 	});
 	test("round artifacts retain demotion audit evidence and the original finding", async () => {
 		const { ctx } = stubContext([score(5), score(6), score(4)]);

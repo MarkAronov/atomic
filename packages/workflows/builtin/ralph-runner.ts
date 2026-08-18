@@ -286,13 +286,15 @@ export async function runRalphWorkflow(
         findings: review.decision.findings,
       })),
     );
-    const reverified = await reverify_consolidated_batch(ctx, {
-      batch: consolidatedFindings,
-      context: {
-        objective: workflowPrompt,
-        candidateRefs: [researchPath, implementationNotesPath, orchestratorReportPath],
-      },
-    });
+    const reverified = approved
+      ? { batch: consolidatedFindings, audits: [] as const }
+      : await reverify_consolidated_batch(ctx, {
+          batch: consolidatedFindings,
+          context: {
+            objective: workflowPrompt,
+            candidateRefs: [researchPath, implementationNotesPath, orchestratorReportPath],
+          },
+        });
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
       {

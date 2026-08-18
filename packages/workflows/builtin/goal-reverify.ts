@@ -179,14 +179,14 @@ async function runRepeat(
 	context: ReverifyBatchInput["context"],
 	stageName: string,
 ): Promise<ReverifyReport | undefined> {
-	const rendered = promptFor(finding, context);
-	const options = {
-		prompt: rendered.prompt,
-		context: "fresh" as const,
-		reads: rendered.reads,
-		schema: reverifySchema,
-	};
 	try {
+		const rendered = promptFor(finding, context);
+		const options = {
+			prompt: rendered.prompt,
+			context: "fresh" as const,
+			reads: rendered.reads,
+			schema: reverifySchema,
+		};
 		return parseReport(await ctx.task(stageName, options));
 	} catch {
 		return undefined;
