@@ -71,8 +71,8 @@ test("adversarial-verification uses fresh evidence verifiers and accepts only th
 		const result = await adversarialVerification.run(ctx);
 		assert.equal(result.approved, true);
 		assert.equal(result.repairs_completed, 0);
-		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1", "verifier-0-2"]]);
-		for (const name of ctx.calls.parallel[0]!) {
+		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1"], ["verifier-0-2"]]);
+		for (const name of ctx.calls.parallel.flat()) {
 			const options = ctx.calls.taskOptions[name]?.[0];
 			assert.equal(options?.context, "fresh");
 			assert.ok(readPaths(options).some((path) => path.endsWith("candidate.md")));
@@ -205,6 +205,10 @@ test("generate-and-filter fans out, dedupes, optionally judges, and finalizes ar
 			readPaths(ctx.calls.taskOptions["dedupe-and-filter"]?.[0]).some((path) => path.endsWith("manifest.json")),
 		);
 		assert.ok(readPaths(ctx.calls.taskOptions.judge?.[0]).some((path) => path.endsWith("filter.json")));
+		const judgePrompt = ctx.calls.prompts.judge?.[0] ?? "";
+		assert.match(judgePrompt, /<scoring_head>/);
+		assert.match(judgePrompt, /<criterion>/);
+		assert.match(judgePrompt, /<scale_anchors>/);
 		assert.ok(readPaths(ctx.calls.taskOptions["final-shortlist"]?.[0]).some((path) => path.endsWith("judge.json")));
 		const filterReport = JSON.parse(readFileSync(result.filter_path, "utf8")) as {
 			shortlist: string[];

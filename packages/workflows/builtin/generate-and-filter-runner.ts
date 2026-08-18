@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
@@ -61,19 +61,22 @@ export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Pro
   let shortlist = filteredShortlist.length > 0 ? filteredShortlist : fallbackShortlist;
   let judgePath: string | null = null;
   let decisionPath = filterPath;
-  if (ctx.inputs.use_judge) {
-    judgePath = join(root, "judge.json");
-    const judged = await ctx.task("judge", {
-      prompt: renderJudgePrompt(ctx.inputs.prompt, filterPath, shortlistLimit), context: "fresh",
-      reads: [filterPath, ...shortlist], schema: judgeSchema,
-    });
-    const judgedDecision = judgeDecision(judged.structured);
-    // Same inter-stage contract as the filter report above.
-    await writeFile(judgePath, `${JSON.stringify(judgedDecision ?? { shortlist: [], rationale: "Judge stage produced no valid structured decision." }, null, 2)}\n`);
-    const judgedShortlist = selectCandidates(judgedDecision?.shortlist ?? []);
-    shortlist = judgedShortlist.length > 0 ? judgedShortlist : shortlist;
-    decisionPath = judgePath;
-  }
+	if (ctx.inputs.use_judge) {
+		judgePath = join(root, "judge.json");
+		const judgeCandidates = await Promise.all(
+			shortlist.map(async (path) => ({ path, body: await readFile(path, "utf8") })),
+		);
+		const judged = await ctx.task("judge", {
+			prompt: renderJudgePrompt(ctx.inputs.prompt, filterPath, shortlistLimit, judgeCandidates), context: "fresh",
+			reads: [filterPath, ...shortlist], schema: judgeSchema,
+		});
+		const judgedDecision = judgeDecision(judged.structured);
+		// Same inter-stage contract as the filter report above.
+		await writeFile(judgePath, `${JSON.stringify(judgedDecision ?? { shortlist: [], rationale: "Judge stage produced no valid structured decision." }, null, 2)}\n`);
+		const judgedShortlist = selectCandidates(judgedDecision?.shortlist ?? []);
+		shortlist = judgedShortlist.length > 0 ? judgedShortlist : shortlist;
+		decisionPath = judgePath;
+	}
   const finalPath = join(root, "shortlist.md");
   const finalShortlist = await ctx.task("final-shortlist", {
     prompt: renderFinalShortlistPrompt(ctx.inputs.prompt, decisionPath), context: "fresh",

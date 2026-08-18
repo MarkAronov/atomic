@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
 import { renderReducerPrompt, renderRepairPrompt, renderVerifierPrompt, renderWorkerPrompt } from "./adversarial-verification-prompts.js";
+import { warm_first_fan_out } from "./verification-prompts.js";
 import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 const verifierSchema = Type.Object({
@@ -60,13 +61,18 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
   let decision: ReducerDecision = { decision: "reject", rationale: "No valid reducer decision was produced.", remaining_work: ["Reducer did not return a valid structured decision."] };
   for (;;) {
     verifierArtifactPaths = Array.from({ length: ctx.inputs.verifier_count }, (_, index) => join(root, `verification-${repairsCompleted}-${index + 1}.json`));
-    const reports = await ctx.parallel(verifierArtifactPaths.map((_, index) => ({
-      name: `verifier-${repairsCompleted}-${index + 1}`,
-      prompt: renderVerifierPrompt(ctx.inputs.task, candidatePath, rubricPath),
-      context: "fresh" as const,
-      reads: [candidatePath, rubricPath],
-      schema: verifierSchema,
-    })), { concurrency: Math.min(ctx.inputs.verifier_count, 4), failFast: false });
+	const verifierPrompt = renderVerifierPrompt(ctx.inputs.task, candidatePath, rubricPath);
+	const verifierSteps = verifierArtifactPaths.map((_, index) => ({
+		name: `verifier-${repairsCompleted}-${index + 1}`,
+		prompt: verifierPrompt,
+		context: "fresh" as const,
+		reads: [candidatePath, rubricPath],
+		schema: verifierSchema,
+	}));
+	const reports = await warm_first_fan_out(ctx, verifierSteps, () => verifierPrompt, {
+		concurrency: Math.min(ctx.inputs.verifier_count, 4),
+		failFast: false,
+	});
     // Verifier reports are inter-stage data: the reducer reads schema-shaped
     // JSON from these paths, so the runner persists the structured decisions
     // itself rather than routing them through the stage artifact channel.
