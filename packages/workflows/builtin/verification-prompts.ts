@@ -7,6 +7,10 @@
  * The tail contains only the criterion name and description plus the output
  * format instruction. Keeping this ordering invariant means sibling criteria
  * can share the provider's cached prefix byte-for-byte.
+ *
+ * A pathless candidate is valid while the whole family is inline. If any body
+ * exceeds the inline bound, every candidate must provide its caller-bound path;
+ * this layer refuses the family rather than inventing a read path.
  */
 import type {
 	WorkflowParallelOptions,
@@ -21,6 +25,11 @@ import { VERIFICATION_SCALE } from "./verification-criteria.js";
 export const MAX_INLINE_CANDIDATE_BYTES = 32 * 1024;
 
 export interface ScoringCandidate {
+	/**
+	 * Optional only while every candidate body is inline. An oversized family
+	 * requires a caller-bound path for every candidate; paths are preserved
+	 * verbatim and are never synthesized.
+	 */
 	readonly path?: string;
 	readonly body: string;
 }
@@ -50,14 +59,27 @@ function inlineCandidates(head: SharedHead): boolean {
 	);
 }
 
-function candidateSection(head: SharedHead, inline: boolean): string {
+function fallbackReadPaths(head: SharedHead): readonly string[] | undefined {
+	if (inlineCandidates(head)) return undefined;
+	const paths: string[] = [];
+	for (const [index, candidate] of head.candidates.entries()) {
+		if (candidate.path === undefined) {
+			throw new TypeError(
+				`Oversized candidate family requires a caller-bound path for every candidate; candidate ${index + 1} has no path.`,
+			);
+		}
+		paths.push(candidate.path);
+	}
+	return paths;
+}
+
+function candidateSection(head: SharedHead, readPaths: readonly string[] | undefined): string {
 	return head.candidates
 		.map((candidate, index) => {
-			if (inline) {
+			if (readPaths === undefined) {
 				return `<candidate index="${index + 1}">\n${candidate.body}\n</candidate>`;
 			}
-			const source = candidate.path ?? `candidate-${index + 1}`;
-			return `<candidate index="${index + 1}" source="read">\nRead candidate from ${source}.\n</candidate>`;
+			return `<candidate index="${index + 1}" source="read">\nRead candidate from ${readPaths[index]!}.\n</candidate>`;
 		})
 		.join("\n");
 }
@@ -66,11 +88,11 @@ function candidateSection(head: SharedHead, inline: boolean): string {
  * Return candidate paths required by the read fallback.
  *
  * The whole family switches together: either every body is in the shared head,
- * or every candidate is named as a read. Order and duplicate paths are kept.
+ * or every candidate is named as a caller-provided read. Order and duplicate
+ * paths are kept; an oversized pathless family throws instead of guessing.
  */
 export function scoring_prompt_reads(head: SharedHead): readonly string[] {
-	if (inlineCandidates(head)) return [];
-	return head.candidates.map((candidate, index) => candidate.path ?? `candidate-${index + 1}`);
+	return fallbackReadPaths(head) ?? [];
 }
 
 /**
@@ -80,7 +102,7 @@ export function scoring_prompt_reads(head: SharedHead): readonly string[] {
  * family, preserving the same head for every sibling criterion.
  */
 export function build_scoring_prompt(head: SharedHead, criterion: Criterion): string {
-	const inline = inlineCandidates(head);
+	const readPaths = fallbackReadPaths(head);
 	const sharedHead = [
 		"<scoring_head>",
 		"<task_statement>",
@@ -90,7 +112,7 @@ export function build_scoring_prompt(head: SharedHead, criterion: Criterion): st
 		head.groundTruthNote,
 		"</ground_truth_note>",
 		"<candidates>",
-		candidateSection(head, inline),
+		candidateSection(head, readPaths),
 		"</candidates>",
 		"<scale_anchors>",
 		head.scaleAnchors ?? VERIFICATION_SCALE.anchors,
@@ -106,6 +128,14 @@ export function build_scoring_prompt(head: SharedHead, criterion: Criterion): st
 		"</output_format>",
 	].join("\n");
 	return `${sharedHead}\n\n${varyingTail}`;
+}
+
+function boundedConcurrency(
+	stepCount: number,
+	phaseCap: number | undefined,
+	inheritedCap: number | undefined,
+): number {
+	return Math.min(stepCount, phaseCap ?? stepCount, inheritedCap ?? stepCount);
 }
 
 /**
@@ -133,6 +163,7 @@ export async function warm_first_fan_out<K>(
 	}
 
 	const { warmConcurrency, ...parallelOptions } = options;
+	const inheritedConcurrency = parallelOptions.concurrency;
 	const resultsByIndex = new Map<number, WorkflowTaskResult>();
 	let warmFailure: Error | undefined;
 	if (warmIndices.length > 0) {
@@ -140,7 +171,11 @@ export async function warm_first_fan_out<K>(
 		try {
 			const warmResults = await ctx.parallel(warmSteps, {
 				...parallelOptions,
-				concurrency: warmConcurrency ?? Math.min(warmSteps.length, DEFAULT_WARM_CONCURRENCY),
+				concurrency: boundedConcurrency(
+					warmSteps.length,
+					warmConcurrency ?? DEFAULT_WARM_CONCURRENCY,
+					inheritedConcurrency,
+				),
 				failFast: false,
 			});
 			for (const [resultIndex, result] of warmResults.entries()) {
@@ -156,7 +191,7 @@ export async function warm_first_fan_out<K>(
 		const restSteps = restIndices.map((index) => steps[index]!);
 		const restResults = await ctx.parallel(restSteps, {
 			...parallelOptions,
-			concurrency: restSteps.length,
+			concurrency: boundedConcurrency(restSteps.length, undefined, inheritedConcurrency),
 		});
 		for (const [resultIndex, result] of restResults.entries()) {
 			const originalIndex = restIndices[resultIndex];
