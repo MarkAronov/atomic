@@ -86,15 +86,29 @@ function styledStatus(status: ToolNodeStatus, theme: GraphTheme | undefined): st
 }
 
 function styledTitle(text: string, theme: GraphTheme | undefined): string {
-	return theme === undefined ? text : `${hexToAnsi(theme.text)}${BOLD}${text}${RESET}`;
+	return theme === undefined ? text : `${hexToAnsi(theme.toolTitle)}${BOLD}${text}${RESET}`;
+}
+
+function styledOutput(text: string, theme: GraphTheme | undefined): string {
+	return theme === undefined ? text : `${hexToAnsi(theme.toolOutput)}${text}${RESET}`;
 }
 
 function styledMuted(text: string, theme: GraphTheme | undefined): string {
 	return theme === undefined ? text : `${hexToAnsi(theme.textMuted)}${text}${RESET}`;
 }
 
+function styledDim(text: string, theme: GraphTheme | undefined): string {
+	return theme === undefined ? text : `${hexToAnsi(theme.dim)}${text}${RESET}`;
+}
+
 function styledError(text: string, theme: GraphTheme | undefined): string {
 	return theme === undefined ? text : `${hexToAnsi(theme.error)}${text}${RESET}`;
+}
+
+function expandHintLine(earlier: number, expandKey: string, pad: string, theme: GraphTheme | undefined): string {
+	const lead = `... (${earlier} earlier lines`;
+	if (expandKey.length === 0) return `${pad}${styledMuted(`${lead})`, theme)}`;
+	return `${pad}${styledMuted(`${lead}, `, theme)}${styledDim(expandKey, theme)}${styledMuted(" Expand)", theme)}`;
 }
 
 function toolBackground(status: ToolNodeStatus, theme: GraphTheme): string {
@@ -282,7 +296,7 @@ function messageHeaderRows(
 function bodyRows(text: string, error: boolean, width: number, theme: GraphTheme | undefined): string[] {
 	const { pad, inner } = boxMetrics(width);
 	return wrapFieldValue(text, inner).map((line) => {
-		const styled = error ? styledError(line, theme) : styledMuted(line, theme);
+		const styled = error ? styledError(line, theme) : styledOutput(line, theme);
 		return `${pad}${styled}`;
 	});
 }
@@ -290,12 +304,11 @@ function bodyRows(text: string, error: boolean, width: number, theme: GraphTheme
 function footerText(tool: ToolNodeSnapshot, elapsed: number | undefined): string | undefined {
 	if (elapsed === undefined) return undefined;
 	const label = tool.status === "running" ? "Elapsed" : "Took";
-	const duration = elapsed < 1000 ? `${Math.round(elapsed)}ms` : fmtDuration(elapsed);
 	const markers = [
 		tool.status === "cached" ? "cached" : undefined,
 		tool.replayed === true ? "replayed" : undefined,
 	].filter((marker): marker is string => marker !== undefined);
-	return `${label} ${duration}${markers.length > 0 ? ` · ${markers.join(" · ")}` : ""}`;
+	return `${label} ${fmtDuration(elapsed)}${markers.length > 0 ? ` · ${markers.join(" · ")}` : ""}`;
 }
 
 function renderMessageLines(
@@ -325,11 +338,7 @@ function renderMessageLines(
 	} else {
 		const earlier = Math.max(0, wrappedBody.length - COLLAPSED_RESULT_LINES);
 		if (earlier > 0) {
-			const hint =
-				expandKey.length > 0
-					? `... (${earlier} earlier lines, ${expandKey} Expand)`
-					: `... (${earlier} earlier lines)`;
-			rows.push(`${pad}${styledMuted(hint, theme)}`);
+			rows.push(expandHintLine(earlier, expandKey, pad, theme));
 		}
 		rows.push(...wrappedBody.slice(-COLLAPSED_RESULT_LINES));
 	}

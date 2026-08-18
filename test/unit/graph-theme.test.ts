@@ -33,6 +33,8 @@ describe("deriveGraphThemeFromPiTheme", () => {
 		assert.deepEqual(deriveGraphThemeFromPiTheme(undefined), MOCHA_DEFAULTS);
 		assert.deepEqual(deriveGraphThemeFromPiTheme(null), MOCHA_DEFAULTS);
 		assert.deepEqual(deriveGraphThemeFromPiTheme({}), MOCHA_DEFAULTS);
+		assert.equal(MOCHA_DEFAULTS.toolTitle, "#b4befe");
+		assert.equal(MOCHA_DEFAULTS.toolOutput, "#cdd6f4");
 	});
 
 	test("falls back to the Catppuccin defaults when accessors are missing", () => {
@@ -54,6 +56,8 @@ describe("deriveGraphThemeFromPiTheme", () => {
 			muted: truecolorFg(0xa6, 0xad, 0xc8),
 			dim: truecolorFg(0x7f, 0x84, 0x9c),
 			text: truecolorFg(0xcd, 0xd6, 0xf4),
+			toolTitle: truecolorFg(0xb4, 0xbe, 0xfe),
+			toolOutput: truecolorFg(0xaa, 0xbb, 0xcc),
 		};
 		const bgMap: Record<string, string> = {
 			customMessageBg: truecolorBg(0x31, 0x32, 0x44),
@@ -85,6 +89,8 @@ describe("deriveGraphThemeFromPiTheme", () => {
 		assert.equal(theme.textMuted, "#a6adc8");
 		assert.equal(theme.dim, "#7f849c");
 		assert.equal(theme.text, "#cdd6f4");
+		assert.equal(theme.toolTitle, "#b4befe");
+		assert.equal(theme.toolOutput, "#aabbcc");
 		// No Pi `info` token — bridge mirrors `accent`.
 		assert.equal(theme.info, "#123456");
 		assert.equal(theme.backgroundPanel, "#45475a");

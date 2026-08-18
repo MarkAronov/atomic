@@ -271,7 +271,7 @@ describe("tool graph inspection", () => {
 			"$ inspect-api",
 			'{"branch":"feat/inspect","checks":["lint","test"]}',
 			'{"ok":true,"output":["passed","passed"]}',
-			"Took 75ms",
+			"Took 0s",
 		])
 			assert.ok(collapsed.includes(expected), expected);
 		assert.match(collapsed, /ctrl\+o expand/);
@@ -286,7 +286,7 @@ describe("tool graph inspection", () => {
 			"$ inspect-api",
 			'{"branch":"feat/inspect","checks":["lint","test"]}',
 			'{"ok":true,"output":["passed","passed"]}',
-			"Took 75ms",
+			"Took 0s",
 		])
 			assert.ok(expanded.includes(expected), expected);
 		for (const hidden of ["ARGS", "RESULT", "SOURCE", "TIMING", "MARKERS", "startedAt=", "endedAt=", "duration="])
@@ -311,7 +311,7 @@ describe("tool graph inspection", () => {
 		assert.equal(configured._toolDetailExpanded, false);
 		assert.equal(configured.handleInput("x"), true);
 		assert.equal(configured._toolDetailExpanded, true);
-		assert.match(visibleText(configured.render(120)), /Took 75ms/);
+		assert.match(visibleText(configured.render(120)), /Took 0s/);
 		assert.match(visibleText(configured.render(120)), /alt\+e collapse/);
 		configured.dispose();
 
@@ -335,7 +335,7 @@ describe("tool graph inspection", () => {
 		assert.match(callText, /^\s{2,}\$/, "the card keeps a left canvas inset");
 		assert.equal(visibleText([rows[callIndex - 1]!]).trim(), "", "the card keeps an inner top pad");
 		assert.equal(visibleText([rows[callIndex - 2]!]).trim(), "", "canvas separates the header bar from the card");
-		const tookIndex = rows.findIndex((row) => visibleText([row]).includes("Took 75ms"));
+		const tookIndex = rows.findIndex((row) => visibleText([row]).includes("Took 0s"));
 		assert.ok(tookIndex > callIndex, "the duration footer belongs to the card");
 		assert.ok(footerIndex > tookIndex + 1, "canvas separates the card from the footer bar");
 		assert.equal(visibleText([rows[tookIndex + 1]!]).trim(), "", "the card keeps an inner bottom pad");
@@ -357,7 +357,7 @@ describe("tool graph inspection", () => {
 			" second line",
 			" third line",
 			"",
-			" Took 75ms",
+			" Took 0s",
 			"",
 		]);
 		assert.ok(wideRows.filter((row) => row.includes("line")).every((row) => row.startsWith(" ")));
@@ -409,7 +409,7 @@ describe("tool graph inspection", () => {
 		assert.match(collapsed, /earlier lines, ctrl\+o Expand/);
 		assert.ok(collapsed.includes("line-19"));
 		assert.ok(!collapsed.includes("line-0"));
-		assert.match(collapsed, /Took 11ms/);
+		assert.match(collapsed, /Took 0s/);
 		assert.doesNotMatch(collapsed, /\(0s\)|duration=/);
 
 		const cached = renderToolDetail(
@@ -419,7 +419,7 @@ describe("tool graph inspection", () => {
 				expanded: true,
 			},
 		);
-		assert.match(cached, /Took 11ms · cached · replayed/);
+		assert.match(cached, /Took 0s · cached · replayed/);
 		assert.doesNotMatch(cached, /MARKERS/);
 
 		const path = "/Users/tonystark/Documents/projects/atomic-issue-2462/.ci-diagnostics/p0-2462/probe-1";
@@ -457,10 +457,23 @@ describe("tool graph inspection", () => {
 		assert.match(themed, /\x1b\[48;2;/);
 		assert.doesNotMatch(renderToolDetail(tool({ result: "ok" }), { width: 40 }), /\x1b/);
 		const themedRows = themed.split("\n");
-		const footerIndex = themedRows.findIndex((row) => visibleText([row]).includes("Took 75ms"));
+		const footerIndex = themedRows.findIndex((row) => visibleText([row]).includes("Took 0s"));
 		assert.ok(footerIndex > 0, "themed output must include the duration footer");
 		assert.equal(visibleText([themedRows[footerIndex - 1]!]).trim(), "", "footer needs a blank separator row");
 		assert.match(themedRows[footerIndex - 1]!, /\x1b\[48;2;/, "blank separator keeps the tool background");
+		assert.match(themed, /\x1b\[38;2;180;190;254m/, "title uses host toolTitle");
+		assert.match(themed, /\x1b\[38;2;205;214;244m/, "body uses host toolOutput");
+
+		const longHint = renderToolDetail(
+			tool({
+				status: "failed",
+				result: undefined,
+				error: Array.from({ length: 24 }, (_, index) => `report-line-${index}`).join("\n"),
+			}),
+			{ width: 80, theme: defaultTheme, expandKey: "ctrl+o" },
+		);
+		assert.match(visibleText(longHint.split("\n")), /ctrl\+o Expand/);
+		assert.match(longHint, /\x1b\[38;2;127;132;156mctrl\+o/, "expand key uses dim");
 	});
 
 	test("collapsed previews use the full bounded body and exact visual tail count", () => {
@@ -606,12 +619,12 @@ describe("tool graph inspection", () => {
 			}).split("\n"),
 		);
 		assert.match(cached, /↻/);
-		assert.match(cached, /Took 75ms · cached · replayed/);
+		assert.match(cached, /Took 0s · cached · replayed/);
 
 		const replayed = visibleText(
 			renderToolDetail(tool({ replayed: true }), { theme: defaultTheme, width: 96, expanded: true }).split("\n"),
 		);
-		assert.match(replayed, /Took 75ms · replayed/);
+		assert.match(replayed, /Took 0s · replayed/);
 		assert.doesNotMatch(cached, /MARKERS/);
 		assert.doesNotMatch(replayed, /MARKERS/);
 	});
@@ -819,7 +832,7 @@ describe("tool graph inspection", () => {
 			expanded: true,
 		});
 		const text = visibleText(rendered.split("\n"));
-		assert.ok(text.includes("Took 4ms"));
+		assert.ok(text.includes("Took 0s"));
 		assert.doesNotMatch(text, /startedAt=|endedAt=|duration=|\(0s\)/);
 	});
 
@@ -1111,7 +1124,7 @@ describe("tool graph inspection", () => {
 		const atEnd = visibleText(view.render(120));
 		assert.ok(view._graphScrollOffset > afterPage, "End reaches the bottom");
 		assert.ok(atEnd.includes("source-line-599"), "the last source row is reachable without a mouse event");
-		assert.ok(atEnd.includes("Took 75ms"));
+		assert.ok(atEnd.includes("Took 0s"));
 
 		assert.equal(view.handleInput(KEY_HOME), true);
 		view.render(120);
@@ -1184,7 +1197,7 @@ describe("tool graph inspection", () => {
 			assert.equal(view.handleInput(KEY_END), true);
 			const atEnd = visibleText(view.render(width));
 			assert.ok(atEnd.includes("source-line-799"), `${width}x${rows}: End must reveal the last source row`);
-			assert.ok(atEnd.includes("Took 75ms"), `${width}x${rows}: End must reveal the Took line`);
+			assert.ok(atEnd.includes("Took 0s"), `${width}x${rows}: End must reveal the Took line`);
 			for (const field of ["SOURCE", "TIMING", "MARKERS"]) assert.doesNotMatch(atEnd, new RegExp(field));
 
 			assert.equal(view.handleInput(KEY_HOME), true);
@@ -1192,7 +1205,7 @@ describe("tool graph inspection", () => {
 			assert.equal(view._graphScrollOffset, 0);
 			const keyboardOnly = keyboardScrollToBottom(view, width);
 			assert.ok(keyboardOnly.includes("source-line-799"), `${width}x${rows}: PageDown must reveal the source tail`);
-			assert.ok(keyboardOnly.includes("Took 75ms"), `${width}x${rows}: PageDown must reveal the footer`);
+			assert.ok(keyboardOnly.includes("Took 0s"), `${width}x${rows}: PageDown must reveal the footer`);
 			view.dispose();
 		}
 	});
@@ -1206,7 +1219,7 @@ describe("tool graph inspection", () => {
 		view.render(80);
 		assert.equal(view.handleInput(KEY_END), true);
 		const atEnd = visibleText(view.render(80));
-		assert.ok(atEnd.includes("Took 75ms"), "the operator footer must be reachable");
+		assert.ok(atEnd.includes("Took 0s"), "the operator footer must be reachable");
 		assert.ok(atEnd.includes("source-line-499"));
 		view.dispose();
 	});
@@ -1222,13 +1235,13 @@ describe("tool graph inspection", () => {
 		assert.equal(view.handleInput(KEY_END), true);
 		const atEnd = stripFrameEscapes(view.render(80).join("\n"));
 		assert.match(atEnd, /result-\s*line-299/, "End must reveal the final result line");
-		assert.ok(atEnd.includes("Took 75ms"), "End must reveal the operator footer");
+		assert.ok(atEnd.includes("Took 0s"), "End must reveal the operator footer");
 
 		assert.equal(view.handleInput(KEY_HOME), true);
 		view.render(80);
 		const keyboardOnly = stripFrameEscapes(keyboardScrollToBottom(view, 80));
 		assert.match(keyboardOnly, /result-\s*line-299/, "PageDown must reveal the final result line");
-		assert.ok(keyboardOnly.includes("Took 75ms"), "PageDown must reveal the operator footer");
+		assert.ok(keyboardOnly.includes("Took 0s"), "PageDown must reveal the operator footer");
 		view.dispose();
 	});
 
@@ -1447,7 +1460,7 @@ describe("tool graph inspection", () => {
 		assert.equal(view.handleInput(KEY_END), true);
 		const frame = view.render(40).map(stripFrameEscapes);
 		const text = frame.join("\n");
-		assert.match(text, /Took 75ms/);
+		assert.match(text, /Took 0s/);
 		assert.doesNotMatch(text, /SOURCE|TIMING|MARKERS|startedAt=|endedAt=|duration=/);
 		assert.doesNotMatch(text, /╰─{30,}╯/);
 		for (const row of frame) assert.ok(visibleWidth(row) <= 40, `row overflowed: ${JSON.stringify(row)}`);

@@ -31,6 +31,7 @@ const MOCHA = {
 	red: "#f38ba8",
 	mauve: "#cba6f7",
 	sky: "#89dceb",
+	lavender: "#b4befe",
 } as const;
 
 /**
@@ -51,6 +52,8 @@ export interface GenericTheme {
 	text?: string;
 	textMuted?: string;
 	dim?: string;
+	toolTitle?: string;
+	toolOutput?: string;
 	accent?: string;
 	mauve?: string;
 	success?: string;
@@ -87,6 +90,10 @@ export interface GraphTheme {
 	text: string;
 	textMuted: string;
 	dim: string;
+	/** Host tool-card title (`toolTitle`, Catppuccin lavender). */
+	toolTitle: string;
+	/** Host tool-card body (`toolOutput`, usually the same as `text`). */
+	toolOutput: string;
 
 	/** Accents */
 	accent: string;
@@ -116,6 +123,8 @@ export function deriveGraphTheme(theme: GenericTheme = {}): GraphTheme {
 		text: theme.text ?? MOCHA.text,
 		textMuted: theme.textMuted ?? MOCHA.subtext0,
 		dim: theme.dim ?? MOCHA.overlay1,
+		toolTitle: theme.toolTitle ?? MOCHA.lavender,
+		toolOutput: theme.toolOutput ?? MOCHA.text,
 
 		accent: theme.accent ?? MOCHA.blue,
 		mauve: theme.mauve ?? MOCHA.mauve,
@@ -262,6 +271,8 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 		text: fgHex(t, "text") ?? fgHex(t, "customMessageText"),
 		textMuted: fgHex(t, "muted"),
 		dim: fgHex(t, "dim"),
+		toolTitle: fgHex(t, "toolTitle"),
+		toolOutput: fgHex(t, "toolOutput") ?? fgHex(t, "text") ?? fgHex(t, "customMessageText"),
 
 		accent,
 		success: fgHex(t, "success"),
