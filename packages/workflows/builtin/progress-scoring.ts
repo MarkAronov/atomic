@@ -4,7 +4,8 @@
  * Progress is a monitoring magnitude only. The prompt asks about the supplied
  * current state, and the trend result carries evidence without an action.
  */
-import type { WorkflowRunContext } from "../src/shared/types.js";
+import { Type } from "typebox";
+import type { WorkflowRunContext, WorkflowSerializableObject, WorkflowSerializableValue } from "../src/shared/types.js";
 import { VERIFICATION_SCALE } from "./verification-criteria.js";
 
 export const DEFAULT_TREND_WINDOW = 3;
@@ -35,27 +36,133 @@ export interface ProgressScoreInput {
 
 export type ProgressScoringContext = Pick<WorkflowRunContext, "task">;
 
-export interface ProgressCurve {
-	readonly checkpoints: number[];
-	readonly scores: (number | null)[];
-	readonly perRepeat: (number | null)[][];
-}
+export type ProgressCurve = {
+	checkpoints: number[];
+	scores: (number | null)[];
+	perRepeat: (number | null)[][];
+};
 
-export interface TrendConfig {
-	readonly window?: number;
-	readonly riseDelta?: number;
-	readonly fallDelta?: number;
-}
+export type TrendConfig = {
+	window?: number;
+	riseDelta?: number;
+	fallDelta?: number;
+};
 
 export type Trend = "rising" | "flat" | "regressing";
 
-export interface TrendResult {
-	readonly trend: Trend;
-	readonly evidence: {
-		readonly series: readonly number[];
-		readonly window: number;
-		readonly delta: number;
+export type TrendResult = {
+	trend: Trend;
+	evidence: {
+		series: readonly number[];
+		window: number;
+		delta: number;
 	};
+};
+
+const progressSchema = Type.Object({
+	scores: Type.Array(Type.Object({
+		checkpoint: Type.Integer({ minimum: 1 }),
+		score: VERIFICATION_SCALE.schema,
+	}, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+type ProgressStructuredOutput = {
+	readonly scores: readonly WorkflowSerializableValue[];
+};
+
+function isRecord(value: WorkflowSerializableValue | undefined): value is WorkflowSerializableObject {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isProgressStructuredOutput(value: WorkflowSerializableValue | undefined): value is ProgressStructuredOutput {
+	if (!isRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "scores")) return false;
+	return Array.isArray(value.scores);
+}
+
+function nullScores(checkpointCount: number): (number | null)[] {
+	return Array.from({ length: checkpointCount }, () => null);
+}
+
+function defaultCheckpoints(stepCount: number): number[] {
+	const result: number[] = [];
+	for (let checkpoint = 2; checkpoint <= stepCount - 1; checkpoint += 1) result.push(checkpoint);
+	return result;
+}
+
+function validateCheckpoints(checkpoints: readonly number[], stepCount: number): void {
+	for (const checkpoint of checkpoints) {
+		if (!Number.isInteger(checkpoint) || checkpoint < 1 || checkpoint > stepCount) {
+			throw new RangeError(`Progress checkpoint ${checkpoint} is outside the step range 1..${stepCount}.`);
+		}
+	}
+}
+
+function scoresFromStructured(
+	value: WorkflowSerializableValue | undefined,
+	checkpoints: readonly number[],
+): (number | null)[] {
+	if (!isProgressStructuredOutput(value)) return nullScores(checkpoints.length);
+	const requested = new Set(checkpoints);
+	const seen = new Set<number>();
+	const scoresByCheckpoint = new Map<number, number>();
+	for (const candidate of value.scores) {
+		if (!isRecord(candidate) || Object.keys(candidate).length !== 2 ||
+			!Object.hasOwn(candidate, "checkpoint") || !Object.hasOwn(candidate, "score")) continue;
+		const checkpoint = candidate.checkpoint;
+		const score = candidate.score;
+		if (typeof checkpoint !== "number" || !Number.isInteger(checkpoint) || seen.has(checkpoint)) continue;
+		seen.add(checkpoint);
+		if (!requested.has(checkpoint) || typeof score !== "number" || !Number.isInteger(score) ||
+			score < VERIFICATION_SCALE.min || score > VERIFICATION_SCALE.max) continue;
+		scoresByCheckpoint.set(checkpoint, score);
+	}
+	return checkpoints.map((checkpoint) => scoresByCheckpoint.get(checkpoint) ?? null);
+}
+
+/**
+ * Score all requested checkpoints in one structured stage call for one repeat.
+ * A failed or malformed call is an invalid repeat and leaves every checkpoint
+ * in that repeat null.
+ */
+async function scoreRepeat(
+	ctx: ProgressScoringContext,
+	input: ProgressScoreInput,
+	checkpoints: readonly number[],
+	repeat: number,
+): Promise<(number | null)[]> {
+	try {
+		const result = await ctx.task(`progress-score-${repeat + 1}`, {
+			prompt: build_progress_prompt({ ...input, checkpoints }),
+			context: "fresh",
+			schema: progressSchema,
+		});
+		return scoresFromStructured(result.structured, checkpoints);
+	} catch {
+		return nullScores(checkpoints.length);
+	}
+}
+
+/** Score every requested checkpoint once per repeat, returning null-safe means. */
+export async function score_progress(
+	ctx: ProgressScoringContext,
+	input: ProgressScoreInput,
+): Promise<ProgressCurve> {
+	if (input.steps.length === 0) throw new RangeError("Progress scoring requires a non-empty step prefix.");
+	const checkpoints = Array.from(input.checkpoints ?? defaultCheckpoints(input.steps.length));
+	validateCheckpoints(checkpoints, input.steps.length);
+	const repeats = input.repeats ?? DEFAULT_REPEATS;
+	const perRepeat: (number | null)[][] = [];
+	for (let repeat = 0; repeat < repeats; repeat += 1) {
+		perRepeat.push(await scoreRepeat(ctx, input, checkpoints, repeat));
+	}
+	const scores = checkpoints.map((_, checkpointIndex) => {
+		const valid = perRepeat
+			.map((repeat) => repeat[checkpointIndex])
+			.filter((score): score is number => score !== null);
+		if (valid.length === 0) return null;
+		return valid.reduce((total, score) => total + score, 0) / valid.length;
+	});
+	return { checkpoints, scores, perRepeat };
 }
 
 /**
