@@ -18,6 +18,7 @@ import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import type { WorkflowBudget } from "../shared/budget.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
@@ -30,7 +31,7 @@ export interface DurableResumeRuntime {
 		options?: {
 			readonly policy?: WorkflowExecutionPolicy;
 			readonly actor?: WorkflowActor;
-			readonly budget?: import("../shared/budget.js").WorkflowBudget;
+			readonly budget?: WorkflowBudget;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;

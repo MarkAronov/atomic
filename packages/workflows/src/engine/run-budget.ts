@@ -2,19 +2,15 @@ import { type DurationBudgetReport, type EffectiveBudget, enforceDurationBudget 
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowModelUsage } from "../shared/types.js";
-
 export const BUDGET_WRAP_UP_PROMPT =
 	"The workflow budget is exhausted. Stop substantive work, summarize useful progress, identify remaining work or blockers, and leave a clear next step. Do not start any new stages.";
-
 export interface BudgetExceededReport extends DurationBudgetReport {
 	readonly frontierStage: string;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: WorkflowModelUsage;
 }
-
 export class WorkflowBudgetExceededError extends Error {
 	readonly report: BudgetExceededReport;
-
 	constructor(report: BudgetExceededReport) {
 		super(
 			`atomic-workflows: ${report.dimension} budget exceeded (${report.reading}ms / ${report.ceiling}ms) at ${report.frontierStage}`,
@@ -23,9 +19,7 @@ export class WorkflowBudgetExceededError extends Error {
 		this.report = report;
 	}
 }
-
 export type RunBudgetController = ReturnType<typeof createRunBudgetController>;
-
 const withFrontier = (
 	report: DurationBudgetReport,
 	frontierStage: string | undefined,
@@ -37,7 +31,6 @@ const withFrontier = (
 		summary === undefined ? {} : { wrapUpSummary: summary },
 		usage === undefined ? {} : { wrapUpUsage: usage },
 	);
-
 export function createRunBudgetController(input: {
 	readonly run: RunSnapshot;
 	readonly budget: EffectiveBudget;
@@ -108,7 +101,6 @@ export function createRunBudgetController(input: {
 	const deliverWrapUp = (frontierStage: string): Promise<never> => {
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage);
-		// Only a live stage turn may consume the one-time wrap-up allowance; boundary-only exhaustion stops untouched.
 		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined, false);
 		run.budgetState = state = { ...(state ?? {}), wrapUpDelivered: true };
 		wrapUpPromise = registration.handler();
