@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Value } from "typebox/value";
 import { test } from "vitest";
 import adversarialVerification from "../../packages/workflows/builtin/adversarial-verification.js";
 import generateAndFilter from "../../packages/workflows/builtin/generate-and-filter.js";
@@ -61,6 +62,13 @@ test("adversarial-verification declares the graded input and output contracts", 
 			"Relevant validation is executed and reported with commands run and observed output, and no blocking correctness, safety, or completeness gap remains.",
 	});
 	assert.equal(fieldKind(adversarialVerification.inputs.criteria), "unknown");
+	assert.equal(fieldRequired(adversarialVerification.inputs.criteria), false);
+	const criteriaSchema = adversarialVerification.inputs.criteria;
+	const markdownCriteria = "## Criteria\n### Task fit {#task_fit}\nFits.";
+	assert.equal(Value.Check(criteriaSchema, markdownCriteria), true);
+	assert.equal(Value.Check(criteriaSchema, { task_fit: "Fits." }), true);
+	assert.equal(Value.Check(criteriaSchema, ["Fits."]), false);
+	assert.equal(Value.Check(criteriaSchema, 14), false);
 	assert.equal(fieldDefault(adversarialVerification.inputs.verifier_count), 3);
 	assert.equal(fieldDefault(adversarialVerification.inputs.max_repairs), 2);
 	assert.equal(fieldDefault(adversarialVerification.inputs.accept_mean), 14);
