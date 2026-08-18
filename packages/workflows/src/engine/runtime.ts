@@ -169,6 +169,8 @@ export class EngineRuntime {
 		options?: StageOptions,
 		failFastScope?: ParallelFailFastScope,
 	): StageContextWithMeta => {
+		const checkpoint = this.budget.checkpoint();
+		if (checkpoint.kind === "wrap_up" || checkpoint.kind === "exhausted") throw this.budget.stopExhausted();
 		const handle = this.spawnStage(name, {
 			kind: "agent",
 			...(options !== undefined ? { options } : {}),

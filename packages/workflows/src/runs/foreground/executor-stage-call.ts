@@ -138,10 +138,8 @@ export function createTrackedStageCaller(input: {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
 		const beforeBudget = runtime.budget.checkpoint(runtime.name);
-		if (beforeBudget.kind === "exhausted") {
-			throw runtime.budget.finishWrapUp(runtime.name, undefined, undefined);
-		}
-		const wrapUpBeforeCall = beforeBudget.kind === "wrap_up";
+		if (beforeBudget.kind === "wrap_up" || beforeBudget.kind === "exhausted")
+			throw runtime.budget.stopExhausted(undefined);
 		await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
@@ -219,7 +217,6 @@ export function createTrackedStageCaller(input: {
 			}
 
 			runtime.mcpScope.apply();
-			if (wrapUpBeforeCall) await runtime.budget.deliverWrapUp(runtime.name);
 
 			const abortSession = (): void => {
 				void runtime.innerCtx.abort().catch(() => {});
@@ -295,7 +292,7 @@ export function createTrackedStageCaller(input: {
 			}
 			const afterBudget = runtime.budget.checkpoint(runtime.name);
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
-			if (afterBudget.kind === "exhausted") throw runtime.budget.finishWrapUp(runtime.name, undefined, undefined);
+			if (afterBudget.kind === "exhausted") throw runtime.budget.stopExhausted(runtime.name);
 			await runtime.innerCtx.__closeGeneration();
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());

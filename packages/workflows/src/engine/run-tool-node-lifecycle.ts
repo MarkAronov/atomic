@@ -101,8 +101,8 @@ export function createTrackedToolPrimitive(input: {
 	const budgetBoundary = (): void | Promise<void> => {
 		const frontierStage = input.run.stages.at(-1)?.name;
 		const checkpoint = input.budget.checkpoint(frontierStage);
-		if (checkpoint.kind === "wrap_up") return input.budget.deliverWrapUp(frontierStage);
-		if (checkpoint.kind === "exhausted") throw input.budget.finishWrapUp(frontierStage, undefined, undefined);
+		if (checkpoint.kind === "wrap_up") return input.budget.deliverWrapUp(undefined);
+		if (checkpoint.kind === "exhausted") throw input.budget.stopExhausted(frontierStage);
 	};
 	const tool = createToolPrimitive({
 		workflowId: input.workflowId,

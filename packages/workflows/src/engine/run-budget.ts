@@ -46,20 +46,27 @@ export function createRunBudgetController(input: {
 		state = { ...(state ?? {}), duration };
 		run.budgetState = state;
 	};
+	const budgetError = (report: DurationBudgetReport, frontierStage: string | undefined): WorkflowBudgetExceededError =>
+		new WorkflowBudgetExceededError(withFrontier(report, frontierStage, state?.wrapUpSummary, state?.wrapUpUsage));
 	const finishWrapUp = (
 		frontierStage: string | undefined,
 		summary: string | undefined,
 		usage: WorkflowModelUsage | undefined,
 	): WorkflowBudgetExceededError => {
 		state = Object.assign(state ?? {}, {
+			wrapUpDelivered: true,
 			wrapUpCompleted: true,
 			...(summary === undefined ? {} : { wrapUpSummary: summary }),
 			...(usage === undefined ? {} : { wrapUpUsage: usage }),
 		});
 		const report = exhaustedReport ?? enforceDurationBudget(elapsedRunMs(run), budget).report;
 		setState(report);
-		const finalReport = withFrontier(report, frontierStage, state.wrapUpSummary, state.wrapUpUsage);
-		return new WorkflowBudgetExceededError(finalReport);
+		return budgetError(report, frontierStage);
+	};
+	const stopExhausted = (frontierStage?: string): WorkflowBudgetExceededError => {
+		const report = exhaustedReport ?? enforceDurationBudget(elapsedRunMs(run), budget).report;
+		setState(report);
+		return budgetError(report, frontierStage);
 	};
 	const checkpoint = (frontierStage?: string) => {
 		if (!enabled) return { kind: "continue" };
@@ -73,12 +80,13 @@ export function createRunBudgetController(input: {
 			return check.warning ? { kind: "warn", report: check.report } : check;
 		}
 		exhaustedReport ??= check.report;
-		const wrapping = state?.wrapUpCompleted !== true;
-		if (wrapping) state = { ...(state ?? {}), wrapUpDelivered: true };
 		setState(check.report);
-		if (wrapping) return { kind: "wrap_up", report: check.report };
-		const finalReport = withFrontier(exhaustedReport, frontierStage, state?.wrapUpSummary, state?.wrapUpUsage);
-		return { kind: "exhausted", report: finalReport };
+		if (state?.wrapUpCompleted === true)
+			return {
+				kind: "exhausted",
+				report: withFrontier(exhaustedReport, frontierStage, state.wrapUpSummary, state.wrapUpUsage),
+			};
+		return { kind: "wrap_up", report: check.report };
 	};
 	const registerWrapUp = (frontierStage: string, handler: () => Promise<never>): (() => void) => {
 		if (!enabled) return () => {};
@@ -95,9 +103,12 @@ export function createRunBudgetController(input: {
 			frontierStage === undefined
 				? handlers.at(-1)
 				: handlers.findLast((entry) => entry.frontierStage === frontierStage);
-		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined);
+		// Only a live stage turn may consume the one-time wrap-up allowance; boundary-only exhaustion stops untouched.
+		if (registration === undefined) throw stopExhausted(frontierStage);
+		state = { ...(state ?? {}), wrapUpDelivered: true };
+		run.budgetState = state;
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;
 	};
-	return { enabled, checkpoint, registerWrapUp, deliverWrapUp, finishWrapUp };
+	return { enabled, checkpoint, registerWrapUp, deliverWrapUp, finishWrapUp, stopExhausted };
 }
