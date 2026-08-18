@@ -15,6 +15,7 @@ import type {
 	WorkflowChainOptions,
 	WorkflowDefinition,
 	WorkflowInputValues,
+	WorkflowModelAttempt,
 	WorkflowOutputValues,
 	WorkflowParallelOptions,
 	WorkflowRunChildArgs,
@@ -75,6 +76,11 @@ interface MockResponders {
 	cwd?: string;
 	task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => MockTaskResponse | undefined;
 	sessionFile?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
+	modelAttempts?: (
+		name: string,
+		options: WorkflowTaskOptions,
+		calls: MockCalls,
+	) => readonly WorkflowModelAttempt[] | undefined;
 	parallel?: (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions,
@@ -101,6 +107,7 @@ export function makeTaskResult(
 	text: string,
 	sessionFile?: string,
 	structured?: WorkflowTaskResult["structured"],
+	modelAttempts?: readonly WorkflowModelAttempt[],
 ): WorkflowTaskResult {
 	return {
 		name,
@@ -108,6 +115,7 @@ export function makeTaskResult(
 		text,
 		...(structured === undefined ? {} : { structured }),
 		...(sessionFile === undefined ? {} : { sessionFile }),
+		...(modelAttempts === undefined ? {} : { modelAttempts }),
 	};
 }
 
@@ -183,7 +191,14 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 				}
 			}
 		}
-		return makeTaskResult(name, resultText, responders.sessionFile?.(name, options, calls), structured);
+		const modelAttempts = responders.modelAttempts?.(name, options, calls);
+		return makeTaskResult(
+			name,
+			resultText,
+			responders.sessionFile?.(name, options, calls),
+			structured,
+			modelAttempts,
+		);
 	};
 
 	const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
