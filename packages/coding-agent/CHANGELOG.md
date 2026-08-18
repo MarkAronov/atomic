@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Bundled `web_search` no longer opens the curator confirmation UI by default. Persist `"workflow": "summary-review"` in web-search config or run `/curator on` to opt in.
+
+### Removed
+
+- The `workflow` parameter on bundled `web_search`. Models cannot select the curator per call.
+
 ## [0.9.14-alpha.3] - 2026-08-17
 
 ### Changed
