@@ -283,7 +283,11 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
       if (pending.length === 0) break;
     }
 
-    const scoreReports = validResults.map((item) => item.report);
+    const validReportsByCell = new Map(validResults.map((item) => [item.cell.name, item.report]));
+    const scoreReports = cells.flatMap((cell) => {
+      const report = validReportsByCell.get(cell.name);
+      return report === undefined ? [] : [report];
+    });
     const scores = scoreReports.map(toCriterionScore);
     const invalidCount = pending.length;
     const roundResult = { scores, invalidCount, expectedCount };
