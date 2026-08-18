@@ -332,7 +332,7 @@ describe("tool graph inspection", () => {
 		assert.ok(callIndex > headerIndex + 2, "the call must sit below the header band");
 		assert.ok(footerIndex > callIndex, "the footer must sit below the card");
 		const callText = visibleText([rows[callIndex]!]);
-		assert.match(callText, /^\s{2,}\$/, "the card keeps a left canvas inset");
+		assert.match(callText, /^ \$/, "the card aligns with the chrome; only Box pad precedes $");
 		assert.equal(visibleText([rows[callIndex - 1]!]).trim(), "", "the card keeps an inner top pad");
 		assert.equal(visibleText([rows[callIndex - 2]!]).trim(), "", "canvas separates the header bar from the card");
 		const tookIndex = rows.findIndex((row) => visibleText([row]).includes("Took 0s"));

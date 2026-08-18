@@ -28,14 +28,6 @@ function stripLayoutWrapper(line: string): string {
 }
 /** Unpainted canvas between the orchestrator bars and the painted card. */
 const TOOL_DETAIL_VIEWPORT_PAD = 1;
-/** Unpainted columns left and right of the card, matching graph card inset. */
-const TOOL_DETAIL_OUTER_X = 2;
-
-function toolDetailOuterX(width: number): number {
-	if (width >= TOOL_DETAIL_OUTER_X * 2 + 1) return TOOL_DETAIL_OUTER_X;
-	if (width >= 3) return 1;
-	return 0;
-}
 
 function toolDetailViewportPad(rows: number): number {
 	return rows >= TOOL_DETAIL_VIEWPORT_PAD * 2 + 1 ? TOOL_DETAIL_VIEWPORT_PAD : 0;
@@ -174,17 +166,15 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const cached = this.detailFrame;
 		if (cached !== null && cached.width === safeWidth) return cached;
-		// Match the host tool card: a painted Box inset from the canvas, not a
-		// full-bleed slab flush against the orchestrator chrome.
-		const leftPad = toolDetailOuterX(safeWidth);
-		const blockWidth = Math.max(1, safeWidth - leftPad * 2);
+		// Span the same columns as the header/footer bars. Main-chat tool
+		// blocks are full width; only the Box(1,1) pad insets the `$` text.
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
-			blockWidth,
-			leftPad,
+			blockWidth: safeWidth,
+			leftPad: 0,
 			lines: renderToolDetailLines(node, {
 				theme: this.graphTheme,
-				width: blockWidth,
+				width: safeWidth,
 				expanded: this.toolDetailExpanded,
 				expandKey: toolExpandKey(isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined),
 			}),
