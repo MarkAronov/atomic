@@ -78,8 +78,8 @@ function formatProgressReport(report: { curve: readonly number[]; trend: Trend }
 }
 
 function repeatCount(input: LoopInputs): number {
-	const repeats = input.progress_repeats;
-	return typeof repeats === "number" && Number.isInteger(repeats) && repeats > 0 ? repeats : 1;
+  const repeats = input.progress_repeats;
+  return typeof repeats === "number" && Number.isInteger(repeats) && repeats > 0 ? repeats : 1;
 }
 
 async function scoreIteration(

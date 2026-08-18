@@ -232,13 +232,21 @@ describe("loop-until-done builtin", () => {
 
 	test("keeps loop decisions unchanged when progress scoring is disabled or throws", async () => {
 		const { default: definition } = await import("../../packages/workflows/builtin/loop-until-done.js");
-		const decisions = async (progress_scoring: boolean, throws: boolean) => {
+		const decisions = async (progress_scoring: boolean, throws: boolean, working = false) => {
+			let checkpoint = 0;
 			const ctx = withCwd(
 				makeMockCtx(
 					{ prompt: "Bounded fixture", max_iterations: 2, progress_scoring },
 					{
 						task: (name) => {
-							if (name.startsWith("progress-score-") && throws) throw new Error("stub scorer failed");
+							if (name.startsWith("progress-score-")) {
+								if (throws) throw new Error("stub scorer failed");
+								checkpoint += 1;
+								return {
+									text: "",
+									structured: { scores: [{ checkpoint, score: working ? 7 : 5 }] },
+								};
+							}
 							if (name === "evaluate-1")
 								return JSON.stringify({
 									done: false,
@@ -265,20 +273,88 @@ describe("loop-until-done builtin", () => {
 			const output = await definition.run(ctx);
 			const ledger = JSON.parse(readFileSync(output.ledger_path, "utf8"));
 			return {
-				status: output.status,
-				iterations_completed: output.iterations_completed,
-				remaining_work: output.remaining_work,
-				entries: ledger.entries.map((entry) => ({
-					iteration: entry.iteration,
-					summary: entry.summary,
-					findings: entry.findings,
-					failures: entry.failures,
-					validation_evidence: entry.validation_evidence,
-					done: entry.done,
-					remaining_work: entry.remaining_work,
-				})),
+				projection: {
+					status: output.status,
+					iterations_completed: output.iterations_completed,
+					remaining_work: output.remaining_work,
+					entries: ledger.entries.map((entry) => ({
+						iteration: entry.iteration,
+						summary: entry.summary,
+						findings: entry.findings,
+						failures: entry.failures,
+						validation_evidence: entry.validation_evidence,
+						done: entry.done,
+						remaining_work: entry.remaining_work,
+					})),
+				},
+				progress_curve: output.progress_curve,
 			};
 		};
-		assert.deepEqual(await decisions(false, false), await decisions(true, true));
+		const disabled = await decisions(false, false);
+		const throwing = await decisions(true, true);
+		const working = await decisions(true, false, true);
+		assert.deepEqual(disabled.projection, throwing.projection);
+		assert.deepEqual(disabled.projection, working.projection);
+		assert.ok(working.progress_curve.length > 0);
+	});
+
+	test("keeps low-and-flat progress advisory during the full loop", async () => {
+		const { default: definition } = await import("../../packages/workflows/builtin/loop-until-done.js");
+		const scores = [5, 5, 6, 5, 5, 6];
+		const run = async (progress_scoring: boolean) => {
+			let checkpoint = 0;
+			const ctx = withCwd(
+				makeMockCtx(
+					{ prompt: "Bounded low-flat fixture", max_iterations: scores.length, progress_scoring },
+					{
+						task: (name) => {
+							if (name.startsWith("progress-score-")) {
+								const current = checkpoint;
+								checkpoint += 1;
+								return {
+									text: "",
+									structured: { scores: [{ checkpoint: current + 1, score: scores[current] }] },
+								};
+							}
+							if (name.startsWith("evaluate-")) {
+								const iteration = Number(name.slice("evaluate-".length));
+								return JSON.stringify({
+									done: iteration === scores.length,
+									summary: `iteration ${iteration}`,
+									new_findings: [],
+									failures: [],
+									validation_evidence: [],
+									remaining_work: iteration === scores.length ? "" : "continue",
+								});
+							}
+							return undefined;
+						},
+					},
+				),
+			);
+			const output = await definition.run(ctx);
+			const ledger = JSON.parse(readFileSync(output.ledger_path, "utf8"));
+			return {
+				status: output.status,
+				iterations_completed: output.iterations_completed,
+				done: ledger.entries.map((entry) => entry.done),
+				progress_curve: output.progress_curve,
+			};
+		};
+		const disabled = await run(false);
+		const enabled = await run(true);
+		assert.deepEqual(
+			{
+				status: enabled.status,
+				iterations_completed: enabled.iterations_completed,
+				done: enabled.done,
+			},
+			{
+				status: disabled.status,
+				iterations_completed: disabled.iterations_completed,
+				done: disabled.done,
+			},
+		);
+		assert.deepEqual(enabled.progress_curve, scores);
 	});
 });

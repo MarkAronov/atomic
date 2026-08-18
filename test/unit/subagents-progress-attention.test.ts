@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse } from "@babel/parser";
 import { describe, test } from "vitest";
 import { nextLongRunningTrigger } from "../../packages/subagents/src/runs/shared/long-running-guard.js";
 import {
@@ -21,6 +24,7 @@ import {
 	DEFAULT_RISE_DELTA as workflowRiseDelta,
 	DEFAULT_TREND_WINDOW as workflowTrendWindow,
 } from "../../packages/workflows/builtin/progress-scoring.js";
+import { moduleDir } from "../helpers/runtime.js";
 
 const TREND_CASES = [
 	{ name: "rising boundary", series: [1, 1, 1, 2.5, 2.5, 2.5] },
@@ -29,6 +33,188 @@ const TREND_CASES = [
 	{ name: "short series", series: [5, 6, 7] },
 	{ name: "paper low and flat failure", series: [5, 5, 6, 5, 5, 6] },
 ];
+const repoRoot = join(moduleDir(import.meta.url), "../..");
+const PROGRESS_CONSUMER_SOURCES = [
+	"packages/subagents/src/runs/shared/progress-trend.ts",
+	"packages/subagents/src/runs/shared/subagent-control.ts",
+	"packages/subagents/src/runs/shared/long-running-guard.ts",
+	"packages/workflows/builtin/loop-until-done-runner.ts",
+] as const;
+const TREND_DERIVED_IDENTIFIERS = new Set([
+	"TrendResult",
+	"trend",
+	"progressScores",
+	"score",
+	"scores",
+	"scoreIteration",
+	"score_progress",
+	"classify_trend",
+	"progressAwareThreshold",
+	"hasProgressAttentionSignal",
+]);
+const TERMINAL_STATUS_LITERALS = new Set([
+	"complete",
+	"completed",
+	"failed",
+	"failure",
+	"cancelled",
+	"canceled",
+	"aborted",
+	"stopped",
+	"terminated",
+]);
+
+type SourceNode = { readonly type: string; readonly [key: string]: unknown };
+
+function isNode(value: unknown): value is SourceNode {
+	return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
+}
+
+function children(node: SourceNode): SourceNode[] {
+	const result: SourceNode[] = [];
+	for (const value of Object.values(node)) {
+		if (Array.isArray(value)) {
+			for (const entry of value) if (isNode(entry)) result.push(entry);
+		} else if (isNode(value)) {
+			result.push(value);
+		}
+	}
+	return result;
+}
+
+function hasTrendDerivedIdentifier(node: SourceNode): boolean {
+	if (node.type === "Identifier" && TREND_DERIVED_IDENTIFIERS.has(String(node.name))) return true;
+	return children(node).some((child) => hasTrendDerivedIdentifier(child));
+}
+
+function hasTerminalStatusLiteral(node: SourceNode): boolean {
+	if (node.type === "StringLiteral" && TERMINAL_STATUS_LITERALS.has(String(node.value))) return true;
+	return children(node).some((child) => hasTerminalStatusLiteral(child));
+}
+
+function propertyName(node: SourceNode | undefined): string | undefined {
+	if (node === undefined) return undefined;
+	if (node.type === "Identifier") return String(node.name);
+	if (node.type === "StringLiteral" || node.type === "NumericLiteral") return String(node.value);
+	return undefined;
+}
+
+const ASSIGNMENT_OPERATORS = new Set([
+	"=",
+	"+=",
+	"-=",
+	"*=",
+	"/=",
+	"%=",
+	"**=",
+	"<<=",
+	">>=",
+	">>>=",
+	"|=",
+	"^=",
+	"&=",
+]);
+
+function isStatusAssignment(node: SourceNode): boolean {
+	if (node.type !== "AssignmentExpression" || !ASSIGNMENT_OPERATORS.has(String(node.operator))) return false;
+	const left = node.left as SourceNode;
+	if (left.type === "Identifier") return String(left.name) === "status";
+	return left.type === "MemberExpression" && propertyName(left.property as SourceNode | undefined) === "status";
+}
+
+function isTerminalSink(node: SourceNode): boolean {
+	if (node.type === "ThrowStatement") return true;
+	if (isStatusAssignment(node)) return true;
+	if (node.type === "CallExpression") {
+		const callee = node.callee as SourceNode;
+		if (
+			callee.type === "MemberExpression" &&
+			propertyName(callee.object as SourceNode | undefined) === "ctx" &&
+			propertyName(callee.property as SourceNode | undefined) === "exit"
+		) {
+			return true;
+		}
+	}
+	if (node.type === "ObjectProperty" && propertyName(node.key as SourceNode | undefined) === "status") return true;
+	if (node.type === "VariableDeclarator" && propertyName(node.id as SourceNode | undefined) === "status") {
+		return node.init !== undefined;
+	}
+	if (node.type === "ReturnStatement") {
+		const argument = node.argument as SourceNode | undefined;
+		return argument !== undefined && argument.type !== "ObjectExpression" && hasTerminalStatusLiteral(argument);
+	}
+	return false;
+}
+
+function containsNode(root: SourceNode | undefined, target: SourceNode): boolean {
+	return root === target || (root !== undefined && children(root).some((child) => containsNode(child, target)));
+}
+
+const FUNCTION_BOUNDARIES = new Set([
+	"ArrowFunctionExpression",
+	"ClassMethod",
+	"ClassPrivateMethod",
+	"FunctionDeclaration",
+	"FunctionExpression",
+	"ObjectMethod",
+]);
+
+function hasTrendControl(sink: SourceNode, ancestors: readonly SourceNode[]): boolean {
+	if (sink.type === "ReturnStatement") {
+		const argument = sink.argument as SourceNode | undefined;
+		if (argument !== undefined && argument.type !== "ObjectExpression" && hasTrendDerivedIdentifier(argument))
+			return true;
+	} else if (sink.type === "ObjectProperty" || sink.type === "VariableDeclarator") {
+		const value = (sink.type === "ObjectProperty" ? sink.value : sink.init) as SourceNode | undefined;
+		if (value !== undefined && hasTrendDerivedIdentifier(value)) return true;
+	} else if (hasTrendDerivedIdentifier(sink)) {
+		return true;
+	}
+	for (const current of ancestors) {
+		if (current.type === "IfStatement" && hasTrendDerivedIdentifier(current.test as SourceNode)) {
+			if (
+				containsNode(current.consequent as SourceNode, sink) ||
+				containsNode(current.alternate as SourceNode | undefined, sink)
+			)
+				return true;
+		}
+		if (
+			current.type === "ConditionalExpression" &&
+			hasTrendDerivedIdentifier(current.test as SourceNode) &&
+			(containsNode(current.consequent as SourceNode, sink) || containsNode(current.alternate as SourceNode, sink))
+		) {
+			return true;
+		}
+		if (
+			current.type === "LogicalExpression" &&
+			hasTrendDerivedIdentifier(current.left as SourceNode) &&
+			containsNode(current.right as SourceNode, sink)
+		) {
+			return true;
+		}
+		if (current.type === "SwitchStatement" && hasTrendDerivedIdentifier(current.discriminant as SourceNode))
+			return true;
+		if (FUNCTION_BOUNDARIES.has(current.type)) break;
+	}
+	return false;
+}
+
+function assertNoTrendTerminalPath(relativePath: (typeof PROGRESS_CONSUMER_SOURCES)[number]): void {
+	const source = readFileSync(join(repoRoot, relativePath), "utf8");
+	const root = parse(source, { sourceType: "module", plugins: ["typescript", "decorators"] })
+		.program as unknown as SourceNode;
+	const violations: string[] = [];
+	const visit = (node: SourceNode, ancestors: readonly SourceNode[]): void => {
+		// This executable source guard must fail if progress evidence is wired into a terminal/status path.
+		if (isTerminalSink(node) && hasTrendControl(node, ancestors)) {
+			const line = (node.loc as { start?: { line?: number } } | undefined)?.start?.line ?? "?";
+			violations.push(`${relativePath}:${line}`);
+		}
+		for (const child of children(node)) visit(child, [node, ...ancestors]);
+	};
+	visit(root, []);
+	assert.deepEqual(violations, [], `${relativePath} has a trend-derived terminal/status path`);
+}
 
 function controlConfig(progressScores?: number[]): ResolvedControlConfig {
 	return {
@@ -104,6 +290,10 @@ describe("subagents progress attention", () => {
 			nextLongRunningTrigger(progress, { startedAt, now: startedAt, turns: 0, tokens: 3 }),
 			nextLongRunningTrigger(baseline, { startedAt, now: startedAt, turns: 0, tokens: 3 }),
 		);
+	});
+
+	test("progress trend source has no terminal or status path", () => {
+		for (const relativePath of PROGRESS_CONSUMER_SOURCES) assertNoTrendTerminalPath(relativePath);
 	});
 
 	test("progress trend evidence is actionless and cannot mutate run status", () => {
