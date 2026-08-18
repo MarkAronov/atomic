@@ -56,6 +56,10 @@ function ring_cycle(n: number, rng: () => number): DirectedPair[] {
 	return permutation.map((a, index) => ({ a, b: permutation[(index + 1) % n]! }));
 }
 
+function pair_key(a: number, b: number): string {
+	return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
 
 /** Build a deterministic ring and expose the later pivot/job phases as pure closures. */
 export function plan_comparisons(input: {
@@ -64,15 +68,46 @@ export function plan_comparisons(input: {
 	repeats: number;
 	seed: number;
 }): ComparisonPlan {
-	const { n, pivots, repeats, seed } = input;
-  if (n < 2) throw new RangeError("n must be at least 2");
-  if (pivots < 1) throw new RangeError("pivots must be at least 1");
-  if (repeats < 1) throw new RangeError("repeats must be at least 1");
+	const { n, pivots: pivotCount, repeats, seed } = input;
+	if (n < 2) throw new RangeError("n must be at least 2");
+	if (pivotCount < 1) throw new RangeError("pivots must be at least 1");
+	if (repeats < 1) throw new RangeError("repeats must be at least 1");
 
-  const ring = ring_cycle(n, seeded_rng(seed));
+	const ring = ring_cycle(n, seeded_rng(seed));
 	return {
 		ring,
-		pivotRounds: () => [],
-		jobs: () => [],
+		pivotRounds: (pivots) => {
+			const scheduled = new Set(ring.map(({ a, b }) => pair_key(a, b)));
+			const pivotSet = new Set(pivots);
+			const pairs: DirectedPair[] = [];
+			const add = (a: number, b: number): void => {
+				if (a === b) return;
+				const key = pair_key(a, b);
+				if (scheduled.has(key)) return;
+				scheduled.add(key);
+				pairs.push({ a, b });
+			};
+			for (let candidate = 0; candidate < n; candidate += 1) {
+				if (pivotSet.has(candidate)) continue;
+				for (const pivot of pivots) add(candidate, pivot);
+			}
+			for (let first = 0; first < pivots.length; first += 1) {
+				for (let second = first + 1; second < pivots.length; second += 1) {
+					add(pivots[first]!, pivots[second]!);
+				}
+			}
+			return pairs;
+		},
+		jobs: (pairs, criterionIds) => {
+			const jobs: ScoringJob[] = [];
+			for (const pair of pairs) {
+				for (const criterionId of criterionIds) {
+					for (let rep = 0; rep < repeats; rep += 1) {
+						jobs.push({ a: pair.a, b: pair.b, criterionId, rep, swapped: rep % 2 === 1 });
+					}
+				}
+			}
+			return jobs;
+		},
 	};
 }
