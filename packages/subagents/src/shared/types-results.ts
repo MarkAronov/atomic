@@ -55,6 +55,7 @@ export interface ControlConfig {
 	activeNoticeAfterTurns?: number;
 	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention?: number;
+	progressScores?: number[];
 	notifyOn?: ControlEventType[];
 	notifyChannels?: ControlNotificationChannel[];
 }
@@ -66,6 +67,7 @@ export interface ResolvedControlConfig {
 	activeNoticeAfterTurns?: number;
 	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention: number;
+	progressScores?: number[];
 	notifyOn: ControlEventType[];
 	notifyChannels: ControlNotificationChannel[];
 }
