@@ -85,6 +85,7 @@ type VerificationCell = {
 type ValidResult = {
   readonly cell: VerificationCell;
   readonly report: CriterionScoreReport;
+  readonly artifactPath: string;
 };
 type InvalidArtifact = {
   readonly invalid: true;
@@ -182,7 +183,7 @@ function findingText(decision: Extract<VerificationDecision, { kind: "repair" }>
 }
 
 function quorumEvidence(missing: number, invalidCount: number, expectedCount: number, reaskLimit: number): string {
-  return `Quorum failure: ${missing} of ${expectedCount} criterion scores remain missing after ${reaskLimit} re-ask wave(s); ${invalidCount} cells produced invalid or missing reports.`;
+  return `Quorum failure: ${missing} of ${expectedCount} criterion scores remain missing after ${reaskLimit} re-ask wave(s); ${invalidCount} report attempts were invalid or missing.`;
 }
 
 function stageName(cell: VerificationCell, reaskWave: number): string {
@@ -263,11 +264,14 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
       const invalid: VerificationCell[] = [];
       for (const cell of pending) {
         const report = byName.get(stageName(cell, reaskWave));
+        const artifactPath = reaskWave === 0
+          ? cell.artifactPath
+          : cell.artifactPath.replace(/\.json$/, `-reask-${reaskWave}.json`);
         if (isCriterionScore(report?.structured, cell.criterion.id)) {
-          await writeFile(cell.artifactPath, `${JSON.stringify(report.structured, null, 2)}\n`);
-          valid.push({ cell, report: report.structured });
+          await writeFile(artifactPath, `${JSON.stringify(report.structured, null, 2)}\n`);
+          valid.push({ cell, report: report.structured, artifactPath });
         } else {
-          await writeInvalid(cell.artifactPath, stageName(cell, reaskWave));
+          await writeInvalid(artifactPath, stageName(cell, reaskWave));
           invalid.push(cell);
         }
       }
@@ -276,9 +280,11 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 
     let pending = [...cells];
     const validResults: ValidResult[] = [];
+    let invalidCount = 0;
     for (let reaskWave = 0; reaskWave <= reaskLimit; reaskWave += 1) {
       const wave = await runWave(pending, reaskWave);
       validResults.push(...wave.valid);
+      invalidCount += wave.invalid.length;
       pending = [...wave.invalid];
       if (pending.length === 0) break;
     }
@@ -289,7 +295,6 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
       return report === undefined ? [] : [report];
     });
     const scores = scoreReports.map(toCriterionScore);
-    const invalidCount = pending.length;
     const roundResult = { scores, invalidCount, expectedCount };
     const decision = decide_verification(roundResult, { acceptMean, quorumFraction: QUORUM_FRACTION });
     finalDecision = decision;
@@ -315,7 +320,7 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 
     consecutiveIndeterminate = 0;
     const confirmedFindings = findingText(decision);
-    const scorePaths = validResults.map((item) => item.cell.artifactPath);
+    const scorePaths = validResults.map((item) => item.artifactPath);
     const consolidated = await ctx.task(`consolidate-findings-${round}`, {
       prompt: renderConsolidatorPrompt(ctx.inputs.task, candidatePath, scorePaths, repairsCompleted, maxRepairs),
       context: "fresh",
@@ -327,9 +332,9 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
       : [`Mean score ${decision.mean} is below the acceptance threshold ${acceptMean}.`];
     const consolidatedReport: ConsolidatedReport = structured(consolidated.structured, isConsolidatedReport)
       ?? { repair_guidance: "Confirmed verifier findings require repair.", remaining_work: fallbackRemaining };
-    remainingWork = consolidatedReport.remaining_work.length > 0 ? [...consolidatedReport.remaining_work] : fallbackRemaining;
+    remainingWork = fallbackRemaining;
     await writeFile(scoreTablePath, `${JSON.stringify({ scores: scoreReports, mean: finalMean, invalidCount, decision }, null, 2)}\n`);
-    await writeFile(reviewReportPath, `${JSON.stringify(consolidatedReport, null, 2)}\n`);
+    await writeFile(reviewReportPath, `${JSON.stringify({ ...consolidatedReport, remaining_work: remainingWork }, null, 2)}\n`);
 
     if (repairsCompleted >= maxRepairs) break;
     repairsCompleted += 1;

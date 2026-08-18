@@ -157,7 +157,7 @@ test("adversarial-verification fans out one fresh schema-backed stage per criter
 	});
 });
 
-test("adversarial-verification re-asks invalid reports without counting or persisting them as scores", async () => {
+test("adversarial-verification re-asks invalid reports without counting them as scores", async () => {
 	await withTempCwd(async (cwd) => {
 		const ctx = assignCwd(
 			makeMockCtx(
@@ -172,7 +172,7 @@ test("adversarial-verification re-asks invalid reports without counting or persi
 				{
 					task: (name, options) => {
 						if (!name.startsWith("verifier-")) return undefined;
-						if (name.startsWith("verifier-0-task_fit-1")) return "prose instead of structured output";
+						if (name === "verifier-0-task_fit-1") return "prose instead of structured output";
 						return criterionReport(String(options.prompt));
 					},
 				},
@@ -183,29 +183,41 @@ test("adversarial-verification re-asks invalid reports without counting or persi
 		assert.equal(result.approved, true);
 		assert.deepEqual(
 			ctx.calls.parallel.map((steps) => steps.length),
-			[2, 1, 2],
+			[2, 1],
 		);
 		assert.equal(ctx.calls.parallel[1]?.[0], "verifier-0-task_fit-1-reask-1");
 		const root = dirname(result.score_table_path);
 		assert.deepEqual(JSON.parse(readFileSync(join(root, "verification-0-task_fit-1.json"), "utf8")), {
 			invalid: true,
-			stage: "verifier-0-task_fit-1-reask-1",
+			stage: "verifier-0-task_fit-1",
 		});
-		const firstSummary = JSON.parse(readFileSync(join(root, "verification-summary-0.json"), "utf8")) as {
+		assert.deepEqual(JSON.parse(readFileSync(join(root, "verification-0-task_fit-1-reask-1.json"), "utf8")), {
+			criterion_id: "task_fit",
+			score: 20,
+			evidence: ["checked"],
+			findings: [],
+		});
+		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
 			scores: Array<{ criterion_id: string }>;
+			mean: number;
 			invalidCount: number;
+			decision: { kind: string };
 		};
-		assert.equal(firstSummary.scores.length, 1);
-		assert.equal(
-			firstSummary.scores.some((score) => score.criterion_id === "task_fit"),
-			true,
-		);
-		assert.equal(firstSummary.invalidCount, 1);
+		assert.equal(summary.scores.length, 2);
+		assert.equal(summary.invalidCount, 1);
+		assert.equal(summary.mean, 20);
+		assert.equal(summary.decision.kind, "accept");
 	});
 });
 
-test("adversarial-verification repairs veto findings even when the mean is perfect, without model approval", async () => {
+test("adversarial-verification preserves confirmed findings and reads the successful re-ask artifact", async () => {
 	await withTempCwd(async (cwd) => {
+		const rawFindings = [
+			{ finding: "  veto finding\nline two  ", severity: "veto" },
+			{ finding: "blocking → exact", severity: "blocking" },
+			{ finding: "blocking → exact", severity: "blocking" },
+		] as const;
+		const expectedRemaining = rawFindings.map(({ finding }) => finding);
 		const ctx = assignCwd(
 			makeMockCtx(
 				{
@@ -217,16 +229,17 @@ test("adversarial-verification repairs veto findings even when the mean is perfe
 					reask_limit: 1,
 				},
 				{
-					task: (name, options) =>
-						name.startsWith("verifier-")
-							? criterionReport(
-									String(options.prompt),
-									20,
-									name.endsWith("-1") ? [{ finding: "veto finding", severity: "veto" }] : [],
-								)
-							: name.startsWith("consolidate-findings-")
-								? JSON.stringify({ repair_guidance: "repair the veto", remaining_work: ["veto finding"] })
-								: undefined,
+					task: (name, options) => {
+						if (name === "verifier-0-task_fit-1") return "invalid initial report";
+						if (name === "verifier-0-task_fit-1-reask-1") {
+							return criterionReport(String(options.prompt), 20, rawFindings);
+						}
+						if (name.startsWith("verifier-")) return criterionReport(String(options.prompt));
+						if (name.startsWith("consolidate-findings-")) {
+							return JSON.stringify({ repair_guidance: "repair the veto", remaining_work: ["rewritten"] });
+						}
+						return undefined;
+					},
 				},
 			),
 			cwd,
@@ -237,15 +250,26 @@ test("adversarial-verification repairs veto findings even when the mean is perfe
 		assert.equal(result.repairs_completed, 0);
 		assert.equal(ctx.calls.task.includes("consolidate-findings-0"), true);
 		assert.equal(ctx.calls.task.includes("repair-1"), false);
-		assert.deepEqual(result.remaining_work, ["veto finding"]);
+		assert.deepEqual(result.remaining_work, expectedRemaining);
+		const consolidatorReads = readPaths(ctx.calls.taskOptions["consolidate-findings-0"]?.[0]);
+		assert.equal(
+			consolidatorReads.some((path) => path.endsWith("verification-0-task_fit-1-reask-1.json")),
+			true,
+		);
+		assert.equal(
+			consolidatorReads.some((path) => path.endsWith("verification-0-task_fit-1.json")),
+			false,
+		);
 		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
+			invalidCount: number;
 			decision: { kind: string; mean: number };
 		};
+		assert.equal(summary.invalidCount, 1);
 		assert.equal(summary.decision.kind, "repair");
 		assert.equal(summary.decision.mean, 20);
 		assert.deepEqual(JSON.parse(readFileSync(result.review_report_path, "utf8")), {
 			repair_guidance: "repair the veto",
-			remaining_work: ["veto finding"],
+			remaining_work: expectedRemaining,
 		});
 	});
 });
@@ -279,13 +303,22 @@ test("adversarial-verification repeats indeterminate rounds once and records quo
 			false,
 		);
 		assert.match(result.remaining_work[0] ?? "", /Quorum failure/);
+		const root = dirname(result.score_table_path);
+		assert.deepEqual(JSON.parse(readFileSync(join(root, "verification-1-task_fit-1.json"), "utf8")), {
+			invalid: true,
+			stage: "verifier-1-task_fit-1",
+		});
+		assert.deepEqual(JSON.parse(readFileSync(join(root, "verification-1-task_fit-1-reask-1.json"), "utf8")), {
+			invalid: true,
+			stage: "verifier-1-task_fit-1-reask-1",
+		});
 		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
 			scores: unknown[];
 			invalidCount: number;
 			decision: { kind: string; missing: number };
 		};
 		assert.deepEqual(summary.scores, []);
-		assert.equal(summary.invalidCount, 1);
+		assert.equal(summary.invalidCount, 2);
 		assert.equal(summary.decision.kind, "indeterminate");
 		assert.equal(summary.decision.missing, 1);
 		const review = JSON.parse(readFileSync(result.review_report_path, "utf8")) as { evidence: string[] };
