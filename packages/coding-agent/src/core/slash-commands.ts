@@ -51,11 +51,20 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
 		name: "adversarial-verification",
 		description:
-			"Produce a candidate, challenge it with fresh-context rubric-based verifiers, and reduce their evidence through a bounded repair loop.",
+			"Produce a candidate, score independent per-criterion verifier reports, and apply a deterministic mean-and-veto gate with bounded repairs.",
 		inputs: {
 			task: { description: "Task whose candidate result must be independently verified.", kind: "string" },
-			verifier_count: { description: "Number of independent verifiers per review round.", kind: "number" },
+			verifier_count: {
+				description: "Number of independent verifiers for each criterion per round.",
+				kind: "number",
+			},
 			max_repairs: { description: "Maximum candidate repair rounds before rejection.", kind: "number" },
+			criteria: { description: "Criteria record of name-to-description entries, or criteria.md markdown." },
+			accept_mean: {
+				description: "Mean score required for acceptance on the 1–20 verification scale.",
+				kind: "number",
+			},
+			reask_limit: { description: "Maximum bounded re-ask waves for invalid criterion reports.", kind: "number" },
 		},
 	},
 	{

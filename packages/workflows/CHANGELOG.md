@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
+- `adversarial-verification` now accepts optional per-criterion `criteria`, `accept_mean`, and bounded `reask_limit` inputs, and returns deterministic graded mean/veto results through `mean_score` and `score_table_path`; callers must migrate from the removed `result`, `verifier_artifact_paths`, and `artifact_dir` outputs. Invalid verifier reports are recorded as invalid markers and re-asked instead of becoming fail votes ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 - Replaced `bracket_path`/`bracket.json` and the knockout tournament schedule with `comparisons_path`/`comparisons.json` on the soft-scored pivot-pairing schedule. Judge stages now use deterministic `judge-<a>-<b>-<criterion>-r<rep>` identities, and the reducer stage is named `comparisons-reducer`.
 
 ### Added
@@ -16,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added prefix-cache-aware verification prompts with a byte-identical shared head, UTF-8 bounded candidate inlining with whole-family read fallback, and warm-first verifier fan-out scheduling that preserves input order while releasing later phases after warm failures ([#2493](https://github.com/bastani-inc/atomic/issues/2493)).
 - Added pure, seeded selection math for probabilistic pivot tournaments: deterministic Hamiltonian ring and deduplicated pivot planning, criterion/repeat slot-swap jobs, normalized Bradley–Terry soft wins, count-normalized pivot selection, and complete candidate rankings ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
 - Added tournament `n_evaluations`, `pivots`, `seed`, `criteria`, and heterogeneous `models` inputs, plus `ranking` and `seed` outputs and the auditable `comparisons.json` score ledger with invalid-report and budget records ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
+- `adversarial-verification` now fans out one schema-validated 1–20 score for every criterion/verifier pair, applies mean-plus-veto acceptance, bounds invalid-report re-asks, and consolidates confirmed findings into repair guidance ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 
 ### Fixed
 
