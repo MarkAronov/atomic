@@ -171,13 +171,13 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 						reading: elapsedMs,
 						ceiling: run.budget.maxDurationMs,
 						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
-					  }
+					}
 				: (run.budgetState?.duration ?? {
 						dimension: "duration" as const,
 						reading: elapsedMs,
 						ceiling: run.budget.maxDurationMs,
 						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
-					  });
+					});
 	const budgetState = run.budget === undefined ? undefined : { ...(run.budgetState ?? {}), duration };
 	return {
 		runId: run.id,

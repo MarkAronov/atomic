@@ -27,7 +27,6 @@ export interface WorkflowRunResumeCandidate {
 	readonly budgetSystemOwnedStop?: boolean;
 }
 
-
 /** Derive the paused/blocked state used by every workflow resume surface. */
 export function workflowRunHasPausedState(run: Pick<RunSnapshot, "status" | "exitReason" | "stages">): boolean {
 	return (

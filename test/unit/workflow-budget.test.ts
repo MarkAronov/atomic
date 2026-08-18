@@ -28,8 +28,14 @@ import {
 } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
-import { assistantMessageWithUsage, makeMockSession, type AgentSession, type AgentSessionAdapter } from "./stage-runner-helpers.js";
+import {
+	type AgentSession,
+	type AgentSessionAdapter,
+	assistantMessageWithUsage,
+	makeMockSession,
+} from "./stage-runner-helpers.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -74,6 +80,7 @@ interface BudgetOutcome {
 	readonly ceiling?: number;
 	readonly frontierStage?: string;
 	readonly wrapUpSummary?: string;
+	readonly wrapUpUsage?: WorkflowModelUsage;
 }
 
 function budgetOutcome(value: object | undefined): BudgetOutcome | undefined {
@@ -250,11 +257,15 @@ describe("budget duration controller", () => {
 			outputs: { result: Type.String() },
 			run: async (ctx) => ({ result: await ctx.stage("frontier", { model: "test/model" }).prompt("progress") }),
 		});
-		const result = await run(definition, {}, {
-			store: createStore(),
-			budget: { maxDurationMs: 1 },
-			adapters: { agentSession },
-		});
+		const result = await run(
+			definition,
+			{},
+			{
+				store: createStore(),
+				budget: { maxDurationMs: 1 },
+				adapters: { agentSession },
+			},
+		);
 		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, "wrap summary");
 		assert.deepEqual(budgetOutcome(result.result)?.wrapUpUsage, { ...usage, turns: 1 });
 	});
@@ -812,14 +823,28 @@ describe("budget executor boundaries", () => {
 		});
 		const prompts: string[] = [];
 		const store = createStore();
-		const result = await run(definition, {}, {
-			store,
-			budget: { maxDurationMs: 100 },
-			adapters: {
-				complete: { complete: async (text) => { await sleep(400); return text; } },
-				prompt: { prompt: async (text) => { prompts.push(text); return "wrap-up from the live turn"; } },
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 100 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							await sleep(400);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "wrap-up from the live turn";
+						},
+					},
+				},
 			},
-		});
+		);
 		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
 		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
 		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, undefined);
@@ -922,11 +947,15 @@ describe("budget executor boundaries", () => {
 			},
 		});
 		const store = createStore();
-		const result = await run(definition, {}, {
-			store,
-			budget: { maxDurationMs: 200 },
-			adapters: { complete: { complete: async (text) => text } },
-		});
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 200 },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
 		assert.equal(result.status, "completed");
 		assert.deepEqual(result.result, { result: "real work product" });
 		assert.equal(store.runs()[0]?.budgetState?.systemOwnedStop, undefined);

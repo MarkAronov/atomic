@@ -110,5 +110,13 @@ export function createRunBudgetController(input: {
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;
 	};
-	return { enabled, checkpoint, registerWrapUp, deliverWrapUp, finishWrapUp, rethrowIfSystemOwnedStop, stopAtBoundary };
+	return {
+		enabled,
+		checkpoint,
+		registerWrapUp,
+		deliverWrapUp,
+		finishWrapUp,
+		rethrowIfSystemOwnedStop,
+		stopAtBoundary,
+	};
 }
