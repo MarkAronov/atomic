@@ -26,6 +26,13 @@ function stripLayoutWrapper(line: string): string {
 	const end = endsWithWrapper ? line.length - LAYOUT_OSC_RESET.length : line.length;
 	return line.slice(start, Math.max(start, end));
 }
+/** Unpainted canvas between the orchestrator bars and the painted card. */
+const TOOL_DETAIL_VIEWPORT_PAD = 1;
+
+function toolDetailViewportPad(rows: number): number {
+	return rows >= TOOL_DETAIL_VIEWPORT_PAD * 2 + 1 ? TOOL_DETAIL_VIEWPORT_PAD : 0;
+}
+
 /** One frame's tool-message geometry, derived once and shared by both callbacks. */
 interface ToolDetailFrame {
 	readonly width: number;
@@ -159,17 +166,15 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const cached = this.detailFrame;
 		if (cached !== null && cached.width === safeWidth) return cached;
-		// Match the flat message surface used by agent tool calls. The one-cell
-		// leading inset gives the block the same breathing room without drawing a
-		// standalone rounded panel or hiding content behind a border.
-		const blockWidth = Math.max(1, safeWidth - 1);
+		// Span the same columns as the header/footer bars. Main-chat tool
+		// blocks are full width; only the Box(1,1) pad insets the `$` text.
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
-			blockWidth,
-			leftPad: safeWidth > 1 ? 1 : 0,
+			blockWidth: safeWidth,
+			leftPad: 0,
 			lines: renderToolDetailLines(node, {
 				theme: this.graphTheme,
-				width: blockWidth,
+				width: safeWidth,
 				expanded: this.toolDetailExpanded,
 				expandKey: toolExpandKey(isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined),
 			}),
@@ -181,7 +186,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private _graphBodyContentHeight(width: number, viewportRows: number): number {
 		const rows = Math.max(0, Math.floor(viewportRows));
 		if (this.toolDetail !== null) {
-			return Math.max(rows, this._toolDetailFrame(this.toolDetail, width).lines.length);
+			const pad = toolDetailViewportPad(rows);
+			return Math.max(rows, this._toolDetailFrame(this.toolDetail, width).lines.length + pad * 2);
 		}
 		if (!this._currentRenderRun() || this.cachedRenderGeometry.totalRows <= 0) return rows;
 		return Math.max(rows, this.cachedRenderGeometry.totalRows);
@@ -249,9 +255,12 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private _renderBody(width: number, top: number, rows: number, _contentRows: number): string[] {
 		if (this.toolDetail !== null) {
 			const detail = this._toolDetailFrame(this.toolDetail, width);
-			return detail.lines
-				.slice(top, top + rows)
+			const pad = toolDetailViewportPad(rows);
+			const inner = Math.max(0, rows - pad * 2);
+			const painted = detail.lines
+				.slice(top, top + inner)
 				.map((line) => this._canvasRow(`${" ".repeat(detail.leftPad)}${line}`, width));
+			return [...Array.from({ length: pad }, () => ""), ...painted, ...Array.from({ length: pad }, () => "")];
 		}
 		const run = this._currentRenderRun();
 		const raw = run ? this._renderGraph(width, top, rows, run) : this._renderEmptyBody(width, rows);

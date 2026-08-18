@@ -19,7 +19,14 @@ export const TOOL_DETAIL_VALUE_LIMIT = TOOL_PAYLOAD_VALUE_LIMIT;
 const COLLAPSED_ARGS_LIMIT = 240;
 /** Match the host tool renderer's collapsed fallback preview row bound. */
 const COLLAPSED_RESULT_LINES = 10;
-const BODY_INDENT = "  ";
+/** Match pi-tui `Box(paddingX=1, paddingY=1)` around the host tool card. */
+const BOX_PAD = 1;
+
+function boxMetrics(width: number): { pad: string; inner: number } {
+	const safeWidth = Math.max(1, Math.floor(width));
+	const inset = safeWidth >= BOX_PAD * 2 + 1 ? BOX_PAD : 0;
+	return { pad: " ".repeat(inset), inner: Math.max(1, safeWidth - inset * 2) };
+}
 
 export interface RenderToolDetailOpts {
 	/** Provide for ANSI output; omit for plain text. */
@@ -79,15 +86,29 @@ function styledStatus(status: ToolNodeStatus, theme: GraphTheme | undefined): st
 }
 
 function styledTitle(text: string, theme: GraphTheme | undefined): string {
-	return theme === undefined ? text : `${hexToAnsi(theme.text)}${BOLD}${text}${RESET}`;
+	return theme === undefined ? text : `${hexToAnsi(theme.toolTitle)}${BOLD}${text}${RESET}`;
+}
+
+function styledOutput(text: string, theme: GraphTheme | undefined): string {
+	return theme === undefined ? text : `${hexToAnsi(theme.toolOutput)}${text}${RESET}`;
 }
 
 function styledMuted(text: string, theme: GraphTheme | undefined): string {
 	return theme === undefined ? text : `${hexToAnsi(theme.textMuted)}${text}${RESET}`;
 }
 
+function styledDim(text: string, theme: GraphTheme | undefined): string {
+	return theme === undefined ? text : `${hexToAnsi(theme.dim)}${text}${RESET}`;
+}
+
 function styledError(text: string, theme: GraphTheme | undefined): string {
 	return theme === undefined ? text : `${hexToAnsi(theme.error)}${text}${RESET}`;
+}
+
+function expandHintLine(earlier: number, expandKey: string, pad: string, theme: GraphTheme | undefined): string {
+	const lead = `... (${earlier} earlier lines`;
+	if (expandKey.length === 0) return `${pad}${styledMuted(`${lead})`, theme)}`;
+	return `${pad}${styledMuted(`${lead}, `, theme)}${styledDim(expandKey, theme)}${styledMuted(" Expand)", theme)}`;
 }
 
 function toolBackground(status: ToolNodeStatus, theme: GraphTheme): string {
@@ -249,7 +270,7 @@ function messageHeaderRows(
 	theme: GraphTheme | undefined,
 	expanded: boolean,
 ): string[] {
-	const safeWidth = Math.max(1, Math.floor(width));
+	const { pad, inner } = boxMetrics(width);
 	const name = sanitizeToolTitleText(tool.name);
 	const glyph = headerGlyph(tool.status);
 	const glyphSuffix = glyph === undefined ? "" : ` ${glyph}`;
@@ -258,38 +279,36 @@ function messageHeaderRows(
 			? ""
 			: boundedSerializedValue(tool.args, expanded ? TOOL_DETAIL_VALUE_LIMIT : COLLAPSED_ARGS_LIMIT);
 	const withArgs = `$ ${name}${args ? ` ${args}` : ""}${glyphSuffix}`;
-	const plain = !expanded && visibleWidth(withArgs) > safeWidth ? `$ ${name}${glyphSuffix}` : withArgs;
+	const plain = !expanded && visibleWidth(withArgs) > inner ? `$ ${name}${glyphSuffix}` : withArgs;
 	const titleEnd = `$ ${name}`;
-	const continuationIndent = BODY_INDENT;
-	const continuationWidth = Math.max(1, safeWidth - visibleWidth(continuationIndent));
-	return wrapFieldValue(plain, safeWidth, continuationWidth).map((chunk, index, chunks) => {
-		const prefix = index === 0 ? "" : continuationIndent;
-		if (index !== 0 || !chunk.startsWith(titleEnd)) return `${prefix}${styledMuted(chunk, theme)}`;
+	return wrapFieldValue(plain, inner, inner).map((chunk, index, chunks) => {
+		if (index !== 0 || !chunk.startsWith(titleEnd)) return `${pad}${styledMuted(chunk, theme)}`;
 		const remainder = chunk.slice(titleEnd.length);
 		const hasStatus = glyphSuffix.length > 0 && index === chunks.length - 1 && remainder.endsWith(glyphSuffix);
 		const summary = hasStatus ? remainder.slice(0, -glyphSuffix.length) : remainder;
 		const suffix = hasStatus ? ` ${styledStatus(tool.status, theme)}` : "";
-		return `${styledTitle(titleEnd, theme)}${summary.trim().length > 0 ? styledMuted(summary, theme) : ""}${suffix}`;
+		const title = styledTitle(titleEnd, theme);
+		const rest = summary.trim().length > 0 ? styledMuted(summary, theme) : "";
+		return `${pad}${title}${rest}${suffix}`;
 	});
 }
 
 function bodyRows(text: string, error: boolean, width: number, theme: GraphTheme | undefined): string[] {
-	const contentWidth = Math.max(1, width - visibleWidth(BODY_INDENT));
-	return wrapFieldValue(text, contentWidth).map((line) => {
-		const styled = error ? styledError(line, theme) : styledMuted(line, theme);
-		return `${BODY_INDENT}${styled}`;
+	const { pad, inner } = boxMetrics(width);
+	return wrapFieldValue(text, inner).map((line) => {
+		const styled = error ? styledError(line, theme) : styledOutput(line, theme);
+		return `${pad}${styled}`;
 	});
 }
 
 function footerText(tool: ToolNodeSnapshot, elapsed: number | undefined): string | undefined {
 	if (elapsed === undefined) return undefined;
 	const label = tool.status === "running" ? "Elapsed" : "Took";
-	const duration = elapsed < 1000 ? `${Math.round(elapsed)}ms` : fmtDuration(elapsed);
 	const markers = [
 		tool.status === "cached" ? "cached" : undefined,
 		tool.replayed === true ? "replayed" : undefined,
 	].filter((marker): marker is string => marker !== undefined);
-	return `${label} ${duration}${markers.length > 0 ? ` · ${markers.join(" · ")}` : ""}`;
+	return `${label} ${fmtDuration(elapsed)}${markers.length > 0 ? ` · ${markers.join(" · ")}` : ""}`;
 }
 
 function renderMessageLines(
@@ -301,36 +320,36 @@ function renderMessageLines(
 	now: number,
 ): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
+	const { pad, inner } = boxMetrics(safeWidth);
 	const result = resultText(tool, TOOL_DETAIL_VALUE_LIMIT);
 	const rows: string[] = messageHeaderRows(tool, safeWidth, theme, expanded);
+	// Host bash/result renderers put a blank row between the `$` call and the body.
+	rows.push("");
 	const wrappedBody = bodyRows(result.text, result.error, safeWidth, theme);
 	if (expanded) {
 		rows.push(...wrappedBody);
 		if (tool.source !== undefined && tool.source.length > 0) {
-			const sourceWidth = Math.max(1, safeWidth - visibleWidth(BODY_INDENT));
 			rows.push(
-				...wrapFieldValue(boundedToolText(sanitizeToolDisplayText(tool.source)), sourceWidth).map(
-					(line) => `${BODY_INDENT}${styledMuted(line, theme)}`,
+				...wrapFieldValue(boundedToolText(sanitizeToolDisplayText(tool.source)), inner).map(
+					(line) => `${pad}${styledMuted(line, theme)}`,
 				),
 			);
 		}
 	} else {
 		const earlier = Math.max(0, wrappedBody.length - COLLAPSED_RESULT_LINES);
 		if (earlier > 0) {
-			const hint =
-				expandKey.length > 0
-					? `... (${earlier} earlier lines, ${expandKey} Expand)`
-					: `... (${earlier} earlier lines)`;
-			rows.push(`  ${styledMuted(hint, theme)}`);
+			rows.push(expandHintLine(earlier, expandKey, pad, theme));
 		}
 		rows.push(...wrappedBody.slice(-COLLAPSED_RESULT_LINES));
 	}
 	const footer = footerText(tool, durationMs(tool, now));
 	if (footer !== undefined) {
 		rows.push("");
-		rows.push(styledMuted(footer, theme));
+		rows.push(`${pad}${styledMuted(footer, theme)}`);
 	}
-	return rows.map((row) => paintRow(row, safeWidth, theme, tool.status));
+	const painted = rows.map((row) => paintRow(row, safeWidth, theme, tool.status));
+	const padRow = paintRow("", safeWidth, theme, tool.status);
+	return [padRow, ...painted, padRow];
 }
 
 /** Render one read-only host-style operator tool message block. */
