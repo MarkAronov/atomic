@@ -79,6 +79,13 @@ function budgetOutcome(value: object | undefined): BudgetOutcome | undefined {
 	return value as BudgetOutcome | undefined;
 }
 
+function assertBudgetBlockedSnapshot(snapshot: RunSnapshot | undefined): asserts snapshot is RunSnapshot {
+	assert.ok(snapshot);
+	assert.equal(effectiveRunStatus(snapshot), "blocked");
+	assert.notEqual(snapshot.endedAt, undefined);
+	assert.equal(summarizeRunSnapshot(snapshot).status, "blocked");
+}
+
 describe("workflow budget resolution", () => {
 	test("budget later layers win per field for every layer-presence combination", () => {
 		for (const [field, configValue, definitionValue, runValue] of BUDGET_FIELDS) {
@@ -629,6 +636,7 @@ describe("budget executor boundaries", () => {
 		assert.equal(prompts.length, 0);
 		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
 		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assertBudgetBlockedSnapshot(snapshot);
 	});
 
 	test("budget child-workflow boundary does not consume an undeliverable wrap-up", async () => {
@@ -681,6 +689,7 @@ describe("budget executor boundaries", () => {
 		assert.equal(prompts.length, 0);
 		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
 		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assertBudgetBlockedSnapshot(snapshot);
 	});
 
 	test("budget before dispatch creates no new stage when no turn is live", async () => {
@@ -703,6 +712,7 @@ describe("budget executor boundaries", () => {
 		assert.deepEqual(snapshot?.stages, []);
 		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
 		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assertBudgetBlockedSnapshot(snapshot);
 	});
 
 	test("budget caught stage error still stops on the system-owned blocked rail", async () => {
