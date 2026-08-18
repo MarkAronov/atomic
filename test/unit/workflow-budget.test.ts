@@ -538,6 +538,54 @@ describe("budget executor boundaries", () => {
 		assert.deepEqual(store.notices(), []);
 	});
 
+	test("budget warning notice reaches the store once across repeated stage boundaries", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-warning-notice",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				let last = "";
+				for (let index = 0; index < 6; index++) last = await ctx.stage(`step-${index}`).complete(`work ${index}`);
+				return { result: last };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 200 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(30);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "wrap-up summary" },
+				},
+			},
+		);
+
+		// Six boundaries cross the 80% line repeatedly, but the shipped
+		// store.recordNotice wiring must emit exactly one warning per dimension.
+		const notices = store.notices();
+		assert.equal(notices.length, 1);
+		assert.equal(notices[0]?.level, "warning");
+		assert.equal(notices[0]?.id, `workflow-budget-warning:${result.runId}:duration`);
+		assert.match(notices[0]?.message ?? "", /90\.0% of its duration budget \(180 \/ 200\)/);
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(snapshot?.budgetState?.warned, true);
+		// A warning must not stop the run: 180ms of 200ms never reaches the ceiling.
+		assert.equal(result.status, "completed");
+		assert.equal(result.result?.result, "work 5");
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
+	});
+
 	test("budget resume carries elapsed time, repeats no wrap-up at the same ceiling, and continues when raised", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
