@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "vitest";
 import adversarialVerification from "../../packages/workflows/builtin/adversarial-verification.js";
+import { VERIFICATION_SCALE } from "../../packages/workflows/builtin/verification-criteria.js";
 import generateAndFilter from "../../packages/workflows/builtin/generate-and-filter.js";
 import {
 	assertOutputTypes,
@@ -30,108 +31,237 @@ function assignCwd<T extends object>(ctx: T, cwd: string): T {
 	return ctx;
 }
 
-test("adversarial-verification declares bounded composable contracts", () => {
+function criterionId(prompt: string): string {
+	const match = prompt.match(/\nid: ([^\n]+)/);
+	assert.ok(match?.[1], "criterion verifier prompt must name its criterion");
+	return match[1];
+}
+
+function criterionReport(prompt: string, score = 20, findings: readonly { finding: string; severity: "veto" | "blocking" | "note" }[] = []): string {
+	return JSON.stringify({ criterion_id: criterionId(prompt), score, evidence: ["checked"], findings });
+}
+
+function schemaShape(schema: unknown): Record<string, unknown> {
+	return schema as Record<string, unknown>;
+}
+
+test("adversarial-verification declares the graded input and output contracts", () => {
 	assertWorkflowDefinition(adversarialVerification);
 	assert.equal(adversarialVerification.normalizedName, "adversarial-verification");
 	assert.equal(fieldKind(adversarialVerification.inputs.task), "text");
 	assert.equal(fieldRequired(adversarialVerification.inputs.task), true);
+	assert.deepEqual(fieldDefault(adversarialVerification.inputs.criteria), {
+		task_fit: "The candidate satisfies the literal task.",
+		evidence: "Important claims cite observable evidence, and file findings cite file:line where applicable.",
+		completeness: "Relevant validation is executed and reported with commands run and observed output, and no blocking correctness, safety, or completeness gap remains.",
+	});
+	assert.equal(fieldKind(adversarialVerification.inputs.criteria), "unknown");
 	assert.equal(fieldDefault(adversarialVerification.inputs.verifier_count), 3);
 	assert.equal(fieldDefault(adversarialVerification.inputs.max_repairs), 2);
+	assert.equal(fieldDefault(adversarialVerification.inputs.accept_mean), 14);
+	assert.equal(fieldDefault(adversarialVerification.inputs.reask_limit), 1);
 	assert.equal(Reflect.get(adversarialVerification.inputs.verifier_count, "minimum"), 1);
 	assert.equal(Reflect.get(adversarialVerification.inputs.verifier_count, "maximum"), 5);
 	assert.equal(Reflect.get(adversarialVerification.inputs.max_repairs, "maximum"), 5);
+	assert.equal(Reflect.get(adversarialVerification.inputs.accept_mean, "minimum"), 1);
+	assert.equal(Reflect.get(adversarialVerification.inputs.accept_mean, "maximum"), 20);
 	assertOutputTypes(adversarialVerification.outputs, {
-		result: "text",
 		approved: "boolean",
+		mean_score: "number",
+		score_table_path: "text",
 		repairs_completed: "integer",
 		candidate_path: "text",
 		review_report_path: "text",
-		verifier_artifact_paths: "array",
-		artifact_dir: "text",
 		remaining_work: "array",
 	});
 });
 
-test("adversarial-verification uses fresh evidence verifiers and accepts only through reducer", async () => {
+test("adversarial-verification fans out one fresh schema-backed stage per criterion and verifier", async () => {
 	await withTempCwd(async (cwd) => {
 		const ctx = assignCwd(
 			makeMockCtx(
-				{ task: "verify this", verifier_count: 2, max_repairs: 1 },
 				{
-					task: (name) =>
-						name.startsWith("verifier-")
-							? JSON.stringify({ verdict: "pass", evidence: ["checked"], blocking_findings: [] })
-							: name.startsWith("reducer-")
-								? JSON.stringify({ decision: "accept", rationale: "all evidence passed", remaining_work: [] })
-								: undefined,
+					task: "verify this",
+					verifier_count: 2,
+					max_repairs: 1,
+					criteria: { task_fit: "The task is satisfied.", evidence: "Claims have evidence." },
+					accept_mean: 14,
+					reask_limit: 1,
+				},
+				{ task: (name, options) => (name.startsWith("verifier-") ? criterionReport(String(options.prompt)) : undefined) },
+			),
+			cwd,
+		);
+		const result = await adversarialVerification.run(ctx);
+		assert.equal(result.approved, true);
+		assert.equal(result.mean_score, 20);
+		assert.equal(result.repairs_completed, 0);
+		assert.equal(ctx.calls.parallel.length, 1);
+		assert.equal(ctx.calls.parallel[0]?.length, 4);
+		assert.deepEqual(ctx.calls.parallel[0], [
+			"verifier-0-task_fit-1",
+			"verifier-0-task_fit-2",
+			"verifier-0-evidence-1",
+			"verifier-0-evidence-2",
+		]);
+		for (const name of ctx.calls.parallel[0]!) {
+			const options = ctx.calls.taskOptions[name]?.[0];
+			assert.equal(options?.context, "fresh");
+			assert.equal(options?.schema === undefined, false);
+			assert.ok(readPaths(options).some((path) => path.endsWith("candidate.md")));
+			assert.ok(readPaths(options).some((path) => path.endsWith("criteria.md")));
+			const schema = schemaShape(options?.schema);
+			assert.equal(schema.additionalProperties, false);
+			const properties = schemaShape(schema.properties);
+			assert.equal(schemaShape(properties.criterion_id).type, "string");
+			assert.equal(properties.score, VERIFICATION_SCALE.schema);
+			assert.equal(schemaShape(properties.evidence).type, "array");
+			assert.equal(schemaShape(properties.findings).type, "array");
+			const findingSchema = schemaShape(schemaShape(properties.findings).items);
+			assert.equal(findingSchema.additionalProperties, false);
+		}
+		for (const criterion of ["task_fit", "evidence"]) {
+			for (const index of [1, 2]) {
+				const artifact = join(dirname(result.score_table_path), `verification-0-${criterion}-${index}.json`);
+				assert.deepEqual(JSON.parse(readFileSync(artifact, "utf8")), {
+					criterion_id: criterion,
+					score: 20,
+					evidence: ["checked"],
+					findings: [],
+				});
+			}
+		}
+		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
+			scores: unknown[];
+			mean: number;
+			invalidCount: number;
+			decision: { kind: string };
+		};
+		assert.equal(summary.scores.length, 4);
+		assert.equal(summary.mean, 20);
+		assert.equal(summary.invalidCount, 0);
+		assert.equal(summary.decision.kind, "accept");
+		assert.equal(readFileSync(join(dirname(result.score_table_path), "criteria.md"), "utf8").includes("## Criteria"), true);
+	});
+});
+
+test("adversarial-verification re-asks invalid reports without counting or persisting them as scores", async () => {
+	await withTempCwd(async (cwd) => {
+		const ctx = assignCwd(
+			makeMockCtx(
+				{
+					task: "verify this",
+					verifier_count: 2,
+					max_repairs: 0,
+					criteria: { task_fit: "The task is satisfied." },
+					accept_mean: 14,
+					reask_limit: 1,
+				},
+				{
+					task: (name, options) => {
+						if (!name.startsWith("verifier-")) return undefined;
+						if (name.startsWith("verifier-0-task_fit-1")) return "prose instead of structured output";
+						return criterionReport(String(options.prompt));
+					},
 				},
 			),
 			cwd,
 		);
 		const result = await adversarialVerification.run(ctx);
 		assert.equal(result.approved, true);
-		assert.equal(result.repairs_completed, 0);
-		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1", "verifier-0-2"]]);
-		for (const name of ctx.calls.parallel[0]!) {
-			const options = ctx.calls.taskOptions[name]?.[0];
-			assert.equal(options?.context, "fresh");
-			assert.ok(readPaths(options).some((path) => path.endsWith("candidate.md")));
-			assert.ok(readPaths(options).some((path) => path.endsWith("rubric.md")));
-			assert.notEqual(options?.schema, undefined);
-		}
-		assert.ok(readPaths(ctx.calls.taskOptions["reducer-0"]?.[0]).some((path) => path.includes("verification-0-1")));
-		assert.equal(ctx.calls.taskOptions["reducer-0"]?.[0]?.output, undefined);
-		assert.deepEqual(JSON.parse(readFileSync(join(result.artifact_dir, "verification-0-1.json"), "utf8")), {
-			verdict: "pass",
-			evidence: ["checked"],
-			blocking_findings: [],
+		assert.deepEqual(ctx.calls.parallel.map((steps) => steps.length), [2, 1, 2]);
+		assert.equal(ctx.calls.parallel[1]?.[0], "verifier-0-task_fit-1-reask-1");
+		const root = dirname(result.score_table_path);
+		assert.deepEqual(JSON.parse(readFileSync(join(root, "verification-0-task_fit-1.json"), "utf8")), {
+			invalid: true,
+			stage: "verifier-0-task_fit-1-reask-1",
 		});
-		assert.deepEqual(JSON.parse(readFileSync(result.review_report_path, "utf8")), {
-			decision: "accept",
-			rationale: "all evidence passed",
-			remaining_work: [],
-		});
+		const firstSummary = JSON.parse(readFileSync(join(root, "verification-summary-0.json"), "utf8")) as {
+			scores: Array<{ criterion_id: string }>;
+			invalidCount: number;
+		};
+		assert.equal(firstSummary.scores.length, 1);
+		assert.equal(firstSummary.scores.some((score) => score.criterion_id === "task_fit"), true);
+		assert.equal(firstSummary.invalidCount, 1);
 	});
 });
 
-test("adversarial-verification bounds repair and returns inspectable rejection", async () => {
+test("adversarial-verification repairs veto findings even when the mean is perfect, without model approval", async () => {
 	await withTempCwd(async (cwd) => {
 		const ctx = assignCwd(
 			makeMockCtx(
-				{ task: "repair this", verifier_count: 1, max_repairs: 1 },
 				{
-					task: (name) =>
-						name.startsWith("verifier-")
-							? JSON.stringify({ verdict: "fail", evidence: [], blocking_findings: ["missing test"] })
-							: name.startsWith("reducer-")
-								? JSON.stringify({
-										decision: "repair",
-										rationale: "repair required",
-										remaining_work: ["missing test"],
-									})
-								: undefined,
+					task: "repair this",
+					verifier_count: 2,
+					max_repairs: 0,
+					criteria: { task_fit: "The task is satisfied." },
+					accept_mean: 14,
+					reask_limit: 1,
+				},
+				{
+					task: (name, options) => name.startsWith("verifier-")
+						? criterionReport(String(options.prompt), 20, name.endsWith("-1") ? [{ finding: "veto finding", severity: "veto" }] : [])
+						: name.startsWith("consolidate-findings-")
+							? JSON.stringify({ repair_guidance: "repair the veto", remaining_work: ["veto finding"] })
+							: undefined,
 				},
 			),
 			cwd,
 		);
 		const result = await adversarialVerification.run(ctx);
 		assert.equal(result.approved, false);
-		assert.equal(result.repairs_completed, 1);
-		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1"], ["verifier-1-1"]]);
-		assert.ok(ctx.calls.task.includes("repair-1"));
-		assert.deepEqual(result.remaining_work, ["missing test"]);
-		assert.deepEqual(JSON.parse(readFileSync(join(result.artifact_dir, "verification-0-1.json"), "utf8")), {
-			verdict: "fail",
-			evidence: [],
-			blocking_findings: ["missing test"],
-		});
+		assert.equal(result.mean_score, 20);
+		assert.equal(result.repairs_completed, 0);
+		assert.equal(ctx.calls.task.includes("consolidate-findings-0"), true);
+		assert.equal(ctx.calls.task.includes("repair-1"), false);
+		assert.deepEqual(result.remaining_work, ["veto finding"]);
+		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as { decision: { kind: string; mean: number } };
+		assert.equal(summary.decision.kind, "repair");
+		assert.equal(summary.decision.mean, 20);
 		assert.deepEqual(JSON.parse(readFileSync(result.review_report_path, "utf8")), {
-			decision: "repair",
-			rationale: "repair required",
-			remaining_work: ["missing test"],
+			repair_guidance: "repair the veto",
+			remaining_work: ["veto finding"],
 		});
 	});
 });
+
+test("adversarial-verification repeats indeterminate rounds once and records quorum failure", async () => {
+	await withTempCwd(async (cwd) => {
+		const ctx = assignCwd(
+			makeMockCtx(
+				{
+					task: "verify this",
+					verifier_count: 1,
+					max_repairs: 2,
+					criteria: { task_fit: "The task is satisfied." },
+					accept_mean: 14,
+					reask_limit: 1,
+				},
+				{ task: (name) => (name.startsWith("verifier-") ? "permanently invalid" : undefined) },
+			),
+			cwd,
+		);
+		const result = await adversarialVerification.run(ctx);
+		assert.equal(result.approved, false);
+		assert.equal(result.repairs_completed, 0);
+		assert.equal(ctx.calls.parallel.length, 4);
+		assert.deepEqual(ctx.calls.parallel.map((steps) => steps.length), [1, 1, 1, 1]);
+		assert.equal(ctx.calls.task.some((name) => name.startsWith("consolidate-findings-")), false);
+		assert.match(result.remaining_work[0] ?? "", /Quorum failure/);
+		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
+			scores: unknown[];
+			invalidCount: number;
+			decision: { kind: string; missing: number };
+		};
+		assert.deepEqual(summary.scores, []);
+		assert.equal(summary.invalidCount, 1);
+		assert.equal(summary.decision.kind, "indeterminate");
+		assert.equal(summary.decision.missing, 1);
+		const review = JSON.parse(readFileSync(result.review_report_path, "utf8")) as { evidence: string[] };
+		assert.match(review.evidence[0] ?? "", /Quorum failure/);
+	});
+});
+
 
 test("generate-and-filter declares bounded composable contracts", () => {
 	assertWorkflowDefinition(generateAndFilter);
