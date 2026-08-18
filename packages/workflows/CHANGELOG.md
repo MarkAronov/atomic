@@ -6,11 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced `bracket_path`/`bracket.json` and the knockout tournament schedule with `comparisons_path`/`comparisons.json` on the soft-scored pivot-pairing schedule. Judge stages now use deterministic `judge-<a>-<b>-<criterion>-r<rep>` identities, and the reducer stage is named `comparisons-reducer`.
+
 ### Added
 
 - Added a shared `verification-criteria` module (`parse_rubric`, `normalize_criteria`, `select_criteria`, `VERIFICATION_SCALE`, `decide_verification`) so verification builtins can score one criterion at a time on an anchored 1–20 scale and accept only when a quorum mean clears the threshold with no veto finding. Unparseable reports cannot become scores and cannot shift the mean ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 - Added prefix-cache-aware verification prompts with a byte-identical shared head, UTF-8 bounded candidate inlining with whole-family read fallback, and warm-first verifier fan-out scheduling that preserves input order while releasing later phases after warm failures ([#2493](https://github.com/bastani-inc/atomic/issues/2493)).
 - Added pure, seeded selection math for probabilistic pivot tournaments: deterministic Hamiltonian ring and deduplicated pivot planning, criterion/repeat slot-swap jobs, normalized Bradley–Terry soft wins, count-normalized pivot selection, and complete candidate rankings ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
+- Added tournament `n_evaluations`, `pivots`, `seed`, `criteria`, and heterogeneous `models` inputs, plus `ranking` and `seed` outputs and the auditable `comparisons.json` score ledger with invalid-report and budget records ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
 
 ### Fixed
 
