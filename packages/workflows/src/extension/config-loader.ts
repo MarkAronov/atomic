@@ -193,7 +193,7 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
 		maxDurationMs: 0,
 		maxTokens: 0,
 		maxCost: 0,
-		warnAtPercent: 0,
+		warnAtPercent: 80,
 	},
 	workflowNotifications: {
 		enabled: true,

@@ -3531,7 +3531,7 @@ export default workflow({
 
 `maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and retain the root config default.
 
-`maxDurationMs` is enforced at stage and durable-tool boundaries using elapsed run time (paused time is excluded and resumed runs carry prior elapsed time). A warning notice is emitted once at `warnAtPercent`; exhaustion gives the frontier stage one wrap-up turn, then records a resumable `budget_exceeded` blocked result with its reading, ceiling, frontier, and wrap-up summary. A resumed run does not receive a second wrap-up for the same budget. Nested child budgets constrain only the child subtree; a child budget exhaustion returns to the parent as a blocked child result while the parent continues. `maxTokens` and `maxCost` are currently validated and resolved but are not metered by this duration slice.
+`maxDurationMs` is enforced at stage and durable-tool boundaries using elapsed run time (paused time is excluded and resumed runs carry prior elapsed time). A warning notice is emitted once at `warnAtPercent` (default `80`); exhaustion gives an already-live frontier stage one current-turn wrap-up, then records a resumable `budget_exceeded` blocked result with its reading, ceiling, frontier, and wrap-up summary. No new stage is created just to host a wrap-up; when no stage turn is live at the exhausting boundary, the run stops with no wrap-up summary and leaves the once-per-run delivery allowance unused. A resumed run does not receive a second wrap-up for the same budget. Nested child budgets constrain only the child subtree; a child budget exhaustion returns to the parent as a blocked child result while the parent continues. `maxTokens` and `maxCost` are currently validated and resolved but are not metered by this duration slice.
 
 ## Workflow Configuration
 
@@ -3559,7 +3559,7 @@ Example config:
   },
   "defaultConcurrency": 4,
   "maxDepth": 4,
-  "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 0 },
+  "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 80 },
   "persistRuns": true,
   "statusFile": false,
   "resumeInFlight": "ask",
@@ -3579,7 +3579,7 @@ Runtime config defaults:
 |-----|---------|---------|
 | `defaultConcurrency` | `4` | Default concurrency for authored `ctx.parallel(...)` execution |
 | `maxDepth` | `4` | Maximum workflow nesting depth |
-| `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 0 }` | Default per-run budget declaration; `0` disables a dimension |
+| `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 80 }` | Default per-run budget declaration; `0` disables a dimension; warnings default to `80` percent |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
