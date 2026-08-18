@@ -22,6 +22,7 @@ import {
 	type WorkflowBudget,
 } from "../../packages/workflows/src/shared/budget.js";
 import {
+	effectiveRunStatus,
 	isReturnedBlockedWorkflowStatus,
 	isReturnedResumableBlockedWorkflowStatus,
 } from "../../packages/workflows/src/shared/returned-run-status.js";
@@ -502,6 +503,8 @@ describe("budget executor boundaries", () => {
 		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
 		assert.equal(snapshot?.result?.status, "budget_exceeded");
 		assert.equal(snapshot?.budgetState?.wrapUpCompleted, true);
+		assert.ok(snapshot);
+		assert.equal(effectiveRunStatus(snapshot), "blocked");
 		assert.equal(
 			snapshot?.stages.some((stage) => stage.name === "after-frontier"),
 			false,
