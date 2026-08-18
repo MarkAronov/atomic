@@ -153,6 +153,7 @@ describe("tournament builtin", () => {
 		assert.match(firstJudge.prompt, /<criterion>/);
 		assert.equal(firstJudge.context, "fresh");
 		assert.equal(firstJudge.reads.length, 0);
+		assert.ok(ctx.calls.taskOptions["comparisons-reducer"][0].reads.includes(output.comparisons_path));
 		const ledger = JSON.parse(readFileSync(output.comparisons_path, "utf8"));
 		assert.equal(ledger.seed, 7);
 		assert.equal(ledger.params.n, 4);
