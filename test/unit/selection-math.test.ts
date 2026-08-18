@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { plan_comparisons, seeded_rng } from "../../packages/workflows/builtin/selection-math.js";
+import {
+	accumulate,
+	plan_comparisons,
+	rank_candidates,
+	seeded_rng,
+	select_pivots,
+	soft_win,
+} from "../../packages/workflows/builtin/selection-math.js";
 
 describe("selection-math", () => {
 	test("seeded_rng matches Mulberry32 reference vectors and stays in [0, 1)", () => {
@@ -80,6 +87,45 @@ describe("selection-math", () => {
 		assert.deepEqual(Object.keys(jobs[0]!), ["a", "b", "criterionId", "rep", "swapped"]);
 	});
 
+	test("soft_win normalizes the 1–20 verification scale before sigmoid", () => {
+		assert.equal(soft_win(10, 10), 0.5);
+		assert.ok(Math.abs(soft_win(20, 1) - 0.7310585786300049) < 1e-15);
+		assert.ok(Math.abs(soft_win(20, 1) + soft_win(1, 20) - 1) < 1e-15);
+	});
+
+	test("accumulate mutates win mass and counts for every preference", () => {
+		const w = [0, 0, 0];
+		const c = [0, 0, 0];
+		const prefs = [
+			{ a: 0, b: 1, p: 0.75 },
+			{ a: 1, b: 2, p: 0.25 },
+			{ a: 0, b: 1, p: 0.5 },
+		];
+		accumulate(prefs, w, c);
+		assert.deepEqual(w, [1.25, 1, 0.75]);
+		assert.deepEqual(c, [2, 3, 1]);
+		assert.equal(
+			c.reduce((total, count) => total + count, 0),
+			2 * prefs.length,
+		);
+		assert.equal(
+			w.reduce((total, preference) => total + preference, 0),
+			prefs.length,
+		);
+	});
+
+	test("select_pivots and rank_candidates use zero-count means and index ties", () => {
+		const w = [0, 0.8, 0.4, 0];
+		const c = [0, 1, 1, 0];
+		assert.deepEqual(select_pivots(w, c, 3), [1, 2, 0]);
+		assert.deepEqual(rank_candidates(w, c), [
+			{ index: 1, meanPreference: 0.8 },
+			{ index: 2, meanPreference: 0.4 },
+			{ index: 0, meanPreference: 0 },
+			{ index: 3, meanPreference: 0 },
+		]);
+		assert.equal(rank_candidates(w, c).length, w.length);
+	});
 	test("planner refuses the three invalid lower bounds", () => {
 		assert.throws(() => plan_comparisons({ n: 1, pivots: 1, repeats: 1, seed: 0 }), /n/);
 		assert.throws(() => plan_comparisons({ n: 2, pivots: 0, repeats: 1, seed: 0 }), /pivots/);
