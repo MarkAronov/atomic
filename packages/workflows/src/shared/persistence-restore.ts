@@ -217,6 +217,7 @@ export function restoreOnSessionStart(
 				status: "running",
 				stages,
 				startedAt: run.startTs,
+				...(blockedMeta.endedAt !== undefined ? { endedAt: blockedMeta.endedAt } : {}),
 				...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 				...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
@@ -238,10 +239,12 @@ export function restoreOnSessionStart(
 					? { failureDisposition: blockedMeta.failureDisposition }
 					: {}),
 				...(blockedMeta.failureMessage !== undefined ? { failureMessage: blockedMeta.failureMessage } : {}),
-				failedStageId: blockedMeta.failedStageId,
+				...(blockedMeta.failedStageId !== undefined ? { failedStageId: blockedMeta.failedStageId } : {}),
 				resumable: true,
 				...(blockedMeta.retryAfterMs !== undefined ? { retryAfterMs: blockedMeta.retryAfterMs } : {}),
-				result: blockedMeta.result,
+				...(blockedMeta.endedAt !== undefined ? { endedAt: blockedMeta.endedAt } : {}),
+				...(blockedMeta.result !== undefined ? { result: blockedMeta.result } : {}),
+				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
 				blockedAt: blockedMeta.ts,
 			});
 			continue;

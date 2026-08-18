@@ -87,7 +87,7 @@ export interface ExtensionRuntimeOpts {
 // Public interface
 // ---------------------------------------------------------------------------
 export type ResumeFailedRunResult =
-	| { ok: true; runId: string; sourceRunId: string; resumeFromStageId: string; message: string }
+	| { ok: true; runId: string; sourceRunId: string; resumeFromStageId?: string; message: string }
 	| {
 			ok: false;
 			reason: "run_not_found" | "not_resumable" | "workflow_not_found" | "insufficient_state";
@@ -217,9 +217,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	function resolveResumeStage(
 		source: RunSnapshot,
 		stageId?: string,
-	): { ok: true; stageId: string } | { ok: false; message: string } {
+	): { ok: true; stageId?: string } | { ok: false; message: string } {
 		const budgetExceededSource =
-			source.result?.status === "budget_exceeded" && source.budgetState?.wrapUpCompleted === true;
+			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 		if (stageId !== undefined) {
 			const resolved = resolveUniqueResumeStage(source, stageId);
 			if (!resolved.ok) return { ok: false, message: resolved.message };
@@ -229,10 +229,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			return { ok: true, stageId: stage.id };
 		}
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
-		if (failedStageId === undefined) {
-			return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
-		}
-		return { ok: true, stageId: failedStageId };
+		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
+		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
+		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
 
 	async function resumeFailedRun(
@@ -246,8 +245,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		}
 		const isTerminalFailedResumable =
 			source.status === "failed" && source.endedAt !== undefined && source.resumable !== false;
+		const isBudgetResumable =
+			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 		const isActiveBlockedResumable =
-			source.endedAt === undefined && source.resumable === true && source.failureRecoverability === "recoverable";
+			(source.endedAt === undefined || isBudgetResumable) &&
+			source.resumable === true &&
+			source.failureRecoverability === "recoverable";
 		if (!isTerminalFailedResumable && !isActiveBlockedResumable) {
 			return { ok: false, reason: "not_resumable", message: `run ${sourceRunId} is not a resumable workflow run` };
 		}
@@ -270,11 +273,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			};
 		}
 		const stageMessage = (verb: string, runId: string): string =>
-			`${verb} workflow "${def.name}" from run ${source.id} at stage ${resolvedStage.stageId} (run ${runId}).`;
+			`${verb} workflow "${def.name}" from run ${source.id}${resolvedStage.stageId === undefined ? " at workflow start" : ` at stage ${resolvedStage.stageId}`} (run ${runId}).`;
 		const launchContinuation = () =>
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),
-				continuation: { source, resumeFromStageId: resolvedStage.stageId },
+				continuation: {
+					source,
+					...(resolvedStage.stageId !== undefined ? { resumeFromStageId: resolvedStage.stageId } : {}),
+				},
 				...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				...(jobs !== undefined ? { jobs } : {}),
 				...(options?.budget === undefined ? {} : { budget: options.budget }),

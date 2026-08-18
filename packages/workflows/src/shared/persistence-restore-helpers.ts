@@ -23,7 +23,7 @@ import {
 } from "./workflow-failures.js";
 
 interface RestoredRunBlockedMetadata {
-	readonly failedStageId: string;
+	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -32,6 +32,7 @@ interface RestoredRunBlockedMetadata {
 	readonly failureMessage?: string;
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
+	readonly endedAt?: number;
 	readonly result?: WorkflowOutputValues;
 	readonly budgetState?: RunBudgetState;
 	readonly ts: number;
@@ -149,12 +150,12 @@ function markRestoredBlockedFailureStage(snap: StageSnapshot, blockedMeta: Resto
 	snap.failureMessage = blockedMeta.failureMessage;
 	snap.retryAfterMs = blockedMeta.retryAfterMs;
 }
-
 function restoreBlockedStageState(
 	stageMap: Map<string, StageSnapshot>,
 	endedStages: ReadonlySet<string>,
 	blockedMeta: RestoredRunBlockedMetadata,
 ): void {
+	if (blockedMeta.failedStageId === undefined) return;
 	for (const [stageId, snap] of stageMap) {
 		if (endedStages.has(stageId)) continue;
 		if (stageId === blockedMeta.failedStageId) {
@@ -202,27 +203,27 @@ function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
 	const duration = isRecord(value.duration) ? value.duration : {};
-	const reading = numericDuration(duration.reading);
-	const ceiling = numericDuration(duration.ceiling);
-	const percent = numericDuration(duration.percent);
-	const restoredDuration =
-		reading === undefined || ceiling === undefined || percent === undefined
+	const report = (candidate: Record<string, unknown>): RunBudgetState["duration"] | undefined => {
+		const reading = numericDuration(candidate.reading);
+		const ceiling = numericDuration(candidate.ceiling);
+		const percent = numericDuration(candidate.percent);
+		return reading === undefined || ceiling === undefined || percent === undefined
 			? undefined
-			: { dimension: "duration" as const, reading, ceiling, percent };
-	const warned = value.warned === true,
-		wrapUpDelivered = value.wrapUpDelivered === true,
-		wrapUpCompleted = value.wrapUpCompleted === true;
-	const wrapUpSummary = value.wrapUpSummary,
-		wrapUpUsage = isRecord(value.wrapUpUsage) ? (value.wrapUpUsage as RunBudgetState["wrapUpUsage"]) : undefined;
+			: { dimension: "duration", reading, ceiling, percent };
+	};
+	const restoredDuration = report(duration);
+	const warning = isRecord(value.warning) ? report(value.warning) : undefined;
 	const state = {
 		...(restoredDuration !== undefined ? { duration: restoredDuration } : {}),
-		...(warned ? { warned: true } : {}),
-		...(wrapUpDelivered ? { wrapUpDelivered: true } : {}),
-		...(wrapUpCompleted ? { wrapUpCompleted: true } : {}),
-		...(typeof wrapUpSummary === "string" ? { wrapUpSummary } : {}),
-		...(wrapUpUsage !== undefined ? { wrapUpUsage } : {}),
+		...(warning !== undefined ? { warning } : {}),
+		...(value.warned === true ? { warned: true } : {}),
+		...(value.wrapUpDelivered === true ? { wrapUpDelivered: true } : {}),
+		...(value.wrapUpCompleted === true ? { wrapUpCompleted: true } : {}),
+		...(value.systemOwnedStop === true ? { systemOwnedStop: true } : {}),
+		...(typeof value.wrapUpSummary === "string" ? { wrapUpSummary: value.wrapUpSummary } : {}),
+		...(isRecord(value.wrapUpUsage) ? { wrapUpUsage: value.wrapUpUsage as RunBudgetState["wrapUpUsage"] } : {}),
 	};
-	return Object.keys(state).length > 0 || wrapUpSummary !== undefined ? state : undefined;
+	return Object.keys(state).length > 0 ? state : undefined;
 }
 function isWorkflowChildReplayStatus(status: unknown): status is WorkflowExitStatus {
 	return (
@@ -364,19 +365,19 @@ export function findRunBlockedMetadata(
 		const ts = entry.payload.ts;
 		const result = serializableObject(entry.payload.result);
 		const budgetState = restoreBudgetState(entry.payload.budgetState);
+		const isBudgetStop = budgetState?.systemOwnedStop === true && result?.status === "budget_exceeded";
 		if (
-			typeof failedStageId !== "string" ||
 			typeof error !== "string" ||
 			typeof failureKind !== "string" ||
 			!isWorkflowFailureKind(failureKind) ||
 			failureRecoverability !== "recoverable" ||
 			resumable !== true ||
-			typeof ts !== "number"
-		) {
+			typeof ts !== "number" ||
+			(!isBudgetStop && typeof failedStageId !== "string")
+		)
 			continue;
-		}
 		latest = {
-			failedStageId,
+			...(typeof failedStageId === "string" ? { failedStageId } : {}),
 			error,
 			failureKind,
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
@@ -387,6 +388,7 @@ export function findRunBlockedMetadata(
 			...(typeof failureMessage === "string" ? { failureMessage } : {}),
 			...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
 			resumable: true,
+			...(typeof entry.payload.endedAt === "number" ? { endedAt: entry.payload.endedAt } : {}),
 			...(result !== undefined ? { result } : {}),
 			...(budgetState !== undefined ? { budgetState } : {}),
 			ts,
@@ -394,7 +396,6 @@ export function findRunBlockedMetadata(
 	}
 	return latest;
 }
-
 export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): void {
 	const started = new Map<
 		string,

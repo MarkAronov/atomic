@@ -126,7 +126,7 @@ export interface RunEndPayload {
 
 export interface RunBlockedPayload {
 	readonly runId: string;
-	readonly failedStageId: string;
+	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -135,6 +135,7 @@ export interface RunBlockedPayload {
 	readonly failureDisposition?: WorkflowFailureDisposition;
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
+	readonly endedAt?: number;
 	readonly result?: WorkflowOutputValues;
 	readonly budgetState?: import("./store-types.js").RunBudgetState;
 	readonly ts: number;
@@ -283,7 +284,7 @@ export function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload
 	if (typeof api.appendEntry !== "function") return;
 	api.appendEntry("workflow.run.blocked", {
 		runId: payload.runId,
-		failedStageId: payload.failedStageId,
+		...(payload.failedStageId !== undefined ? { failedStageId: payload.failedStageId } : {}),
 		error: payload.error,
 		failureKind: payload.failureKind,
 		...(payload.failureCode !== undefined ? { failureCode: payload.failureCode } : {}),
@@ -292,6 +293,7 @@ export function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload
 		...(payload.failureDisposition !== undefined ? { failureDisposition: payload.failureDisposition } : {}),
 		...(payload.retryAfterMs !== undefined ? { retryAfterMs: payload.retryAfterMs } : {}),
 		resumable: payload.resumable,
+		...(payload.endedAt !== undefined ? { endedAt: payload.endedAt } : {}),
 		...(payload.result !== undefined ? { result: payload.result } : {}),
 		...(payload.budgetState !== undefined ? { budgetState: payload.budgetState } : {}),
 		ts: payload.ts,
