@@ -144,3 +144,23 @@ test("clearQueue adopts disjoint authoritative engine queues after a failed remo
 		harness.cleanup();
 	}
 });
+
+test("clearQueue keeps an authoritative empty queue_update when the remote clear fails", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const session = runtime.session;
+		probe.emit({ type: "queue_update", steering: ["before steer"], followUp: ["before follow-up"] });
+
+		session.clearQueue();
+		probe.emit({ type: "queue_update", steering: [], followUp: [] });
+		probe.reject(new Error("engine unavailable"));
+		await settleRejectedClear();
+
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+	} finally {
+		harness.cleanup();
+	}
+});

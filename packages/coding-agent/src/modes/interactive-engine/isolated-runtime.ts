@@ -38,6 +38,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
+	private queueUpdateGeneration = 0;
 	private engineCallbackActive = false;
 	private readonly queuePause: RemoteQueuePause;
 	private autoCompactionEnabled = true;
@@ -406,17 +407,21 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: () => {
 					const queued = { steering: [...this.steeringMessages], followUp: [...this.followUpMessages] };
+					const generation = this.queueUpdateGeneration;
 					this.steeringMessages = [];
 					this.followUpMessages = [];
 					const clearRequest = this.client.requestInternal({ type: "clear_queue" });
 					this.dispatchBestEffort(
 						"clear queue",
 						clearRequest.catch((error: Error) => {
-							// A queue_update replaces both arrays with the engine's authoritative queue.
-							// A non-empty array is already engine truth, so prepending the snapshot would
-							// duplicate it. Restore only an array that is still empty after the failed clear.
-							if (this.steeringMessages.length === 0) this.steeringMessages = [...queued.steering];
-							if (this.followUpMessages.length === 0) this.followUpMessages = [...queued.followUp];
+							// A later queue_update is engine truth, including an empty one. Length
+							// cannot stand in for that: an authoritative empty update looks like
+							// "no update arrived" and would restore messages the engine already
+							// removed. Restore the snapshot only when no update followed this clear.
+							if (this.queueUpdateGeneration === generation) {
+								this.steeringMessages = [...queued.steering];
+								this.followUpMessages = [...queued.followUp];
+							}
 							throw error;
 						}),
 					);
@@ -580,6 +585,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.compactionReason = undefined;
 				break;
 			case "queue_update":
+				this.queueUpdateGeneration += 1;
 				this.steeringMessages = [...event.steering];
 				this.followUpMessages = [...event.followUp];
 				break;
