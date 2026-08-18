@@ -90,7 +90,7 @@ describe("tournament builtin", () => {
 });
 
 describe("loop-until-done builtin", () => {
-	test("declares a bounded loop and precise composable output contract", async () => {
+	test("declares bounded progress loop inputs and outputs", async () => {
 		const { default: definition } = await import("../../packages/workflows/builtin/loop-until-done.js");
 		assertWorkflowDefinition(definition);
 		assert.equal(definition.name, "loop-until-done");
