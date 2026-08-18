@@ -25,6 +25,7 @@ export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionU
 }
 
 /**
+ * Control frames must remain reachable while an ordinary RPC command is
  * pending. Interrupts cancel or adjust queued work for that command, while
  * host responses can unblock UI work awaited by it. Everything else stays on
  * the ordered command lane.
