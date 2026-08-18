@@ -6,6 +6,7 @@
 import type {
 	WorkflowExitStatus,
 	WorkflowInputValues,
+	WorkflowModelUsage,
 	WorkflowOutputValues,
 	WorkflowSerializableValue,
 } from "./types.js";
@@ -20,6 +21,27 @@ export type StageStatus =
 	| "completed"
 	| "failed"
 	| "skipped";
+
+export interface RunBudgetSnapshot {
+	readonly maxDurationMs: number;
+	readonly warnAtPercent: number;
+}
+
+export interface RunBudgetDurationReading {
+	readonly dimension: "duration";
+	readonly reading: number;
+	readonly ceiling: number;
+	readonly percent: number;
+}
+
+export interface RunBudgetState {
+	readonly duration?: RunBudgetDurationReading;
+	readonly warned?: boolean;
+	readonly wrapUpDelivered?: boolean;
+	readonly wrapUpCompleted?: boolean;
+	readonly wrapUpSummary?: string;
+	readonly wrapUpUsage?: WorkflowModelUsage;
+}
 
 export type ToolNodeStatus = "pending" | "running" | "completed" | "failed" | "cached" | "cancelled";
 
@@ -307,6 +329,10 @@ export interface RunSnapshot {
 	readonly stages: StageSnapshot[];
 	/** Durable ctx.tool execution nodes. Optional only for legacy/restored snapshots. */
 	readonly toolNodes?: ToolNodeSnapshot[];
+	/** Resolved duration budget; omitted for byte-identical unbudgeted runs. */
+	budget?: RunBudgetSnapshot;
+	/** Persisted warning/wrap-up state for resumable budget exhaustion. */
+	budgetState?: RunBudgetState;
 	startedAt: number;
 	endedAt?: number;
 	durationMs?: number;

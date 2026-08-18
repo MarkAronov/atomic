@@ -226,6 +226,8 @@ export function restoreOnSessionStart(
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),
+				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
 			};
 			store.recordRunStart(runSnapshot);
 			store.recordRunBlocked(run.runId, blockedMeta.error, {
@@ -239,6 +241,7 @@ export function restoreOnSessionStart(
 				failedStageId: blockedMeta.failedStageId,
 				resumable: true,
 				...(blockedMeta.retryAfterMs !== undefined ? { retryAfterMs: blockedMeta.retryAfterMs } : {}),
+				result: blockedMeta.result,
 				blockedAt: blockedMeta.ts,
 			});
 			continue;
@@ -259,6 +262,8 @@ export function restoreOnSessionStart(
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
 				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+				...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),
@@ -284,6 +289,8 @@ export function restoreOnSessionStart(
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
 				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+				...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),

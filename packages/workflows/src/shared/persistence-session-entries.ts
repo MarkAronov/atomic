@@ -7,6 +7,8 @@
  */
 
 import type {
+	RunBudgetSnapshot,
+	RunBudgetState,
 	ToolNodeSnapshot,
 	WorkflowActor,
 	WorkflowFailureCode,
@@ -32,7 +34,6 @@ export interface PersistenceAPI {
 // ---------------------------------------------------------------------------
 // Entry payload types (spec §5.6)
 // ---------------------------------------------------------------------------
-
 export interface RunStartPayload {
 	readonly runId: string;
 	readonly name: string;
@@ -46,6 +47,8 @@ export interface RunStartPayload {
 	readonly resumeFromStageId?: string;
 	/** Elapsed ms inherited from prior sessions of a resumed run. */
 	readonly accumulatedDurationMs?: number;
+	readonly budget?: RunBudgetSnapshot;
+	readonly budgetState?: RunBudgetState;
 	readonly ts: number;
 }
 
@@ -133,6 +136,8 @@ export interface RunBlockedPayload {
 	readonly failureDisposition?: WorkflowFailureDisposition;
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
+	readonly result?: WorkflowOutputValues;
+	readonly budgetState?: RunBudgetState;
 	readonly ts: number;
 }
 
@@ -157,6 +162,8 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
 		...(payload.origin !== undefined ? { origin: payload.origin } : {}),
 		...(payload.resumeFromStageId !== undefined ? { resumeFromStageId: payload.resumeFromStageId } : {}),
 		...(payload.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: payload.accumulatedDurationMs } : {}),
+		...(payload.budget !== undefined ? { budget: payload.budget } : {}),
+		...(payload.budgetState !== undefined ? { budgetState: payload.budgetState } : {}),
 		ts: payload.ts,
 	});
 	if (entryId && typeof api.setLabel === "function") {
@@ -286,6 +293,8 @@ export function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload
 		...(payload.failureDisposition !== undefined ? { failureDisposition: payload.failureDisposition } : {}),
 		...(payload.retryAfterMs !== undefined ? { retryAfterMs: payload.retryAfterMs } : {}),
 		resumable: payload.resumable,
+		...(payload.result !== undefined ? { result: payload.result } : {}),
+		...(payload.budgetState !== undefined ? { budgetState: payload.budgetState } : {}),
 		ts: payload.ts,
 	});
 }

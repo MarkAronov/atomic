@@ -3,6 +3,8 @@ import type { NormalizedSessionEntry as SessionEntry } from "./persistence-resto
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
 import type {
+	RunBudgetSnapshot,
+	RunBudgetState,
 	RunStatus,
 	StageSnapshot,
 	StageStatus,
@@ -30,6 +32,8 @@ interface RestoredRunBlockedMetadata {
 	readonly failureMessage?: string;
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
+	readonly result?: WorkflowOutputValues;
+	readonly budgetState?: RunBudgetState;
 	readonly ts: number;
 }
 
@@ -189,6 +193,59 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 	return serializableObject(value) ?? {};
 }
 
+function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
+	if (!isRecord(value)) return undefined;
+	const maxDurationMs = value.maxDurationMs;
+	const warnAtPercent = value.warnAtPercent;
+	if (
+		typeof maxDurationMs !== "number" ||
+		!Number.isFinite(maxDurationMs) ||
+		typeof warnAtPercent !== "number" ||
+		!Number.isFinite(warnAtPercent)
+	)
+		return undefined;
+	return { maxDurationMs, warnAtPercent };
+}
+
+function restoreBudgetState(value: unknown): RunBudgetState | undefined {
+	if (!isRecord(value)) return undefined;
+	const duration = value.duration;
+	const reading = isRecord(duration) ? duration.reading : undefined;
+	const ceiling = isRecord(duration) ? duration.ceiling : undefined;
+	const percent = isRecord(duration) ? duration.percent : undefined;
+	const restoredDuration =
+		typeof reading === "number" &&
+		Number.isFinite(reading) &&
+		typeof ceiling === "number" &&
+		Number.isFinite(ceiling) &&
+		typeof percent === "number" &&
+		Number.isFinite(percent)
+			? { dimension: "duration" as const, reading, ceiling, percent }
+			: undefined;
+	const warned = value.warned === true;
+	const wrapUpDelivered = value.wrapUpDelivered === true;
+	const wrapUpCompleted = value.wrapUpCompleted === true;
+	const wrapUpSummary = value.wrapUpSummary;
+	const wrapUpUsage = isRecord(value.wrapUpUsage) ? (value.wrapUpUsage as RunBudgetState["wrapUpUsage"]) : undefined;
+	if (
+		restoredDuration === undefined &&
+		!warned &&
+		!wrapUpDelivered &&
+		!wrapUpCompleted &&
+		wrapUpSummary === undefined &&
+		wrapUpUsage === undefined
+	)
+		return undefined;
+	return {
+		...(restoredDuration !== undefined ? { duration: restoredDuration } : {}),
+		...(warned ? { warned: true } : {}),
+		...(wrapUpDelivered ? { wrapUpDelivered: true } : {}),
+		...(wrapUpCompleted ? { wrapUpCompleted: true } : {}),
+		...(typeof wrapUpSummary === "string" ? { wrapUpSummary } : {}),
+		...(wrapUpUsage !== undefined ? { wrapUpUsage } : {}),
+	};
+}
+
 function isWorkflowChildReplayStatus(status: unknown): status is WorkflowExitStatus {
 	return (
 		status === "completed" ||
@@ -327,6 +384,8 @@ export function findRunBlockedMetadata(
 		const retryAfterMs = numericRetryAfterMs(entry.payload.retryAfterMs);
 		const resumable = entry.payload.resumable;
 		const ts = entry.payload.ts;
+		const result = serializableObject(entry.payload.result);
+		const budgetState = restoreBudgetState(entry.payload.budgetState);
 		if (
 			typeof failedStageId !== "string" ||
 			typeof error !== "string" ||
@@ -350,6 +409,8 @@ export function findRunBlockedMetadata(
 			...(typeof failureMessage === "string" ? { failureMessage } : {}),
 			...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
 			resumable: true,
+			...(result !== undefined ? { result } : {}),
+			...(budgetState !== undefined ? { budgetState } : {}),
 			ts,
 		};
 	}
@@ -422,6 +483,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			...(runMeta.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 				: {}),
+			...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+			...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
 		});
 
 		const error = end.error;
@@ -501,6 +564,8 @@ export function findRunStartMetadata(
 	readonly resumeFromStageId?: string;
 	readonly accumulatedDurationMs?: number;
 	readonly origin?: WorkflowActor;
+	readonly budget?: RunBudgetSnapshot;
+	readonly budgetState?: RunBudgetState;
 } {
 	for (const entry of entries) {
 		if (entry.type !== "workflow.run.start" || entry.payload.runId !== runId) continue;
@@ -510,6 +575,8 @@ export function findRunStartMetadata(
 		const resumedFromRunId = entry.payload.resumedFromRunId;
 		const resumeFromStageId = entry.payload.resumeFromStageId;
 		const accumulatedDurationMs = entry.payload.accumulatedDurationMs;
+		const budget = restoreBudgetSnapshot(entry.payload.budget);
+		const budgetState = restoreBudgetState(entry.payload.budgetState);
 		const origin = entry.payload.origin;
 		return {
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
@@ -523,6 +590,8 @@ export function findRunStartMetadata(
 				? { accumulatedDurationMs }
 				: {}),
 			...(origin === "user" || origin === "agent" ? { origin } : {}),
+			...(budget !== undefined ? { budget } : {}),
+			...(budgetState !== undefined ? { budgetState } : {}),
 		};
 	}
 	return {};

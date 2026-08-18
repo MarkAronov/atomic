@@ -145,6 +145,8 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			run.resumable = metadata.resumable;
 			run.blockedAt = metadata.blockedAt ?? Date.now();
 			if (metadata.retryAfterMs !== undefined) run.retryAfterMs = metadata.retryAfterMs;
+			if (metadata.result !== undefined) run.result = metadata.result;
+			if (metadata.budgetState !== undefined) run.budgetState = metadata.budgetState;
 			context.bumpAndNotify();
 			return true;
 		},

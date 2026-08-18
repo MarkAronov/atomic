@@ -64,6 +64,8 @@ export interface RunBlockedMetadata extends RunEndMetadata {
 	readonly failedStageId: string;
 	readonly resumable: true;
 	readonly blockedAt?: number;
+	readonly result?: WorkflowOutputValues;
+	readonly budgetState?: import("./store-types.js").RunBudgetState;
 }
 
 export type StagePromptAnswerSource = "workflow_ui" | "workflow_tool";
