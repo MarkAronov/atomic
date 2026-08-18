@@ -2,15 +2,19 @@ import { type DurationBudgetReport, type EffectiveBudget, enforceDurationBudget 
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowModelUsage } from "../shared/types.js";
+
 export const BUDGET_WRAP_UP_PROMPT =
 	"The workflow budget is exhausted. Stop substantive work, summarize useful progress, identify remaining work or blockers, and leave a clear next step. Do not start any new stages.";
+
 export interface BudgetExceededReport extends DurationBudgetReport {
 	readonly frontierStage: string;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: WorkflowModelUsage;
 }
+
 export class WorkflowBudgetExceededError extends Error {
 	readonly report: BudgetExceededReport;
+
 	constructor(report: BudgetExceededReport) {
 		super(
 			`atomic-workflows: ${report.dimension} budget exceeded (${report.reading}ms / ${report.ceiling}ms) at ${report.frontierStage}`,
@@ -19,7 +23,9 @@ export class WorkflowBudgetExceededError extends Error {
 		this.report = report;
 	}
 }
+
 export type RunBudgetController = ReturnType<typeof createRunBudgetController>;
+
 const withFrontier = (
 	report: DurationBudgetReport,
 	frontierStage: string | undefined,
@@ -31,6 +37,7 @@ const withFrontier = (
 		summary === undefined ? {} : { wrapUpSummary: summary },
 		usage === undefined ? {} : { wrapUpUsage: usage },
 	);
+
 export function createRunBudgetController(input: {
 	readonly run: RunSnapshot;
 	readonly budget: EffectiveBudget;
@@ -51,8 +58,9 @@ export function createRunBudgetController(input: {
 		usage?: WorkflowModelUsage,
 		delivered = true,
 	): WorkflowBudgetExceededError => {
+		state = Object.assign(state ?? {}, { systemOwnedStop: true });
 		if (delivered)
-			state = Object.assign(state ?? {}, {
+			Object.assign(state, {
 				wrapUpDelivered: true,
 				wrapUpCompleted: true,
 				...(summary === undefined ? {} : { wrapUpSummary: summary }),
@@ -69,7 +77,7 @@ export function createRunBudgetController(input: {
 		const check = enforceDurationBudget(elapsedRunMs(run), budget, { warned: state?.warned });
 		if (check.kind === "continue") {
 			if (check.warning) {
-				state = { ...(state ?? {}), warned: true };
+				state = { ...(state ?? {}), warned: true, warning: check.report };
 				input.onWarning?.(check.report);
 			}
 			setState(check.report);

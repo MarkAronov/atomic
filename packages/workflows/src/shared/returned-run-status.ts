@@ -61,7 +61,7 @@ export function structuredRecoverableWorkflowFailure(
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
 		returnedStatus === "budget_exceeded" &&
-		run.budgetState?.wrapUpCompleted === true &&
+		run.budgetState?.systemOwnedStop === true &&
 		run.failureDisposition === "active_blocked" &&
 		run.failureRecoverability === "recoverable"
 	) {

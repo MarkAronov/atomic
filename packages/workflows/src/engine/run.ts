@@ -202,7 +202,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		...(opts.continuation !== undefined
 			? {
 					resumedFromRunId: opts.continuation.source.id,
-					resumeFromStageId: opts.continuation.resumeFromStageId,
+					...(opts.continuation.resumeFromStageId !== undefined
+						? { resumeFromStageId: opts.continuation.resumeFromStageId }
+						: {}),
 				}
 			: {}),
 		// A continuation keeps the attribution of the run it continues rather than
@@ -680,8 +682,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			const report = err.report;
 			const frontierStageId =
 				runSnapshot.stages.find((stage) => stage.name === report.frontierStage)?.id ??
-				runSnapshot.stages.at(-1)?.id ??
-				report.frontierStage;
+				runSnapshot.stages.at(-1)?.id;
 			for (const stage of runSnapshot.stages) scheduler.blockKnownNonTerminalDescendants(stage.id);
 			const result: WorkflowOutputValues = { status: "budget_exceeded", ...report };
 			return recordActiveBlockedFailure(runId, runSnapshot, activeStore, opts.persistence, {
@@ -691,7 +692,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				failureRecoverability: "recoverable",
 				failureDisposition: "active_blocked",
 				failureMessage: err.message,
-				failedStageId: frontierStageId,
+				...(frontierStageId !== undefined ? { failedStageId: frontierStageId } : {}),
 				resumable: true,
 				result,
 				budgetState: runSnapshot.budgetState,

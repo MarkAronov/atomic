@@ -102,6 +102,7 @@ export interface RunFailureMetadata {
 	readonly failedToolNodeId?: string;
 	readonly resumable: boolean;
 	readonly retryAfterMs?: number;
+	readonly endedAt?: number;
 	readonly result?: WorkflowOutputValues;
 	readonly budgetState?: RunBudgetState;
 }
@@ -438,24 +439,25 @@ export function finalizeKilledByFailure(
 		onRunEnd,
 	);
 }
-
 export function recordActiveBlockedFailure(
 	runId: string,
 	runSnapshot: RunSnapshot,
 	activeStore: Store,
 	persistence: WorkflowPersistencePort | undefined,
-	metadata: RunFailureMetadata & { readonly failureRecoverability: "recoverable"; readonly failedStageId: string },
+	metadata: RunFailureMetadata & { readonly failureRecoverability: "recoverable" },
 ): RunResult {
 	const blockedAt = Date.now();
+	const endedAt = metadata.budgetState?.systemOwnedStop === true ? blockedAt : undefined;
 	const recorded = activeStore.recordRunBlocked(runId, metadata.errorMessage, {
 		failureKind: metadata.failureKind,
 		...(metadata.failureCode !== undefined ? { failureCode: metadata.failureCode } : {}),
 		failureRecoverability: "recoverable",
 		...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
 		failureMessage: metadata.failureMessage,
-		failedStageId: metadata.failedStageId,
+		...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
 		resumable: true,
 		...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
+		...(endedAt !== undefined ? { endedAt } : {}),
 		...(metadata.result !== undefined ? { result: metadata.result } : {}),
 		...(metadata.budgetState !== undefined ? { budgetState: metadata.budgetState } : {}),
 		blockedAt,
@@ -463,7 +465,7 @@ export function recordActiveBlockedFailure(
 	if (recorded && persistence !== undefined) {
 		appendRunBlocked(persistence, {
 			runId,
-			failedStageId: metadata.failedStageId,
+			...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
 			error: metadata.errorMessage,
 			failureKind: metadata.failureKind,
 			...(metadata.failureCode !== undefined ? { failureCode: metadata.failureCode } : {}),
@@ -472,6 +474,7 @@ export function recordActiveBlockedFailure(
 			...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
 			...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
 			resumable: true,
+			...(endedAt !== undefined ? { endedAt } : {}),
 			...(metadata.result !== undefined ? { result: metadata.result } : {}),
 			...(metadata.budgetState !== undefined ? { budgetState: metadata.budgetState } : {}),
 			ts: blockedAt,

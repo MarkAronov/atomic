@@ -23,8 +23,10 @@ export type StageStatus =
 	| "skipped";
 
 export type RunBudgetSnapshot = { readonly maxDurationMs: number; readonly warnAtPercent: number };
-export interface RunBudgetState extends Partial<Record<"warned" | "wrapUpDelivered" | "wrapUpCompleted", boolean>> {
+export interface RunBudgetState
+	extends Partial<Record<"warned" | "wrapUpDelivered" | "wrapUpCompleted" | "systemOwnedStop", boolean>> {
 	readonly duration?: DurationBudgetReport;
+	readonly warning?: DurationBudgetReport;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: import("./types.js").WorkflowModelUsage;
 }
