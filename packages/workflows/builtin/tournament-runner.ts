@@ -1,194 +1,329 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
-import type {
-  WorkflowRunContext,
-  WorkflowSerializableObject,
-  WorkflowSerializableValue,
-  WorkflowTaskResult,
-} from "../src/shared/types.js";
-import {
-  renderBracketReducerPrompt,
-  renderPairwiseJudgePrompt,
-  renderTournamentAttemptPrompt,
-} from "./tournament-prompts.js";
+import type { WorkflowInputValues, WorkflowRunContext, WorkflowSerializableObject, WorkflowSerializableValue, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import { accumulate, plan_comparisons, rank_candidates, select_pivots, soft_win, type Preference, type ScoringJob } from "./selection-math.js";
+import { build_scoring_prompt, scoring_prompt_reads, warm_first_fan_out, type ScoringCandidate, type SharedHead } from "./verification-prompts.js";
+import { normalize_criteria, VERIFICATION_SCALE, type CriterionInput } from "./verification-criteria.js";
+import { DEFAULT_TOURNAMENT_CRITERIA, renderComparisonsReducerPrompt, renderTournamentAttemptPrompt } from "./tournament-prompts.js";
 import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
-const judgeDecisionSchema = Type.Object({
-  winner: Type.Union([Type.Literal("first"), Type.Literal("second")]),
-  rationale: Type.String(),
-  evidence: Type.Array(Type.String(), { minItems: 1 }),
+const judgeScoreSchema = Type.Object({
+	criterion_id: Type.String(),
+	score_a: Type.Integer({ minimum: VERIFICATION_SCALE.min, maximum: VERIFICATION_SCALE.max }),
+	score_b: Type.Integer({ minimum: VERIFICATION_SCALE.min, maximum: VERIFICATION_SCALE.max }),
+	evidence: Type.Array(Type.String()),
 }, { additionalProperties: false });
 
-type TournamentInputs = {
-  readonly prompt: string;
-  readonly num_attempts: number;
-  readonly max_concurrency: number;
-} & Record<string, WorkflowSerializableValue>;
+const JUDGE_GROUND_TRUTH_NOTE = "No external ground truth is supplied; score each presented solution against the task and criterion.";
+const JUDGE_OUTPUT_FORMAT =
+	"Return only JSON with criterion_id (string), score_a (integer 1–20 for presented slot 1), score_b (integer 1–20 for presented slot 2), and evidence (array of strings).";
 
-type Entrant = { readonly label: string; readonly path: string };
-type MatchRecord = {
-  readonly round: number;
-  readonly match: number;
-  readonly first: string;
-  readonly second: string;
-  readonly winner: string;
-  readonly rationale: string;
-  readonly evidence: readonly string[];
-  readonly judge_artifact_path: string;
-};
-type ByeRecord = { readonly round: number; readonly entrant: string };
+type TournamentCriterionInput = CriterionInput & { readonly name: string; readonly description: string };
+type TournamentInputs = WorkflowInputValues & { readonly prompt: string; readonly num_attempts: number; readonly max_concurrency: number; readonly n_evaluations: number; readonly pivots: number; readonly seed: number; readonly criteria?: readonly TournamentCriterionInput[]; readonly models?: readonly string[] };
+
+type Entrant = { readonly label: string; readonly path: string; readonly body: string };
+type JudgeReport = { readonly criterion_id: string; readonly score_a: number; readonly score_b: number; readonly evidence: readonly string[] };
+type ComparisonRecord = { a: number; b: number; phase: "ring" | "pivot"; criterion_id: string; rep: number; swapped: boolean; score_a?: number; score_b?: number; p_ab?: number; invalid?: true; judge_artifact_path: string };
+type ScoredComparisonRecord = ComparisonRecord & { score_a: number; score_b: number };
+type PairRecord = { a: number; b: number; phase: "ring" | "pivot"; valid_reports: number; mean_score_a?: number; mean_score_b?: number; p_ab: number; invalid?: true };
+type JudgeStage = { readonly job: ScoringJob; readonly name: string; readonly path: string; readonly slot1: number; readonly slot2: number; readonly step: WorkflowTaskStep };
 
 function serializableObject(
-  value: WorkflowSerializableValue | undefined,
+	value: WorkflowSerializableValue | undefined,
 ): WorkflowSerializableObject | undefined {
-  if (value === null || Array.isArray(value) || typeof value !== "object") return undefined;
-  return value as WorkflowSerializableObject;
+	if (value === null || Array.isArray(value) || typeof value !== "object") return undefined;
+	return value as WorkflowSerializableObject;
 }
 
-function decisionFrom(result: WorkflowTaskResult): {
-  readonly winner: "first" | "second";
-  readonly rationale: string;
-  readonly evidence: readonly string[];
-} {
-  const value = serializableObject(result.structured);
-  if (value === undefined) {
-    throw new Error(`tournament: judge ${result.stageName} did not return a structured decision`);
-  }
-  const winner = value.winner;
-  const rationale = value.rationale;
-  const evidence = value.evidence;
-  if ((winner !== "first" && winner !== "second") || typeof rationale !== "string" ||
-      !Array.isArray(evidence) || !evidence.every((item) => typeof item === "string")) {
-    throw new Error(`tournament: judge ${result.stageName} returned an invalid decision`);
-  }
-  return { winner, rationale, evidence };
+function stringArray(value: WorkflowSerializableValue | undefined): value is readonly string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-function resultByName(results: readonly WorkflowTaskResult[], name: string): WorkflowTaskResult {
-  const result = results.find((candidate) => candidate.stageName === name || candidate.name === name);
-  if (result === undefined) throw new Error(`tournament: missing result for ${name}`);
-  return result;
+function judgeReport(value: WorkflowSerializableValue | undefined): JudgeReport | undefined {
+	const object = serializableObject(value);
+	if (object === undefined) return undefined;
+	const criterionId = object.criterion_id;
+	const scoreA = object.score_a;
+	const scoreB = object.score_b;
+	const evidence = object.evidence;
+	if (
+		typeof criterionId !== "string" ||
+		typeof scoreA !== "number" ||
+		!Number.isInteger(scoreA) ||
+		scoreA < VERIFICATION_SCALE.min ||
+		scoreA > VERIFICATION_SCALE.max ||
+		typeof scoreB !== "number" ||
+		!Number.isInteger(scoreB) ||
+		scoreB < VERIFICATION_SCALE.min ||
+		scoreB > VERIFICATION_SCALE.max ||
+		!stringArray(evidence)
+	) return undefined;
+	return { criterion_id: criterionId, score_a: scoreA, score_b: scoreB, evidence };
+}
+
+function resultFor(
+	results: readonly WorkflowTaskResult[],
+	stageName: string,
+): WorkflowTaskResult | undefined {
+	return results.find((result) => result.stageName === stageName || result.name === stageName);
+}
+
+function scoredComparison(record: ComparisonRecord): record is ScoredComparisonRecord {
+	return typeof record.score_a === "number" && typeof record.score_b === "number" && record.invalid !== true;
+}
+
+function stageName(job: ScoringJob): string {
+	return `judge-${job.a}-${job.b}-${job.criterionId}-r${job.rep}`;
+}
+
+function modelAssignment(
+	entrants: readonly Entrant[],
+	models: readonly string[] | undefined,
+): Record<string, string> | undefined {
+	if (models === undefined) return undefined;
+	const assignment: Record<string, string> = {};
+	if (models.length === 0) return assignment;
+	for (const [index, entrant] of entrants.entries()) assignment[entrant.label] = models[index % models.length]!;
+	return assignment;
 }
 
 export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
-  const artifactDir = await stableArtifactRoot(ctx, "tournament");
-  const attemptsDir = join(artifactDir, "attempts");
-  const judgesDir = join(artifactDir, "judges");
-  await mkdir(attemptsDir, { recursive: true });
-  await mkdir(judgesDir, { recursive: true });
+	const artifactDir = await stableArtifactRoot(ctx, "tournament");
+	const attemptsDir = join(artifactDir, "attempts");
+	const numAttempts = ctx.inputs.num_attempts ?? 4;
+	const maxConcurrency = ctx.inputs.max_concurrency ?? 4;
+	const nEvaluations = ctx.inputs.n_evaluations ?? 2;
+	const pivotCount = ctx.inputs.pivots ?? 1;
+	const seed = ctx.inputs.seed ?? 0;
+	const judgesDir = join(artifactDir, "judges");
+	await mkdir(attemptsDir, { recursive: true });
+	await mkdir(judgesDir, { recursive: true });
 
-  const attemptArtifactPaths = Array.from({ length: ctx.inputs.num_attempts }, (_, index) =>
-    join(attemptsDir, `attempt-${index + 1}.md`));
-  await ctx.parallel(
-    attemptArtifactPaths.map((path, index) => ({
-      name: `attempt-${index + 1}`,
-      prompt: renderTournamentAttemptPrompt(ctx.inputs.prompt, index + 1),
-      context: "fresh" as const,
-      output: path,
-      outputMode: "file-only" as const,
-    })),
-    { concurrency: ctx.inputs.max_concurrency, failFast: true },
-  );
+	const attemptArtifactPaths = Array.from({ length: numAttempts }, (_, index) =>
+		join(attemptsDir, `attempt-${index + 1}.md`));
+	const models = ctx.inputs.models;
+	await ctx.parallel(
+		attemptArtifactPaths.map((path, index) => ({
+			name: `attempt-${index + 1}`,
+			prompt: renderTournamentAttemptPrompt(ctx.inputs.prompt, index + 1),
+			context: "fresh" as const,
+			output: path,
+			outputMode: "file-only" as const,
+			...(models !== undefined && models.length > 0 ? { model: models[index % models.length] } : {}),
+		})),
+		{ concurrency: maxConcurrency, failFast: true },
+	);
 
-  let entrants: Entrant[] = attemptArtifactPaths.map((path, index) => ({
-    label: `attempt-${index + 1}`,
-    path,
-  }));
-  const matches: MatchRecord[] = [];
-  const byes: ByeRecord[] = [];
-  const judgeArtifactPaths: string[] = [];
-  let round = 1;
+	const entrants: Entrant[] = await Promise.all(attemptArtifactPaths.map(async (path, index) => ({
+		label: `attempt-${index + 1}`,
+		path,
+		body: await readFile(path, "utf8"),
+	})));
+	const criteria = normalize_criteria(
+		(ctx.inputs.criteria ?? DEFAULT_TOURNAMENT_CRITERIA) as readonly CriterionInput[],
+	);
+	const criterionIds = criteria.map((criterion) => criterion.id);
+	const plan = plan_comparisons({
+		n: entrants.length,
+		pivots: pivotCount,
+		repeats: nEvaluations,
+		seed,
+	});
+	const weights = Array.from({ length: entrants.length }, () => 0);
+	const counts = Array.from({ length: entrants.length }, () => 0);
+	const comparisons: ComparisonRecord[] = [];
+	const pairs: PairRecord[] = [];
+	const judgeArtifactPaths: string[] = [];
+	let executed = 0;
 
-  while (entrants.length > 1) {
-    const pairs: Array<readonly [Entrant, Entrant]> = [];
-    const bye = entrants.length % 2 === 1 ? entrants.at(-1) : undefined;
-    if (bye !== undefined) byes.push({ round, entrant: bye.label });
-    for (let index = 0; index + 1 < entrants.length; index += 2) {
-      pairs.push([entrants[index]!, entrants[index + 1]!]);
-    }
-    const judgeSteps = pairs.map(([left, right], index) => {
-      const reverse = (round + index) % 2 === 0;
-      const first = reverse ? right : left;
-      const second = reverse ? left : right;
-      const path = join(judgesDir, `round-${round}-match-${index + 1}.json`);
-      judgeArtifactPaths.push(path);
-      return {
-        name: `judge-round-${round}-match-${index + 1}`,
-        prompt: renderPairwiseJudgePrompt({
-          task: ctx.inputs.prompt,
-          firstLabel: first.label,
-          secondLabel: second.label,
-          firstPath: first.path,
-          secondPath: second.path,
-        }),
-        context: "fresh" as const,
-        reads: [first.path, second.path],
-        schema: judgeDecisionSchema,
-      };
-    });
-    const judgeResults = await ctx.parallel(judgeSteps, {
-      concurrency: Math.min(ctx.inputs.max_concurrency, Math.max(1, judgeSteps.length)),
-      failFast: true,
-    });
-    const next: Entrant[] = [];
-    for (let index = 0; index < pairs.length; index += 1) {
-      const [left, right] = pairs[index]!;
-      const reverse = (round + index) % 2 === 0;
-      const first = reverse ? right : left;
-      const second = reverse ? left : right;
-      const name = `judge-round-${round}-match-${index + 1}`;
-      const decision = decisionFrom(resultByName(judgeResults, name));
-      // Judge decisions are inter-stage data: the bracket reducer reads
-      // schema-shaped JSON from these paths, so the runner persists the
-      // structured decisions itself rather than the stage artifact channel.
-      const judgeArtifactPath = judgeArtifactPaths.at(-pairs.length + index)!;
-      await writeFile(judgeArtifactPath, `${JSON.stringify(decision, null, 2)}\n`);
-      const winner = decision.winner === "first" ? first : second;
-      next.push(winner);
-      matches.push({
-        round,
-        match: index + 1,
-        first: first.label,
-        second: second.label,
-        winner: winner.label,
-        rationale: decision.rationale,
-        evidence: decision.evidence,
-        judge_artifact_path: judgeArtifactPath,
-      });
-    }
-    if (bye !== undefined) next.push(bye);
-    entrants = next;
-    round += 1;
-  }
+	const runPhase = async (
+		phase: "ring" | "pivot",
+		jobs: readonly ScoringJob[],
+	): Promise<Preference[]> => {
+		const stages: JudgeStage[] = jobs.map((job) => {
+			const slot1 = job.swapped ? job.b : job.a;
+			const slot2 = job.swapped ? job.a : job.b;
+			const first = entrants[slot1]!;
+			const second = entrants[slot2]!;
+			const head: SharedHead = {
+				task: ctx.inputs.prompt,
+				groundTruthNote: JUDGE_GROUND_TRUTH_NOTE,
+				candidates: [
+					{ path: first.path, body: first.body },
+					{ path: second.path, body: second.body },
+				] satisfies readonly ScoringCandidate[],
+				scaleAnchors: VERIFICATION_SCALE.anchors,
+				outputFormat: JUDGE_OUTPUT_FORMAT,
+			};
+			const name = stageName(job);
+			const path = join(judgesDir, `${name}.json`);
+			judgeArtifactPaths.push(path);
+			return {
+				job,
+				name,
+				path,
+				slot1,
+				slot2,
+				step: {
+					name,
+					prompt: build_scoring_prompt(head, criteria.find((criterion) => criterion.id === job.criterionId)!),
+					context: "fresh" as const,
+					reads: scoring_prompt_reads(head),
+					schema: judgeScoreSchema,
+				},
+			};
+		});
+		if (stages.length === 0) return [];
+		executed += stages.length;
+		const results = await warm_first_fan_out(
+			ctx,
+			stages.map((stage) => stage.step),
+			(_step, index) => `${stages[index]!.slot1}:${stages[index]!.slot2}`,
+			{ concurrency: maxConcurrency, failFast: false },
+		);
+		for (const stage of stages) {
+			let report = judgeReport(resultFor(results, stage.name)?.structured);
+			if (report === undefined) {
+				executed += 1;
+				const retried = await ctx.task(`${stage.name}-reask`, {
+					prompt: `${stage.step.prompt}\nThe previous report was invalid. Return the required JSON schema exactly once.`,
+					context: "fresh",
+					reads: stage.step.reads,
+					schema: judgeScoreSchema,
+				});
+				report = judgeReport(retried.structured);
+			}
+			if (report === undefined) {
+				await writeFile(stage.path, `${JSON.stringify({ invalid: true }, null, 2)}\n`);
+				comparisons.push({
+					a: stage.job.a,
+					b: stage.job.b,
+					phase,
+					criterion_id: stage.job.criterionId,
+					rep: stage.job.rep,
+					swapped: stage.job.swapped,
+					invalid: true,
+					judge_artifact_path: stage.path,
+				});
+				continue;
+			}
+			await writeFile(stage.path, `${JSON.stringify(report, null, 2)}\n`);
+			const scoreA = stage.job.swapped ? report.score_b : report.score_a;
+			const scoreB = stage.job.swapped ? report.score_a : report.score_b;
+			comparisons.push({
+				a: stage.job.a,
+				b: stage.job.b,
+				phase,
+				criterion_id: stage.job.criterionId,
+				rep: stage.job.rep,
+				swapped: stage.job.swapped,
+				score_a: scoreA,
+				score_b: scoreB,
+				judge_artifact_path: stage.path,
+			});
+		}
 
-  const winner = entrants[0]!;
-  const bracketPath = join(artifactDir, "bracket.json");
-  await writeFile(bracketPath, `${JSON.stringify({ task: ctx.inputs.prompt, matches, byes, winner }, null, 2)}\n`);
-  const resultPath = join(artifactDir, "winner.md");
-  const reducer = await ctx.task("bracket-reducer", {
-    prompt: renderBracketReducerPrompt({
-      task: ctx.inputs.prompt,
-      bracketPath,
-      winnerLabel: winner.label,
-      winnerPath: winner.path,
-    }),
-    context: "fresh",
-    reads: [bracketPath, winner.path, ...judgeArtifactPaths],
-    output: resultPath,
-    // Keep the reducer report out of the caller's context window; `result_path`
-    // below carries it for callers that want the contents.
-    outputMode: "file-only",
-  });
+		const phaseRecords = comparisons.filter((record) => record.phase === phase);
+		const grouped = new Map<string, ComparisonRecord[]>();
+		for (const record of phaseRecords) {
+			const key = `${record.a}:${record.b}`;
+			const group = grouped.get(key);
+			if (group === undefined) grouped.set(key, [record]);
+			else group.push(record);
+		}
+		const preferences: Preference[] = [];
+		for (const records of grouped.values()) {
+			const first = records[0]!;
+			const valid = records.filter(scoredComparison);
+			if (valid.length === 0) {
+				pairs.push({ a: first.a, b: first.b, phase, valid_reports: 0, p_ab: 0.5, invalid: true });
+				preferences.push({ a: first.a, b: first.b, p: 0.5 });
+				continue;
+			}
+			const meanScoreA = valid.reduce((sum, record) => sum + record.score_a, 0) / valid.length;
+			const meanScoreB = valid.reduce((sum, record) => sum + record.score_b, 0) / valid.length;
+			const p = soft_win(meanScoreA, meanScoreB);
+			for (const record of valid) record.p_ab = p;
+			pairs.push({
+				a: first.a,
+				b: first.b,
+				phase,
+				valid_reports: valid.length,
+				mean_score_a: meanScoreA,
+				mean_score_b: meanScoreB,
+				p_ab: p,
+			});
+			preferences.push({ a: first.a, b: first.b, p });
+		}
+		return preferences;
+	};
 
-  return {
-    result: reducer.text,
-    winner: winner.label,
-    winner_artifact_path: winner.path,
-    result_path: resultPath,
-    attempt_artifact_paths: attemptArtifactPaths,
-    judge_artifact_paths: judgeArtifactPaths,
-    bracket_path: bracketPath,
-    artifact_dir: artifactDir,
-  };
+	const ringJobs = plan.jobs(plan.ring, criterionIds);
+	const ringPreferences = await runPhase("ring", ringJobs);
+	accumulate(ringPreferences, weights, counts);
+	const pivotIndices = select_pivots(weights, counts, pivotCount);
+	const pivotJobs = plan.jobs(plan.pivotRounds(pivotIndices), criterionIds);
+	const pivotPreferences = await runPhase("pivot", pivotJobs);
+	accumulate(pivotPreferences, weights, counts);
+	const ranking = rank_candidates(weights, counts).map((entry) => ({
+		label: entrants[entry.index]!.label,
+		index: entry.index,
+		meanPreference: entry.meanPreference,
+	}));
+	const outputRanking = ranking.map(({ label, meanPreference }) => ({ label, meanPreference }));
+	const comparisonBudget =
+		(entrants.length + pivotCount * (entrants.length - pivotCount) + (pivotCount * (pivotCount - 1)) / 2) *
+		criteria.length * nEvaluations;
+	const comparisonPath = join(artifactDir, "comparisons.json");
+	const assignment = modelAssignment(entrants, models);
+	const ledger = {
+		task: ctx.inputs.prompt,
+		seed,
+		params: {
+			n: entrants.length,
+			pivots: pivotCount,
+			n_evaluations: nEvaluations,
+			criteria,
+		},
+		comparisons,
+		pairs,
+		w: weights,
+		c: counts,
+		ranking,
+		// Budget units are judge stages: planned jobs versus dispatched jobs, including re-asks in executed.
+		budget: { planned: comparisonBudget, executed },
+		...(assignment === undefined ? {} : { model_assignment: assignment }),
+	};
+	await writeFile(comparisonPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+	const winner = ranking[0]!;
+	const winnerEntrant = entrants[winner.index]!;
+	const resultPath = join(artifactDir, "winner.md");
+	const reducer = await ctx.task("comparisons-reducer", {
+		prompt: renderComparisonsReducerPrompt({
+			task: ctx.inputs.prompt,
+			comparisonsPath: comparisonPath,
+			ranking: outputRanking,
+			winnerLabel: winner.label,
+			winnerPath: winnerEntrant.path,
+		}),
+		context: "fresh",
+		reads: [comparisonPath, winnerEntrant.path, ...judgeArtifactPaths],
+		output: resultPath,
+		outputMode: "file-only",
+	});
+
+	return {
+		result: reducer.text,
+		winner: winner.label,
+		winner_artifact_path: winnerEntrant.path,
+		result_path: resultPath,
+		attempt_artifact_paths: attemptArtifactPaths,
+		judge_artifact_paths: judgeArtifactPaths,
+		comparisons_path: comparisonPath,
+		ranking: outputRanking,
+		seed,
+		artifact_dir: artifactDir,
+	};
 }
