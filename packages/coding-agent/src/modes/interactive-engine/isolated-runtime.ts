@@ -412,8 +412,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					this.dispatchBestEffort(
 						"clear queue",
 						clearRequest.catch((error: Error) => {
-							this.steeringMessages = [...queued.steering, ...this.steeringMessages];
-							this.followUpMessages = [...queued.followUp, ...this.followUpMessages];
+							// A queue_update replaces both arrays with the engine's authoritative queue.
+							// A non-empty array is already engine truth, so prepending the snapshot would
+							// duplicate it. Restore only an array that is still empty after the failed clear.
+							if (this.steeringMessages.length === 0) this.steeringMessages = [...queued.steering];
+							if (this.followUpMessages.length === 0) this.followUpMessages = [...queued.followUp];
 							throw error;
 						}),
 					);

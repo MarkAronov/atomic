@@ -68,7 +68,12 @@ async function createRuntime(
 	);
 }
 
-test("clearQueue restores its snapshot before messages admitted after the local clear", async () => {
+async function settleRejectedClear(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
+test("clearQueue keeps authoritative superset queues without duplicating the failed snapshot", async () => {
 	const harness = await createHarness();
 	try {
 		const probe = createClearQueueClient();
@@ -82,13 +87,59 @@ test("clearQueue restores its snapshot before messages admitted after the local 
 		assert.deepEqual(session.getFollowUpMessages(), []);
 		assert.equal(probe.clearCalls, 1);
 
+		probe.emit({
+			type: "queue_update",
+			steering: ["before steer", "new steer"],
+			followUp: ["before follow-up", "new follow-up"],
+		});
+		probe.reject(new Error("engine unavailable"));
+		await settleRejectedClear();
+
+		assert.deepEqual(session.getSteeringMessages(), ["before steer", "new steer"]);
+		assert.deepEqual(session.getFollowUpMessages(), ["before follow-up", "new follow-up"]);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("clearQueue restores both snapshots when the remote clear fails before any engine update", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const session = runtime.session;
+		probe.emit({ type: "queue_update", steering: ["before steer"], followUp: ["before follow-up"] });
+
+		const returned = session.clearQueue();
+		assert.deepEqual(returned, { steering: ["before steer"], followUp: ["before follow-up"] });
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+
+		probe.reject(new Error("engine unavailable"));
+		await settleRejectedClear();
+
+		assert.deepEqual(session.getSteeringMessages(), ["before steer"]);
+		assert.deepEqual(session.getFollowUpMessages(), ["before follow-up"]);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("clearQueue adopts disjoint authoritative engine queues after a failed remote clear", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const session = runtime.session;
+		probe.emit({ type: "queue_update", steering: ["before steer"], followUp: ["before follow-up"] });
+
+		session.clearQueue();
 		probe.emit({ type: "queue_update", steering: ["admitted steer"], followUp: ["admitted follow-up"] });
 		probe.reject(new Error("engine unavailable"));
-		await Promise.resolve();
-		await Promise.resolve();
+		await settleRejectedClear();
 
-		assert.deepEqual(session.getSteeringMessages(), ["before steer", "admitted steer"]);
-		assert.deepEqual(session.getFollowUpMessages(), ["before follow-up", "admitted follow-up"]);
+		assert.deepEqual(session.getSteeringMessages(), ["admitted steer"]);
+		assert.deepEqual(session.getFollowUpMessages(), ["admitted follow-up"]);
 	} finally {
 		harness.cleanup();
 	}
