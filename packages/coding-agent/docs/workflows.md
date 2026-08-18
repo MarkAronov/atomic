@@ -3514,7 +3514,7 @@ A successful rescan may still contain per-resource diagnostics. Both reload surf
 
 ## Run budgets
 
-Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, or a `workflow({ action: "run" })` tool call. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
+Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, a `workflow({ action: "run" })` tool call, or a `workflow({ action: "resume" })` continuation to raise or narrow the ceiling. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
 
 ```ts
 export default workflow({
@@ -3531,7 +3531,7 @@ export default workflow({
 
 `maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and retain the root config default.
 
-`maxDurationMs` is enforced at stage and durable-tool boundaries using elapsed run time (paused time is excluded and resumed runs carry prior elapsed time). A warning notice is emitted once at `warnAtPercent` (default `80`); exhaustion gives an already-live frontier stage one current-turn wrap-up, then records a resumable `budget_exceeded` blocked result with its reading, ceiling, frontier, and wrap-up summary. No new stage is created just to host a wrap-up; when no stage turn is live at the exhausting boundary, the run stops with no wrap-up summary and leaves the once-per-run delivery allowance unused. A resumed run does not receive a second wrap-up for the same budget. Nested child budgets constrain only the child subtree; a child budget exhaustion returns to the parent as a blocked child result while the parent continues. `maxTokens` and `maxCost` are currently validated and resolved but are not metered by this duration slice.
+`maxDurationMs` is enforced at stage and durable-tool boundaries using elapsed run time (paused time is excluded and resumed runs carry prior elapsed time). A warning notice is emitted once at `warnAtPercent` (default `80`); exhaustion gives an already-live frontier stage one current-turn wrap-up, then records a resumable `budget_exceeded` blocked result with its reading, ceiling, frontier, and wrap-up summary. No new stage is created just to host a wrap-up; when no stage turn is live at the exhausting boundary, the run stops with no wrap-up summary and leaves the once-per-run delivery allowance unused. A resumed run does not receive a second wrap-up for the same budget; pass a raised resume budget to continue with the prior elapsed spend. Nested child budgets constrain only the child subtree; a child budget exhaustion returns to the parent as a blocked child result while the parent continues. `maxTokens` and `maxCost` are currently validated and resolved but are not metered by this duration slice.
 
 ## Workflow Configuration
 
