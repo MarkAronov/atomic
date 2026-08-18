@@ -321,6 +321,28 @@ describe("tool graph inspection", () => {
 		assert.ok(clickView._toolDetail);
 		clickView.dispose();
 	});
+	test("opened tool detail keeps canvas between the chrome bars and the painted card", () => {
+		const view = viewFor(tool());
+		view.render(120);
+		assert.equal(view.handleInput("\r"), true);
+		const rows = view.render(120);
+		const callIndex = rows.findIndex((row) => visibleText([row]).includes("$ inspect-api"));
+		const headerIndex = rows.findIndex((row) => visibleText([row]).includes("ORCHESTRATOR"));
+		const footerIndex = rows.findIndex((row) => visibleText([row]).includes("GRAPH"));
+		assert.ok(callIndex > headerIndex + 2, "the call must sit below the header band");
+		assert.ok(footerIndex > callIndex, "the footer must sit below the card");
+		const callText = visibleText([rows[callIndex]!]);
+		assert.match(callText, /^\s{2,}\$/, "the card keeps a left canvas inset");
+		assert.equal(visibleText([rows[callIndex - 1]!]).trim(), "", "the card keeps an inner top pad");
+		assert.equal(visibleText([rows[callIndex - 2]!]).trim(), "", "canvas separates the header bar from the card");
+		const tookIndex = rows.findIndex((row) => visibleText([row]).includes("Took 75ms"));
+		assert.ok(tookIndex > callIndex, "the duration footer belongs to the card");
+		assert.ok(footerIndex > tookIndex + 1, "canvas separates the card from the footer bar");
+		assert.equal(visibleText([rows[tookIndex + 1]!]).trim(), "", "the card keeps an inner bottom pad");
+		assert.equal(visibleText([rows[footerIndex - 2]!]).trim(), "", "canvas sits above the footer bar");
+		view.dispose();
+	});
+
 	test("collapsed multi-line errors keep the block inset and account for bounded rows", () => {
 		const wideError = "first line\nsecond line\nthird line";
 		const wideRows = renderToolDetail(tool({ status: "failed", result: undefined, error: wideError }), {
@@ -328,14 +350,17 @@ describe("tool graph inspection", () => {
 			expandKey: "ctrl+o",
 		}).split("\n");
 		assert.deepEqual(wideRows, [
-			'$ inspect-api {"branch":"feat/inspect","checks":["lint","test"]} ✗',
-			"  first line",
-			"  second line",
-			"  third line",
 			"",
-			"Took 75ms",
+			' $ inspect-api {"branch":"feat/inspect","checks":["lint","test"]} ✗',
+			"",
+			" first line",
+			" second line",
+			" third line",
+			"",
+			" Took 75ms",
+			"",
 		]);
-		assert.ok(wideRows.slice(1, 4).every((row) => row.startsWith("  ")));
+		assert.ok(wideRows.filter((row) => row.includes("line")).every((row) => row.startsWith(" ")));
 
 		const narrowRows = renderToolDetail(
 			tool({
@@ -353,7 +378,7 @@ describe("tool graph inspection", () => {
 			narrowRows.some((row) => row.includes("THIRD-LINE-MARKER")),
 			"third error line must remain visible",
 		);
-		assert.ok(narrowRows.slice(1).every((row) => row === "" || row.startsWith("  ") || row.startsWith("Took")));
+		assert.ok(narrowRows.slice(1).every((row) => row.trim() === "" || row.startsWith(" ") || row.includes("Took")));
 		assert.ok(
 			narrowRows.every((row) => visibleWidth(row) <= 60),
 			"collapsed rows must fit the frame",
@@ -367,7 +392,7 @@ describe("tool graph inspection", () => {
 			}),
 			{ width: 80, expandKey: "ctrl+o" },
 		).split("\n");
-		assert.equal(manyRows.length, 14, `collapsed preview emitted ${manyRows.length} rows`);
+		assert.equal(manyRows.length, 17, `collapsed preview emitted ${manyRows.length} rows`);
 		assert.ok(manyRows.some((row) => row.includes("line-199")));
 		assert.match(manyRows.find((row) => row.includes("earlier lines")) ?? "", /190 earlier lines, ctrl\+o Expand/);
 	});
@@ -401,7 +426,13 @@ describe("tool graph inspection", () => {
 		const pathText = renderToolDetail(tool({ result: path }), { width: 40, expanded: true });
 		assert.ok(pathText.includes("atomic-issue"));
 		assert.doesNotMatch(pathText, /atomic-issu[^e]/);
-		assert.ok(pathText.split("\n")[1]?.startsWith("  "), "wrapped header continuation must stay indented");
+		const pathRows = pathText.split("\n");
+		const headerIndex = pathRows.findIndex((row) => row.includes("$"));
+		assert.ok(headerIndex >= 0, "header must render");
+		const continuation = pathRows
+			.slice(headerIndex + 1)
+			.find((row) => row.trim().length > 0 && !row.includes("Took"));
+		assert.ok(continuation?.startsWith(" "), "wrapped header continuation must stay indented");
 
 		const slashWrap = renderToolDetail(tool({ args: undefined, name: "t", result: "abcdef/next" }), {
 			width: 7,
@@ -438,7 +469,7 @@ describe("tool graph inspection", () => {
 			width: 80,
 			expandKey: "ctrl+o",
 		}).split("\n");
-		assert.equal(wideRows[1], "  ... (6 earlier lines, ctrl+o Expand)");
+		assert.equal(wideRows[3], " ... (6 earlier lines, ctrl+o Expand)");
 		assert.ok(wideRows.some((row) => row.includes("report-line-23")));
 		assert.ok(!wideRows.some((row) => row.includes("report-line-0")));
 		assert.doesNotMatch(wideRows.join("\n"), /… \[truncated\]/);
@@ -450,7 +481,7 @@ describe("tool graph inspection", () => {
 			}),
 			{ width: 40, expandKey: "ctrl+o" },
 		).split("\n");
-		assert.equal(narrowRows[1], "  ... (3 earlier lines, ctrl+o Expand)");
+		assert.equal(narrowRows[3], " ... (3 earlier lines, ctrl+o Expand)");
 		assert.ok(narrowRows.some((row) => row.includes("report-line-23")));
 		assert.ok(!narrowRows.some((row) => row.includes("report-line-0")));
 		assert.doesNotMatch(narrowRows.join("\n"), /… \[truncated\]/);
@@ -1409,7 +1440,7 @@ describe("tool graph inspection", () => {
 		view.render(40);
 		assert.equal(view.handleInput("\r"), true);
 		const collapsed = visibleText(view.render(40));
-		assert.match(collapsed, /earlier lines, ctrl\+o Expand/);
+		assert.match(collapsed, /earlier lines, ctrl\+o Exp/);
 		assert.doesNotMatch(collapsed, /╰─{30,}╯/);
 		assert.equal(view.handleInput("\x0f"), true);
 		view.render(40);
