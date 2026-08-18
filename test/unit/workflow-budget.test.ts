@@ -29,6 +29,7 @@ import {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { assistantMessageWithUsage, makeMockSession, type AgentSession, type AgentSessionAdapter } from "./stage-runner-helpers.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -219,6 +220,43 @@ describe("budget duration controller", () => {
 			return true;
 		});
 		assert.equal(controller.checkpoint("frontier").kind, "exhausted");
+	});
+
+	test("budget executor records the wrap-up turn usage in the exhaustion report", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const messages: AgentSession["messages"] = [];
+		let promptCount = 0;
+		let lastAssistantText = "";
+		const usage = { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 };
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return makeMockSession({
+					messages,
+					async prompt() {
+						const text = promptCount++ === 0 ? "progress" : "wrap summary";
+						if (promptCount === 1) vi.advanceTimersByTime(2);
+						lastAssistantText = text;
+						messages.push(assistantMessageWithUsage(text, usage));
+					},
+					getLastAssistantText: () => lastAssistantText,
+				}).session;
+			},
+		};
+		const definition = workflow({
+			name: "budget-wrap-up-usage",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("frontier", { model: "test/model" }).prompt("progress") }),
+		});
+		const result = await run(definition, {}, {
+			store: createStore(),
+			budget: { maxDurationMs: 1 },
+			adapters: { agentSession },
+		});
+		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, "wrap summary");
+		assert.deepEqual(budgetOutcome(result.result)?.wrapUpUsage, { ...usage, turns: 1 });
 	});
 
 	test("no budget leaves the run untouched and performs no meter work", () => {
@@ -756,6 +794,40 @@ describe("budget executor boundaries", () => {
 		assert.equal(snapshot?.result?.status, "budget_exceeded");
 	});
 
+	test("budget live stage does not burn wrap-up allowance when its boundary summary is lost", async () => {
+		const sleep = (milliseconds: number): Promise<void> =>
+			new Promise((resolve) => setTimeout(resolve, milliseconds));
+		const definition = workflow({
+			name: "budget-live-stage-boundary",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const live = ctx.stage("live-frontier").complete("long substantive turn");
+				live.catch(() => undefined);
+				await sleep(160);
+				await ctx.tool("burn", {}, async () => ({ ok: true }));
+				return { result: await live };
+			},
+		});
+		const prompts: string[] = [];
+		const store = createStore();
+		const result = await run(definition, {}, {
+			store,
+			budget: { maxDurationMs: 100 },
+			adapters: {
+				complete: { complete: async (text) => { await sleep(400); return text; } },
+				prompt: { prompt: async (text) => { prompts.push(text); return "wrap-up from the live turn"; } },
+			},
+		});
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, undefined);
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assert.equal(prompts.length, 1);
+	});
+
 	test("budget resume carries elapsed time, repeats no wrap-up at the same ceiling, and continues when raised", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
@@ -796,6 +868,7 @@ describe("budget executor boundaries", () => {
 		const source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
 		assert.equal(budgetOutcome(first.result)?.status, "budget_exceeded");
 		assert.equal(source.failedStageId !== undefined, true);
+
 		const sourceElapsed = source.budgetState?.duration?.reading ?? 0;
 		const sameStore = createStore();
 		const same = await run(

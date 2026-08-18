@@ -107,7 +107,6 @@ export function createRunBudgetController(input: {
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage);
 		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined, false);
-		run.budgetState = state = { ...(state ?? {}), wrapUpDelivered: true };
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;
 	};

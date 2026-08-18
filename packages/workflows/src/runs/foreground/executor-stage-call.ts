@@ -1,6 +1,6 @@
 import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
 import { rebasedStageStartedAt } from "../../shared/timing.js";
-import type { StageOptions } from "../../shared/types.js";
+import type { StageOptions, WorkflowModelUsage } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { raceAbort } from "./executor-abort.js";
 import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
@@ -122,17 +122,18 @@ export function createTrackedStageCaller(input: {
 	};
 	const deliverBudgetWrapUp = async (): Promise<never> => {
 		let summary: string | undefined;
+		let usage: WorkflowModelUsage | undefined;
 		try {
-			await runtime.raceStageSessionHeartbeat(
+			const response = await runtime.raceStageSessionHeartbeat(
 				raceAbort(runtime.innerCtx.prompt(BUDGET_WRAP_UP_PROMPT), runtime.signal),
 			);
-			summary = runtime.innerCtx.__getLastAssistantText();
+			summary = typeof response === "string" ? response : runtime.innerCtx.__getLastAssistantText();
+			usage = runtime.innerCtx.__modelFallbackMeta().modelAttempts?.at(-1)?.usage;
 		} catch {
-			// The budget owns the terminal outcome even if the wrap-up provider fails.
+			// A failed or aborted wrap-up did not deliver a summary and must not
+			// consume the once-per-run delivery allowance.
 		}
-		// B2 deliberately does not meter model usage; never attribute the prior
-		// substantive attempt to this turn. B3 owns usage accounting.
-		throw runtime.budget.finishWrapUp(runtime.name, summary);
+		throw runtime.budget.finishWrapUp(runtime.name, summary, usage, summary !== undefined);
 	};
 
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
