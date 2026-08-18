@@ -273,6 +273,56 @@ describe("non-attachable tool interactions", () => {
 		assert.match(result.message, /resumed failed author exit from tool/);
 	});
 
+	test("budget_exceeded run resumes through the shipped workflow tool with a raised budget", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const id = testRunId("budget-tool-resume");
+		const stageId = `${id}:frontier`;
+		backend.registerWorkflow({
+			workflowId: id,
+			name: "budget-tool-resume-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "failed",
+			resumable: true,
+		});
+		store.recordRunStart({
+			id,
+			name: "budget-tool-resume-flow",
+			inputs: {},
+			status: "running",
+			stages: [{ id: stageId, name: "frontier", status: "completed", parentIds: [], toolEvents: [] }],
+			startedAt: 1,
+			endedAt: 2,
+			blockedAt: 2,
+			failedStageId: stageId,
+			resumable: true,
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			budgetState: { systemOwnedStop: true },
+			result: { status: "budget_exceeded", dimension: "duration", reading: 10, ceiling: 10, percent: 100 },
+		});
+
+		let resumeBudget: { maxDurationMs?: number } | undefined;
+		const result = await workflowResumeAction(
+			{ action: "resume", runId: id, budget: { maxDurationMs: 60_000 } },
+			{
+				getRuntime: () => ({
+					resumeFailedRun: async (_runId, _stageId, options) => {
+						resumeBudget = options.budget;
+						return { ok: true as const, runId: `${id}:resumed`, message: "raised budget resumed" };
+					},
+				}),
+				policy: {},
+				ensureWorkflowResourcesLoaded() {},
+			},
+		);
+
+		assert.equal(result.status, "running");
+		assert.deepEqual(resumeBudget, { maxDurationMs: 60_000 });
+		assert.match(result.message, /raised budget resumed/);
+	});
+
 	test("tool does not snapshot-resume an exited failure without a durable registration", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
