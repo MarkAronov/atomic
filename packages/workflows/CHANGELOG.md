@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `adversarial-verification` now accepts optional per-criterion `criteria`, `accept_mean`, and bounded `reask_limit` inputs, and returns deterministic graded mean/veto results through `mean_score` and `score_table_path`; callers must migrate from the removed `result`, `verifier_artifact_paths`, and `artifact_dir` outputs. Invalid verifier reports are recorded as invalid markers and re-asked instead of becoming fail votes ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+
 ### Added
 
 - Added a shared `verification-criteria` module (`parse_rubric`, `normalize_criteria`, `select_criteria`, `VERIFICATION_SCALE`, `decide_verification`) so verification builtins can score one criterion at a time on an anchored 1–20 scale and accept only when a quorum mean clears the threshold with no veto finding. Unparseable reports cannot become scores and cannot shift the mean ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+- `adversarial-verification` now fans out one schema-validated 1–20 score for every criterion/verifier pair, applies mean-plus-veto acceptance, bounds invalid-report re-asks, and consolidates confirmed findings into repair guidance ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 
 ### Fixed
 
