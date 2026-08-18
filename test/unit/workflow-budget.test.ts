@@ -834,6 +834,176 @@ describe("budget executor boundaries", () => {
 		assert.ok((raisedSnapshot?.durationMs ?? 0) >= sourceElapsed);
 	});
 
+	test("budget resumed startup exhaustion lands on the blocked rail with no stage", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-resumed-startup-boundary",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("resume-frontier").complete("progress") }),
+		});
+		const sourceStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store: sourceStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "startup-boundary wrap-up" },
+				},
+			},
+		);
+		const source = sourceStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.ok(source.failedStageId);
+
+		const resumedStore = createStore();
+		const resumed = await run(
+			definition,
+			{},
+			{
+				store: resumedStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: {
+					complete: { complete: async (text) => text },
+					prompt: { prompt: async () => "must not wrap again" },
+				},
+			},
+		);
+		const snapshot = resumedStore.runs().find((candidate) => candidate.id === resumed.runId);
+		assert.equal(budgetOutcome(resumed.result)?.status, "budget_exceeded");
+		assert.deepEqual(snapshot?.stages, []);
+		assertBudgetBlockedSnapshot(snapshot);
+		assert.equal(snapshot.failedStageId, undefined);
+	});
+
+	test("budget exhausted generation can resume again from its boundary with a raised ceiling", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-resume-boundary-chain",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("frontier").complete("progress") }),
+		});
+		const firstStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store: firstStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "first chain wrap-up" },
+				},
+			},
+		);
+		const source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.ok(source.failedStageId);
+
+		const secondStore = createStore();
+		const second = await run(
+			definition,
+			{},
+			{
+				store: secondStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		const secondSnapshot = secondStore.runs().find((candidate) => candidate.id === second.runId);
+		assert.equal(budgetOutcome(second.result)?.status, "budget_exceeded");
+		assertBudgetBlockedSnapshot(secondSnapshot);
+		assert.deepEqual(secondSnapshot.stages, []);
+
+		const raisedStore = createStore();
+		// The boundary-only generation has no stage id; resume must still be legal.
+		const raised = await run(
+			definition,
+			{},
+			{
+				store: raisedStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				continuation: { source: secondSnapshot, resumeFromStageId: secondSnapshot.failedStageId! },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		assert.equal(raised.status, "completed");
+		assert.deepEqual(raised.result, { result: "progress" });
+	});
+
+	test("budget failedStageId is a real stage id or absent, never a display name", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-failed-stage-id-shape",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("named-frontier").complete("progress") }),
+		});
+		const firstStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store: firstStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "id-shape wrap-up" },
+				},
+			},
+		);
+		const source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.ok(source.failedStageId);
+		assert.ok(source.stages.some((stage) => stage.id === source.failedStageId));
+		assert.notEqual(source.failedStageId, "named-frontier");
+
+		const secondStore = createStore();
+		const second = await run(
+			definition,
+			{},
+			{
+				store: secondStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		const resumed = secondStore.runs().find((candidate) => candidate.id === second.runId);
+		assert.deepEqual(resumed?.stages, []);
+		assert.equal(resumed?.failedStageId, undefined);
+	});
 	test("budget_exceeded returned by stage output cannot forge a system exhaustion", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
