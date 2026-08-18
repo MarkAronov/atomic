@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.14-alpha.4] - 2026-08-18
+
 ### Fixed
 
 - Opened `ctx.tool` detail now matches the main-chat tool block: `Box(1,1)` inner padding, a blank row under the `$` header, full-width alignment with the orchestrator bars, unpainted canvas above and below the card, host `toolTitle`/`toolOutput` colors, a dim `ctrl+o Expand` hint, and second-resolution `Took`/`Elapsed` timing.

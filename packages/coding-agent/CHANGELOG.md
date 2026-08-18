@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.14-alpha.4] - 2026-08-18
+
 ### Changed
 
 - Bundled `web_search` no longer opens the curator confirmation UI by default. Persist `"workflow": "summary-review"` in web-search config or run `/curator on` to opt in.
