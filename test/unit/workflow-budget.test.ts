@@ -1086,6 +1086,15 @@ describe("budget executor boundaries", () => {
 		assert.equal(summary.budgetState?.duration?.ceiling, 10);
 		assert.equal(summary.budgetState?.duration?.percent, 50);
 	});
+	test("budget live status recomputes duration instead of freezing the last checkpoint", () => {
+		const snapshot = budgetRun({
+			budget: { maxDurationMs: 100_000, warnAtPercent: 80 },
+			budgetState: { duration: { dimension: "duration", reading: 0, ceiling: 100_000, percent: 0 } },
+		});
+		const summary = summarizeRunSnapshot(snapshot, 301);
+		assert.equal(summary.budgetState?.duration?.reading, 301);
+		assert.equal(summary.budgetState?.duration?.percent, 0.301);
+	});
 });
 test("budget_exceeded is a resumable returned blocked status", () => {
 	assert.equal(isReturnedBlockedWorkflowStatus("budget_exceeded"), true);
