@@ -144,6 +144,14 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 				description: "Maximum work/evaluation iterations before returning an inspectable failed status (1-20).",
 				kind: "number",
 			},
+			progress_scoring: {
+				description: "Enable advisory progress scoring after each completed iteration.",
+				kind: "boolean",
+			},
+			progress_repeats: {
+				description: "Number of advisory progress-scoring repeats per iteration.",
+				kind: "number",
+			},
 		},
 	},
 	{

@@ -752,7 +752,7 @@ The six common patterns are full definitions exported from `@bastani/workflows/b
 | `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, approval, repairs, candidate/review/verifier paths |
 | `generate-and-filter` | `prompt` | `num_candidates` (2–20), `shortlist_size` (1–10), `use_judge`, `max_concurrency` | `result`, shortlist, candidate/filter/judge/final/manifest paths |
 | `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8) | `result`, winner, attempt/judge/bracket paths |
-| `loop-until-done` | `prompt` | `max_iterations` (1–20) | `result`, `status`, ledger, iteration/evaluation paths, remaining work |
+| `loop-until-done` | `prompt` | `max_iterations` (1–20), `progress_scoring`, `progress_repeats` (≥1) | `result`, `status`, ledger, iteration/evaluation paths, remaining work, `progress_curve`, `final_trend`, `progress_disclaimer` |
 
 ```ts
 import {
