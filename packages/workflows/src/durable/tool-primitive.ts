@@ -101,7 +101,10 @@ export interface CreateToolPrimitiveInput {
 	 * quit already closed admission for this workflow tree; the call never runs.
 	 */
 	readonly admitToolCall?: () => ToolCallAdmission;
-	/** Track the final logical execution promise and bind it to its graph node. */
+	/** Deterministic boundary hook immediately before a tool node dispatches. */
+	readonly beforeToolCall?: () => void | Promise<void>;
+	/** Deterministic boundary hook after a tool node settles. */
+	readonly afterToolCall?: () => void | Promise<void>;
 	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */
 	readonly onFailureObserved?: (error: unknown, nodeId: string) => void;
@@ -185,11 +188,28 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
 			noteCancelled: () => admission?.noteCancelled?.(),
 			releaseAdmission: () => lease?.release(),
 		};
+		const settleAfterBoundary = (settle: () => void): void => {
+			let afterToolCall: void | Promise<void>;
+			try {
+				afterToolCall = input.afterToolCall?.();
+			} catch (error) {
+				rejectExecution(error);
+				return;
+			}
+			if (afterToolCall === undefined) {
+				settle();
+				return;
+			}
+			void afterToolCall.then(settle, rejectExecution);
+		};
 		void executeToolInvocation(input, ordinals, name, args, fn, options, control, captureCallbackSource(fn))
 			// Backstop for a throw before either explicit release point; the lease
 			// release itself is idempotent.
 			.finally(() => lease?.release())
-			.then(resolveExecution, rejectExecution);
+			.then(
+				(value) => settleAfterBoundary(() => resolveExecution(value)),
+				(error) => settleAfterBoundary(() => rejectExecution(error)),
+			);
 		return execution;
 	}) as WorkflowToolPrimitive;
 }
@@ -204,6 +224,9 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 	control: ToolInvocationAdmissionControl,
 	source: string | undefined,
 ): Promise<WorkflowToolInvocationResult<T>> {
+	input.throwIfCancelled();
+	const beforeToolCall = input.beforeToolCall?.();
+	if (beforeToolCall !== undefined) await beforeToolCall;
 	input.throwIfCancelled();
 	if (
 		options?.retriesAllowed === true &&

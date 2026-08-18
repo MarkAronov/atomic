@@ -19,6 +19,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type { StageOptions } from "../shared/types.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
+import type { RunBudgetController } from "./run-budget.js";
 
 export interface EngineRuntimeInput {
 	readonly runId: string;
@@ -41,6 +42,7 @@ export interface EngineRuntimeInput {
 	readonly worktreeSymlinkDirectories?: readonly string[];
 	readonly stageRegistry: StageControlRegistry;
 	readonly exit: WorkflowExitManager;
+	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: LiveStageRuntime["classifyExecutorFailure"];
 }
 
@@ -83,6 +85,7 @@ export class EngineRuntime {
 	readonly exit: WorkflowExitManager;
 	readonly inputRuntimeDefaults: Partial<StageOptions>;
 	readonly workflowInvocationCwd: string;
+	readonly budget: RunBudgetController;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
 
@@ -110,6 +113,7 @@ export class EngineRuntime {
 		this.exit = input.exit;
 		this.inputRuntimeDefaults = input.inputRuntimeDefaults;
 		this.workflowInvocationCwd = input.workflowInvocationCwd;
+		this.budget = input.budget;
 		this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
 
@@ -130,6 +134,7 @@ export class EngineRuntime {
 			workflowInvocationCwd: input.workflowInvocationCwd,
 			gitWorktreeSetupCache: input.gitWorktreeSetupCache,
 			stageRegistry: input.stageRegistry,
+			budget: input.budget,
 			exit: input.exit,
 			classifyExecutorFailure: input.classifyExecutorFailure,
 			createMcpScope: (stageId, options) => this.createMcpScope(stageId, options),

@@ -1,3 +1,4 @@
+import { BUDGET_WRAP_UP_PROMPT, isWorkflowBudgetExceededError } from "../../engine/run-budget.js";
 import { rebasedStageStartedAt } from "../../shared/timing.js";
 import type { StageOptions } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
@@ -119,10 +120,30 @@ export function createTrackedStageCaller(input: {
 		captureChatAnswer();
 		return { result, chatAnswerObserved };
 	};
+	const deliverBudgetWrapUp = async (): Promise<never> => {
+		let summary: string | undefined;
+		try {
+			await runtime.raceStageSessionHeartbeat(
+				raceAbort(runtime.innerCtx.prompt(BUDGET_WRAP_UP_PROMPT), runtime.signal),
+			);
+			summary = runtime.innerCtx.__getLastAssistantText();
+		} catch {
+			// The budget owns the terminal outcome even if the wrap-up provider fails.
+		}
+		const usage = runtime.stageSnapshot.modelAttempts?.at(-1)?.usage;
+		throw runtime.budget.finishWrapUp(runtime.name, summary, usage);
+	};
 
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
+		const beforeBudget = runtime.budget.enabled
+			? runtime.budget.checkpoint(runtime.name)
+			: ({ kind: "continue" } as const);
+		if (beforeBudget.kind === "exhausted") {
+			throw runtime.budget.finishWrapUp(runtime.name, undefined, undefined);
+		}
+		const wrapUpBeforeCall = beforeBudget.kind === "wrap_up";
 		await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
@@ -142,6 +163,7 @@ export function createTrackedStageCaller(input: {
 		// final durable checkpoint can replace it without touching a real
 		// failure/skip classification recorded by the catch block.
 		let terminalStateIsSuccess = false;
+		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
 			if (
@@ -199,6 +221,7 @@ export function createTrackedStageCaller(input: {
 			}
 
 			runtime.mcpScope.apply();
+			if (wrapUpBeforeCall) await runtime.budget.deliverWrapUp(runtime.name);
 
 			const abortSession = (): void => {
 				void runtime.innerCtx.abort().catch(() => {});
@@ -272,6 +295,11 @@ export function createTrackedStageCaller(input: {
 			} finally {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
+			const afterBudget = runtime.budget.enabled
+				? runtime.budget.checkpoint(runtime.name)
+				: ({ kind: "continue" } as const);
+			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
+			if (afterBudget.kind === "exhausted") throw runtime.budget.finishWrapUp(runtime.name, undefined, undefined);
 			await runtime.innerCtx.__closeGeneration();
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
@@ -295,7 +323,24 @@ export function createTrackedStageCaller(input: {
 			return result;
 		} catch (err) {
 			const workflowExitAbort = runtime.signal.aborted ? runtime.exit.currentWorkflowExitAbortReason() : undefined;
-			if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
+			if (isWorkflowBudgetExceededError(err) && trackStageLifecycle && !runtime.state.skippedForParallelFailFast) {
+				let budgetError = err;
+				if (
+					runtime.activeStore.runs().find((run) => run.id === runtime.runId)?.budgetState?.wrapUpCompleted !== true
+				) {
+					try {
+						await runtime.budget.deliverWrapUp(runtime.name);
+					} catch (wrapUpError) {
+						if (isWorkflowBudgetExceededError(wrapUpError)) budgetError = wrapUpError;
+					}
+				}
+				applyTerminalStageState = () => {
+					runtime.stageSnapshot.status = "completed";
+					if (budgetError.report.wrapUpSummary !== undefined)
+						runtime.stageSnapshot.result = budgetError.report.wrapUpSummary;
+				};
+				throw budgetError;
+			} else if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
 				runtime.state.stageClosedByWorkflowExit = true;
 				if (trackStageLifecycle && !isTerminalStage(runtime.stageSnapshot)) {
 					const skippedReason = runtime.exit.workflowExitSkippedReason(workflowExitAbort.reason);
@@ -310,6 +355,7 @@ export function createTrackedStageCaller(input: {
 			}
 			throw err;
 		} finally {
+			unregisterBudgetWrapUp();
 			// Finalization, handle release, and limiter release are each independent.
 			// If finalizeStageSnapshot() throws, the limiter must still be released
 			// so the concurrency semaphore is not leaked.

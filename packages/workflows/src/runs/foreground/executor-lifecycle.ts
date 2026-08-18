@@ -2,6 +2,7 @@ import { appendRunBlocked, appendRunEnd } from "../../shared/persistence-session
 import type { Store } from "../../shared/store.js";
 import { isTerminalRunStatus } from "../../shared/store-internal.js";
 import type {
+	RunBudgetState,
 	RunSnapshot,
 	RunStatus,
 	StageSnapshot,
@@ -101,6 +102,8 @@ export interface RunFailureMetadata {
 	readonly failedToolNodeId?: string;
 	readonly resumable: boolean;
 	readonly retryAfterMs?: number;
+	readonly result?: WorkflowOutputValues;
+	readonly budgetState?: RunBudgetState;
 }
 
 /**
@@ -453,6 +456,8 @@ export function recordActiveBlockedFailure(
 		failedStageId: metadata.failedStageId,
 		resumable: true,
 		...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
+		...(metadata.result !== undefined ? { result: metadata.result } : {}),
+		...(metadata.budgetState !== undefined ? { budgetState: metadata.budgetState } : {}),
 		blockedAt,
 	});
 	if (recorded && persistence !== undefined) {
@@ -467,12 +472,15 @@ export function recordActiveBlockedFailure(
 			...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
 			...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
 			resumable: true,
+			...(metadata.result !== undefined ? { result: metadata.result } : {}),
+			...(metadata.budgetState !== undefined ? { budgetState: metadata.budgetState } : {}),
 			ts: blockedAt,
 		});
 	}
 	return {
 		runId,
 		status: "running",
+		...(metadata.result !== undefined ? { result: metadata.result } : {}),
 		error: metadata.errorMessage,
 		stages: [...runSnapshot.stages],
 		toolNodes: [...(runSnapshot.toolNodes ?? [])],

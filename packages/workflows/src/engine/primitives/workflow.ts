@@ -62,6 +62,11 @@ export function createChildWorkflowRunner(input: {
 			throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));
 		const childName = child.normalizedName;
 		const boundaryName = options.stageName ?? `workflow:${childName}`;
+		const parentBudgetBefore = runtime.budget.enabled
+			? runtime.budget.checkpoint(boundaryName)
+			: ({ kind: "continue" } as const);
+		if (parentBudgetBefore.kind === "wrap_up" || parentBudgetBefore.kind === "exhausted")
+			throw runtime.budget.finishWrapUp(boundaryName, undefined, undefined);
 		const boundaryReplayKey = input.nextWorkflowBoundaryReplayKey(boundaryName);
 		const durableInvocation = input.consumeDurableInvocation?.();
 		const boundary = runtime.spawnStage(boundaryName, {
@@ -127,11 +132,17 @@ export function createChildWorkflowRunner(input: {
 					rootRunId: runtime.parentRootRunId ?? runtime.runId,
 				},
 				signal: childController.signal,
+				budget: options.budget,
 				deferWorkflowStart: false,
 				...(durableInvocation !== undefined ? { durableScope: durableInvocation.scope } : {}),
 			});
 			boundary.observeChildRun(childRunPromise);
 			const childRun = await childRunPromise;
+			const parentBudgetAfter = runtime.budget.enabled
+				? runtime.budget.checkpoint(boundaryName)
+				: ({ kind: "continue" } as const);
+			if (parentBudgetAfter.kind === "wrap_up" || parentBudgetAfter.kind === "exhausted")
+				throw runtime.budget.finishWrapUp(boundaryName, undefined, undefined);
 			runtime.exit.throwIfWorkflowExitSelected();
 
 			// A gracefully quit child is a suspension, not a child failure: carry the
@@ -143,7 +154,12 @@ export function createChildWorkflowRunner(input: {
 			) {
 				throw new WorkflowGracefulQuitError(childRunId, `child workflow "${childName}" (${child.name})`);
 			}
-			if (!isWorkflowExitStatus(childRun.status) || (childRun.status === "failed" && childRun.exited !== true)) {
+			const childBudgetExceeded = childRun.result?.status === "budget_exceeded";
+			const childExitStatus = isWorkflowExitStatus(childRun.status) ? childRun.status : "blocked";
+			if (
+				(!isWorkflowExitStatus(childRun.status) && !childBudgetExceeded) ||
+				(childRun.status === "failed" && childRun.exited !== true)
+			) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				throw new Error(
 					`atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
@@ -159,12 +175,12 @@ export function createChildWorkflowRunner(input: {
 			}
 
 			const outputs = selectWorkflowOutputs(child, childRun.result);
-			const childExited = childRun.exited === true || childRun.status !== "completed";
+			const childExited = childBudgetExceeded || childRun.exited === true || childRun.status !== "completed";
 			const childResult: WorkflowChildResult<TChildOutputs> = childExited
 				? {
 						workflow: child.normalizedName,
 						runId: childRun.runId,
-						status: childRun.status,
+						status: childBudgetExceeded ? "blocked" : childExitStatus,
 						exited: true,
 						outputs: outputs as Partial<TChildOutputs>,
 						...(childRun.exitReason !== undefined ? { exitReason: childRun.exitReason } : {}),
