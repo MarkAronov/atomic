@@ -43,7 +43,7 @@ export function enforceDurationBudget(
 	return {
 		kind: "continue",
 		report,
-		warning: options.warned !== true && report.percent >= budget.warnAtPercent,
+		warning: options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent,
 	};
 }
 

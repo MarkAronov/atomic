@@ -16,6 +16,7 @@ import type {
 } from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import type * as AuthoringContract from "./authoring-contract.js";
+import type { WorkflowBudget } from "./budget.js";
 import type { ToolNodeSnapshot } from "./store-types.js";
 
 export type { EffectiveBudget, ResolveBudgetLayers, WorkflowBudget } from "./budget.js";
@@ -109,6 +110,8 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 	readonly inputs?: TInputs;
 	/** Parent boundary stage display name. Defaults to workflow:<workflow-name>. */
 	readonly stageName?: string;
+	/** Additional subtree-scoped duration budget; parent run overrides do not flow here. */
+	readonly budget?: WorkflowBudget;
 }
 
 type WorkflowRequiredKeys<T extends object> = {
