@@ -8,6 +8,8 @@ const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
 	"abort_retry",
 	"abort_bash",
 	"pause_queued_messages",
+	"resume_queued_messages",
+	"clear_queue",
 ]);
 const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set(["bash", "user_bash", "refresh_models"]);
 
@@ -23,9 +25,9 @@ export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionU
 }
 
 /**
- * Control frames must remain reachable while an ordinary RPC command is
- * pending. Interrupts cancel that command, while host responses can unblock UI
- * work awaited by it. Everything else stays on the ordered command lane.
+ * pending. Interrupts cancel or adjust queued work for that command, while
+ * host responses can unblock UI work awaited by it. Everything else stays on
+ * the ordered command lane.
  */
 export function isConcurrentRpcControlLine(line: string): boolean {
 	if (parseInteractiveEngineCommand(line)) return true;

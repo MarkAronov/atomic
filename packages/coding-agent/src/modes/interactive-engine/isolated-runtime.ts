@@ -408,7 +408,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const queued = { steering: [...this.steeringMessages], followUp: [...this.followUpMessages] };
 					this.steeringMessages = [];
 					this.followUpMessages = [];
-					this.dispatchBestEffort("clear queue", this.client.requestInternal({ type: "clear_queue" }));
+					const clearRequest = this.client.requestInternal({ type: "clear_queue" });
+					this.dispatchBestEffort(
+						"clear queue",
+						clearRequest.catch((error: Error) => {
+							this.steeringMessages = [...queued.steering, ...this.steeringMessages];
+							this.followUpMessages = [...queued.followUp, ...this.followUpMessages];
+							throw error;
+						}),
+					);
 					return queued;
 				},
 			},

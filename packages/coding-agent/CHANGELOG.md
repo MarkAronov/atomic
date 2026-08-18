@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Queue-control RPC frames now remain reachable during long-running prompts, and failed remote queue clears restore host-queued messages ([#2516](https://github.com/bastani-inc/atomic/issues/2516)).
+
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Changed
