@@ -125,9 +125,34 @@ describe("tournament builtin", () => {
 			evidence: [`candidate ${slotA} over candidate ${slotB}`],
 		});
 	}
+	const ATTEMPT_USAGE = { input: 10, output: 2, cacheRead: 5, cacheWrite: 1, cost: 1, turns: 1 };
+	const RING_USAGE = { input: 20, output: 3, cacheRead: 2, cacheWrite: 1, cost: 2, turns: 1 };
+	const RING_REASK_USAGE = { input: 30, output: 4, cacheRead: 9, cacheWrite: 2, cost: 3, turns: 2 };
+	const PIVOT_USAGE = { input: 40, output: 5, cacheRead: 1, cacheWrite: 3, cost: 4, turns: 1 };
+	const REDUCER_USAGE = { input: 70, output: 8, cacheRead: 25, cacheWrite: 4, cost: 5, turns: 2 };
+
+	function expectedUsage(...parts: readonly { count: number; usage: typeof ATTEMPT_USAGE }[]) {
+		const totals = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+		for (const { count, usage } of parts) {
+			totals.calls += count;
+			totals.input += count * usage.input;
+			totals.output += count * usage.output;
+			totals.cacheRead += count * usage.cacheRead;
+			totals.cacheWrite += count * usage.cacheWrite;
+			totals.cost += count * usage.cost;
+			totals.turns += count * usage.turns;
+		}
+		const denominator = totals.input + totals.cacheRead;
+		return { ...totals, cacheHitRate: denominator === 0 ? 0 : totals.cacheRead / denominator };
+	}
+
+	function fixtureModelAttempts(usage: typeof ATTEMPT_USAGE) {
+		return [{ model: "fixture-model", success: true, usage }];
+	}
 
 	test("runs the ring and pivot phases and writes a complete comparisons ledger", async () => {
 		const { default: definition } = await import("../../packages/workflows/builtin/tournament.js");
+		let invalidJudgeName = "";
 		const ctx = withCwd(
 			makeMockCtx(
 				{
@@ -138,7 +163,25 @@ describe("tournament builtin", () => {
 					pivots: 1,
 					seed: 7,
 				},
-				{ task: (name) => (name.startsWith("judge-") ? validJudgeReport(name) : undefined) },
+				{
+					task: (name) => {
+						if (!name.startsWith("judge-")) return undefined;
+						if (invalidJudgeName === "") {
+							invalidJudgeName = name;
+							return "invalid report";
+						}
+						return validJudgeReport(name);
+					},
+					modelAttempts: (name, _options, calls) => {
+						if (name.startsWith("attempt-")) return fixtureModelAttempts(ATTEMPT_USAGE);
+						if (name === "comparisons-reducer") return fixtureModelAttempts(REDUCER_USAGE);
+						if (name.endsWith("-reask")) return fixtureModelAttempts(RING_REASK_USAGE);
+						if (name.startsWith("judge-")) {
+							return fixtureModelAttempts(calls.parallel.length <= 3 ? RING_USAGE : PIVOT_USAGE);
+						}
+						return undefined;
+					},
+				},
 			),
 		);
 		const output = await definition.run(ctx);
@@ -161,18 +204,51 @@ describe("tournament builtin", () => {
 		assert.equal(ledger.params.criteria.length, 3);
 		assert.ok(ledger.comparisons.length > 0);
 		assert.deepEqual(Object.keys(ledger.usage).sort(), ["attempts", "pivots", "reducer", "ring", "total"]);
-		for (const phase of ["attempts", "ring", "pivots", "reducer", "total"]) {
-			assert.deepEqual(ledger.usage[phase], {
-				calls: 0,
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: 0,
-				turns: 0,
-				cacheHitRate: 0,
-			});
+		const attemptStageCount = ctx.calls.parallel[0].length;
+		const ringStageCount = ctx.calls.parallel[1].length + ctx.calls.parallel[2].length;
+		const pivotStageCount = ctx.calls.parallel[3].length + ctx.calls.parallel[4].length;
+		assert.notEqual(invalidJudgeName, "");
+		assert.equal(ctx.calls.task.includes(`${invalidJudgeName}-reask`), true);
+		const expectedAttempts = expectedUsage({ count: attemptStageCount, usage: ATTEMPT_USAGE });
+		const expectedRing = expectedUsage(
+			{ count: ringStageCount, usage: RING_USAGE },
+			{ count: 1, usage: RING_REASK_USAGE },
+		);
+		const expectedPivots = expectedUsage({ count: pivotStageCount, usage: PIVOT_USAGE });
+		const expectedReducer = expectedUsage({ count: 1, usage: REDUCER_USAGE });
+		const expectedTotal = expectedUsage(
+			{ count: attemptStageCount, usage: ATTEMPT_USAGE },
+			{ count: ringStageCount, usage: RING_USAGE },
+			{ count: 1, usage: RING_REASK_USAGE },
+			{ count: pivotStageCount, usage: PIVOT_USAGE },
+			{ count: 1, usage: REDUCER_USAGE },
+		);
+		assert.deepEqual(ledger.usage.attempts, expectedAttempts);
+		assert.deepEqual(ledger.usage.ring, expectedRing);
+		assert.deepEqual(ledger.usage.pivots, expectedPivots);
+		assert.deepEqual(ledger.usage.reducer, expectedReducer);
+		assert.deepEqual(ledger.usage.total, expectedTotal);
+		const phaseUsage = [ledger.usage.attempts, ledger.usage.ring, ledger.usage.pivots, ledger.usage.reducer];
+		for (const field of ["calls", "input", "output", "cacheRead", "cacheWrite", "cost", "turns"]) {
+			assert.equal(
+				ledger.usage.total[field],
+				phaseUsage.reduce((sum, phase) => sum + phase[field], 0),
+			);
 		}
+		assert.equal(
+			ledger.usage.total.cacheHitRate,
+			ledger.usage.total.cacheRead / (ledger.usage.total.input + ledger.usage.total.cacheRead),
+		);
+		assert.equal(ledger.usage.reducer.calls, 1);
+		assert.ok(ledger.usage.reducer.cost > 0);
+		assert.notEqual(
+			ledger.usage.total.cacheHitRate,
+			(expectedAttempts.cacheHitRate +
+				expectedRing.cacheHitRate +
+				expectedPivots.cacheHitRate +
+				expectedReducer.cacheHitRate) /
+				4,
+		);
 		assert.equal(
 			ledger.comparisons.every((entry) => entry.invalid === true || typeof entry.score_a === "number"),
 			true,
