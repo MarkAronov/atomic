@@ -76,8 +76,8 @@ test("adversarial-verification declares the graded input and output contracts", 
 	assert.equal(Reflect.get(adversarialVerification.inputs.verifier_count, "minimum"), 1);
 	assert.equal(Reflect.get(adversarialVerification.inputs.verifier_count, "maximum"), 5);
 	assert.equal(Reflect.get(adversarialVerification.inputs.max_repairs, "maximum"), 5);
-	assert.equal(Reflect.get(adversarialVerification.inputs.accept_mean, "minimum"), 1);
-	assert.equal(Reflect.get(adversarialVerification.inputs.accept_mean, "maximum"), 20);
+	assert.equal(Value.Check(adversarialVerification.inputs.accept_mean, 0), true);
+	assert.equal(Value.Check(adversarialVerification.inputs.accept_mean, 21), true);
 	assertOutputTypes(adversarialVerification.outputs, {
 		approved: "boolean",
 		mean_score: "number",

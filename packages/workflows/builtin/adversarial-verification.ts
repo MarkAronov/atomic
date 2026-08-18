@@ -18,7 +18,7 @@ export default workflow({
       Type.String(),
       Type.Record(Type.String(), Type.String()),
     ], { default: DEFAULT_CRITERIA, description: "Criteria record of name-to-description entries, or criteria.md markdown." }),
-    accept_mean: Type.Number({ minimum: 1, maximum: 20, default: 14, description: "Mean score required for acceptance on the 1–20 verification scale." }),
+    accept_mean: Type.Number({ default: 14, description: "Mean score required for acceptance on the 1–20 verification scale." }),
     reask_limit: Type.Integer({ minimum: 0, default: 1, description: "Maximum bounded re-ask waves for invalid criterion reports." }),
   },
   outputs: {
