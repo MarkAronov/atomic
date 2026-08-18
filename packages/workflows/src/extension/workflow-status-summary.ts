@@ -16,6 +16,8 @@
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
+	RunBudgetSnapshot,
+	RunBudgetState,
 	RunSnapshot,
 	RunStatus,
 	StageInputRequest,
@@ -91,6 +93,9 @@ export interface WorkflowRunStatusSummary {
 	readonly tools?: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
 	readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
+	/** Effective duration ceiling and the latest reading for a budgeted run. */
+	readonly budget?: RunBudgetSnapshot;
+	readonly budgetState?: RunBudgetState;
 	readonly exitReason?: string;
 	readonly error?: string;
 }
@@ -154,16 +159,29 @@ function awaitingInputEntries(run: RunSnapshot): WorkflowStatusAwaitingInput[] {
 	return entries;
 }
 
-/** Reduce one run snapshot to its concise status summary. */
+/** Reduce one run snapshot to the concise status summary. */
 export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
+	const elapsedMs = elapsedRunMs(run, now);
+	const duration =
+		run.budget === undefined
+			? undefined
+			: (run.budgetState?.duration ?? {
+					dimension: "duration" as const,
+					reading: elapsedMs,
+					ceiling: run.budget.maxDurationMs,
+					percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
+				});
+	const budgetState = run.budget === undefined ? undefined : { ...(run.budgetState ?? {}), duration };
 	return {
 		runId: run.id,
 		name: run.name,
 		status: effectiveRunStatus(run),
 		startedAt: run.startedAt,
 		endedAt: run.endedAt,
-		elapsedMs: elapsedRunMs(run, now),
+		elapsedMs,
+		...(run.budget !== undefined ? { budget: run.budget } : {}),
+		...(budgetState !== undefined ? { budgetState } : {}),
 		activeStages: run.stages.filter(stageIsActive).map((stage) => ({
 			stageId: stage.id,
 			name: stage.name,

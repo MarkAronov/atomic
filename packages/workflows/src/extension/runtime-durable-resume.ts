@@ -27,7 +27,11 @@ import { discoverWorkflows } from "./discovery.js";
 export interface DurableResumeRuntime {
 	resumeDurableWorkflow(
 		workflowId: string,
-		options?: { readonly policy?: WorkflowExecutionPolicy; readonly actor?: WorkflowActor },
+		options?: {
+			readonly policy?: WorkflowExecutionPolicy;
+			readonly actor?: WorkflowActor;
+			readonly budget?: import("../shared/budget.js").WorkflowBudget;
+		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
@@ -83,6 +87,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				registry: deps.registry,
 				baseRunOpts: {
 					...deps.baseRunOpts(options?.policy),
+					...(options?.budget === undefined ? {} : { budget: options.budget }),
 					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				},
 				durableBackend: backend,

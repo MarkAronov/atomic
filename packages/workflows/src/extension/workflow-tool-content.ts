@@ -43,6 +43,11 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 	const tools = run.tools ?? [];
 	const toolHint =
 		tools.length > 0 ? `tools: ${tools.map((tool) => `${tool.name} (${tool.status})`).join(", ")}` : undefined;
+	const durationBudget = run.budgetState?.duration;
+	const budgetHint =
+		durationBudget === undefined
+			? undefined
+			: `budget: ${durationBudget.reading}/${durationBudget.ceiling}ms (${durationBudget.percent.toFixed(1)}%)`;
 	let primary: string | undefined;
 	if (run.awaitingInputCount > 0) {
 		const stages = run.awaitingInput
@@ -55,7 +60,11 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 	} else if (run.activeStages.length > 0) {
 		primary = `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
 	}
-	if (primary !== undefined) return toolHint === undefined ? primary : `${primary} · ${toolHint}`;
+	if (primary !== undefined) {
+		const hints = [primary, budgetHint, toolHint].filter((part): part is string => part !== undefined);
+		return hints.join(" · ");
+	}
+	if (budgetHint !== undefined) return toolHint === undefined ? budgetHint : `${budgetHint} · ${toolHint}`;
 	if (toolHint !== undefined) return toolHint;
 	if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
 	if (run.exitReason !== undefined && run.exitReason.length > 0) {
