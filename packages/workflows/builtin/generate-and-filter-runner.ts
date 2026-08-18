@@ -66,9 +66,10 @@ export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Pro
 		const judgeCandidates = await Promise.all(
 			shortlist.map(async (path) => ({ path, body: await readFile(path, "utf8") })),
 		);
+		const judgePrompt = renderJudgePrompt(ctx.inputs.prompt, filterPath, shortlistLimit, judgeCandidates);
 		const judged = await ctx.task("judge", {
-			prompt: renderJudgePrompt(ctx.inputs.prompt, filterPath, shortlistLimit, judgeCandidates), context: "fresh",
-			reads: [filterPath, ...shortlist], schema: judgeSchema,
+			prompt: judgePrompt.prompt, context: "fresh",
+			reads: judgePrompt.reads, schema: judgeSchema,
 		});
 		const judgedDecision = judgeDecision(judged.structured);
 		// Same inter-stage contract as the filter report above.
