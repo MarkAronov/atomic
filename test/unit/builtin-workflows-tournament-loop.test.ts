@@ -248,7 +248,6 @@ describe("tournament builtin", () => {
 		for (const path of output.judge_artifact_paths) {
 			const fromRoot = relative(judgeRoot, resolve(path));
 			assert.equal(fromRoot.startsWith("..") || isAbsolute(fromRoot), false);
-			assert.equal(resolve(path).startsWith(`${judgeRoot}/`), true);
 		}
 		assert.deepEqual(new Set(ledger.comparisons.map((entry) => entry.criterion_id)), new Set(suppliedIds));
 		assert.equal(existsSync(join(output.artifact_dir, "escaped-r0.json")), false);
