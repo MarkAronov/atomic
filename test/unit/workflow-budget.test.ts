@@ -9,6 +9,7 @@ import { withWorkflowDefaults } from "../../packages/workflows/src/extension/con
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import {
 	type EffectiveBudget,
+	enforceDurationBudget,
 	resolve_budget,
 	validateWorkflowBudget,
 	type WorkflowBudget,
@@ -59,7 +60,9 @@ describe("workflow budget resolution", () => {
 								? definitionValue
 								: configPresent
 									? configValue
-									: 0;
+									: field === "warnAtPercent"
+										? 80
+										: 0;
 
 						assert.equal(
 							resolved[field],
@@ -98,6 +101,37 @@ describe("workflow budget resolution", () => {
 		assert.equal(resolved.maxTokens, 0);
 		assert.equal(resolved.maxCost, 0);
 		assert.equal(resolved.warnAtPercent, 0);
+	});
+});
+
+describe("duration budget enforcement", () => {
+	test("uses the default warning threshold and reports duration readings", () => {
+		const budget = resolve_budget({ run: { maxDurationMs: 100 } });
+		assert.equal(budget.warnAtPercent, 80);
+		assert.deepEqual(enforceDurationBudget(80, budget), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 80, ceiling: 100, percent: 80 },
+			warning: true,
+		});
+		assert.deepEqual(enforceDurationBudget(80, budget, { warned: true }), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 80, ceiling: 100, percent: 80 },
+			warning: false,
+		});
+	});
+
+	test("exhausts at the duration ceiling and leaves unbudgeted runs untouched", () => {
+		const budget = resolve_budget({ run: { maxDurationMs: 1 } });
+		assert.deepEqual(enforceDurationBudget(1, budget), {
+			kind: "exhausted",
+			report: { dimension: "duration", reading: 1, ceiling: 1, percent: 100 },
+		});
+		const unbudgeted = resolve_budget({});
+		assert.deepEqual(enforceDurationBudget(10_000, unbudgeted), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 10_000, ceiling: 0, percent: 0 },
+			warning: false,
+		});
 	});
 });
 
