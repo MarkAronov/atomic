@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.14-alpha.3] - 2026-08-17
+
 ### Fixed
 
 - `fetch_content` PDF extraction no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.

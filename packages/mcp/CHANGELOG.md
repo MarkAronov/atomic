@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.14-alpha.3] - 2026-08-17
+
 ### Changed
 
 - MCP OAuth now opens the authorization URL from WSL when the Linux working directory is not reachable from Windows.

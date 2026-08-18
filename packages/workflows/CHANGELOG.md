@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.14-alpha.3] - 2026-08-17
+
 ### Changed
 
 - Raised built-in Goal, Ralph, and open-claude-design Grok 4.6 fallbacks from `xai/grok-4.6:high` to `xai/grok-4.6:xhigh` and added the matching `github-copilot/grok-4.6:xhigh` twin immediately after each xAI id.
