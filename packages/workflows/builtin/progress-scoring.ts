@@ -111,9 +111,9 @@ function scoresFromStructured(
 		const checkpoint = candidate.checkpoint;
 		const score = candidate.score;
 		if (typeof checkpoint !== "number" || !Number.isInteger(checkpoint) || seen.has(checkpoint)) continue;
-		seen.add(checkpoint);
 		if (!requested.has(checkpoint) || typeof score !== "number" || !Number.isInteger(score) ||
 			score < VERIFICATION_SCALE.min || score > VERIFICATION_SCALE.max) continue;
+		seen.add(checkpoint);
 		scoresByCheckpoint.set(checkpoint, score);
 	}
 	return checkpoints.map((checkpoint) => scoresByCheckpoint.get(checkpoint) ?? null);
