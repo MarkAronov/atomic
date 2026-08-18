@@ -149,6 +149,26 @@ this is an author note
 			assert.equal(parsed.criteria[0]?.description, "visible");
 		});
 
+		test("drops a trailing unterminated HTML comment", () => {
+			const parsed = parse_rubric(`## Criteria
+### Real {#real}
+visible
+<!-- unfinished author note
+### Fake {#fake}
+hidden
+`);
+			assert.deepEqual(parsed.criteria, [{ id: "real", name: "Real", description: "visible" }]);
+		});
+
+		test("strips HTML comment openers revealed by an earlier removal", () => {
+			const parsed = parse_rubric(`## Criteria
+### Real {#real}
+visible
+<!<!-- inner -->--hidden
+`);
+			assert.equal(parsed.criteria[0]?.description, "visible");
+		});
+
 		test("rejects an empty criterion body instead of skipping it", () => {
 			assert.throws(
 				() =>

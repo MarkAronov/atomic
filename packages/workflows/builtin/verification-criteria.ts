@@ -67,7 +67,6 @@ export class EmptyCriterion extends RubricError {
 }
 
 const CRITERION_ID_ANCHOR = /^(.*?)\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
-const HTML_COMMENT = /<!--.*?-->/gs;
 const SLUG_MAX_LENGTH = 40;
 
 function slug_id(text: string): string {
@@ -93,6 +92,17 @@ function criterion(id: string, name: string, description: string): Criterion {
   return { id, name, description };
 }
 
+function strip_html_comments(markdown: string): string {
+  let sanitized = markdown;
+  while (true) {
+    const opener = sanitized.indexOf("<!--");
+    if (opener === -1) return sanitized;
+    const closer = sanitized.indexOf("-->", opener + 4);
+    if (closer === -1) return sanitized.slice(0, opener);
+    sanitized = sanitized.slice(0, opener) + sanitized.slice(closer + 3);
+  }
+}
+
 /**
  * Parse a `criteria.md` document into normalized criteria.
  *
@@ -105,7 +115,7 @@ function criterion(id: string, name: string, description: string): Criterion {
  * @throws {EmptyCriterion} when any criterion has an empty body
  */
 export function parse_rubric(markdown: string): Criteria {
-  const lines = markdown.replace(HTML_COMMENT, "").split(/\r?\n/);
+  const lines = strip_html_comments(markdown).split(/\r?\n/);
 
   let groundTruthNote = "";
   let seenGroundTruth = false;
