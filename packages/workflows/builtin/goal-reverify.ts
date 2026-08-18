@@ -177,7 +177,7 @@ async function runRepeat(
 	ctx: ReverifyContext,
 	finding: ReverifiableConsolidatedFinding,
 	context: ReverifyBatchInput["context"],
-	repeat: number,
+	stageName: string,
 ): Promise<ReverifyReport | undefined> {
 	const rendered = promptFor(finding, context);
 	const options = {
@@ -187,7 +187,7 @@ async function runRepeat(
 		schema: reverifySchema,
 	};
 	try {
-		return parseReport(await ctx.task(`reverify-${repeat}`, options));
+		return parseReport(await ctx.task(stageName, options));
 	} catch {
 		return undefined;
 	}
@@ -209,9 +209,10 @@ export async function reverify_finding(
 			readonly candidateRefs: readonly string[];
 		};
 		repeats?: number;
+		threshold?: number;
 	},
 ): Promise<ReverifyResult> {
-	if (!is_reverifiable(input.finding)) {
+	if (!is_reverifiable(input.finding, input.threshold)) {
 		throw new Error("Cannot re-verify an ineligible finding.");
 	}
 
@@ -222,9 +223,9 @@ export async function reverify_finding(
 	const evidence: string[] = [];
 	const validScores: number[] = [];
 	for (let repeat = 1; repeat <= repeatCount; repeat += 1) {
-		let report = await runRepeat(ctx, input.finding, input.context, repeat);
+		let report = await runRepeat(ctx, input.finding, input.context, `reverify-${repeat}`);
 		if (report === undefined) {
-			report = await runRepeat(ctx, input.finding, input.context, repeat + repeatCount);
+			report = await runRepeat(ctx, input.finding, input.context, `reverify-${repeat}-reask`);
 		}
 		if (report === undefined) {
 			perRepeat.push(null);
@@ -296,6 +297,7 @@ export async function reverify_consolidated_batch<F extends ReverifiableFinding>
 			finding: entry,
 			context: input.context,
 			repeats: input.repeats,
+			threshold: input.threshold,
 		});
 		audits.push({ finding: entry, ...result });
 	}

@@ -1,20 +1,24 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "vitest";
+import { writeReviewRoundArtifact } from "../../packages/workflows/builtin/goal-artifacts.js";
+import {
+	apply_reverify_results,
+	DEFAULT_REVERIFY_THRESHOLD,
+	is_reverifiable,
+	type ReverifiableConsolidatedFinding,
+	type ReverifiableFinding,
+	type ReverifyContext,
+	reverify_finding,
+} from "../../packages/workflows/builtin/goal-reverify.js";
+import { summarizeReviewConvergence } from "../../packages/workflows/builtin/review-convergence.js";
 import type {
 	WorkflowSerializableValue,
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
 } from "../../packages/workflows/src/shared/types.js";
-import {
-	DEFAULT_REVERIFY_THRESHOLD,
-	apply_reverify_results,
-	is_reverifiable,
-	reverify_finding,
-	type ReverifyContext,
-	type ReverifiableConsolidatedFinding,
-	type ReverifiableFinding,
-} from "../../packages/workflows/builtin/goal-reverify.js";
-import { summarizeReviewConvergence } from "../../packages/workflows/builtin/review-convergence.js";
 
 function finding(overrides: Partial<ReverifiableFinding> = {}): ReverifiableFinding {
 	return {
@@ -74,10 +78,7 @@ const context = {
 
 describe("goal reverify eligibility", () => {
 	test("is_reverifiable covers alignments, corroboration, confidence, and blocking", () => {
-		for (const alignment of [
-			"required_by_objective",
-			"consistent_with_objective",
-		] as const) {
+		for (const alignment of ["required_by_objective", "consistent_with_objective"] as const) {
 			assert.equal(is_reverifiable(entry({ objective_alignment: alignment }), DEFAULT_REVERIFY_THRESHOLD), true);
 		}
 		for (const alignment of ["beyond_objective", "contradicts_objective"] as const) {
@@ -109,12 +110,11 @@ describe("goal reverify scoring", () => {
 		assert.strictEqual(reshaped.batch[0]?.finding, original.finding);
 		assert.equal(reshaped.audits[0]?.verdict, "demoted");
 		assert.deepEqual(reshaped.audits[0]?.perRepeat, [5, 6, 4]);
-		assert.equal(calls.every((call) => call.options.context === "fresh"), true);
-		assert.deepEqual(calls[0]?.options.reads, [
-			"/repo/src/file.ts",
-			"/repo/research.md",
-			"/repo/receipt.md",
-		]);
+		assert.equal(
+			calls.every((call) => call.options.context === "fresh"),
+			true,
+		);
+		assert.deepEqual(calls[0]?.options.reads, ["/repo/src/file.ts", "/repo/research.md", "/repo/receipt.md"]);
 		assert.match(calls[0]?.options.prompt ?? "", /<scoring_head>/u);
 		assert.match(calls[0]?.options.prompt ?? "", /<criterion>/u);
 		assert.match(calls[0]?.options.prompt ?? "", /is it a real, objective-relevant, currently-unresolved blocker\?/u);
@@ -138,7 +138,7 @@ describe("goal reverify scoring", () => {
 		assert.equal(result.verdict, "demoted");
 		assert.equal(calls.length, 4);
 		assert.equal(calls[0]?.name, "reverify-1");
-		assert.equal(calls[1]?.name, "reverify-4");
+		assert.equal(calls[1]?.name, "reverify-1-reask");
 	});
 
 	test("required findings use the stricter unanimous bar while standard findings at 8 demote", async () => {
@@ -170,7 +170,7 @@ describe("goal reverify scoring", () => {
 		assert.equal(is_reverifiable(corroborated), false);
 		await assert.rejects(
 			reverify_finding(stubContext([]).ctx, { finding: corroborated, context }),
-		/ineligible finding/u,
+			/ineligible finding/u,
 		);
 	});
 
@@ -179,7 +179,10 @@ describe("goal reverify scoring", () => {
 		const { ctx } = stubContext([score(5), score(6), score(4)]);
 		const result = await reverify_finding(ctx, { finding: original, context });
 		const reshaped = apply_reverify_results([original], [{ finding: original, ...result }]);
-		assert.equal(reshaped.batch.every((item) => item.blocking === false), true);
+		assert.equal(
+			reshaped.batch.every((item) => item.blocking === false),
+			true,
+		);
 		const round = summarizeReviewConvergence({
 			parsed: true,
 			approved: false,
@@ -189,5 +192,35 @@ describe("goal reverify scoring", () => {
 		});
 		assert.equal(round.stopReviewLoop, false);
 		assert.equal(round.approved, false);
+	});
+	test("round artifacts retain demotion audit evidence and the original finding", async () => {
+		const { ctx } = stubContext([score(5), score(6), score(4)]);
+		const original = entry();
+		const result = await reverify_finding(ctx, { finding: original, context });
+		const reshaped = apply_reverify_results([original], [{ finding: original, ...result }]);
+		const artifactDir = await mkdtemp(join(tmpdir(), "goal-reverify-"));
+		try {
+			const artifactPath = await writeReviewRoundArtifact(artifactDir, [], reshaped.batch, reshaped.audits);
+			const saved = JSON.parse(await readFile(artifactPath, "utf8")) as {
+				readonly consolidated_findings: readonly {
+					readonly blocking: boolean;
+					readonly finding: { readonly title: string };
+				}[];
+				readonly reverification: readonly {
+					readonly verdict: string;
+					readonly meanScore: number;
+					readonly perRepeat: readonly (number | null)[];
+					readonly evidence: readonly string[];
+				}[];
+			};
+			assert.equal(saved.consolidated_findings[0]?.blocking, false);
+			assert.equal(saved.consolidated_findings[0]?.finding.title, original.finding.title);
+			assert.equal(saved.reverification[0]?.verdict, "demoted");
+			assert.equal(saved.reverification[0]?.meanScore, 5);
+			assert.deepEqual(saved.reverification[0]?.perRepeat, [5, 6, 4]);
+			assert.equal(saved.reverification[0]?.evidence.length, 3);
+		} finally {
+			await rm(artifactDir, { recursive: true, force: true });
+		}
 	});
 });
