@@ -2,31 +2,29 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, test } from "vitest";
 import {
+	type ConvergenceEntry,
 	classify_convergence,
 	convergence_escalation_evidence,
 	record_convergence,
-	type ConvergenceEntry,
 } from "../../packages/workflows/builtin/goal-convergence.js";
-import { fold_usage } from "../../packages/workflows/builtin/verification-usage.js";
 import { reduceGoalDecision } from "../../packages/workflows/builtin/goal-reducer.js";
 import type { GoalLedger, ReviewRecord } from "../../packages/workflows/builtin/goal-types.js";
+import { fold_usage } from "../../packages/workflows/builtin/verification-usage.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
-function usageResult(
-	name: string,
-	input: number,
-	output: number,
-): WorkflowTaskResult {
+function usageResult(name: string, input: number, output: number): WorkflowTaskResult {
 	return {
 		name,
 		stageName: name,
 		text: "stage result",
-		modelAttempts: [{
-			model: "mock/model",
-			success: true,
-			usage: { input, output, cacheRead: 2, cacheWrite: 3, cost: 0.5, turns: 1 },
-		}],
+		modelAttempts: [
+			{
+				model: "mock/model",
+				success: true,
+				usage: { input, output, cacheRead: 2, cacheWrite: 3, cost: 0.5, turns: 1 },
+			},
+		],
 	};
 }
 
@@ -59,10 +57,7 @@ function ledger(): GoalLedger {
 	};
 }
 
-function review(
-	reviewer: string,
-	decision: "complete" | "continue" | "blocked",
-): ReviewRecord {
+function review(reviewer: string, decision: "complete" | "continue" | "blocked"): ReviewRecord {
 	const approved = decision === "complete";
 	return {
 		findings: [],
@@ -70,11 +65,13 @@ function review(
 		overall_explanation: "mock convergence review",
 		overall_confidence_score: 0.8,
 		goal_oracle_satisfied: approved,
-		requirements_traceability: [{
-			requirement: "complete objective",
-			status: approved ? "proven" : "missing",
-			evidence: approved ? "observed proof" : "work remains",
-		}],
+		requirements_traceability: [
+			{
+				requirement: "complete objective",
+				status: approved ? "proven" : "missing",
+				evidence: approved ? "observed proof" : "work remains",
+			},
+		],
 		receipt_assessment: "mock receipt",
 		verification_remaining: approved ? "none" : "work remains",
 		stop_review_loop: approved,
@@ -121,11 +118,13 @@ function goalReviewJson(): string {
 		overall_explanation: "The mock review leaves the objective unresolved.",
 		overall_confidence_score: 0.5,
 		goal_oracle_satisfied: false,
-		requirements_traceability: [{
-			requirement: "complete objective",
-			status: "missing",
-			evidence: "work remains",
-		}],
+		requirements_traceability: [
+			{
+				requirement: "complete objective",
+				status: "missing",
+				evidence: "work remains",
+			},
+		],
 		receipt_assessment: "mock receipt",
 		verification_remaining: "work remains",
 		stop_review_loop: false,
@@ -143,13 +142,10 @@ describe("goal convergence", () => {
 			demotions: 1,
 			usage,
 		});
-		assert.deepEqual(Object.keys(shaped).sort(), [
-			"demotions",
-			"fractionProven",
-			"meanFindingConfidence",
-			"unresolvedBlockingCount",
-			"usage",
-		].sort());
+		assert.deepEqual(
+			Object.keys(shaped).sort(),
+			["demotions", "fractionProven", "meanFindingConfidence", "unresolvedBlockingCount", "usage"].sort(),
+		);
 		assert.equal(shaped.unresolvedBlockingCount, 2);
 		assert.equal(shaped.meanFindingConfidence, null);
 		assert.equal(shaped.fractionProven, 0.5);
@@ -164,13 +160,16 @@ describe("goal convergence", () => {
 			turns: 2,
 			cacheHitRate: 4 / 44,
 		});
-		assert.equal(record_convergence({
-			unresolvedBlockingCount: 0,
-			meanFindingConfidence: null,
-			fractionProven: 0,
-			demotions: 0,
-			usage: fold_usage([]),
-		}).meanFindingConfidence, null);
+		assert.equal(
+			record_convergence({
+				unresolvedBlockingCount: 0,
+				meanFindingConfidence: null,
+				fractionProven: 0,
+				demotions: 0,
+				usage: fold_usage([]),
+			}).meanFindingConfidence,
+			null,
+		);
 	});
 
 	test("classify_convergence uses V7 trends and preserves raw series evidence", () => {
@@ -218,10 +217,12 @@ describe("goal convergence", () => {
 				create_pr: false,
 			},
 			{
-				task: (name) => name.startsWith("completion-reviewer-") ||
-					name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")
-					? goalReviewJson()
-					: undefined,
+				task: (name) =>
+					name.startsWith("completion-reviewer-") ||
+					name.startsWith("evidence-reviewer-") ||
+					name.startsWith("risk-reviewer-")
+						? goalReviewJson()
+						: undefined,
 				parallel: async (steps) => {
 					if (steps[0]?.name.endsWith("-6")) throw new Error("mock reviewer execution failure");
 					return undefined;
