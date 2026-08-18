@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.14-alpha.3] - 2026-08-17
+
 ### Changed
 
 - Documented built-in workflow and subagent Grok 4.6 fallbacks as `xai/grok-4.6:xhigh` and `github-copilot/grok-4.6:xhigh`.
