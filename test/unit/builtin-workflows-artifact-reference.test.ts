@@ -108,17 +108,22 @@ describe("pattern workflow terminal artifacts stay references", () => {
 					{
 						task: (name) =>
 							name.startsWith("judge-")
-								? JSON.stringify({ winner: "first", rationale: "rubric", evidence: ["observable evidence"] })
+								? JSON.stringify({
+										criterion_id: "correctness",
+										score_a: 18,
+										score_b: 6,
+										evidence: ["observable evidence"],
+									})
 								: undefined,
 					},
 				),
 				{ cwd: tempCwd },
 			),
-			(name) => name === "bracket-reducer",
+			(name) => name === "comparisons-reducer",
 		);
 
 		const output = await definition.run(ctx);
-		assertReferenceOnly(output.result, output.result_path, ctx.calls.taskOptions["bracket-reducer"]?.[0]);
+		assertReferenceOnly(output.result, output.result_path, ctx.calls.taskOptions["comparisons-reducer"]?.[0]);
 	});
 
 	test("loop-until-done returns the completion artifact by reference", async () => {

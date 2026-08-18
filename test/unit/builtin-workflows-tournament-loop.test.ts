@@ -5,7 +5,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { accumulate, rank_candidates, soft_win } from "../../packages/workflows/builtin/selection-math.js";
+import {
+	accumulate,
+	plan_comparisons,
+	rank_candidates,
+	select_pivots,
+	soft_win,
+} from "../../packages/workflows/builtin/selection-math.js";
 import {
 	assertOutputTypes,
 	assertWorkflowDefinition,
@@ -109,6 +115,55 @@ describe("tournament builtin", () => {
 			ledger.comparisons.every((entry) => entry.judge_artifact_path.endsWith(".json")),
 			true,
 		);
+		const schedule = plan_comparisons({
+			n: ledger.params.n,
+			pivots: ledger.params.pivots,
+			repeats: ledger.params.n_evaluations,
+			seed: ledger.seed,
+		});
+		const ringGroups = new Map();
+		for (const entry of ledger.comparisons) {
+			if (entry.phase !== "ring") continue;
+			const key = `${entry.a}:${entry.b}`;
+			const records = ringGroups.get(key) ?? [];
+			records.push(entry);
+			ringGroups.set(key, records);
+		}
+		const ringPreferences = [];
+		for (const records of ringGroups.values()) {
+			const valid = records.filter((entry) => entry.invalid !== true && typeof entry.score_a === "number");
+			const first = records[0];
+			const p =
+				valid.length === 0
+					? 0.5
+					: soft_win(
+							valid.reduce((sum, entry) => sum + entry.score_a, 0) / valid.length,
+							valid.reduce((sum, entry) => sum + entry.score_b, 0) / valid.length,
+						);
+			ringPreferences.push({ a: first.a, b: first.b, p });
+		}
+		const ringWeights = Array.from({ length: ledger.params.n }, () => 0);
+		const ringCounts = Array.from({ length: ledger.params.n }, () => 0);
+		accumulate(ringPreferences, ringWeights, ringCounts);
+		const recordedPivots = select_pivots(ringWeights, ringCounts, ledger.params.pivots);
+		const expectedJobs =
+			schedule.jobs(
+				schedule.ring,
+				ledger.params.criteria.map((criterion) => criterion.id),
+			).length +
+			schedule.jobs(
+				schedule.pivotRounds(recordedPivots),
+				ledger.params.criteria.map((criterion) => criterion.id),
+			).length;
+		assert.equal(ledger.comparisons.length, expectedJobs);
+		const n = ledger.params.n;
+		const k = ledger.params.pivots;
+		const repeats = ledger.params.n_evaluations;
+		assert.equal(
+			ledger.budget.planned,
+			(n + k * (n - k) + (k * (k - 1)) / 2) * ledger.params.criteria.length * repeats,
+		);
+		assert.ok(ledger.budget.executed >= ledger.comparisons.length);
 		assert.equal(ledger.ranking.length, 4);
 		assert.equal(output.winner, ledger.ranking[0].label);
 		assert.equal(output.judge_artifact_paths.length, ledger.comparisons.length);
@@ -158,6 +213,10 @@ describe("tournament builtin", () => {
 		assert.equal(invalidPairRecord.invalid, true);
 		assert.equal(invalidPairRecord.valid_reports, 0);
 		assert.equal(invalidPairRecord.p_ab, 0.5);
+		const reaskCount = ctx.calls.task.filter((name) => name.endsWith("-reask")).length;
+		assert.ok(reaskCount > 0);
+		assert.ok(ledger.budget.executed >= ledger.comparisons.length);
+		assert.equal(ledger.budget.executed, ledger.comparisons.length + reaskCount);
 	});
 
 	test("maps swapped slot scores back to candidate order and recomputes ranking from comparisons", async () => {
