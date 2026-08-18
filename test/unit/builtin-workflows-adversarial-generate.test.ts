@@ -89,7 +89,8 @@ test("adversarial-verification fans out one fresh schema-backed stage per criter
 					task: "verify this",
 					verifier_count: 2,
 					max_repairs: 1,
-					criteria: { task_fit: "The task is satisfied.", evidence: "Claims have evidence." },
+					criteria:
+						"## Criteria\n### Task fit {#task_fit}\nThe task is satisfied.\n\n### Evidence {#evidence}\nClaims have evidence.",
 					accept_mean: 14,
 					reask_limit: 1,
 				},
