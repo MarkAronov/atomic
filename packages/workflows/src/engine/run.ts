@@ -618,7 +618,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		budget.stopAtBoundary(startupFrontierStage);
 		const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
 		await admittedTools.closeAndDrain();
-		budget.stopAtBoundary(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
+		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
 		const normalTerminalEvent = terminalEvents.winner();
 		if (normalTerminalEvent?.kind === "cancellation") {
 			const selectedExit = findWorkflowExitSignal(normalTerminalEvent.reason, exitScope);

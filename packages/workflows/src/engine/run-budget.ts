@@ -89,6 +89,10 @@ export function createRunBudgetController(input: {
 		if (check.kind === "wrap_up" || check.kind === "exhausted")
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 	};
+	const rethrowIfSystemOwnedStop = (frontierStage?: string): void => {
+		if (state?.systemOwnedStop === true)
+			throw finishWrapUp(frontierStage, state.wrapUpSummary, state.wrapUpUsage, state.wrapUpCompleted === true);
+	};
 	const registerWrapUp = (frontierStage: string, handler: () => Promise<never>): (() => void) => {
 		if (!enabled) return () => {};
 		const registration = { frontierStage, handler };
@@ -98,6 +102,7 @@ export function createRunBudgetController(input: {
 			if (index >= 0) handlers.splice(index, 1);
 		};
 	};
+
 	const deliverWrapUp = (frontierStage: string): Promise<never> => {
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage);
@@ -106,5 +111,5 @@ export function createRunBudgetController(input: {
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;
 	};
-	return { enabled, checkpoint, registerWrapUp, deliverWrapUp, finishWrapUp, stopAtBoundary };
+	return { enabled, checkpoint, registerWrapUp, deliverWrapUp, finishWrapUp, rethrowIfSystemOwnedStop, stopAtBoundary };
 }

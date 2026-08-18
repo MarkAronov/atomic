@@ -834,6 +834,31 @@ describe("budget executor boundaries", () => {
 		assert.ok((raisedSnapshot?.durationMs ?? 0) >= sourceElapsed);
 	});
 
+	test("budget successful body preserves outputs after non-stage work past the ceiling", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-success-after-body-work",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const result = await ctx.stage("only-stage").complete("real work product");
+				vi.advanceTimersByTime(300);
+				return { result };
+			},
+		});
+		const store = createStore();
+		const result = await run(definition, {}, {
+			store,
+			budget: { maxDurationMs: 200 },
+			adapters: { complete: { complete: async (text) => text } },
+		});
+		assert.equal(result.status, "completed");
+		assert.deepEqual(result.result, { result: "real work product" });
+		assert.equal(store.runs()[0]?.budgetState?.systemOwnedStop, undefined);
+	});
+
 	test("budget resumed startup exhaustion lands on the blocked rail with no stage", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
