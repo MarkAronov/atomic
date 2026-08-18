@@ -218,8 +218,8 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
   await writeFile(criteriaPath, renderCriteriaMarkdown(resolvedCriteria));
   await ctx.task("worker", { prompt: renderWorkerPrompt(ctx.inputs.task), context: "fresh", output: candidatePath, outputMode: "file-only" });
 
-  const verifierCount = ctx.inputs.verifier_count;
-  const maxRepairs = ctx.inputs.max_repairs;
+  const verifierCount = ctx.inputs.verifier_count ?? 3;
+  const maxRepairs = ctx.inputs.max_repairs ?? 2;
   const acceptMean = ctx.inputs.accept_mean ?? 14;
   const reaskLimit = Math.max(0, Math.floor(ctx.inputs.reask_limit ?? 1));
   const expectedCount = resolvedCriteria.criteria.length * verifierCount;
