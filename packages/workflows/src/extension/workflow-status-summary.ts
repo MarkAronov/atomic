@@ -93,7 +93,6 @@ export interface WorkflowRunStatusSummary {
 	readonly tools?: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
 	readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
-	/** Effective duration ceiling and the latest reading for a budgeted run. */
 	readonly budget?: RunBudgetSnapshot;
 	readonly budgetState?: RunBudgetState;
 	readonly exitReason?: string;

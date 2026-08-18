@@ -33,11 +33,8 @@ export function enforceDurationBudget(
 		percent: ceiling === 0 ? 0 : (reading / ceiling) * 100,
 	};
 	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
-	return {
-		kind: "continue",
-		report,
-		warning: options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent,
-	};
+	const warning = options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent;
+	return { kind: "continue", report, warning };
 }
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */
 class ResolvedWorkflowBudget {

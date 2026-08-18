@@ -99,10 +99,7 @@ export function createTrackedToolPrimitive(input: {
 	});
 	const lifecycle = createToolNodeLifecycle(input);
 	const budgetBoundary = (): void | Promise<void> => {
-		const frontierStage = input.run.stages.at(-1)?.name;
-		const checkpoint = input.budget.checkpoint(frontierStage);
-		if (checkpoint.kind === "wrap_up") return input.budget.deliverWrapUp(undefined);
-		if (checkpoint.kind === "exhausted") throw input.budget.stopExhausted(frontierStage);
+		input.budget.stopAtBoundary(input.run.stages.at(-1)?.name);
 	};
 	const tool = createToolPrimitive({
 		workflowId: input.workflowId,

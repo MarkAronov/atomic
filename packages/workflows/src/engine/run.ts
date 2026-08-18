@@ -610,18 +610,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		});
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
 		const sourceFrontierStage = opts.continuation?.source;
+		const sourceFrontierId = sourceFrontierStage?.failedStageId ?? opts.continuation?.resumeFromStageId;
 		const startupFrontierStage =
-			sourceFrontierStage?.stages.find((stage) => stage.id === sourceFrontierStage.failedStageId)?.name ??
-			sourceFrontierStage?.stages.find((stage) => stage.id === opts.continuation?.resumeFromStageId)?.name ??
-			"workflow frontier";
-		const startupBudget = budget.checkpoint(startupFrontierStage);
-		if (startupBudget.kind === "wrap_up" || startupBudget.kind === "exhausted")
-			throw budget.stopExhausted(startupFrontierStage);
+			sourceFrontierStage?.stages.find((stage) => stage.id === sourceFrontierId)?.name ?? "workflow frontier";
+		budget.stopAtBoundary(startupFrontierStage);
 		const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
 		await admittedTools.closeAndDrain();
-		const postBodyBudget = budget.checkpoint(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
-		if (postBodyBudget.kind === "wrap_up" || postBodyBudget.kind === "exhausted")
-			throw budget.stopExhausted(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
+		budget.stopAtBoundary(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
 		const normalTerminalEvent = terminalEvents.winner();
 		if (normalTerminalEvent?.kind === "cancellation") {
 			const selectedExit = findWorkflowExitSignal(normalTerminalEvent.reason, exitScope);
