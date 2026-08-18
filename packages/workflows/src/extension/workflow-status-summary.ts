@@ -159,7 +159,7 @@ function awaitingInputEntries(run: RunSnapshot): WorkflowStatusAwaitingInput[] {
 	return entries;
 }
 
-/** Reduce one run snapshot to the concise status summary. */
+/** Reduce one run snapshot to its concise status summary. */
 export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
 	const elapsedMs = elapsedRunMs(run, now);

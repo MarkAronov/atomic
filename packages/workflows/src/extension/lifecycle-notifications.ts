@@ -507,13 +507,7 @@ function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked
 }
 
 function isActiveRecoverableBlockedRun(run: RunSnapshot): boolean {
-	return (
-		run.blockedAt !== undefined &&
-		((run.result?.status === "budget_exceeded" &&
-			run.budgetState?.wrapUpCompleted === true &&
-			run.resumable === true) ||
-			structuredRecoverableWorkflowFailureText(run) !== undefined)
-	);
+	return run.blockedAt !== undefined && structuredRecoverableWorkflowFailureText(run) !== undefined;
 }
 
 function lifecycleOccurrenceAt(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): number | undefined {

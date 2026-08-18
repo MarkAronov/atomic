@@ -1,4 +1,4 @@
-import { BUDGET_WRAP_UP_PROMPT, isWorkflowBudgetExceededError } from "../../engine/run-budget.js";
+import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
 import { rebasedStageStartedAt } from "../../shared/timing.js";
 import type { StageOptions } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
@@ -319,23 +319,22 @@ export function createTrackedStageCaller(input: {
 			return result;
 		} catch (err) {
 			const workflowExitAbort = runtime.signal.aborted ? runtime.exit.currentWorkflowExitAbortReason() : undefined;
-			if (isWorkflowBudgetExceededError(err) && trackStageLifecycle && !runtime.state.skippedForParallelFailFast) {
-				let budgetError = err;
-				if (
-					runtime.activeStore.runs().find((run) => run.id === runtime.runId)?.budgetState?.wrapUpCompleted !== true
-				) {
+			const budgetError = err instanceof WorkflowBudgetExceededError ? err : undefined;
+			if (budgetError !== undefined && trackStageLifecycle && !runtime.state.skippedForParallelFailFast) {
+				let selectedBudgetError = budgetError;
+				if (runtime.runSnapshot.budgetState?.wrapUpCompleted !== true) {
 					try {
 						await runtime.budget.deliverWrapUp(runtime.name);
 					} catch (wrapUpError) {
-						if (isWorkflowBudgetExceededError(wrapUpError)) budgetError = wrapUpError;
+						if (wrapUpError instanceof WorkflowBudgetExceededError) selectedBudgetError = wrapUpError;
 					}
 				}
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
-					if (budgetError.report.wrapUpSummary !== undefined)
-						runtime.stageSnapshot.result = budgetError.report.wrapUpSummary;
+					if (selectedBudgetError.report.wrapUpSummary !== undefined)
+						runtime.stageSnapshot.result = selectedBudgetError.report.wrapUpSummary;
 				};
-				throw budgetError;
+				throw selectedBudgetError;
 			} else if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
 				runtime.state.stageClosedByWorkflowExit = true;
 				if (trackStageLifecycle && !isTerminalStage(runtime.stageSnapshot)) {

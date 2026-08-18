@@ -68,7 +68,7 @@ import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
 import { createContinuationReplayIndex } from "./replay.js";
-import { createRunBudgetController, isWorkflowBudgetExceededError } from "./run-budget.js";
+import { createRunBudgetController, WorkflowBudgetExceededError } from "./run-budget.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
@@ -129,6 +129,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			toolNodes: [],
 		};
 	}
+
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
 	const priorRun =
@@ -177,12 +178,11 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		resolvedBudget.maxDurationMs > 0
 			? { maxDurationMs: resolvedBudget.maxDurationMs, warnAtPercent: resolvedBudget.warnAtPercent }
 			: undefined;
-	const priorBudgetState = opts.continuation?.source.budgetState ?? priorRun?.budgetState;
 	const continuationBudgetState =
 		budgetSnapshot !== undefined &&
 		continuedBudget?.maxDurationMs === budgetSnapshot.maxDurationMs &&
 		continuedBudget?.warnAtPercent === budgetSnapshot.warnAtPercent
-			? priorBudgetState
+			? (opts.continuation?.source.budgetState ?? priorRun?.budgetState)
 			: undefined;
 	const runSnapshot: RunSnapshot = {
 		id: runId,
@@ -672,7 +672,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
 		await admittedTools.closeAndDrain();
-		if (isWorkflowBudgetExceededError(err)) {
+		if (err instanceof WorkflowBudgetExceededError) {
 			const report = err.report;
 			const frontierStageId =
 				runSnapshot.stages.find((stage) => stage.name === report.frontierStage)?.id ??

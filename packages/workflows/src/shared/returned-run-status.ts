@@ -69,7 +69,6 @@ export function structuredRecoverableWorkflowFailure(
 		return {
 			error,
 			metadata: {
-				failureKind: run.failureKind ?? "unknown",
 				...(run.failureCode !== undefined ? { failureCode: run.failureCode } : {}),
 				failureRecoverability: "recoverable",
 				failureDisposition: "active_blocked",
@@ -106,15 +105,12 @@ export function structuredRecoverableWorkflowFailureText(
 ): string | undefined {
 	return structuredRecoverableWorkflowFailure(run)?.error;
 }
+
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
 		(run.status === "running" || run.status === "completed") &&
-		((returnedStatus === "budget_exceeded" &&
-			run.budgetState?.wrapUpCompleted === true &&
-			run.failureDisposition === "active_blocked" &&
-			run.failureRecoverability === "recoverable") ||
-			structuredRecoverableWorkflowFailure(run) !== undefined)
+		structuredRecoverableWorkflowFailure(run) !== undefined
 	)
 		return "blocked";
 	if (returnedStatus === "budget_exceeded") return run.status;

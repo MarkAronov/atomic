@@ -7,7 +7,7 @@ import { interruptAllRuns, interruptRun, pauseAllRuns, pauseRun, resumeRun } fro
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import type { WorkflowBudget, WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
+import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
@@ -343,7 +343,7 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 async function resumeDurableShadow(
 	runId: string,
 	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
-	budget?: WorkflowBudget,
+	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
 	let warning: string | undefined;
@@ -372,7 +372,7 @@ async function resumeDurableShadow(
 async function resumePreparedDurableTarget(
 	runId: string,
 	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy">,
-	budget?: WorkflowBudget,
+	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	try {
 		const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, {

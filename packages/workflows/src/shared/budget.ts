@@ -11,21 +11,15 @@ export interface WorkflowBudget {
 	readonly warnAtPercent?: number;
 }
 
-/** The duration dimension currently enforced by slice B2. */
-export type BudgetDimension = "duration";
-
 export interface DurationBudgetReport {
-	readonly dimension: BudgetDimension;
+	readonly dimension: "duration";
 	readonly reading: number;
 	readonly ceiling: number;
 	readonly percent: number;
 }
-
 export type DurationBudgetCheck =
 	| { readonly kind: "continue"; readonly report: DurationBudgetReport; readonly warning: boolean }
 	| { readonly kind: "exhausted"; readonly report: DurationBudgetReport };
-
-/** Check one duration boundary without mutating run state. */
 export function enforceDurationBudget(
 	reading: number,
 	budget: EffectiveBudget,
@@ -38,15 +32,13 @@ export function enforceDurationBudget(
 		ceiling,
 		percent: ceiling === 0 ? 0 : (reading / ceiling) * 100,
 	};
-	if (ceiling === 0) return { kind: "continue", report, warning: false };
-	if (reading >= ceiling) return { kind: "exhausted", report };
+	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
 	return {
 		kind: "continue",
 		report,
 		warning: options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent,
 	};
 }
-
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */
 class ResolvedWorkflowBudget {
 	private declare readonly brand: undefined;

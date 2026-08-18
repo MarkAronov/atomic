@@ -1,11 +1,9 @@
 import { type DurationBudgetReport, type EffectiveBudget, enforceDurationBudget } from "../shared/budget.js";
-import type { RunSnapshot, RunBudgetState } from "../shared/store-types.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowModelUsage } from "../shared/types.js";
-
 export const BUDGET_WRAP_UP_PROMPT =
 	"The workflow budget is exhausted. Stop substantive work, summarize useful progress, identify remaining work or blockers, and leave a clear next step. Do not start any new stages.";
-
 export interface BudgetExceededReport extends DurationBudgetReport {
 	readonly frontierStage: string;
 	readonly wrapUpSummary?: string;
@@ -13,10 +11,8 @@ export interface BudgetExceededReport extends DurationBudgetReport {
 }
 export type BudgetCheckpoint =
 	| { readonly kind: "continue"; readonly report?: DurationBudgetReport }
-	| { readonly kind: "warn"; readonly report: DurationBudgetReport }
-	| { readonly kind: "wrap_up"; readonly report: DurationBudgetReport }
+	| { readonly kind: "warn" | "wrap_up"; readonly report: DurationBudgetReport }
 	| { readonly kind: "exhausted"; readonly report: BudgetExceededReport };
-
 export class WorkflowBudgetExceededError extends Error {
 	readonly report: BudgetExceededReport;
 	constructor(report: BudgetExceededReport) {
@@ -33,29 +29,20 @@ export interface RunBudgetController {
 	registerWrapUp(frontierStage: string, handler: () => Promise<never>): () => void;
 	deliverWrapUp(frontierStage: string | undefined): Promise<never>;
 	finishWrapUp(
-		frontierStage: string | undefined,
-		summary: string | undefined,
-		usage: WorkflowModelUsage | undefined,
+		...args: [string | undefined, string | undefined, WorkflowModelUsage | undefined]
 	): WorkflowBudgetExceededError;
 }
-export function isWorkflowBudgetExceededError(error: unknown): error is WorkflowBudgetExceededError {
-	return error instanceof WorkflowBudgetExceededError;
-}
-
-function withFrontier(
+const withFrontier = (
 	report: DurationBudgetReport,
 	frontierStage: string | undefined,
 	summary: string | undefined,
 	usage: WorkflowModelUsage | undefined,
-): BudgetExceededReport {
-	return {
-		...report,
-		frontierStage: frontierStage ?? "workflow frontier",
-		...(summary !== undefined ? { wrapUpSummary: summary } : {}),
-		...(usage !== undefined ? { wrapUpUsage: usage } : {}),
-	};
-}
-
+): BudgetExceededReport => ({
+	...report,
+	frontierStage: frontierStage ?? "workflow frontier",
+	...(summary !== undefined ? { wrapUpSummary: summary } : {}),
+	...(usage !== undefined ? { wrapUpUsage: usage } : {}),
+});
 export function createRunBudgetController(input: {
 	readonly run: RunSnapshot;
 	readonly budget: EffectiveBudget;
@@ -63,7 +50,7 @@ export function createRunBudgetController(input: {
 }): RunBudgetController {
 	const { run, budget } = input;
 	const enabled = budget.maxDurationMs > 0;
-	let state: RunBudgetState | undefined = run.budgetState;
+	let state: RunSnapshot["budgetState"] = run.budgetState;
 	let exhaustedReport: DurationBudgetReport | undefined;
 	let wrapUpPromise: Promise<never> | undefined;
 	const handlers: Array<{ readonly frontierStage: string; readonly handler: () => Promise<never> }> = [];
@@ -85,7 +72,8 @@ export function createRunBudgetController(input: {
 		};
 		const report = exhaustedReport ?? enforceDurationBudget(elapsedRunMs(run), budget).report;
 		setState(report);
-		return new WorkflowBudgetExceededError(withFrontier(report, frontierStage, state.wrapUpSummary, state.wrapUpUsage));
+		const finalReport = withFrontier(report, frontierStage, state.wrapUpSummary, state.wrapUpUsage);
+		return new WorkflowBudgetExceededError(finalReport);
 	};
 	const checkpoint = (frontierStage?: string): BudgetCheckpoint => {
 		if (!enabled) return { kind: "continue" };
@@ -102,9 +90,9 @@ export function createRunBudgetController(input: {
 		const wrapping = state?.wrapUpCompleted !== true;
 		if (wrapping) state = { ...(state ?? {}), wrapUpDelivered: true };
 		setState(check.report);
-		return wrapping
-			? { kind: "wrap_up", report: check.report }
-			: { kind: "exhausted", report: withFrontier(exhaustedReport, frontierStage, state?.wrapUpSummary, state?.wrapUpUsage) };
+		if (wrapping) return { kind: "wrap_up", report: check.report };
+		const finalReport = withFrontier(exhaustedReport, frontierStage, state?.wrapUpSummary, state?.wrapUpUsage);
+		return { kind: "exhausted", report: finalReport };
 	};
 	const registerWrapUp = (frontierStage: string, handler: () => Promise<never>): (() => void) => {
 		if (!enabled) return () => {};

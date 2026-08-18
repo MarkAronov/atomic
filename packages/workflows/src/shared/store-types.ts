@@ -3,10 +3,10 @@
  * cross-ref: spec §5.5
  */
 
+import type { DurationBudgetReport, WorkflowBudget } from "./budget.js";
 import type {
 	WorkflowExitStatus,
 	WorkflowInputValues,
-	WorkflowModelUsage,
 	WorkflowOutputValues,
 	WorkflowSerializableValue,
 } from "./types.js";
@@ -22,27 +22,15 @@ export type StageStatus =
 	| "failed"
 	| "skipped";
 
-export interface RunBudgetSnapshot {
-	readonly maxDurationMs: number;
-	readonly warnAtPercent: number;
-}
-
-export interface RunBudgetDurationReading {
-	readonly dimension: "duration";
-	readonly reading: number;
-	readonly ceiling: number;
-	readonly percent: number;
-}
-
+export type RunBudgetSnapshot = Required<Pick<WorkflowBudget, "maxDurationMs" | "warnAtPercent">>;
 export interface RunBudgetState {
-	readonly duration?: RunBudgetDurationReading;
+	readonly duration?: DurationBudgetReport;
 	readonly warned?: boolean;
 	readonly wrapUpDelivered?: boolean;
 	readonly wrapUpCompleted?: boolean;
 	readonly wrapUpSummary?: string;
-	readonly wrapUpUsage?: WorkflowModelUsage;
+	readonly wrapUpUsage?: import("./types.js").WorkflowModelUsage;
 }
-
 export type ToolNodeStatus = "pending" | "running" | "completed" | "failed" | "cached" | "cancelled";
 
 /** First-class, durable graph node created for each ctx.tool invocation. */

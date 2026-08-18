@@ -7,8 +7,6 @@
  */
 
 import type {
-	RunBudgetSnapshot,
-	RunBudgetState,
 	ToolNodeSnapshot,
 	WorkflowActor,
 	WorkflowFailureCode,
@@ -34,6 +32,7 @@ export interface PersistenceAPI {
 // ---------------------------------------------------------------------------
 // Entry payload types (spec §5.6)
 // ---------------------------------------------------------------------------
+
 export interface RunStartPayload {
 	readonly runId: string;
 	readonly name: string;
@@ -47,8 +46,8 @@ export interface RunStartPayload {
 	readonly resumeFromStageId?: string;
 	/** Elapsed ms inherited from prior sessions of a resumed run. */
 	readonly accumulatedDurationMs?: number;
-	readonly budget?: RunBudgetSnapshot;
-	readonly budgetState?: RunBudgetState;
+	readonly budget?: import("./store-types.js").RunBudgetSnapshot;
+	readonly budgetState?: import("./store-types.js").RunBudgetState;
 	readonly ts: number;
 }
 
@@ -137,7 +136,7 @@ export interface RunBlockedPayload {
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
 	readonly result?: WorkflowOutputValues;
-	readonly budgetState?: RunBudgetState;
+	readonly budgetState?: import("./store-types.js").RunBudgetState;
 	readonly ts: number;
 }
 

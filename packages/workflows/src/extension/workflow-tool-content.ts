@@ -60,10 +60,7 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 	} else if (run.activeStages.length > 0) {
 		primary = `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
 	}
-	if (primary !== undefined) {
-		const hints = [primary, budgetHint, toolHint].filter((part): part is string => part !== undefined);
-		return hints.join(" · ");
-	}
+	if (primary !== undefined) return [primary, budgetHint, toolHint].filter((part) => part !== undefined).join(" · ");
 	if (budgetHint !== undefined) return toolHint === undefined ? budgetHint : `${budgetHint} · ${toolHint}`;
 	if (toolHint !== undefined) return toolHint;
 	if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
