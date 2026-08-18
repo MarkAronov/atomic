@@ -322,7 +322,9 @@ export function createTrackedStageCaller(input: {
 			const budgetError = err instanceof WorkflowBudgetExceededError ? err : undefined;
 			if (budgetError !== undefined && trackStageLifecycle && !runtime.state.skippedForParallelFailFast) {
 				let selectedBudgetError = budgetError;
-				if (runtime.runSnapshot.budgetState?.wrapUpCompleted !== true) {
+				if (
+					runtime.activeStore.runs().find((run) => run.id === runtime.runId)?.budgetState?.wrapUpCompleted !== true
+				) {
 					try {
 						await runtime.budget.deliverWrapUp(runtime.name);
 					} catch (wrapUpError) {

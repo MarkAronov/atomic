@@ -1,7 +1,6 @@
 /** Workflow authoring primitives, stage/session contracts, and task option types. */
 
 import type { Static, TSchema } from "typebox";
-import type { WorkflowBudget } from "./budget.js";
 
 export type { Static, TSchema };
 
@@ -447,8 +446,7 @@ export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionField
 export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {
 	readonly inputs?: TInputs;
 	readonly stageName?: string;
-	/** Additional subtree-scoped duration budget; parent run overrides do not flow here. */
-	readonly budget?: WorkflowBudget;
+	readonly budget?: import("./budget.js").WorkflowBudget;
 }
 
 type WorkflowRequiredKeys<T extends object> = {

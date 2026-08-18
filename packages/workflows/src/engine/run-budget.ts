@@ -9,10 +9,6 @@ export interface BudgetExceededReport extends DurationBudgetReport {
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: WorkflowModelUsage;
 }
-export type BudgetCheckpoint =
-	| { readonly kind: "continue"; readonly report?: DurationBudgetReport }
-	| { readonly kind: "warn" | "wrap_up"; readonly report: DurationBudgetReport }
-	| { readonly kind: "exhausted"; readonly report: BudgetExceededReport };
 export class WorkflowBudgetExceededError extends Error {
 	readonly report: BudgetExceededReport;
 	constructor(report: BudgetExceededReport) {
@@ -23,15 +19,7 @@ export class WorkflowBudgetExceededError extends Error {
 		this.report = report;
 	}
 }
-export interface RunBudgetController {
-	readonly enabled: boolean;
-	checkpoint(frontierStage?: string): BudgetCheckpoint;
-	registerWrapUp(frontierStage: string, handler: () => Promise<never>): () => void;
-	deliverWrapUp(frontierStage: string | undefined): Promise<never>;
-	finishWrapUp(
-		...args: [string | undefined, string | undefined, WorkflowModelUsage | undefined]
-	): WorkflowBudgetExceededError;
-}
+export type RunBudgetController = ReturnType<typeof createRunBudgetController>;
 const withFrontier = (
 	report: DurationBudgetReport,
 	frontierStage: string | undefined,
@@ -47,10 +35,10 @@ export function createRunBudgetController(input: {
 	readonly run: RunSnapshot;
 	readonly budget: EffectiveBudget;
 	readonly onWarning?: (report: DurationBudgetReport) => void;
-}): RunBudgetController {
+}) {
 	const { run, budget } = input;
 	const enabled = budget.maxDurationMs > 0;
-	let state: RunSnapshot["budgetState"] = run.budgetState;
+	let state = run.budgetState === undefined ? undefined : { ...run.budgetState };
 	let exhaustedReport: DurationBudgetReport | undefined;
 	let wrapUpPromise: Promise<never> | undefined;
 	const handlers: Array<{ readonly frontierStage: string; readonly handler: () => Promise<never> }> = [];
@@ -63,19 +51,17 @@ export function createRunBudgetController(input: {
 		summary: string | undefined,
 		usage: WorkflowModelUsage | undefined,
 	): WorkflowBudgetExceededError => {
-		state = {
-			...(state ?? {}),
-			wrapUpDelivered: true,
+		state = Object.assign(state ?? {}, {
 			wrapUpCompleted: true,
 			...(summary === undefined ? {} : { wrapUpSummary: summary }),
 			...(usage === undefined ? {} : { wrapUpUsage: usage }),
-		};
+		});
 		const report = exhaustedReport ?? enforceDurationBudget(elapsedRunMs(run), budget).report;
 		setState(report);
 		const finalReport = withFrontier(report, frontierStage, state.wrapUpSummary, state.wrapUpUsage);
 		return new WorkflowBudgetExceededError(finalReport);
 	};
-	const checkpoint = (frontierStage?: string): BudgetCheckpoint => {
+	const checkpoint = (frontierStage?: string) => {
 		if (!enabled) return { kind: "continue" };
 		const check = enforceDurationBudget(elapsedRunMs(run), budget, { warned: state?.warned });
 		if (check.kind === "continue") {

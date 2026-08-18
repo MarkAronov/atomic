@@ -3,7 +3,7 @@
  * cross-ref: spec §5.5
  */
 
-import type { DurationBudgetReport, WorkflowBudget } from "./budget.js";
+import type { DurationBudgetReport } from "./budget.js";
 import type {
 	WorkflowExitStatus,
 	WorkflowInputValues,
@@ -22,12 +22,9 @@ export type StageStatus =
 	| "failed"
 	| "skipped";
 
-export type RunBudgetSnapshot = Required<Pick<WorkflowBudget, "maxDurationMs" | "warnAtPercent">>;
-export interface RunBudgetState {
+export type RunBudgetSnapshot = { readonly maxDurationMs: number; readonly warnAtPercent: number };
+export interface RunBudgetState extends Partial<Record<"warned" | "wrapUpDelivered" | "wrapUpCompleted", boolean>> {
 	readonly duration?: DurationBudgetReport;
-	readonly warned?: boolean;
-	readonly wrapUpDelivered?: boolean;
-	readonly wrapUpCompleted?: boolean;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: import("./types.js").WorkflowModelUsage;
 }
@@ -317,9 +314,8 @@ export interface RunSnapshot {
 	readonly stages: StageSnapshot[];
 	/** Durable ctx.tool execution nodes. Optional only for legacy/restored snapshots. */
 	readonly toolNodes?: ToolNodeSnapshot[];
-	/** Resolved duration budget; omitted for byte-identical unbudgeted runs. */
+	/** Resolved duration budget and persisted wrap-up state; omitted when unbudgeted. */
 	budget?: RunBudgetSnapshot;
-	/** Persisted warning/wrap-up state for resumable budget exhaustion. */
 	budgetState?: RunBudgetState;
 	startedAt: number;
 	endedAt?: number;

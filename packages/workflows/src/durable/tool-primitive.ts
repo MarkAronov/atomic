@@ -101,9 +101,8 @@ export interface CreateToolPrimitiveInput {
 	 * quit already closed admission for this workflow tree; the call never runs.
 	 */
 	readonly admitToolCall?: () => ToolCallAdmission;
-	/** Deterministic boundary hook immediately before a tool node dispatches. */
+	/** Deterministic boundary hooks before dispatch and after a tool node settles. */
 	readonly beforeToolCall?: () => void | Promise<void>;
-	/** Deterministic boundary hook after a tool node settles. */
 	readonly afterToolCall?: () => void | Promise<void>;
 	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */

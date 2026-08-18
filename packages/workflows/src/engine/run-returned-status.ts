@@ -33,11 +33,9 @@ export function classifyReturnedRunStatus(
 		(runSnapshot?.budgetState?.wrapUpCompleted !== true ||
 			runSnapshot.failureDisposition !== "active_blocked" ||
 			runSnapshot.failureRecoverability !== "recoverable")
-	) {
-		// This reserved status is produced only by the system-owned budget door;
-		// author/model output cannot turn an ordinary completion into one.
+	)
+		// Only the system-owned budget door may produce this status.
 		return { status: "completed" };
-	}
 	if (returnedStatus === undefined || returnedStatus === "completed" || returnedStatus === "complete") {
 		return { status: "completed" };
 	}

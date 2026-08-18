@@ -185,9 +185,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function finiteNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
 function serializableObject(value: unknown): WorkflowOutputValues | undefined {
 	return Value.Check(workflowSerializableObjectSchema, value) ? (value as WorkflowOutputValues) : undefined;
 }
@@ -198,16 +195,16 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 
 function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 	if (!isRecord(value)) return undefined;
-	const maxDurationMs = finiteNumber(value.maxDurationMs);
-	const warnAtPercent = finiteNumber(value.warnAtPercent);
+	const maxDurationMs = numericDuration(value.maxDurationMs);
+	const warnAtPercent = numericDuration(value.warnAtPercent);
 	return maxDurationMs === undefined || warnAtPercent === undefined ? undefined : { maxDurationMs, warnAtPercent };
 }
 function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
 	const duration = isRecord(value.duration) ? value.duration : {};
-	const reading = finiteNumber(duration.reading);
-	const ceiling = finiteNumber(duration.ceiling);
-	const percent = finiteNumber(duration.percent);
+	const reading = numericDuration(duration.reading);
+	const ceiling = numericDuration(duration.ceiling);
+	const percent = numericDuration(duration.percent);
 	const restoredDuration =
 		reading === undefined || ceiling === undefined || percent === undefined
 			? undefined
