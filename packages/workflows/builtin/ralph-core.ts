@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
+import { VERIFICATION_SCALE } from "./verification-criteria.js";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
@@ -105,6 +106,12 @@ export const reviewDecisionSchema = Type.Object(
     ]),
     overall_explanation: Type.String(),
     overall_confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    criterion_scores: Type.Optional(
+      Type.Array(Type.Object({
+        criterion_id: Type.String(),
+        score: VERIFICATION_SCALE.schema,
+      }, { additionalProperties: false })),
+    ),
     requirements_traceability: Type.Array(requirementsTraceabilitySchema),
     stop_review_loop: Type.Boolean(),
     reviewer_error: Type.Optional(

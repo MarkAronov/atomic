@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { VERIFICATION_SCALE } from "./verification-criteria.js";
 
 const reviewFindingSchema = Type.Object(
   {
@@ -74,6 +75,12 @@ export const reviewDecisionSchema = Type.Object(
     receipt_assessment: Type.String(),
     verification_remaining: Type.String(),
     stop_review_loop: Type.Boolean(),
+    criterion_scores: Type.Optional(
+      Type.Array(Type.Object({
+        criterion_id: Type.String(),
+        score: VERIFICATION_SCALE.schema,
+      }, { additionalProperties: false })),
+    ),
     reviewer_error: Type.Optional(
       Type.Union([Type.Null(), reviewerErrorSchema]),
     ),

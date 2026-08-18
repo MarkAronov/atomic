@@ -64,6 +64,7 @@ export type RequirementTraceability = {
 
 export type ReviewDecision = {
   readonly findings: readonly ReviewFinding[];
+	readonly criterion_scores?: readonly { readonly criterion_id: string; readonly score: number }[];
   readonly overall_correctness: "patch is correct" | "patch is incorrect";
   readonly overall_explanation: string;
   readonly overall_confidence_score: number;
