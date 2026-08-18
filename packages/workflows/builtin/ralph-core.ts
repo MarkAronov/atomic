@@ -20,6 +20,7 @@ import {
   type ParsedReviewDecision,
   type ReviewConvergenceSummary,
 } from "./review-convergence.js";
+import type { ConvergenceEntry } from "./goal-convergence.js";
 import type { ReverifyAuditEntry } from "./goal-reverify.js";
 
 
@@ -302,6 +303,7 @@ type ReviewArtifact = {
 
 type ReviewRoundArtifact = {
   readonly convergence_decision: ReviewConvergenceSummary;
+  readonly convergence: readonly ConvergenceEntry[];
   readonly consolidated_findings?: readonly ConsolidatedFinding<ReviewFinding>[];
   readonly reverification?: readonly ReverifyAuditEntry<ReviewFinding>[];
   readonly reviews: readonly {

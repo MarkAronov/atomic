@@ -1,6 +1,12 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
+import { fold_usage } from "./verification-usage.js";
+import {
+	convergence_escalation_evidence,
+	record_convergence,
+	type ConvergenceEntry,
+} from "./goal-convergence.js";
 import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
   ACCEPTANCE_MATRIX_CONTRACT,
@@ -70,6 +76,7 @@ export async function runRalphWorkflow(
   let approved = false;
   let iterationsCompleted = 0;
   let previousResearchPromptRefinementSessionFile: string | undefined;
+  const convergenceEntries: ConvergenceEntry[] = [];
   let previousResearchSessionFile: string | undefined;
   let previousOrchestratorSessionFile: string | undefined;
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {
@@ -295,10 +302,24 @@ export async function runRalphWorkflow(
             candidateRefs: [researchPath, implementationNotesPath, orchestratorReportPath],
           },
         });
+    const findings = reviewEntries.flatMap((review) => review.decision.findings);
+    const traceability = reviewEntries.flatMap((review) => review.decision.requirements_traceability);
+    convergenceEntries.push(record_convergence({
+      unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
+      meanFindingConfidence: findings.length === 0
+        ? null
+        : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
+      fractionProven: traceability.length === 0
+        ? 0
+        : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
+      demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
+      usage: fold_usage([orchestrator, ...reviews]),
+    }));
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
       {
         convergence_decision: roundConvergenceDecision,
+        convergence: convergenceEntries,
         consolidated_findings: reverified.batch,
         reverification: reverified.audits,
         reviews: reviewEntries,
@@ -312,6 +333,9 @@ export async function runRalphWorkflow(
   // carrying the unresolved blocking findings. Without create_pr the workflow
   // never touches a PR, approved or not.
   const unapprovedHandoff = createPr === true && !approved;
+  const escalationEvidence = unapprovedHandoff
+    ? convergence_escalation_evidence(convergenceEntries)
+    : [];
   if (createPr === true) {
     const prResult = await ctx.task("pull-request", {
       prompt: taggedPrompt([
@@ -328,6 +352,7 @@ export async function runRalphWorkflow(
               : unapprovedHandoff
                 ? `Final unapproved review-round artifact: ${latestReviewReportPath}`
                 : `Approved review-round artifact: ${latestReviewReportPath}`,
+            ...escalationEvidence,
           ].join("\n"),
         ],
         ...(unapprovedHandoff
