@@ -1,3 +1,5 @@
+import type { ConvergenceEntry } from "./goal-convergence.js";
+import { convergence_escalation_evidence } from "./goal-convergence.js";
 import type { BlockerObservation, GoalLedger, ReducerOutcome, ReviewRecord } from "./goal-types.js";
 import {
   summarizeReviewConvergence,
@@ -87,6 +89,7 @@ export function reduceGoalDecision(
     readonly reviewQuorum: number;
     readonly blockerThreshold: number;
     readonly nextActionOnComplete: ReviewNextAction;
+		readonly convergence?: readonly ConvergenceEntry[];
   },
 ): ReducerOutcome {
   const completeVotes = turnReviews.filter(
@@ -140,6 +143,8 @@ export function reduceGoalDecision(
   }
 
   if (options.turn >= options.maxTurns) {
+    const baseReason = `Orchestrator attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`;
+    const evidence = convergence_escalation_evidence(options.convergence ?? []);
     return {
       status: "needs_human",
       blockerObservation: observation,
@@ -147,7 +152,7 @@ export function reduceGoalDecision(
         ...reducerSummary(turnReviews, false, "needs_human"),
         turn: options.turn,
         decision: "needs_human",
-        reason: `Orchestrator attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
+        reason: [baseReason, ...evidence].join("\n"),
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
         ...(observation ? { blocker: observation.blocker } : {}),

@@ -1,5 +1,11 @@
 import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import { fold_usage } from "./verification-usage.js";
+import {
+	convergence_escalation_evidence,
+	record_convergence,
+	type ConvergenceEntry,
+} from "./goal-convergence.js";
 import { orchestratorModelConfig, reviewerModelConfig } from "./goal-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
@@ -81,11 +87,13 @@ function reviewerExecutionFailedDecision(input: {
   readonly reviewQuorum: number;
   readonly reviews: readonly ReviewRecord[];
   readonly reason: string;
+  readonly convergence?: readonly ConvergenceEntry[];
 }): ReducerDecision {
+  const evidence = convergence_escalation_evidence(input.convergence ?? []);
   return {
     turn: input.turn,
     decision: "needs_human",
-    reason: input.reason,
+    reason: [input.reason, ...evidence].join("\n"),
     complete_votes: input.reviews.filter((review) => review.decision === "complete").length,
     review_quorum: input.reviewQuorum,
     parsed: input.reviews.every((review) => review.parsed),
@@ -294,6 +302,20 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         ledger.reverification ??= [];
         ledger.reverification.push(...reverified.audits);
       }
+      const findings = latestReviews.flatMap((review) => review.findings);
+      const traceability = latestReviews.flatMap((review) => review.requirements_traceability);
+      ledger.convergence ??= [];
+      ledger.convergence.push(record_convergence({
+        unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
+        meanFindingConfidence: findings.length === 0
+          ? null
+          : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
+        fractionProven: traceability.length === 0
+          ? 0
+          : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
+        demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
+        usage: fold_usage([orchestrator, ...reviewResults]),
+      }));
       ledger.reviews.push(...latestReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
@@ -306,14 +328,16 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       if (reviewerBatchFailed) {
         terminalRemainingWork = collectRemainingWork(latestReviews);
         const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${terminalRemainingWork}`;
-        ledger.decisions.push(reviewerExecutionFailedDecision({
+        const decision = reviewerExecutionFailedDecision({
           turn,
           reviewQuorum,
           reviews: latestReviews,
           reason,
-        }));
+          convergence: ledger.convergence,
+        });
+        ledger.decisions.push(decision);
         ledger.status = "needs_human";
-        appendLifecycleEvent(ledger, "status_decided", reason, turn);
+        appendLifecycleEvent(ledger, "status_decided", decision.reason, turn);
         await writeGoalLedger(ledgerPath, ledger);
         break;
       }
@@ -324,6 +348,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         reviewQuorum,
         blockerThreshold,
         nextActionOnComplete: createPr ? "pull-request" : "finish",
+        convergence: ledger.convergence,
       });
       if (reducerOutcome.blockerObservation !== undefined) {
         ledger.blockers.push(reducerOutcome.blockerObservation);
