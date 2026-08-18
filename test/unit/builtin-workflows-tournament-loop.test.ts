@@ -108,16 +108,27 @@ describe("loop-until-done builtin", () => {
 			result_path: "text",
 			remaining_work: "text",
 			artifact_dir: "text",
+			progress_curve: "array",
+			final_trend: "select",
+			progress_disclaimer: "text",
 		});
 	});
 
 	test("persists progress and stops only after an evidence-backed done decision", async () => {
 		const { default: definition } = await import("../../packages/workflows/builtin/loop-until-done.js");
+		let progressScore = 0;
 		const ctx = withCwd(
 			makeMockCtx(
 				{ prompt: "Make every check pass", max_iterations: 3 },
 				{
 					task: (name) => {
+						if (name.startsWith("progress-score-")) {
+							progressScore += 1;
+							return {
+								text: "",
+								structured: { scores: [{ checkpoint: progressScore, score: progressScore === 1 ? 5 : 10 }] },
+							};
+						}
 						if (name === "evaluate-1")
 							return JSON.stringify({
 								done: false,
@@ -144,11 +155,13 @@ describe("loop-until-done builtin", () => {
 		const output = await definition.run(ctx);
 		assert.equal(output.status, "complete");
 		assert.equal(output.iterations_completed, 2);
-		assert.deepEqual(ctx.calls.task.slice(0, 5), [
+		assert.deepEqual(ctx.calls.task, [
 			"iteration-1",
 			"evaluate-1",
+			"progress-score-1",
 			"iteration-2",
 			"evaluate-2",
+			"progress-score-1",
 			"completion-summary",
 		]);
 		assert.equal(ctx.calls.taskOptions["evaluate-1"][0].context, "fresh");
@@ -165,27 +178,41 @@ describe("loop-until-done builtin", () => {
 		assert.ok(ctx.calls.taskOptions["iteration-2"][0].reads.includes(output.ledger_path));
 		const ledger = JSON.parse(readFileSync(output.ledger_path, "utf8"));
 		assert.equal(ledger.status, "complete");
-		assert.equal(ledger.entries[0].failures[0], "lint failed");
+		assert.deepEqual(
+			ledger.entries.map((entry) => entry.progress.score),
+			[5, 10],
+		);
+		assert.deepEqual(ledger.entries[0].failures, ["lint failed"]);
 		assert.deepEqual(ledger.entries[1].validation_evidence, ["tests pass", "lint passes"]);
+		assert.deepEqual(output.progress_curve, [5, 10]);
+		assert.equal(output.final_trend, "flat");
+		assert.equal(
+			output.progress_disclaimer,
+			"Progress scores are a monitoring signal; VOC separation +0.079; never authoritative.",
+		);
+		assert.match(output.result, /Progress curve: \[5,10\]/);
+		assert.match(output.result, /Final trend: flat/);
 	});
 
-	test("returns inspectable failed exhaustion with ledger and remaining work", async () => {
+	test("returns inspectable failed exhaustion with progress report and remaining work", async () => {
 		const { default: definition } = await import("../../packages/workflows/builtin/loop-until-done.js");
 		const ctx = withCwd(
 			makeMockCtx(
 				{ prompt: "Finish safely", max_iterations: 1 },
 				{
 					task: (name) =>
-						name === "evaluate-1"
-							? JSON.stringify({
-									done: false,
-									summary: "not done",
-									new_findings: [],
-									failures: ["check failed"],
-									validation_evidence: [],
-									remaining_work: "repair check",
-								})
-							: undefined,
+						name.startsWith("progress-score-")
+							? { text: "", structured: { scores: [{ checkpoint: 1, score: 4 }] } }
+							: name === "evaluate-1"
+								? JSON.stringify({
+										done: false,
+										summary: "not done",
+										new_findings: [],
+										failures: ["check failed"],
+										validation_evidence: [],
+										remaining_work: "repair check",
+									})
+								: undefined,
 				},
 			),
 		);
@@ -193,8 +220,65 @@ describe("loop-until-done builtin", () => {
 		assert.equal(output.status, "failed");
 		assert.equal(output.remaining_work, "repair check");
 		assert.equal(output.result_path, output.ledger_path);
+		assert.deepEqual(output.progress_curve, [4]);
+		assert.equal(output.final_trend, "flat");
+		assert.match(output.result, /Progress curve: \[4\]/);
 		const ledger = JSON.parse(readFileSync(output.ledger_path, "utf8"));
 		assert.equal(ledger.status, "failed");
 		assert.equal(ledger.iterations_completed, 1);
+		assert.deepEqual(ledger.progress_curve, [4]);
+		assert.equal(ledger.progress_disclaimer, output.progress_disclaimer);
+	});
+
+	test("keeps loop decisions unchanged when progress scoring is disabled or throws", async () => {
+		const { default: definition } = await import("../../packages/workflows/builtin/loop-until-done.js");
+		const decisions = async (progress_scoring: boolean, throws: boolean) => {
+			const ctx = withCwd(
+				makeMockCtx(
+					{ prompt: "Bounded fixture", max_iterations: 2, progress_scoring },
+					{
+						task: (name) => {
+							if (name.startsWith("progress-score-") && throws) throw new Error("stub scorer failed");
+							if (name === "evaluate-1")
+								return JSON.stringify({
+									done: false,
+									summary: "continue",
+									new_findings: ["finding"],
+									failures: [],
+									validation_evidence: [],
+									remaining_work: "next",
+								});
+							if (name === "evaluate-2")
+								return JSON.stringify({
+									done: true,
+									summary: "done",
+									new_findings: [],
+									failures: [],
+									validation_evidence: ["proof"],
+									remaining_work: "",
+								});
+							return undefined;
+						},
+					},
+				),
+			);
+			const output = await definition.run(ctx);
+			const ledger = JSON.parse(readFileSync(output.ledger_path, "utf8"));
+			return {
+				status: output.status,
+				iterations_completed: output.iterations_completed,
+				remaining_work: output.remaining_work,
+				entries: ledger.entries.map((entry) => ({
+					iteration: entry.iteration,
+					summary: entry.summary,
+					findings: entry.findings,
+					failures: entry.failures,
+					validation_evidence: entry.validation_evidence,
+					done: entry.done,
+					remaining_work: entry.remaining_work,
+				})),
+			};
+		};
+		assert.deepEqual(await decisions(false, false), await decisions(true, true));
 	});
 });

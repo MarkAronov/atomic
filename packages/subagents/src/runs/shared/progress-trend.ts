@@ -57,12 +57,13 @@ export function hasProgressAttentionSignal(series: readonly number[] | undefined
 	if (!hasFiniteProgressScores(series)) return false;
 	const result = classify_trend(series);
 	const latest = series.at(-1);
-	return result.trend === "regressing" || (result.trend === "flat" && latest !== undefined && latest <= FLAT_LOW_SCORE_CEILING);
+	return (
+		result.trend === "regressing" ||
+		(result.trend === "flat" && latest !== undefined && latest <= FLAT_LOW_SCORE_CEILING)
+	);
 }
 
 /** Lower a wall-clock threshold only when progress evidence raises priority. */
 export function progressAwareThreshold(baseMs: number, series: readonly number[] | undefined): number {
-	return hasProgressAttentionSignal(series)
-		? Math.max(1, baseMs * PROGRESS_ATTENTION_THRESHOLD_FRACTION)
-		: baseMs;
+	return hasProgressAttentionSignal(series) ? Math.max(1, baseMs * PROGRESS_ATTENTION_THRESHOLD_FRACTION) : baseMs;
 }

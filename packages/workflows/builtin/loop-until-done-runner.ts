@@ -241,7 +241,6 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
         outputMode: "file-only",
       });
       const result = `${final.text ? `${final.text.trimEnd()}\n\n` : ""}${formatProgressReport(report)}\n`;
-      await writeFile(resultPath, result);
       return {
         result,
         status: "complete" as const,
