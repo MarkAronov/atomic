@@ -130,8 +130,9 @@ export function createTrackedStageCaller(input: {
 		} catch {
 			// The budget owns the terminal outcome even if the wrap-up provider fails.
 		}
-		const usage = runtime.stageSnapshot.modelAttempts?.at(-1)?.usage;
-		throw runtime.budget.finishWrapUp(runtime.name, summary, usage);
+		// B2 deliberately does not meter model usage; never attribute the prior
+		// substantive attempt to this turn. B3 owns usage accounting.
+		throw runtime.budget.finishWrapUp(runtime.name, summary);
 	};
 
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
