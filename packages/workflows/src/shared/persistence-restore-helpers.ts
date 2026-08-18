@@ -185,6 +185,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function finiteNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function serializableObject(value: unknown): WorkflowOutputValues | undefined {
 	return Value.Check(workflowSerializableObjectSchema, value) ? (value as WorkflowOutputValues) : undefined;
 }
@@ -195,33 +199,21 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 
 function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 	if (!isRecord(value)) return undefined;
-	const maxDurationMs = value.maxDurationMs;
-	const warnAtPercent = value.warnAtPercent;
-	if (
-		typeof maxDurationMs !== "number" ||
-		!Number.isFinite(maxDurationMs) ||
-		typeof warnAtPercent !== "number" ||
-		!Number.isFinite(warnAtPercent)
-	)
-		return undefined;
-	return { maxDurationMs, warnAtPercent };
+	const maxDurationMs = finiteNumber(value.maxDurationMs);
+	const warnAtPercent = finiteNumber(value.warnAtPercent);
+	return maxDurationMs === undefined || warnAtPercent === undefined ? undefined : { maxDurationMs, warnAtPercent };
 }
 
 function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
-	const duration = value.duration;
-	const reading = isRecord(duration) ? duration.reading : undefined;
-	const ceiling = isRecord(duration) ? duration.ceiling : undefined;
-	const percent = isRecord(duration) ? duration.percent : undefined;
+	const duration = isRecord(value.duration) ? value.duration : {};
+	const reading = finiteNumber(duration.reading);
+	const ceiling = finiteNumber(duration.ceiling);
+	const percent = finiteNumber(duration.percent);
 	const restoredDuration =
-		typeof reading === "number" &&
-		Number.isFinite(reading) &&
-		typeof ceiling === "number" &&
-		Number.isFinite(ceiling) &&
-		typeof percent === "number" &&
-		Number.isFinite(percent)
-			? { dimension: "duration" as const, reading, ceiling, percent }
-			: undefined;
+		reading === undefined || ceiling === undefined || percent === undefined
+			? undefined
+			: { dimension: "duration" as const, reading, ceiling, percent };
 	const warned = value.warned === true;
 	const wrapUpDelivered = value.wrapUpDelivered === true;
 	const wrapUpCompleted = value.wrapUpCompleted === true;
@@ -321,16 +313,9 @@ function restoreStageStatus(status: unknown): StageStatus {
 	}
 }
 
-function numericRetryAfterMs(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function numericTimestamp(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function numericDuration(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+function nonNegativeNumber(value: unknown): number | undefined {
+	const number = finiteNumber(value);
+	return number === undefined || number < 0 ? undefined : number;
 }
 
 function restoreFailedToolNode(value: unknown): ToolNodeSnapshot | undefined {
@@ -360,8 +345,8 @@ function restoreFailedToolNode(value: unknown): ToolNodeSnapshot | undefined {
 		...(typeof node.executionOrder === "number" && Number.isFinite(node.executionOrder)
 			? { executionOrder: node.executionOrder }
 			: {}),
-		...(numericTimestamp(node.startedAt) !== undefined ? { startedAt: node.startedAt } : {}),
-		...(numericTimestamp(node.endedAt) !== undefined ? { endedAt: node.endedAt } : {}),
+		...(nonNegativeNumber(node.startedAt) !== undefined ? { startedAt: node.startedAt } : {}),
+		...(nonNegativeNumber(node.endedAt) !== undefined ? { endedAt: node.endedAt } : {}),
 		error: node.error,
 		attachable: false,
 	};
@@ -381,7 +366,7 @@ export function findRunBlockedMetadata(
 		const failureRecoverability = entry.payload.failureRecoverability;
 		const failureDisposition = entry.payload.failureDisposition;
 		const failureMessage = entry.payload.failureMessage;
-		const retryAfterMs = numericRetryAfterMs(entry.payload.retryAfterMs);
+		const retryAfterMs = nonNegativeNumber(entry.payload.retryAfterMs);
 		const resumable = entry.payload.resumable;
 		const ts = entry.payload.ts;
 		const result = serializableObject(entry.payload.result);
@@ -493,11 +478,11 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		const failureCode = end.failureCode;
 		const failureRecoverability = end.failureRecoverability;
 		const failureDisposition = end.failureDisposition;
-		const retryAfterMs = numericRetryAfterMs(end.retryAfterMs);
+		const retryAfterMs = nonNegativeNumber(end.retryAfterMs);
 		const failureMessage = end.failureMessage;
 		const failedStageId = end.failedStageId;
-		const restoredEndedAt = numericTimestamp(end.endedAt);
-		const restoredDurationMs = numericDuration(end.durationMs);
+		const restoredEndedAt = nonNegativeNumber(end.endedAt);
+		const restoredDurationMs = nonNegativeNumber(end.durationMs);
 		store.recordRunEnd(runId, status, result, typeof error === "string" ? error : undefined, {
 			...(typeof failureKind === "string" && isWorkflowFailureKind(failureKind) ? { failureKind } : {}),
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),

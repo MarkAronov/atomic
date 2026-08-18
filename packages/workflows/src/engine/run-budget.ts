@@ -1,5 +1,5 @@
 import { type DurationBudgetReport, type EffectiveBudget, enforceDurationBudget } from "../shared/budget.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, RunBudgetState } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowModelUsage } from "../shared/types.js";
 
@@ -63,56 +63,48 @@ export function createRunBudgetController(input: {
 }): RunBudgetController {
 	const { run, budget } = input;
 	const enabled = budget.maxDurationMs > 0;
-	let warned = run.budgetState?.warned === true;
-	let wrapUpDelivered = run.budgetState?.wrapUpDelivered === true;
-	let wrapUpCompleted = run.budgetState?.wrapUpCompleted === true;
-	let wrapUpSummary = run.budgetState?.wrapUpSummary;
-	let wrapUpUsage = run.budgetState?.wrapUpUsage;
+	let state: RunBudgetState | undefined = run.budgetState;
 	let exhaustedReport: DurationBudgetReport | undefined;
 	let wrapUpPromise: Promise<never> | undefined;
 	const handlers: Array<{ readonly frontierStage: string; readonly handler: () => Promise<never> }> = [];
 	const setState = (duration: DurationBudgetReport): void => {
-		run.budgetState = {
-			duration,
-			...(warned ? { warned: true } : {}),
-			...(wrapUpDelivered ? { wrapUpDelivered: true } : {}),
-			...(wrapUpCompleted ? { wrapUpCompleted: true } : {}),
-			...(wrapUpSummary !== undefined ? { wrapUpSummary } : {}),
-			...(wrapUpUsage !== undefined ? { wrapUpUsage } : {}),
-		};
+		state = { ...(state ?? {}), duration };
+		run.budgetState = state;
 	};
 	const finishWrapUp = (
 		frontierStage: string | undefined,
 		summary: string | undefined,
 		usage: WorkflowModelUsage | undefined,
 	): WorkflowBudgetExceededError => {
-		wrapUpDelivered = true;
-		wrapUpCompleted = true;
-		wrapUpSummary = summary ?? wrapUpSummary;
-		wrapUpUsage = usage ?? wrapUpUsage;
+		state = {
+			...(state ?? {}),
+			wrapUpDelivered: true,
+			wrapUpCompleted: true,
+			...(summary === undefined ? {} : { wrapUpSummary: summary }),
+			...(usage === undefined ? {} : { wrapUpUsage: usage }),
+		};
 		const report = exhaustedReport ?? enforceDurationBudget(elapsedRunMs(run), budget).report;
 		setState(report);
-		return new WorkflowBudgetExceededError(withFrontier(report, frontierStage, wrapUpSummary, wrapUpUsage));
+		return new WorkflowBudgetExceededError(withFrontier(report, frontierStage, state.wrapUpSummary, state.wrapUpUsage));
 	};
 	const checkpoint = (frontierStage?: string): BudgetCheckpoint => {
 		if (!enabled) return { kind: "continue" };
-		const check = enforceDurationBudget(elapsedRunMs(run), budget, { warned });
+		const check = enforceDurationBudget(elapsedRunMs(run), budget, { warned: state?.warned });
 		if (check.kind === "continue") {
 			if (check.warning) {
-				warned = true;
+				state = { ...(state ?? {}), warned: true };
 				input.onWarning?.(check.report);
 			}
 			setState(check.report);
 			return check.warning ? { kind: "warn", report: check.report } : check;
 		}
 		exhaustedReport ??= check.report;
+		const wrapping = state?.wrapUpCompleted !== true;
+		if (wrapping) state = { ...(state ?? {}), wrapUpDelivered: true };
 		setState(check.report);
-		if (!wrapUpCompleted) {
-			wrapUpDelivered = true;
-			setState(check.report);
-			return { kind: "wrap_up", report: check.report };
-		}
-		return { kind: "exhausted", report: withFrontier(exhaustedReport, frontierStage, wrapUpSummary, wrapUpUsage) };
+		return wrapping
+			? { kind: "wrap_up", report: check.report }
+			: { kind: "exhausted", report: withFrontier(exhaustedReport, frontierStage, state?.wrapUpSummary, state?.wrapUpUsage) };
 	};
 	const registerWrapUp = (frontierStage: string, handler: () => Promise<never>): (() => void) => {
 		if (!enabled) return () => {};
@@ -128,7 +120,7 @@ export function createRunBudgetController(input: {
 		const registration =
 			frontierStage === undefined
 				? handlers.at(-1)
-				: [...handlers].reverse().find((entry) => entry.frontierStage === frontierStage);
+				: handlers.findLast((entry) => entry.frontierStage === frontierStage);
 		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined);
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;

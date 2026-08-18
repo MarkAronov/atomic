@@ -62,9 +62,7 @@ export function createChildWorkflowRunner(input: {
 			throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));
 		const childName = child.normalizedName;
 		const boundaryName = options.stageName ?? `workflow:${childName}`;
-		const parentBudgetBefore = runtime.budget.enabled
-			? runtime.budget.checkpoint(boundaryName)
-			: ({ kind: "continue" } as const);
+		const parentBudgetBefore = runtime.budget.checkpoint(boundaryName);
 		if (parentBudgetBefore.kind === "wrap_up" || parentBudgetBefore.kind === "exhausted")
 			throw runtime.budget.finishWrapUp(boundaryName, undefined, undefined);
 		const boundaryReplayKey = input.nextWorkflowBoundaryReplayKey(boundaryName);
@@ -138,9 +136,7 @@ export function createChildWorkflowRunner(input: {
 			});
 			boundary.observeChildRun(childRunPromise);
 			const childRun = await childRunPromise;
-			const parentBudgetAfter = runtime.budget.enabled
-				? runtime.budget.checkpoint(boundaryName)
-				: ({ kind: "continue" } as const);
+			const parentBudgetAfter = runtime.budget.checkpoint(boundaryName);
 			if (parentBudgetAfter.kind === "wrap_up" || parentBudgetAfter.kind === "exhausted")
 				throw runtime.budget.finishWrapUp(boundaryName, undefined, undefined);
 			runtime.exit.throwIfWorkflowExitSelected();

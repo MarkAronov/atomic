@@ -137,9 +137,7 @@ export function createTrackedStageCaller(input: {
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
-		const beforeBudget = runtime.budget.enabled
-			? runtime.budget.checkpoint(runtime.name)
-			: ({ kind: "continue" } as const);
+		const beforeBudget = runtime.budget.checkpoint(runtime.name);
 		if (beforeBudget.kind === "exhausted") {
 			throw runtime.budget.finishWrapUp(runtime.name, undefined, undefined);
 		}
@@ -295,9 +293,7 @@ export function createTrackedStageCaller(input: {
 			} finally {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
-			const afterBudget = runtime.budget.enabled
-				? runtime.budget.checkpoint(runtime.name)
-				: ({ kind: "continue" } as const);
+			const afterBudget = runtime.budget.checkpoint(runtime.name);
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
 			if (afterBudget.kind === "exhausted") throw runtime.budget.finishWrapUp(runtime.name, undefined, undefined);
 			await runtime.innerCtx.__closeGeneration();
