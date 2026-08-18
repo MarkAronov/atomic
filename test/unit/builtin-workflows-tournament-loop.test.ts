@@ -159,6 +159,19 @@ describe("tournament builtin", () => {
 		assert.equal(ledger.params.n_evaluations, 2);
 		assert.equal(ledger.params.criteria.length, 3);
 		assert.ok(ledger.comparisons.length > 0);
+		assert.deepEqual(Object.keys(ledger.usage).sort(), ["attempts", "pivots", "reducer", "ring", "total"]);
+		for (const phase of ["attempts", "ring", "pivots", "reducer", "total"]) {
+			assert.deepEqual(ledger.usage[phase], {
+				calls: 0,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+				turns: 0,
+				cacheHitRate: 0,
+			});
+		}
 		assert.equal(
 			ledger.comparisons.every((entry) => entry.invalid === true || typeof entry.score_a === "number"),
 			true,

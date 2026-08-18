@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added pure, seeded selection math for probabilistic pivot tournaments: deterministic Hamiltonian ring and deduplicated pivot planning, criterion/repeat slot-swap jobs, normalized Bradley–Terry soft wins, count-normalized pivot selection, and complete candidate rankings ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
 - Added tournament `n_evaluations`, `pivots`, `seed`, `criteria`, and heterogeneous `models` inputs, plus `ranking` and `seed` outputs and the auditable `comparisons.json` score ledger with invalid-report and budget records ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
 - `adversarial-verification` now fans out one schema-validated 1–20 score for every criterion/verifier pair, applies mean-plus-veto acceptance, bounds invalid-report re-asks, and consolidates confirmed findings into repair guidance ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+- Added pure `fold_usage` accounting over every model attempt (including retries), returning `UsageTotals` with calls, token, cache, cost, turn, and derived cache-hit fields; tournament comparisons and adversarial verification round summaries now record per-phase and total usage blocks ([#2494](https://github.com/bastani-inc/atomic/issues/2494)).
 
 ### Fixed
 

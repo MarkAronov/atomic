@@ -54,6 +54,19 @@ function criterionReport(
 	return JSON.stringify({ criterion_id: criterionId(prompt), score, evidence: ["checked"], findings });
 }
 
+function assertZeroUsage(summary: { usage: Record<string, number> }): void {
+	assert.deepEqual(summary.usage, {
+		calls: 0,
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+		turns: 0,
+		cacheHitRate: 0,
+	});
+}
+
 function schemaShape(schema: unknown): Record<string, unknown> {
 	return schema as Record<string, unknown>;
 }
@@ -162,7 +175,9 @@ test("adversarial-verification fans out one fresh schema-backed stage per criter
 			mean: number;
 			invalidCount: number;
 			decision: { kind: string };
+			usage: Record<string, number>;
 		};
+		assertZeroUsage(summary);
 		assert.equal(summary.scores.length, 4);
 		assert.equal(summary.mean, 20);
 		assert.equal(summary.invalidCount, 0);
@@ -219,7 +234,9 @@ test("adversarial-verification re-asks invalid reports without counting them as 
 			mean: number;
 			invalidCount: number;
 			decision: { kind: string };
+			usage: Record<string, number>;
 		};
+		assertZeroUsage(summary);
 		assert.equal(summary.scores.length, 2);
 		assert.equal(summary.invalidCount, 1);
 		assert.equal(summary.mean, 20);
@@ -280,7 +297,9 @@ test("adversarial-verification preserves confirmed findings and reads the succes
 		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
 			invalidCount: number;
 			decision: { kind: string; mean: number };
+			usage: Record<string, number>;
 		};
+		assertZeroUsage(summary);
 		assert.equal(summary.invalidCount, 1);
 		assert.equal(summary.decision.kind, "repair");
 		assert.equal(summary.decision.mean, 20);
@@ -333,7 +352,9 @@ test("adversarial-verification repeats indeterminate rounds once and records quo
 			scores: unknown[];
 			invalidCount: number;
 			decision: { kind: string; missing: number };
+			usage: Record<string, number>;
 		};
+		assertZeroUsage(summary);
 		assert.deepEqual(summary.scores, []);
 		assert.equal(summary.invalidCount, 2);
 		assert.equal(summary.decision.kind, "indeterminate");
