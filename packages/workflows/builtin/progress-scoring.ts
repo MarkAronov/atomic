@@ -201,3 +201,30 @@ export function build_progress_prompt(input: ProgressPromptInput): string {
 	].join("\n");
 	return `${sharedHead}\n\n${checkpointTail}`;
 }
+
+function mean(values: readonly number[]): number {
+	if (values.length === 0) return 0;
+	return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+/**
+ * Classify a score series using a deterministic hysteresis delta. The trailing
+ * 2*window values are split into equal leading/trailing halves; an odd sample
+ * drops its middle value. Thresholds are inclusive at +riseDelta and -fallDelta.
+ */
+export function classify_trend(series: readonly number[], config: TrendConfig = {}): TrendResult {
+	const window = config.window ?? DEFAULT_TREND_WINDOW;
+	const riseDelta = config.riseDelta ?? DEFAULT_RISE_DELTA;
+	const fallDelta = config.fallDelta ?? DEFAULT_FALL_DELTA;
+	if (series.length < window + 1) {
+		return { trend: "flat", evidence: { series, window, delta: 0 } };
+	}
+	const sample = series.slice(-2 * window);
+	const usableLength = sample.length % 2 === 1 ? sample.length - 1 : sample.length;
+	const halfLength = usableLength / 2;
+	const leading = sample.slice(0, halfLength);
+	const trailing = sample.slice(sample.length - halfLength);
+	const delta = halfLength === 0 ? 0 : mean(trailing) - mean(leading);
+	const trend: Trend = delta >= riseDelta ? "rising" : delta <= fallDelta ? "regressing" : "flat";
+	return { trend, evidence: { series, window, delta } };
+}
