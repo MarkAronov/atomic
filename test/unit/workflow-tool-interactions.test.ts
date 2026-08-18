@@ -1,9 +1,12 @@
 // @ts-nocheck -- intentional white-box GraphView input coverage
 
 import assert from "node:assert/strict";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
 import {
@@ -17,6 +20,7 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { defaultTheme } from "./overlay-graph-helpers.js";
 
@@ -321,6 +325,53 @@ describe("non-attachable tool interactions", () => {
 		assert.equal(result.status, "running");
 		assert.deepEqual(resumeBudget, { maxDurationMs: 60_000 });
 		assert.match(result.message, /raised budget resumed/);
+	});
+
+	test("budget resume action launches a raised-budget continuation through the real runtime", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const definition = workflow({
+			name: "budget-surface-resume",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("frontier").complete("progress") }),
+		});
+		const sleep = (milliseconds: number): Promise<void> =>
+			new Promise((resolve) => setTimeout(resolve, milliseconds));
+		const runtime = createExtensionRuntime({
+			adapters: {
+				complete: {
+					complete: async (text) => {
+						await sleep(20);
+						return text;
+					},
+				},
+				prompt: { prompt: async () => "wrap-up summary" },
+			},
+			store,
+			registry: createRegistry([definition]),
+		});
+		await runtime.dispatch({
+			action: "run",
+			workflow: definition.name,
+			inputs: {},
+			budget: { maxDurationMs: 1 },
+		} as never);
+		await sleep(100);
+		const source = store.runs().find((candidate) => candidate.name === definition.name);
+		assert.ok(source);
+		assert.equal(source.result?.status, "budget_exceeded");
+
+		const resumed = await workflowResumeAction(
+			{ action: "resume", runId: source.id, budget: { maxDurationMs: 1_000 } } as never,
+			{ getRuntime: () => runtime, policy: undefined, ensureWorkflowResourcesLoaded: async () => {} } as never,
+		);
+		assert.equal(resumed.status, "running");
+		assert.notEqual(resumed.runId, source.id);
+		await sleep(100);
+		const continuation = store.runs().find((candidate) => candidate.resumedFromRunId === source.id);
+		assert.equal(continuation?.status, "completed");
 	});
 
 	test("tool does not snapshot-resume an exited failure without a durable registration", async () => {
