@@ -3531,7 +3531,7 @@ export default workflow({
 
 `maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and retain the root config default.
 
-This initial budget slice only resolves and validates declarations. It does not meter, warn, pause, or stop a workflow, so configuring a budget does not change a run's behavior yet.
+`maxDurationMs` is enforced at stage and durable-tool boundaries using elapsed run time (paused time is excluded and resumed runs carry prior elapsed time). A warning notice is emitted once at `warnAtPercent`; exhaustion gives the frontier stage one wrap-up turn, then records a resumable `budget_exceeded` blocked result with its reading, ceiling, frontier, and wrap-up summary. A resumed run does not receive a second wrap-up for the same budget. Nested child budgets constrain only the child subtree; a child budget exhaustion returns to the parent as a blocked child result while the parent continues. `maxTokens` and `maxCost` are currently validated and resolved but are not metered by this duration slice.
 
 ## Workflow Configuration
 

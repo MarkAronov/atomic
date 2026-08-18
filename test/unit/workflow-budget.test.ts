@@ -2,23 +2,46 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import {
+	createRunBudgetController,
+	WorkflowBudgetExceededError,
+} from "../../packages/workflows/src/engine/run-budget.js";
 import { loadConfigFile } from "../../packages/workflows/src/extension/config-file-loader.js";
 import { withWorkflowDefaults } from "../../packages/workflows/src/extension/config-loader.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import {
 	type EffectiveBudget,
 	enforceDurationBudget,
-	resolve_budget,
-	validateWorkflowBudget,
-	type WorkflowBudget,
-} from "../../packages/workflows/src/shared/budget.js";
-import {
+import { createRunBudgetController, WorkflowBudgetExceededError } from "../../packages/workflows/src/engine/run-budget.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+ import {
+ 	isReturnedBlockedWorkflowStatus,
+ 	isReturnedResumableBlockedWorkflowStatus,
+ } from "../../packages/workflows/src/shared/returned-run-status.js";
 	isReturnedBlockedWorkflowStatus,
 	isReturnedResumableBlockedWorkflowStatus,
 } from "../../packages/workflows/src/shared/returned-run-status.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+
+afterEach(() => vi.useRealTimers());
+
+function budgetRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
+	return {
+		id: "budget-test-run",
+		name: "budget-test",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: 0,
+		...overrides,
+	};
+}
 
 const BUDGET_FIELDS = [
 	["maxDurationMs", 10, 20, 30],
@@ -132,6 +155,83 @@ describe("duration budget enforcement", () => {
 			report: { dimension: "duration", reading: 10_000, ceiling: 0, percent: 0 },
 			warning: false,
 		});
+	});
+});
+
+describe("budget duration controller", () => {
+	test("warns once and excludes paused time from the meter", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10_000);
+		const run = budgetRun({ pausedAt: 9_000, pausedDurationMs: 4_000 });
+		const warnings: number[] = [];
+		const controller = createRunBudgetController({
+			run,
+			budget: resolve_budget({ run: { maxDurationMs: 6_000 } }),
+			onWarning: (report) => warnings.push(report.reading),
+		});
+		assert.equal(controller.checkpoint("work").kind, "warn");
+		assert.equal(controller.checkpoint("work").kind, "continue");
+		assert.deepEqual(warnings, [5_000]);
+		run.pausedAt = undefined;
+		vi.setSystemTime(11_000);
+		assert.equal(controller.checkpoint("work").kind, "wrap_up");
+		assert.equal(run.budgetState?.duration?.reading, 7_000);
+	});
+
+	test("soft landing records exact report fields and usage", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(11);
+		const run = budgetRun();
+		const controller = createRunBudgetController({ run, budget: resolve_budget({ run: { maxDurationMs: 10 } }) });
+		assert.equal(controller.checkpoint("frontier").kind, "wrap_up");
+		controller.registerWrapUp("frontier", async () => {
+			throw controller.finishWrapUp("frontier", "progress", { output: 3 });
+		});
+		await assert.rejects(controller.deliverWrapUp("frontier"), (error: unknown) => {
+			assert.ok(error instanceof WorkflowBudgetExceededError);
+			assert.equal(error.report.dimension, "duration");
+			assert.equal(error.report.reading, 11);
+			assert.equal(error.report.ceiling, 10);
+			assert.ok(Math.abs(error.report.percent - 110) < 1e-9);
+			assert.equal(error.report.frontierStage, "frontier");
+			assert.equal(error.report.wrapUpSummary, "progress");
+			assert.deepEqual(error.report.wrapUpUsage, { output: 3 });
+			return true;
+		});
+		assert.equal(controller.checkpoint("frontier").kind, "exhausted");
+	});
+
+	test("no budget leaves the run untouched and performs no meter work", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(99_999);
+		const run = budgetRun();
+		const controller = createRunBudgetController({ run, budget: resolve_budget({}) });
+		assert.deepEqual(controller.checkpoint("work"), { kind: "continue" });
+		assert.equal(run.budgetState, undefined);
+		assert.equal(controller.enabled, false);
+	});
+
+	test("same-budget resume is exhausted immediately while a raised ceiling continues", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10);
+		const prior = budgetRun({
+			accumulatedDurationMs: 10,
+			budget: { maxDurationMs: 10, warnAtPercent: 80 },
+			budgetState: {
+				duration: { dimension: "duration", reading: 10, ceiling: 10, percent: 100 },
+				wrapUpDelivered: true,
+				wrapUpCompleted: true,
+				wrapUpSummary: "progress",
+			},
+		});
+		const same = createRunBudgetController({ run: prior, budget: resolve_budget({ run: { maxDurationMs: 10 } }) });
+		assert.equal(same.checkpoint("work").kind, "exhausted");
+		const raised = budgetRun({ accumulatedDurationMs: 8 });
+		const raisedController = createRunBudgetController({
+			run: raised,
+			budget: resolve_budget({ run: { maxDurationMs: 20 } }),
+		});
+		assert.notEqual(raisedController.checkpoint("work").kind, "exhausted");
 	});
 });
 

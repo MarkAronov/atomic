@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status. This core slice only resolves and validates budgets; it does not meter or stop runs yet ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
+- Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status; these declarations provide the resolution core for the duration enforcement below ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
+- Added duration enforcement for workflow budgets at stage and durable-tool boundaries. Runs warn once at the configured threshold, receive one frontier wrap-up turn at exhaustion, and stop on a resumable `budget_exceeded` blocked rail with a duration report; paused time is excluded, elapsed time carries across resume, and child-scoped exhaustion returns to the parent without stopping it ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
 
 ### Fixed
 
