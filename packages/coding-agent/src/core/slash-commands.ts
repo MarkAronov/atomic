@@ -198,7 +198,7 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
 		name: "tournament",
 		description:
-			"Run several independent whole-task attempts through a balanced pairwise judging bracket and return an auditable winner.",
+			"Run independent whole-task attempts through a soft-scored pivot-pairing schedule and return an auditable ranking.",
 		inputs: {
 			prompt: { description: "Task every competing agent must attempt independently.", kind: "string" },
 			num_attempts: { description: "Number of independent whole-task attempts (2-8).", kind: "number" },
@@ -206,6 +206,17 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 				description: "Maximum simultaneously active attempts or pairwise judges (1-8).",
 				kind: "number",
 			},
+			n_evaluations: {
+				description: "Number of repeated evaluations per criterion and directed pair.",
+				kind: "number",
+			},
+			pivots: {
+				description: "Number of pivot candidates used for the second comparison phase.",
+				kind: "number",
+			},
+			seed: { description: "Seed for the deterministic comparison schedule.", kind: "number" },
+			criteria: { description: "Optional V1 judge criteria; omitted uses the default three-criterion rubric." },
+			models: { description: "Optional ordered model ids assigned round-robin to attempt slots." },
 		},
 	},
 ];
