@@ -50,8 +50,8 @@ export function withSteeringPropagation(prompt: string): string {
 }
 
 export const REVIEWER_CALIBRATION_RULES = [
-	"Trust observed output over the agent's narration.",
-	'Agent declarations of success ("done", "all tests pass") are ZERO evidence on their own.',
+  "Trust observed output over the agent's narration.",
+  'Agent declarations of success ("done", "all tests pass") are ZERO evidence on their own.',
 ].join("\n");
 
 export const WORKER_PREFLIGHT_CONTRACT = [

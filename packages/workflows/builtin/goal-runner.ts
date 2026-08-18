@@ -2,9 +2,9 @@ import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { fold_usage } from "./verification-usage.js";
 import {
-	convergence_escalation_evidence,
-	record_convergence,
-	type ConvergenceEntry,
+  convergence_escalation_evidence,
+  record_convergence,
+  type ConvergenceEntry,
 } from "./goal-convergence.js";
 import { orchestratorModelConfig, reviewerModelConfig } from "./goal-models.js";
 import {

@@ -3,9 +3,9 @@ import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import { fold_usage } from "./verification-usage.js";
 import {
-	convergence_escalation_evidence,
-	record_convergence,
-	type ConvergenceEntry,
+  convergence_escalation_evidence,
+  record_convergence,
+  type ConvergenceEntry,
 } from "./goal-convergence.js";
 import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {

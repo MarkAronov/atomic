@@ -89,7 +89,7 @@ export function reduceGoalDecision(
     readonly reviewQuorum: number;
     readonly blockerThreshold: number;
     readonly nextActionOnComplete: ReviewNextAction;
-		readonly convergence?: readonly ConvergenceEntry[];
+    readonly convergence?: readonly ConvergenceEntry[];
   },
 ): ReducerOutcome {
   const completeVotes = turnReviews.filter(
