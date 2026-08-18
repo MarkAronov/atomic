@@ -78,7 +78,7 @@ For batch search/fetch calls, partial success remains usable and retains item-le
 
 ### web_search
 
-Search the web via Exa, Perplexity AI, or Gemini. Returns a synthesized answer with source citations.
+Search the web via Exa, Perplexity AI, or Gemini. Returns a synthesized answer with source citations. The curator UI is off by default; enable it with `/curator on` or `"workflow": "summary-review"` in config.
 
 ```typescript
 web_search({ query: "rust async programming" })
@@ -87,8 +87,6 @@ web_search({ query: "latest news", numResults: 10, recencyFilter: "week" })
 web_search({ query: "...", domainFilter: ["github.com"] })
 web_search({ query: "...", provider: "exa" })
 web_search({ query: "...", includeContent: true })
-web_search({ queries: ["query 1", "query 2"], workflow: "none" })
-web_search({ queries: ["query 1", "query 2"], workflow: "summary-review" })
 ```
 
 | Parameter | Description |
@@ -99,7 +97,6 @@ web_search({ queries: ["query 1", "query 2"], workflow: "summary-review" })
 | `domainFilter` | Limit to domains (prefix with `-` to exclude) |
 | `provider` | `auto` (default), `exa`, `perplexity`, or `gemini` |
 | `includeContent` | Fetch full page content from sources in background |
-| `workflow` | `none` (skip curator) or `summary-review` (auto-generate summary draft after search completion, default) |
 
 ### code_search
 
@@ -227,7 +224,7 @@ Toggle or configure the curator workflow at runtime.
 /curator summary-review     # explicit workflow
 ```
 
-Persists to `~/.pi/web-search.json` and takes effect on the next `web_search` call. When disabled, `web_search` returns raw results without opening the curator window.
+Persists to `~/.pi/web-search.json` and takes effect on the next `web_search` call. The curator is off by default. When disabled, `web_search` returns raw results without opening the curator window.
 
 ### /search
 
@@ -287,7 +284,7 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
 }
 ```
 
-`EXA_API_KEY`, `GEMINI_API_KEY`, and `PERPLEXITY_API_KEY` env vars take precedence over config file values. `provider` sets the default search provider: `"exa"`, `"perplexity"`, or `"gemini"`. This is also updated automatically when you change the provider in the curator UI. `workflow` sets the default curator mode: `"summary-review"` (default, opens curator with auto-generated summary draft) or `"none"` (raw results, no curator). Overridden per-call via the `workflow` parameter on `web_search`, or toggled at runtime with `/curator`. `chromeProfile` overrides the Chromium profile directory used for Gemini Web cookie lookup. `allowBrowserCookies` enables Chromium cookie extraction for Gemini Web; it defaults to `false` to avoid surprise macOS Keychain prompts. You can also set `PI_ALLOW_BROWSER_COOKIES=1`. `searchModel` overrides the Gemini API model used by `web_search` without changing URL, YouTube, or video extraction defaults. `summaryModel` sets the default model used for generating summary drafts in the curator UI (e.g. `"anthropic/claude-haiku-4-5"` or `"openai-codex/gpt-5.3-codex-spark"`). Only models available in your model registry are eligible; if the configured model is unavailable, the default falls back to the built-in preference list. `curatorTimeoutSeconds` controls the initial curator idle timeout (default `20`, max `600`); users can still adjust the timer in the curator UI.
+`EXA_API_KEY`, `GEMINI_API_KEY`, and `PERPLEXITY_API_KEY` env vars take precedence over config file values. `provider` sets the default search provider: `"exa"`, `"perplexity"`, or `"gemini"`. This is also updated automatically when you change the provider in the curator UI. `workflow` sets the curator mode: `"none"` (default, raw results, no curator) or `"summary-review"` (opens curator with auto-generated summary draft). Enable it in this file or toggle at runtime with `/curator`. `chromeProfile` overrides the Chromium profile directory used for Gemini Web cookie lookup. `allowBrowserCookies` enables Chromium cookie extraction for Gemini Web; it defaults to `false` to avoid surprise macOS Keychain prompts. You can also set `PI_ALLOW_BROWSER_COOKIES=1`. `searchModel` overrides the Gemini API model used by `web_search` without changing URL, YouTube, or video extraction defaults. `summaryModel` sets the default model used for generating summary drafts in the curator UI (e.g. `"anthropic/claude-haiku-4-5"` or `"openai-codex/gpt-5.3-codex-spark"`). Only models available in your model registry are eligible; if the configured model is unavailable, the default falls back to the built-in preference list. `curatorTimeoutSeconds` controls the initial curator idle timeout (default `20`, max `600`); users can still adjust the timer in the curator UI.
 
 ### Shortcuts
 
