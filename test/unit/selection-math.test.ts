@@ -49,6 +49,13 @@ describe("selection-math", () => {
 		const second = plan_comparisons(input);
 		const firstPivots = first.pivotRounds([0, 1]);
 		const secondPivots = second.pivotRounds([0, 1]);
+		const criterionIds = ["quality", "style"];
+		const firstJobs = first.jobs(firstPivots, criterionIds);
+		const secondJobs = second.jobs(secondPivots, criterionIds);
+		assert.deepEqual(
+			{ ring: first.ring, pivotRounds: firstPivots, jobs: firstJobs },
+			{ ring: second.ring, pivotRounds: secondPivots, jobs: secondJobs },
+		);
 		assert.deepEqual(first.ring, second.ring);
 		assert.deepEqual(firstPivots, secondPivots);
 
