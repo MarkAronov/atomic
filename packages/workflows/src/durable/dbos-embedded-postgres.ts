@@ -9,7 +9,7 @@
  * The cluster lives under `~/.atomic/postgres/v<major>` on a dedicated port and
  * is started with `pg_ctl`, which daemonizes the server into its own session:
  * it survives Atomic exiting and is shared by every concurrent Atomic session.
- * Atomic never stops it.
+ * Atomic stops a cluster started by this process during durable shutdown.
  *
  * PostgreSQL refuses to run as UID 0, so a root Atomic process (containers,
  * CI sandboxes, eval harnesses) resolves an unprivileged system account, keeps
@@ -54,6 +54,15 @@ interface EmbeddedPostgresBinaries {
 	readonly pg_ctl: string;
 	readonly initdb: string;
 }
+interface ActiveEmbeddedPostgres {
+	readonly pgCtl: string;
+	readonly dataDir: string;
+	readonly context: EmbeddedPostgresRunContext;
+	/** PID read after this process successfully started the cluster. */
+	readonly postgresPid: number;
+}
+
+let activeCluster: ActiveEmbeddedPostgres | undefined;
 
 let ensured: Promise<void> | undefined;
 
@@ -77,15 +86,24 @@ async function ensure(): Promise<void> {
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	if (context.owner !== undefined) chownSync(root, context.owner.uid, context.owner.gid);
 	const binaries = await prepareBinariesForOwner(loaded, context);
+	let startedHere = false;
 
 	await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async () => {
 		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
 		if (!existsSync(join(dataDir, "PG_VERSION"))) await initializeCluster(binaries.initdb, dataDir, context);
 		await startCluster(binaries.pg_ctl, dataDir, logFile, context);
+		startedHere = true;
 	});
 
 	for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
-		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
+		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) {
+			if (startedHere) {
+				const postgresPid = readPostgresPid(dataDir);
+				if (postgresPid === undefined) throw new Error(`Embedded Postgres became reachable without a postmaster.pid at ${dataDir}.`);
+				activeCluster = { pgCtl: binaries.pg_ctl, dataDir, context, postgresPid };
+			}
+			return;
+		}
 		await delay(READY_DELAY_MS);
 	}
 	throw new Error(
@@ -93,6 +111,50 @@ async function ensure(): Promise<void> {
 	);
 }
 
+/** Stop the cluster started by this process and wait for its listener and process to close. */
+export async function shutdownEmbeddedDbosPostgres(): Promise<void> {
+	const cluster = activeCluster;
+	activeCluster = undefined;
+	if (cluster === undefined) return;
+
+	const result = await cluster.context.runAsOwner(cluster.pgCtl, [
+		"-D",
+		cluster.dataDir,
+		"-m",
+		"fast",
+		"-w",
+		"-t",
+		"60",
+		"stop",
+	]);
+	if (result.exitCode !== 0 && (await clusterStillRunning(cluster.dataDir, cluster.postgresPid))) {
+		throw new Error(`Could not stop the embedded Postgres cluster: ${commandFailureDetail(result)}${logTail(join(cluster.context.baseDir, `v${EMBEDDED_PG_MAJOR}.log`))}`);
+	}
+	while (await clusterStillRunning(cluster.dataDir, cluster.postgresPid)) await delay(READY_DELAY_MS);
+}
+
+async function clusterStillRunning(dataDir: string, expectedPid: number): Promise<boolean> {
+	const pid = readPostgresPid(dataDir);
+	if (pid === expectedPid) {
+		try {
+			process.kill(expectedPid, 0);
+			return true;
+		} catch {
+			// Fall through to the listener check; the pid may have exited while
+			// the socket is still draining.
+		}
+	}
+	return await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT);
+}
+
+function readPostgresPid(dataDir: string): number | undefined {
+	try {
+		const pid = Number.parseInt(readFileSync(join(dataDir, "postmaster.pid"), "utf8").split("\n", 1)[0] ?? "", 10);
+		return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+	} catch {
+		return undefined;
+	}
+}
 async function initializeCluster(initdb: string, dataDir: string, context: EmbeddedPostgresRunContext): Promise<void> {
 	const passwordFile = join(tmpdir(), `atomic-pg-pw-${process.pid}-${crypto.randomUUID().slice(0, 8)}`);
 	writeFileSync(passwordFile, `${EMBEDDED_PASSWORD}\n`, { mode: 0o600 });
@@ -250,4 +312,5 @@ function logTail(logFile: string): string {
 
 export function resetEmbeddedDbosPostgresForTests(): void {
 	ensured = undefined;
+	activeCluster = undefined;
 }
