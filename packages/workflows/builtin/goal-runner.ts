@@ -22,6 +22,8 @@ import {
   reviewDecisionToRecord,
 } from "./goal-review.js";
 import { reviewerFailureText } from "./review-convergence.js";
+import { consolidateFindingsBatch } from "./review-convergence.js";
+import { reverify_consolidated_batch } from "./goal-reverify.js";
 import {
   renderForkedGoalOrchestratorPrompt,
   renderGoalOrchestratorPrompt,
@@ -269,10 +271,32 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         );
         return record;
       }));
-      latestReviewReportPath = await writeReviewRoundArtifact(artifactDir, latestReviews);
+      const consolidatedFindings = consolidateFindingsBatch(
+        latestReviews.map((review) => ({
+          reviewer: review.reviewer,
+          findings: review.findings,
+        })),
+      );
+      const reverified = await reverify_consolidated_batch(ctx, {
+        batch: consolidatedFindings,
+        context: {
+          objective,
+          candidateRefs: [ledgerPath, orchestratorReceiptPath],
+        },
+      });
+      latestReviewReportPath = await writeReviewRoundArtifact(
+        artifactDir,
+        latestReviews,
+        reverified.batch,
+        reverified.audits,
+      );
+      if (reverified.audits.length > 0) {
+        ledger.reverification ??= [];
+        ledger.reverification.push(...reverified.audits);
+      }
+      ledger.reviews.push(...latestReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
-      ledger.reviews.push(...latestReviews);
       appendLifecycleEvent(
         ledger,
         "reviews_recorded",

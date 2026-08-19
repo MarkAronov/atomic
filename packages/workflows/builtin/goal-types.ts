@@ -1,4 +1,5 @@
 import type { ReviewConvergenceSummary } from "./review-convergence.js";
+import type { ReverifyAuditEntry } from "./goal-reverify.js";
 
 export const DEFAULT_MAX_TURNS = 10;
 // Goal Runner runs three independent reviewer personas; two approvals form a majority.
@@ -123,6 +124,8 @@ export type GoalLedger = {
   blockers: BlockerObservation[];
   decisions: ReducerDecision[];
   lifecycle: GoalLifecycleEvent[];
+  /** V9 audit records; the original findings remain in `reviews`. */
+  reverification?: ReverifyAuditEntry<ReviewFinding>[];
 };
 
 export type ReducerOutcome = {
