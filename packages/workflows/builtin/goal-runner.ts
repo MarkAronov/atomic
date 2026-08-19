@@ -287,6 +287,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           findings: review.findings,
         })),
       );
+      const roundProducedDecisions = latestReviews.some((review) => review.parsed);
       const reverified = await reverify_consolidated_batch(ctx, {
         batch: consolidatedFindings,
         context: {
@@ -307,10 +308,10 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       const findings = latestReviews.flatMap((review) => review.findings);
       const traceability = latestReviews.flatMap((review) => review.requirements_traceability);
       ledger.convergence ??= [];
-      // A failed reviewer batch produced no decisions, so recording a
-      // zero-blocker round would fabricate progress and can suppress the
-      // escalation evidence on the very escalation it triggers.
-      if (!reviewerBatchFailed) {
+      // A thrown reviewer batch or an all-unparsed reviewer batch produced no
+      // decisions, so recording a zero-blocker round would fabricate progress
+      // and can suppress the escalation evidence on the very escalation it triggers.
+      if (!reviewerBatchFailed && roundProducedDecisions) {
         ledger.convergence.push(record_convergence({
           unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
           meanFindingConfidence: findings.length === 0
