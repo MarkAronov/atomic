@@ -63,10 +63,25 @@ export type ExtensionCustomComponent = Omit<Component, "handleInput"> & {
  *
  * It is an APC sequence, so pi-tui's `visibleWidth` measures it as zero and
  * terminals ignore it — the same mechanism as pi-tui's own `CURSOR_MARKER`, but
- * private to Atomic and stripped by the host before the line is painted. Embed
- * it once per frame; the host uses the first line that carries it.
+ * private to Atomic. Embed it once per frame; the host uses the first line that
+ * carries it.
+ *
+ * The terminator is ST (`ESC \`), which is what ECMA-48 requires of an APC
+ * string. A BEL terminator is accepted for OSC but not for APC, so terminals
+ * that follow the spec — tmux among them — kept swallowing the rest of the line
+ * as APC payload and drew whatever followed the mark at the wrong column. The
+ * renderer strips the mark centrally in `applyLineResets` before painting, so
+ * it does not reach the terminal at all; the conforming terminator is the
+ * second layer, bounding the damage if a frame ever escapes that strip.
  */
-export const OVERLAY_ACTIVE_ROW_MARKER = "\u001B_atomic:active\u0007";
+export const OVERLAY_ACTIVE_ROW_MARKER = "\u001B_atomic:active\u001B\\";
+
+/** Remove every {@link OVERLAY_ACTIVE_ROW_MARKER} from `lines`, leaving widths untouched. */
+export function stripOverlayActiveRowMarker(lines: readonly string[]): string[] {
+	return lines.map((line) =>
+		line.includes(OVERLAY_ACTIVE_ROW_MARKER) ? line.replaceAll(OVERLAY_ACTIVE_ROW_MARKER, "") : line,
+	);
+}
 
 export interface ChatRenderSettings {
 	hideThinkingBlock: boolean;

@@ -11,6 +11,7 @@
 - Interactive startup now exits quietly when Ctrl+C stops the engine during first-paint binding, without leaking expected in-flight RPC transport failures.
 - Bare `/` and slash-command drafts typed while explicitly loaded extension and workflow packages finish loading now remain in the interactive editor until Enter is pressed.
 - Queue-control RPC frames now remain reachable during long-running prompts. When all overlapping remote `clear_queue` calls fail, Atomic restores the pre-clear host queue only if no later `queue_update` has supplied engine truth, including an empty queue ([#2516](https://github.com/bastani-inc/atomic/issues/2516)).
+- The `ask_user_question` dialog no longer draws one preview row at the wrong horizontal offset. In side-by-side layout the preview box border landed 11-13 columns early on the row carrying the `❯` cursor, cutting into the option label, and the damage followed the cursor between options. The active-row mark that caused it now terminates its APC string with ST as ECMA-48 requires instead of BEL, and both interactive renderers strip the mark centrally before painting, so it no longer reaches the terminal from any host — including workflow stage chats and other custom-UI mounts that do not go through a reserving bottom overlay.
 
 ## [0.9.14-alpha.4] - 2026-08-18
 
