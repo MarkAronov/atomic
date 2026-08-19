@@ -6,13 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `adversarial-verification` now accepts optional per-criterion `criteria`, `accept_mean`, and bounded `reask_limit` inputs, and returns deterministic graded mean/veto results through `mean_score` and `score_table_path`; callers must migrate from the removed `result`, `verifier_artifact_paths`, and `artifact_dir` outputs. Invalid verifier reports are recorded as invalid markers and re-asked instead of becoming fail votes ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+
 ### Added
 
 - Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs or resumes. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status; these declarations provide the resolution core for the duration enforcement below ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
 - Added duration enforcement for workflow budgets at stage and durable-tool boundaries. Runs emit one user-visible `budget_warning` lifecycle notice at the default 80% threshold or configured threshold, receive one wrap-up turn only when a frontier stage turn is already live, and stop on a resumable `budget_exceeded` blocked rail with a duration report; no new stage is created for wrap-up, no-live-turn boundaries leave the allowance unused, paused time is excluded, elapsed time carries across resume, a raised resume budget continues prior spend, the wrap-up turn's own usage is recorded as `wrapUpUsage` when available without tree-wide token/cost aggregation, root duration scope is enforced inside child workflows and wins simultaneous child exhaustion, and child-scoped exhaustion returns to the parent without stopping it ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
 - Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status. This core slice only resolves and validates budgets; it does not meter or stop runs yet ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
 - Added a shared `verification-criteria` module (`parse_rubric`, `normalize_criteria`, `select_criteria`, `VERIFICATION_SCALE`, `decide_verification`) so verification builtins can score one criterion at a time on an anchored 1–20 scale and accept only when a quorum mean clears the threshold with no veto finding. Unparseable reports cannot become scores and cannot shift the mean ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
-- Added prefix-cache-aware verification prompts with a byte-identical shared head, UTF-8 bounded candidate inlining with whole-family read fallback, and warm-first verifier fan-out scheduling that preserves input order while releasing later phases after warm failures ([#2493](https://github.com/bastani-inc/atomic/issues/2493)).
+- `adversarial-verification` now fans out one schema-validated 1–20 score for every criterion/verifier pair, applies mean-plus-veto acceptance, bounds invalid-report re-asks, and consolidates confirmed findings into repair guidance ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Fixed

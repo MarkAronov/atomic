@@ -731,7 +731,7 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 |---|---|---|
 | `classify-and-act` | Structured classifier → deterministic category action; low confidence can fall back to human selection. | Route mixed requests to isolated category-specific work. |
 | `fan-out-and-synthesize` | Structured partition → bounded parallel artifact branches → synthesis barrier. | Split independent slices, including repository research, and merge evidence. |
-| `adversarial-verification` | Worker → fresh rubric verifiers → reducer → bounded repair loop. | Independently prove or reject a candidate. |
+| `adversarial-verification` | Worker → per-criterion fresh verifier fan-out → deterministic mean+veto gate → findings consolidation / bounded repair; consolidator cannot approve. | Independently prove or reject a candidate with auditable graded scores. |
 | `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than needed and keep the strongest distinct few. |
 | `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
@@ -749,7 +749,7 @@ The six common patterns are full definitions exported from `@bastani/workflows/b
 |---|---|---|---|
 | `classify-and-act` | `prompt` | `categories` (1–8), `confidence_threshold` (0.5–0.99) | `result`, category, confidence, classification/action paths |
 | `fan-out-and-synthesize` | `prompt` | `max_branches` (1–12), `max_concurrency` (1–12) | `result`, partitions, branch paths, synthesis/manifest paths |
-| `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, approval, repairs, candidate/review/verifier paths |
+| `adversarial-verification` | `task` | `criteria` (record or criteria.md markdown; defaults to task_fit/evidence/completeness), `verifier_count=3` (1–5), `max_repairs=2` (0–5), `accept_mean=14`, `reask_limit=1`; normal calls per round: criteria.length × verifier_count | `approved`, `mean_score`, `score_table_path`, `repairs_completed`, `candidate_path`, `review_report_path`, `remaining_work` |
 | `generate-and-filter` | `prompt` | `num_candidates` (2–20), `shortlist_size` (1–10), `use_judge`, `max_concurrency` | `result`, shortlist, candidate/filter/judge/final/manifest paths |
 | `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8) | `result`, winner, attempt/judge/bracket paths |
 | `loop-until-done` | `prompt` | `max_iterations` (1–20) | `result`, `status`, ledger, iteration/evaluation paths, remaining work |
