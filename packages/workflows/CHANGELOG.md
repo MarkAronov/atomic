@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
+- Replaced `bracket_path`/`bracket.json` and the knockout tournament schedule with `comparisons_path`/`comparisons.json` on the soft-scored pivot-pairing schedule. Judge stages now use deterministic `judge-<a>-<b>-<criterion>-r<rep>` identities, and the reducer stage is named `comparisons-reducer`.
 - `adversarial-verification` now accepts optional per-criterion `criteria`, `accept_mean`, and bounded `reask_limit` inputs, and returns deterministic graded mean/veto results through `mean_score` and `score_table_path`; callers must migrate from the removed `result`, `verifier_artifact_paths`, and `artifact_dir` outputs. Invalid verifier reports are recorded as invalid markers and re-asked instead of becoming fail votes ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 
 ### Added
@@ -20,10 +21,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added Goal and Ralph review-round re-verification for low-confidence, single-reviewer blocking findings, using fresh 1–20 scoring stages, two-tier demotion bars, and durable per-repeat audit evidence while leaving `stop_review_loop` authoritative.
 - Added observation-grounded progress scoring with batched checkpoint repeats, null-safe invalid-repeat handling, and a pure hysteretic trend classifier that reports evidence without an action ([#2489](https://github.com/bastani-inc/atomic/issues/2489)).
 - Added pure, seeded selection math for probabilistic pivot tournaments: deterministic Hamiltonian ring and deduplicated pivot planning, criterion/repeat slot-swap jobs, normalized Bradley–Terry soft wins, count-normalized pivot selection, and complete candidate rankings ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
+- Added tournament `n_evaluations`, `pivots`, `seed`, `criteria`, and heterogeneous `models` inputs, plus `ranking` and `seed` outputs and the auditable `comparisons.json` score ledger with invalid-report and budget records ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
 
 ### Fixed
 
 - Opened `ctx.tool` detail now matches the main-chat tool block: `Box(1,1)` inner padding, a blank row under the `$` header, full-width alignment with the orchestrator bars, unpainted canvas above and below the card, host `toolTitle`/`toolOutput` colors, a dim `ctrl+o Expand` hint, and second-resolution `Took`/`Elapsed` timing.
+- Tournament criteria now accepts every documented V1 shape, including markdown rubrics, records, string lists, and CriterionInput objects with optional ids and names.
+- Criterion ids are preserved in the ledger while judge artifact filenames are sanitized, collision-free, and contained under the artifact directory.
+- Corrected the planned comparison budget for oversized pivot counts and recorded each comparison row's own soft preference separately from pair aggregates.
 
 ## [0.9.14-alpha.3] - 2026-08-17
 

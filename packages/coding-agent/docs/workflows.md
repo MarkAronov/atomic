@@ -733,7 +733,7 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 | `fan-out-and-synthesize` | Structured partition → bounded parallel artifact branches → synthesis barrier. | Split independent slices, including repository research, and merge evidence. |
 | `adversarial-verification` | Worker → per-criterion fresh verifier fan-out → deterministic mean+veto gate → findings consolidation / bounded repair; consolidator cannot approve. | Independently prove or reject a candidate with auditable graded scores. |
 | `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than needed and keep the strongest distinct few. |
-| `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
+| `tournament` | Whole-task attempts → seeded ring and pivot-round soft scoring → full ranking reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
 | `goal` | Durable goal ledger → bounded sub-agent orchestration → parallel review → deterministic reducer. | Autonomous implementation that needs receipts and reviewer-gated completion. |
 | `ralph` | Prompt refinement → codebase research → delegated implementation → multi-model review loop. | Research-first autonomous implementation with bounded review and repair. |
@@ -751,7 +751,7 @@ The six common patterns are full definitions exported from `@bastani/workflows/b
 | `fan-out-and-synthesize` | `prompt` | `max_branches` (1–12), `max_concurrency` (1–12) | `result`, partitions, branch paths, synthesis/manifest paths |
 | `adversarial-verification` | `task` | `criteria` (record or criteria.md markdown; defaults to task_fit/evidence/completeness), `verifier_count=3` (1–5), `max_repairs=2` (0–5), `accept_mean=14`, `reask_limit=1`; normal calls per round: criteria.length × verifier_count | `approved`, `mean_score`, `score_table_path`, `repairs_completed`, `candidate_path`, `review_report_path`, `remaining_work` |
 | `generate-and-filter` | `prompt` | `num_candidates` (2–20), `shortlist_size` (1–10), `use_judge`, `max_concurrency` | `result`, shortlist, candidate/filter/judge/final/manifest paths |
-| `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8) | `result`, winner, attempt/judge/bracket paths |
+| `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8), `n_evaluations=2`, `pivots=1`, `seed=0`, optional `criteria`/`models` | `result`, `winner`, `attempt_artifact_paths`, `judge_artifact_paths`, `comparisons_path`, `ranking`, `seed` |
 | `loop-until-done` | `prompt` | `max_iterations` (1–20) | `result`, `status`, ledger, iteration/evaluation paths, remaining work |
 
 ```ts
@@ -4570,7 +4570,7 @@ These patterns organize work **inside one root lifecycle**. They do not replace 
 | **Fan-out-and-synthesize** | The task can be split into many independent slices that benefit from clean context windows. | `ctx.parallel([...])` with separate artifacts → synthesis barrier that reads the artifacts and merges the answer. |
 | **Adversarial verification** | Outputs need independent checking against a rubric, security rule, factual source, or acceptance contract. | Worker stage(s) → fresh-context verifier stage(s) → reducer that accepts, rejects, or asks for repair. |
 | **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
-| **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
+| **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → seeded ring and pivot rounds score each candidate pair by criterion → reducer reports the winner and full ranking. |
 | **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
 | **Constructive quorum** | Several fresh-context verifiers judge the same artifact and a tallied vote could mask a defect one verifier found or block on one verifier's misreading. | Parallel verifiers form independent preliminary verdicts → exactly one bounded Intercom evidence-exchange round (share and challenge evidence) → each emits its own final structured verdict → deterministic reducer counts votes. |
 | **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
