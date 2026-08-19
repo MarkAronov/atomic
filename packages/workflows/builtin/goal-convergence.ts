@@ -54,7 +54,7 @@ export function convergence_escalation_evidence(
 
 	const latest = entries[entries.length - 1]?.meanFindingConfidence;
 	return [
-		`${entries.length} rounds recorded; no convergence: the blocking-count trend is ${blocking.trend}.`,
+		`${entries.length} round${entries.length === 1 ? "" : "s"} recorded; no observed convergence: the blocking-count trend is ${blocking.trend}.`,
 		`Blocking-count trend: ${blocking.trend}; raw series: ${JSON.stringify(blocking.evidence.series)}.`,
 		`Fraction-proven trend: ${proven.trend}; raw series: ${JSON.stringify(proven.evidence.series)}.`,
 		latest === null
