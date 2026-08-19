@@ -615,7 +615,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const sourceFrontierId = sourceFrontierStage?.failedStageId ?? opts.continuation?.resumeFromStageId;
 		const startupFrontierStage =
 			sourceFrontierStage?.stages.find((stage) => stage.id === sourceFrontierId)?.name ?? "workflow frontier";
-		budget.stopAtBoundary(startupFrontierStage);
+		await budget.stopAtBoundaryAsync(startupFrontierStage);
 		const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
 		await admittedTools.closeAndDrain();
 		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);

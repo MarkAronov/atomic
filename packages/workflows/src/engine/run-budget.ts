@@ -105,10 +105,19 @@ export function createRunBudgetController(input: {
 
 	const deliverWrapUp = (frontierStage: string): Promise<never> => {
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
-		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage);
+		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage) ?? handlers.at(-1);
 		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined, false);
 		wrapUpPromise = registration.handler();
 		return wrapUpPromise;
+	};
+	const stopAtBoundaryAsync = async (frontierStage?: string): Promise<void> => {
+		const check = checkpoint(frontierStage);
+		if (check.kind === "continue" || check.kind === "warn") return;
+		if (check.kind === "wrap_up") {
+			await deliverWrapUp(frontierStage ?? "workflow frontier");
+			return;
+		}
+		throw finishWrapUp(frontierStage, state?.wrapUpSummary, state?.wrapUpUsage, state?.wrapUpCompleted === true);
 	};
 	return {
 		enabled,
@@ -118,5 +127,6 @@ export function createRunBudgetController(input: {
 		finishWrapUp,
 		rethrowIfSystemOwnedStop,
 		stopAtBoundary,
+		stopAtBoundaryAsync,
 	};
 }

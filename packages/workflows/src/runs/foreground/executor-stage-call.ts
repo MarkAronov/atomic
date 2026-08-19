@@ -139,7 +139,7 @@ export function createTrackedStageCaller(input: {
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
-		runtime.budget.stopAtBoundary(runtime.name);
+		await runtime.budget.stopAtBoundaryAsync(runtime.name);
 		await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
@@ -159,6 +159,7 @@ export function createTrackedStageCaller(input: {
 		// final durable checkpoint can replace it without touching a real
 		// failure/skip classification recorded by the catch block.
 		let terminalStateIsSuccess = false;
+		let stageResultBeforeBudget: string | undefined;
 		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
@@ -290,9 +291,10 @@ export function createTrackedStageCaller(input: {
 			} finally {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
+			stageResultBeforeBudget = runtime.innerCtx.__getLastAssistantText();
 			const afterBudget = runtime.budget.checkpoint(runtime.name);
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
-			if (afterBudget.kind === "exhausted") runtime.budget.stopAtBoundary(runtime.name);
+			if (afterBudget.kind === "exhausted") await runtime.budget.stopAtBoundaryAsync(runtime.name);
 			await runtime.innerCtx.__closeGeneration();
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
@@ -306,7 +308,7 @@ export function createTrackedStageCaller(input: {
 			}
 			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
 			if (trackStageLifecycle) {
-				const assistantText = runtime.innerCtx.__getLastAssistantText();
+				const assistantText = stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText();
 				terminalStateIsSuccess = true;
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
@@ -329,9 +331,13 @@ export function createTrackedStageCaller(input: {
 					}
 				}
 				applyTerminalStageState = () => {
-					runtime.stageSnapshot.status = "completed";
-					if (selectedBudgetError.report.wrapUpSummary !== undefined)
-						runtime.stageSnapshot.result = selectedBudgetError.report.wrapUpSummary;
+					if (stageResultBeforeBudget !== undefined) {
+						runtime.stageSnapshot.status = "completed";
+						runtime.stageSnapshot.result = stageResultBeforeBudget;
+					} else {
+						runtime.stageSnapshot.status = "failed";
+						runtime.stageSnapshot.error = selectedBudgetError.message;
+					}
 				};
 				throw selectedBudgetError;
 			} else if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {

@@ -62,7 +62,7 @@ export function createChildWorkflowRunner(input: {
 			throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));
 		const childName = child.normalizedName;
 		const boundaryName = options.stageName ?? `workflow:${childName}`;
-		runtime.budget.stopAtBoundary(boundaryName);
+		await runtime.budget.stopAtBoundaryAsync(boundaryName);
 		const boundaryReplayKey = input.nextWorkflowBoundaryReplayKey(boundaryName);
 		const durableInvocation = input.consumeDurableInvocation?.();
 		const boundary = runtime.spawnStage(boundaryName, {
@@ -134,7 +134,7 @@ export function createChildWorkflowRunner(input: {
 			});
 			boundary.observeChildRun(childRunPromise);
 			const childRun = await childRunPromise;
-			runtime.budget.stopAtBoundary(boundaryName);
+			await runtime.budget.stopAtBoundaryAsync(boundaryName);
 			runtime.exit.throwIfWorkflowExitSelected();
 
 			// A gracefully quit child is a suspension, not a child failure: carry the
