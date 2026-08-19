@@ -3,13 +3,8 @@
  * cross-ref: spec §5.5
  */
 
-import type {
-	BudgetDimension,
-	BudgetReport,
-	DurationBudgetReport,
-	RunMeterCounters,
-	UsageBudgetReport,
-} from "./budget.js";
+import type { BudgetDimension, BudgetReport, DurationBudgetReport, UsageBudgetReport } from "./budget.js";
+import type { RunMeterCounters } from "./budget-meter.js";
 import type {
 	WorkflowExitStatus,
 	WorkflowInputValues,

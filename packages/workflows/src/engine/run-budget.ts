@@ -3,10 +3,8 @@ import {
 	type EffectiveBudget,
 	enforceDurationBudget,
 	enforceUsageBudget,
-	meter_run,
-	type RunMeters,
-	type RunUsageTree,
 } from "../shared/budget.js";
+import { meter_run, type RunMeters, type RunUsageTree } from "../shared/budget-meter.js";
 import type {
 	RunBudgetAccountingState,
 	RunBudgetState,

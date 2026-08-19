@@ -18,11 +18,11 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import {
 	type EffectiveBudget,
 	enforceDurationBudget,
-	meter_run,
 	resolve_budget,
 	validateWorkflowBudget,
 	type WorkflowBudget,
 } from "../../packages/workflows/src/shared/budget.js";
+import { meter_run } from "../../packages/workflows/src/shared/budget-meter.js";
 import {
 	effectiveRunStatus,
 	isReturnedBlockedWorkflowStatus,
