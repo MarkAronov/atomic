@@ -343,6 +343,7 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 async function resumeDurableShadow(
 	runId: string,
 	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
+	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
 	let warning: string | undefined;
@@ -354,7 +355,11 @@ async function resumeDurableShadow(
 	} catch (error) {
 		warning = formatWorkflowResourceLoadWarning(error);
 	}
-	const resumed = await runtime.resumeDurableWorkflow(runId, { policy: deps.policy, actor: "agent" });
+	const resumed = await runtime.resumeDurableWorkflow(runId, {
+		policy: deps.policy,
+		actor: "agent",
+		...(budget === undefined ? {} : { budget }),
+	});
 	const message = warning === undefined ? resumed.message : `${warning}\n\n${resumed.message}`;
 	return {
 		action: "resume",
@@ -367,9 +372,14 @@ async function resumeDurableShadow(
 async function resumePreparedDurableTarget(
 	runId: string,
 	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy">,
+	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	try {
-		const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, { policy: deps.policy, actor: "agent" });
+		const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, {
+			policy: deps.policy,
+			actor: "agent",
+			...(budget === undefined ? {} : { budget }),
+		});
 		return {
 			action: "resume",
 			runId: resumed.ok ? resumed.runId : runId,
@@ -398,7 +408,7 @@ async function resolveExplicitDurableTarget(
 	if (resolved.kind === "malformed") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message };
 	}
-	if (resolved.kind === "durable") return resumePreparedDurableTarget(resolved.workflowId, deps);
+	if (resolved.kind === "durable") return resumePreparedDurableTarget(resolved.workflowId, deps, args.budget);
 	if (resolved.kind === "live") {
 		return workflowResumeAction({ ...args, runId: resolved.workflowId }, deps);
 	}
@@ -424,7 +434,7 @@ async function resolveExplicitDurableTarget(
 			message: `Workflow ${target} has no durable checkpoint or pending prompt progress and is not resumable.`,
 		};
 	}
-	if (durableHandle !== undefined) return resumePreparedDurableTarget(target, deps);
+	if (durableHandle !== undefined) return resumePreparedDurableTarget(target, deps, args.budget);
 	return { action: "resume", runId: target, status: "noop", message: `Run not found: ${target}` };
 }
 
@@ -450,7 +460,7 @@ export async function workflowResumeAction(
 	const backend = getDurableBackend();
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow = exact === undefined ? "not_shadow" : classifyDurableResumeShadow(exact, store, { backend });
-	if (shadow === "eligible") return resumeDurableShadow(target.runId, deps);
+	if (shadow === "eligible") return resumeDurableShadow(target.runId, deps, args.budget);
 	if (shadow === "ineligible") {
 		return {
 			action: "resume",
@@ -488,16 +498,18 @@ export async function workflowResumeAction(
 		!isPaused &&
 		run.exitReason !== "quit" &&
 		isWorkflowRunResumable(workflowRunResumeCandidate(run));
-	if (isDurableAuthorExit) return resumeDurableShadow(stageRunId, deps);
+	if (isDurableAuthorExit) return resumeDurableShadow(stageRunId, deps, args.budget);
 	if (isResumableContinuation) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();
 		} catch (error) {
 			warning = formatWorkflowResourceLoadWarning(error);
 		}
-		const continuation = await deps
-			.getRuntime()
-			.resumeFailedRun(stageRunId, stage.stageId, { policy: deps.policy, actor: "agent" });
+		const continuation = await deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, {
+			policy: deps.policy,
+			actor: "agent",
+			...(args.budget === undefined ? {} : { budget: args.budget }),
+		});
 		const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;
 		return {
 			action: "resume",

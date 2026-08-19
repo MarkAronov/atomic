@@ -33,8 +33,8 @@ export interface ProviderAvailability {
 	gemini: boolean;
 }
 
-export type WebSearchWorkflow = "none" | "summary-review";
-export type CuratorWorkflow = "summary-review";
+export type { CuratorWorkflow, WebSearchWorkflow } from "./web-search-workflow.js";
+export { resolveWorkflow } from "./web-search-workflow.js";
 
 export interface CuratorBootstrap {
 	availableProviders: ProviderAvailability;
@@ -97,12 +97,6 @@ function normalizeCuratorTimeoutSeconds(value: unknown): number | undefined {
 	const normalized = Math.floor(value);
 	if (normalized < 1) return undefined;
 	return Math.min(normalized, MAX_CURATOR_TIMEOUT_SECONDS);
-}
-
-export function resolveWorkflow(input: unknown, hasUI: boolean): WebSearchWorkflow {
-	if (!hasUI) return "none";
-	if (typeof input === "string" && input.trim().toLowerCase() === "none") return "none";
-	return "summary-review";
 }
 
 export function normalizeQueryList(queryList: unknown[]): string[] {
