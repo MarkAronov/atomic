@@ -158,27 +158,41 @@ function awaitingInputEntries(run: RunSnapshot): WorkflowStatusAwaitingInput[] {
 	return entries;
 }
 
+const budgetReport = <D extends "duration" | "tokens" | "cost">(dimension: D, reading: number, ceiling: number) => ({
+	dimension,
+	reading,
+	ceiling,
+	percent: (reading / ceiling) * 100,
+});
+
 /** Reduce one run snapshot to its concise status summary. */
 export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
 	const elapsedMs = elapsedRunMs(run, now);
 	const duration =
+		run.budget?.maxDurationMs !== undefined && run.budget.maxDurationMs > 0
+			? run.endedAt === undefined
+				? budgetReport("duration", elapsedMs, run.budget.maxDurationMs)
+				: (run.budgetState?.duration ?? budgetReport("duration", elapsedMs, run.budget.maxDurationMs))
+			: undefined;
+	const tokens =
+		run.budget?.maxTokens !== undefined && run.budget.maxTokens > 0
+			? (run.budgetState?.tokens ??
+				budgetReport("tokens", run.budgetState?.accounting?.tokens ?? 0, run.budget.maxTokens))
+			: undefined;
+	const cost =
+		run.budget?.maxCost !== undefined && run.budget.maxCost > 0
+			? (run.budgetState?.cost ?? budgetReport("cost", run.budgetState?.accounting?.cost ?? 0, run.budget.maxCost))
+			: undefined;
+	const budgetState =
 		run.budget === undefined
 			? undefined
-			: run.endedAt === undefined
-				? {
-						dimension: "duration" as const,
-						reading: elapsedMs,
-						ceiling: run.budget.maxDurationMs,
-						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
-					}
-				: (run.budgetState?.duration ?? {
-						dimension: "duration" as const,
-						reading: elapsedMs,
-						ceiling: run.budget.maxDurationMs,
-						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
-					});
-	const budgetState = run.budget === undefined ? undefined : { ...(run.budgetState ?? {}), duration };
+			: {
+					...(run.budgetState ?? {}),
+					...(duration !== undefined ? { duration } : {}),
+					...(tokens !== undefined ? { tokens } : {}),
+					...(cost !== undefined ? { cost } : {}),
+				};
 	return {
 		runId: run.id,
 		name: run.name,

@@ -1,9 +1,86 @@
 /** Pure workflow run-budget declarations and resolution. */
 
-/**
- * Optional budget limits for a workflow run. A present `0` disables that
- * dimension; absent fields inherit from the prior layer.
- */
+import { fold_usage } from "../../builtin/verification-usage.js";
+import type { RunSnapshot } from "./store-types.js";
+import { elapsedRunMs } from "./timing.js";
+
+export type BudgetDimension = "duration" | "tokens" | "cost";
+
+export interface BudgetReport {
+	readonly dimension: BudgetDimension;
+	readonly reading: number;
+	readonly ceiling: number;
+	readonly percent: number;
+}
+
+export type DurationBudgetReport = BudgetReport & { readonly dimension: "duration" };
+export type UsageBudgetReport = BudgetReport & { readonly dimension: "tokens" | "cost" };
+
+export interface RunMeterCounters {
+	readonly input: number;
+	readonly output: number;
+	readonly cacheRead: number;
+	readonly cacheWrite: number;
+}
+
+export interface RunMeters {
+	readonly durationMs: number;
+	readonly tokens: number;
+	readonly cost: number;
+	readonly perCounter: RunMeterCounters;
+}
+
+/** A run and its nested child scopes, used by the tree-wide usage meter. */
+export type RunUsageTree =
+	| { readonly run: RunSnapshot; readonly children?: readonly RunUsageTree[] }
+	| (RunSnapshot & { readonly children?: readonly RunUsageTree[] });
+const treeRun = (tree: RunUsageTree): RunSnapshot => ("run" in tree ? tree.run : tree);
+type UsageCounters = RunMeterCounters & { readonly cost: number };
+const addUsage = (left: UsageCounters, right: UsageCounters): UsageCounters => ({
+	input: left.input + right.input,
+	output: left.output + right.output,
+	cacheRead: left.cacheRead + right.cacheRead,
+	cacheWrite: left.cacheWrite + right.cacheWrite,
+	cost: left.cost + right.cost,
+});
+
+function foldTreeUsage(tree: RunUsageTree): UsageCounters {
+	const run = treeRun(tree);
+	const folded = fold_usage(
+		run.stages
+			.filter((stage) => stage.replayed !== true)
+			.map((stage) => ({
+				stageName: stage.name,
+				text: stage.result ?? "",
+				...(stage.modelAttempts !== undefined ? { modelAttempts: stage.modelAttempts } : {}),
+			})),
+	);
+	const own: UsageCounters = {
+		input: folded.input,
+		output: folded.output,
+		cacheRead: folded.cacheRead,
+		cacheWrite: folded.cacheWrite,
+		cost: folded.cost,
+	};
+	return (tree.children ?? []).reduce((total, child) => addUsage(total, foldTreeUsage(child)), own);
+}
+
+/** Measure one run scope without mutating it or charging a budget. */
+export function meter_run(tree: RunUsageTree, now: number): RunMeters {
+	const usage = foldTreeUsage(tree);
+	return {
+		durationMs: elapsedRunMs(treeRun(tree), now),
+		tokens: usage.input + usage.output,
+		cost: usage.cost,
+		perCounter: {
+			input: usage.input,
+			output: usage.output,
+			cacheRead: usage.cacheRead,
+			cacheWrite: usage.cacheWrite,
+		},
+	};
+}
+
 export interface WorkflowBudget {
 	readonly maxDurationMs?: number;
 	readonly maxTokens?: number;
@@ -11,12 +88,6 @@ export interface WorkflowBudget {
 	readonly warnAtPercent?: number;
 }
 
-export interface DurationBudgetReport {
-	readonly dimension: "duration";
-	readonly reading: number;
-	readonly ceiling: number;
-	readonly percent: number;
-}
 export type DurationBudgetCheck =
 	| { readonly kind: "continue"; readonly report: DurationBudgetReport; readonly warning: boolean }
 	| { readonly kind: "exhausted"; readonly report: DurationBudgetReport };
@@ -34,6 +105,27 @@ export function enforceDurationBudget(
 	};
 	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
 	const warning = options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent;
+	return { kind: "continue", report, warning };
+}
+export type UsageBudgetCheck =
+	| { readonly kind: "continue"; readonly report: UsageBudgetReport; readonly warning: boolean }
+	| { readonly kind: "exhausted"; readonly report: UsageBudgetReport };
+
+export function enforceUsageBudget(
+	dimension: "tokens" | "cost",
+	reading: number,
+	ceiling: number,
+	warnAtPercent: number,
+	options: { readonly warned?: boolean } = {},
+): UsageBudgetCheck {
+	const report: UsageBudgetReport = {
+		dimension,
+		reading,
+		ceiling,
+		percent: ceiling === 0 ? 0 : (reading / ceiling) * 100,
+	};
+	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
+	const warning = options.warned !== true && warnAtPercent > 0 && report.percent >= warnAtPercent;
 	return { kind: "continue", report, warning };
 }
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */

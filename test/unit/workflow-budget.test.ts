@@ -13,10 +13,12 @@ import { loadConfigFile } from "../../packages/workflows/src/extension/config-fi
 import { withWorkflowDefaults } from "../../packages/workflows/src/extension/config-loader.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import {
 	type EffectiveBudget,
 	enforceDurationBudget,
+	meter_run,
 	resolve_budget,
 	validateWorkflowBudget,
 	type WorkflowBudget,
@@ -28,7 +30,7 @@ import {
 } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import type { WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowModelAttempt, WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 import {
 	type AgentSession,
@@ -48,6 +50,21 @@ function budgetRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		stages: [],
 		startedAt: 0,
 		...overrides,
+	};
+}
+
+function budgetAttempt(model: string, usage: WorkflowModelUsage): WorkflowModelAttempt {
+	return { model, success: true, usage };
+}
+
+function usageStage(name: string, modelAttempts: readonly WorkflowModelAttempt[]): RunSnapshot["stages"][number] {
+	return {
+		id: name,
+		name,
+		status: "completed",
+		parentIds: [],
+		toolEvents: [],
+		modelAttempts,
 	};
 }
 
@@ -305,6 +322,241 @@ describe("budget duration controller", () => {
 	});
 });
 
+describe("token and cost budget metering", () => {
+	test("budget meter preserves the exact RunMeters shape and aggregates nested retries", () => {
+		const tree = {
+			run: budgetRun({
+				startedAt: 10,
+				stages: [
+					usageStage("root", [
+						budgetAttempt("root-first", { input: 2, output: 3, cacheRead: 7, cacheWrite: 11, cost: 0.2 }),
+						budgetAttempt("root-retry", { input: 5, output: 1, cacheRead: 13, cacheWrite: 17, cost: 0.3 }),
+					]),
+				],
+			}),
+			children: [
+				{
+					run: budgetRun({
+						id: "budget-child",
+						stages: [usageStage("child", [budgetAttempt("child-model", { input: 4, output: 6, cost: 0.4 })])],
+					}),
+				},
+			],
+		};
+		const meters = meter_run(tree, 110);
+		assert.deepEqual(Object.keys(meters).sort(), ["cost", "durationMs", "perCounter", "tokens"]);
+		assert.deepEqual(Object.keys(meters.perCounter).sort(), ["cacheRead", "cacheWrite", "input", "output"]);
+		assert.deepEqual(meters, {
+			durationMs: 100,
+			tokens: 21,
+			cost: 0.9,
+			perCounter: { input: 11, output: 10, cacheRead: 20, cacheWrite: 28 },
+		});
+	});
+
+	test("budget usage deltas saturate under out-of-order completions and concurrent checkpoints", async () => {
+		const run = budgetRun({
+			stages: [usageStage("metered", [budgetAttempt("model", { input: 4, output: 2, cost: 0.2 })])],
+		});
+		const tree = { run };
+		const controller = createRunBudgetController({
+			run,
+			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
+			usageTree: () => tree,
+		});
+		assert.equal(controller.checkpoint("work").kind, "continue");
+		assert.equal(run.budgetState?.tokens?.reading, 6);
+		run.stages[0]!.modelAttempts = [budgetAttempt("late", { input: 1, output: 1, cost: 0.1 })];
+		await Promise.all([
+			Promise.resolve(controller.checkpoint("work")),
+			Promise.resolve(controller.checkpoint("work")),
+		]);
+		assert.equal(run.budgetState?.tokens?.reading, 6);
+		assert.equal(run.budgetState?.cost?.reading, 0.2);
+	});
+
+	test("budget child scopes and concurrent top-level runs account independently", async () => {
+		const childRun = budgetRun({
+			id: "budget-child-scope",
+			stages: [usageStage("child", [budgetAttempt("child", { input: 3 })])],
+		});
+		const rootRun = budgetRun({
+			id: "budget-root-scope",
+			stages: [usageStage("root", [budgetAttempt("root", { output: 2 })])],
+		});
+		const rootTree = { run: rootRun, children: [{ run: childRun }] };
+		const rootController = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 100 } }),
+			usageTree: () => rootTree,
+		});
+		const childController = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({ run: { maxTokens: 100 } }),
+			usageTree: () => ({ run: childRun }),
+		});
+		assert.equal(rootController.checkpoint("root").kind, "continue");
+		assert.equal(childController.checkpoint("child").kind, "continue");
+		assert.equal(rootRun.budgetState?.tokens?.reading, 5);
+		assert.equal(childRun.budgetState?.tokens?.reading, 3);
+
+		const first = budgetRun({
+			id: "budget-run-one",
+			stages: [usageStage("one", [budgetAttempt("one", { input: 3 })])],
+		});
+		const second = budgetRun({
+			id: "budget-run-two",
+			stages: [usageStage("two", [budgetAttempt("two", { input: 3 })])],
+		});
+		const firstController = createRunBudgetController({
+			run: first,
+			budget: resolve_budget({ run: { maxTokens: 2 } }),
+			usageTree: () => ({ run: first }),
+		});
+		const secondController = createRunBudgetController({
+			run: second,
+			budget: resolve_budget({ run: { maxTokens: 10 } }),
+			usageTree: () => ({ run: second }),
+		});
+		const [firstCheck, secondCheck] = await Promise.all([
+			Promise.resolve(firstController.checkpoint("one")),
+			Promise.resolve(secondController.checkpoint("two")),
+		]);
+		assert.equal(firstCheck.kind, "wrap_up");
+		assert.equal(secondCheck.kind, "continue");
+	});
+
+	test("budget resume carries token and cost baselines without charging replayed spend", () => {
+		const source = budgetRun({
+			id: "budget-source",
+			stages: [usageStage("source", [budgetAttempt("source", { input: 5, output: 2, cost: 0.5 })])],
+		});
+		const sourceController = createRunBudgetController({
+			run: source,
+			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
+			usageTree: () => ({ run: source }),
+		});
+		sourceController.checkpoint("source");
+		const resumed = budgetRun({
+			id: "budget-resumed",
+			resumedFromRunId: source.id,
+			budgetState: source.budgetState,
+			stages: [usageStage("next", [budgetAttempt("next", { input: 3, output: 1, cost: 0.25 })])],
+		});
+		const resumedController = createRunBudgetController({
+			run: resumed,
+			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
+			usageTree: () => ({ run: resumed }),
+		});
+		assert.equal(resumedController.checkpoint("next").kind, "continue");
+		assert.equal(resumed.budgetState?.tokens?.reading, 11);
+		assert.equal(resumed.budgetState?.cost?.reading, 0.75);
+	});
+
+	test("budget cache counters are reported, cost charges cache-heavy spend, and tokens do not", () => {
+		const run = budgetRun({
+			stages: [
+				usageStage("cache-heavy", [
+					budgetAttempt("cached", { input: 4, output: 4, cacheRead: 1000, cacheWrite: 500, cost: 1.25 }),
+				]),
+			],
+		});
+		const tree = { run };
+		const tokenOnly = createRunBudgetController({
+			run,
+			budget: resolve_budget({ run: { maxTokens: 10 } }),
+			usageTree: () => tree,
+		});
+		assert.notEqual(tokenOnly.checkpoint("cache-heavy").kind, "wrap_up");
+		assert.equal(run.budgetState?.tokens?.reading, 8);
+		assert.deepEqual(run.budgetState?.accounting?.perCounter, {
+			input: 4,
+			output: 4,
+			cacheRead: 1000,
+			cacheWrite: 500,
+		});
+
+		const costRun = budgetRun({
+			stages: [
+				usageStage("cache-cost", [
+					budgetAttempt("cached", { input: 4, output: 4, cacheRead: 1000, cacheWrite: 500, cost: 1.25 }),
+				]),
+			],
+		});
+		const costController = createRunBudgetController({
+			run: costRun,
+			budget: resolve_budget({ run: { maxTokens: 10, maxCost: 1 } }),
+			usageTree: () => ({ run: costRun }),
+		});
+		const check = costController.checkpoint("cache-cost");
+		assert.equal(check.kind, "wrap_up");
+		if (check.kind === "wrap_up") assert.equal(check.report.dimension, "cost");
+	});
+
+	test("budget executor soft-lands on token exhaustion at a stage boundary", async () => {
+		const messages: AgentSession["messages"] = [];
+		let promptCount = 0;
+		let lastAssistantText = "";
+		const usage = { input: 2, output: 3, cacheRead: 8, cacheWrite: 9, cost: 0.25 };
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return makeMockSession({
+					messages,
+					async prompt() {
+						lastAssistantText = promptCount++ === 0 ? "progress" : "wrap summary";
+						messages.push(assistantMessageWithUsage(lastAssistantText, usage));
+					},
+					getLastAssistantText: () => lastAssistantText,
+				}).session;
+			},
+		};
+		const definition = workflow({
+			name: "budget-token-soft-land",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({
+				result: await ctx.stage("token-frontier", { model: "test/model" }).prompt("progress"),
+			}),
+		});
+		const result = await run(
+			definition,
+			{},
+			{ store: createStore(), budget: { maxTokens: 1 }, adapters: { agentSession } },
+		);
+		const report = budgetOutcome(result.result);
+		assert.equal(report?.status, "budget_exceeded");
+		assert.equal(report?.dimension, "tokens");
+		assert.equal(report?.reading, 5);
+		assert.equal(report?.frontierStage, "token-frontier");
+		assert.equal(report?.wrapUpSummary, "wrap summary");
+	});
+
+	test("budget status reports token and cost dimensions alongside duration", () => {
+		const run = budgetRun({
+			budget: { maxDurationMs: 100, maxTokens: 10, maxCost: 1, warnAtPercent: 80 },
+			stages: [usageStage("status", [budgetAttempt("model", { input: 3, output: 2, cost: 0.25 })])],
+		});
+		const controller = createRunBudgetController({
+			run,
+			budget: resolve_budget({ run: { maxDurationMs: 100, maxTokens: 10, maxCost: 1 } }),
+			usageTree: () => ({ run }),
+		});
+		controller.checkpoint("status");
+		const summary = summarizeRunSnapshot(run, 10);
+		assert.equal(summary.budgetState?.duration?.dimension, "duration");
+		assert.equal(summary.budgetState?.tokens?.reading, 5);
+		assert.equal(summary.budgetState?.tokens?.ceiling, 10);
+		assert.equal(summary.budgetState?.cost?.reading, 0.25);
+		assert.equal(summary.budgetState?.cost?.ceiling, 1);
+		const statusText = renderWorkflowToolContent(
+			{ action: "status", filter: "all", runs: [summary], snapshots: [run] },
+			{ action: "status" },
+		);
+		assert.match(statusText, /tokens: 5\/10 \(50\.0%\)/);
+		assert.match(statusText, /cost: 0\.25\/1 \(25\.0%\)/);
+	});
+});
 describe("workflow budget validation", () => {
 	test("budget rejects negative, non-finite, and non-integer integer dimensions", () => {
 		const invalid: readonly WorkflowBudget[] = [

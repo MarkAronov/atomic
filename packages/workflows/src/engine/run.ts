@@ -47,7 +47,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
-import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
+import { type RunUsageTree, resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -133,11 +133,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
 	// A budget OBJECT is always materialized by the shipped config defaults, so
-	// presence proves nothing. Only a positive duration ceiling means this run is
-	// budgeted; anything else must take the unbudgeted path untouched (R10).
-	const declaresDuration = (budget: WorkflowBudget | undefined): boolean => (budget?.maxDurationMs ?? 0) > 0;
+	// presence proves nothing. A positive limit on any dimension means this run
+	// is budgeted; otherwise take the unbudgeted path untouched (R10).
+	const declaresBudget = (budget: WorkflowBudget | undefined): boolean =>
+		(budget?.maxDurationMs ?? 0) > 0 || (budget?.maxTokens ?? 0) > 0 || (budget?.maxCost ?? 0) > 0;
 	const hasBudgetDeclaration =
-		declaresDuration(opts.budget) || declaresDuration(def.budget) || declaresDuration(opts.config?.budget);
+		declaresBudget(opts.budget) || declaresBudget(def.budget) || declaresBudget(opts.config?.budget);
 	const priorRun =
 		hasBudgetDeclaration &&
 		opts.rootBudget === undefined &&
@@ -183,16 +184,34 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
 			: undefined;
 	const continuationOrigin = opts.continuation !== undefined ? opts.continuation.source.origin : opts.origin;
+	const snapshotField = (field: "maxTokens" | "maxCost"): number | undefined =>
+		resolvedBudget[field] > 0 || opts.budget?.[field] !== undefined || def.budget?.[field] !== undefined
+			? resolvedBudget[field]
+			: undefined;
 	const budgetSnapshot =
-		resolvedBudget.maxDurationMs > 0
-			? { maxDurationMs: resolvedBudget.maxDurationMs, warnAtPercent: resolvedBudget.warnAtPercent }
+		resolvedBudget.maxDurationMs > 0 || resolvedBudget.maxTokens > 0 || resolvedBudget.maxCost > 0
+			? {
+					maxDurationMs: resolvedBudget.maxDurationMs,
+					...(snapshotField("maxTokens") !== undefined ? { maxTokens: snapshotField("maxTokens") } : {}),
+					...(snapshotField("maxCost") !== undefined ? { maxCost: snapshotField("maxCost") } : {}),
+					warnAtPercent: resolvedBudget.warnAtPercent,
+				}
 			: undefined;
-	const continuationBudgetState =
+	const continuedBudgetState = opts.continuation?.source.budgetState ?? priorRun?.budgetState;
+	const sameBudget =
 		budgetSnapshot !== undefined &&
-		continuedBudget?.maxDurationMs === budgetSnapshot.maxDurationMs &&
-		continuedBudget?.warnAtPercent === budgetSnapshot.warnAtPercent
-			? (opts.continuation?.source.budgetState ?? priorRun?.budgetState)
-			: undefined;
+		(continuedBudget?.maxDurationMs ?? 0) === budgetSnapshot.maxDurationMs &&
+		(continuedBudget?.maxTokens ?? 0) === (budgetSnapshot.maxTokens ?? 0) &&
+		(continuedBudget?.maxCost ?? 0) === (budgetSnapshot.maxCost ?? 0) &&
+		continuedBudget?.warnAtPercent === budgetSnapshot.warnAtPercent;
+	const continuationBudgetState =
+		continuedBudgetState === undefined
+			? undefined
+			: sameBudget
+				? continuedBudgetState
+				: continuedBudgetState.accounting === undefined
+					? undefined
+					: { accounting: continuedBudgetState.accounting };
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -229,9 +248,25 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		...(budgetSnapshot !== undefined ? { budget: budgetSnapshot } : {}),
 		...(continuationBudgetState !== undefined ? { budgetState: continuationBudgetState } : {}),
 	};
+	const usageTree = (): RunUsageTree => {
+		const snapshots = activeStore.runs();
+		const childrenByParent = new Map<string, RunSnapshot[]>();
+		for (const snapshot of snapshots) {
+			if (snapshot.parentRunId === undefined) continue;
+			const children = childrenByParent.get(snapshot.parentRunId) ?? [];
+			children.push(snapshot);
+			childrenByParent.set(snapshot.parentRunId, children);
+		}
+		const build = (run: RunSnapshot): RunUsageTree => {
+			const children = (childrenByParent.get(run.id) ?? []).map(build);
+			return children.length === 0 ? { run } : { run, children };
+		};
+		return build(snapshots.findLast((snapshot) => snapshot.id === runSnapshot.id) ?? runSnapshot);
+	};
 	const budget = createRunBudgetController({
 		run: runSnapshot,
 		budget: resolvedBudget,
+		usageTree,
 		rootBudget: opts.rootBudget,
 		onWarning: (report) => {
 			activeStore.recordNotice({

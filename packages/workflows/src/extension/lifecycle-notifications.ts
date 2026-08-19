@@ -1,4 +1,4 @@
-import type { DurationBudgetReport } from "../shared/budget.js";
+import type { BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -82,6 +82,7 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly toolNodeId?: string;
 	readonly toolName?: string;
 	readonly durationMs?: number;
+	readonly budgetDimension?: "duration" | "tokens" | "cost";
 	readonly active?: boolean;
 	/** Whether a failed author exit or quit run advertises itself as resumable. */
 	readonly resumable?: boolean;
@@ -158,7 +159,8 @@ export function seedWorkflowLifecycleNotificationState(
 				state.deliveredTerminalRuns.add(controlKey);
 			}
 		}
-		if (run.budgetState?.warning !== undefined) state.deliveredTerminalRuns.add(budgetWarningKey(run));
+		for (const warning of budgetWarningReports(run))
+			state.deliveredTerminalRuns.add(budgetWarningKey(run, warning.dimension));
 		if (run.pendingPrompt !== undefined) {
 			state.deliveredInputPrompts.add(runAwaitingInputKey(run.id, run.pendingPrompt));
 		}
@@ -312,15 +314,15 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 	};
 
 	const emitBudgetWarningOnce = (run: RunSnapshot): void => {
-		const warning = run.budgetState?.warning;
-		if (warning === undefined) return;
-		const key = budgetWarningKey(run);
-		if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) return;
-		if (state.suppressionDepth > 0) {
-			state.deliveredTerminalRuns.add(key);
-			return;
+		for (const warning of budgetWarningReports(run)) {
+			const key = budgetWarningKey(run, warning.dimension);
+			if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) continue;
+			if (state.suppressionDepth > 0) {
+				state.deliveredTerminalRuns.add(key);
+				continue;
+			}
+			delivery.deliver(key, makeBudgetWarningNotice(run, warning));
 		}
-		delivery.deliver(key, makeBudgetWarningNotice(run, warning));
 	};
 
 	const inspect = (snapshot: StoreSnapshot): void => {
@@ -404,7 +406,8 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 	}
 	if (details.kind === "budget_warning") {
 		const warningText = details.error ? `: ${details.error}` : "";
-		return `! Workflow "${workflowName}" is approaching its duration budget (run ${details.runId})${origin}${warningText}. Inspect: /workflow status ${details.runId}`;
+		const dimension = details.budgetDimension ?? "duration";
+		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
@@ -473,15 +476,23 @@ function makeTerminalNotice(
 	};
 }
 
-function makeBudgetWarningNotice(run: RunSnapshot, warning: DurationBudgetReport): WorkflowLifecycleNoticeDetails {
+function budgetWarningReports(run: RunSnapshot): readonly BudgetReport[] {
+	const warnings = Object.values(run.budgetState?.warnings ?? {}).filter(
+		(warning): warning is BudgetReport => warning !== undefined,
+	);
+	return warnings.length > 0 ? warnings : run.budgetState?.warning === undefined ? [] : [run.budgetState.warning];
+}
+
+function makeBudgetWarningNotice(run: RunSnapshot, warning: BudgetReport): WorkflowLifecycleNoticeDetails {
 	return {
 		kind: "budget_warning",
 		scope: "run",
 		runId: run.id,
 		workflowName: run.name,
 		status: run.status,
-		error: `At ${warning.percent.toFixed(1)}% of the duration budget (${warning.reading} / ${warning.ceiling}).`,
-		durationMs: warning.reading,
+		budgetDimension: warning.dimension,
+		error: `At ${warning.percent.toFixed(1)}% of the ${warning.dimension} budget (${warning.reading} / ${warning.ceiling}).`,
+		...(warning.dimension === "duration" ? { durationMs: warning.reading } : {}),
 		...(run.origin !== undefined ? { origin: run.origin } : {}),
 		createdAt: run.startedAt,
 	};
@@ -562,8 +573,8 @@ function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapsh
 	const occurrence = kind === "blocked" ? (run.blockedAt ?? lifecycleOccurrenceAt(run, kind)) : "";
 	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
 }
-function budgetWarningKey(run: RunSnapshot): string {
-	return `budget_warning:${run.id}:${run.budgetState?.warning?.dimension ?? "duration"}`;
+function budgetWarningKey(run: RunSnapshot, dimension = run.budgetState?.warning?.dimension ?? "duration"): string {
+	return `budget_warning:${run.id}:${dimension}`;
 }
 
 /** One deliberate control action a run currently carries. */

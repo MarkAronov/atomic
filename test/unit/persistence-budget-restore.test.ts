@@ -9,6 +9,12 @@ import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflo
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import {
+	type AgentSession,
+	type AgentSessionAdapter,
+	assistantMessageWithUsage,
+	makeMockSession,
+} from "./stage-runner-helpers.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -79,6 +85,67 @@ test("budget boundary-only exhaustion survives durable session restore without a
 		}),
 		true,
 	);
+});
+
+test("token and cost baselines survive durable budget-stop restore", async () => {
+	const entries: Array<{ readonly id: string; readonly type: string; readonly payload: Record<string, unknown> }> = [];
+	const persistence = {
+		appendEntry(type: string, payload: Record<string, unknown>): string {
+			const id = `usage-budget-entry-${entries.length + 1}`;
+			entries.push({ id, type, payload });
+			return id;
+		},
+	};
+	const messages: AgentSession["messages"] = [];
+	let promptCount = 0;
+	const agentSession: AgentSessionAdapter = {
+		async create() {
+			return makeMockSession({
+				messages,
+				async prompt() {
+					messages.push(
+						assistantMessageWithUsage(promptCount++ === 0 ? "progress" : "wrap summary", {
+							input: 2,
+							output: 3,
+							cacheRead: 7,
+							cacheWrite: 11,
+							cost: 0.25,
+						}),
+					);
+				},
+			}).session;
+		},
+	};
+	const definition = workflow({
+		name: "usage-budget-restore",
+		description: "",
+		inputs: {},
+		outputs: { result: Type.String() },
+		budget: { maxTokens: 1, maxCost: 1 },
+		run: async (ctx) => ({
+			result: await ctx.stage("usage-frontier", { model: "test/model" }).prompt("progress"),
+		}),
+	});
+	const sourceStore = createStore();
+	const source = await run(definition, {}, { store: sourceStore, persistence, adapters: { agentSession } });
+	const sourceSnapshot = sourceStore.runs().find((candidate) => candidate.id === source.runId);
+	const blockedEntry = entries.find((entry) => entry.type === "workflow.run.blocked");
+	assert.equal((source.result as { readonly status?: string } | undefined)?.status, "budget_exceeded");
+	assert.equal(sourceSnapshot?.budgetState?.accounting?.tokens, 5);
+	assert.equal(sourceSnapshot?.budgetState?.accounting?.cost, 0.25);
+	assert.deepEqual(blockedEntry?.payload.budgetState, sourceSnapshot?.budgetState);
+
+	const restoredStore = createStore();
+	restoreOnSessionStart(
+		{ getEntries: () => entries as unknown as SessionEntry[] },
+		{ resumeInFlight: "never", persistRuns: true },
+		restoredStore,
+	);
+	const restored = restoredStore.runs().find((candidate) => candidate.id === source.runId);
+	assert.equal(restored?.budget?.maxTokens, 1);
+	assert.equal(restored?.budget?.maxCost, 1);
+	assert.equal(restored?.budgetState?.accounting?.tokens, 5);
+	assert.equal(restored?.budgetState?.accounting?.cost, 0.25);
 });
 
 test("budget resume eligibility admits ended system stops but rejects ended non-budget stops", () => {

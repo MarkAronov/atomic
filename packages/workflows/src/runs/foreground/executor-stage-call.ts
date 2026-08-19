@@ -300,13 +300,13 @@ export function createTrackedStageCaller(input: {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
 			if (runtime.budget.enabled) stageResultBeforeBudget ??= runtime.innerCtx.__getLastAssistantText();
+			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
 			const afterBudget = runtime.budget.checkpoint(runtime.name);
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
 			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
 				await runtime.budget.stopAtBoundaryAsync(runtime.name);
 			await runtime.innerCtx.__closeGeneration();
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
-			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
 			if (
 				trackStageLifecycle &&
 				runtime.stageFailFastScope?.failed === true &&

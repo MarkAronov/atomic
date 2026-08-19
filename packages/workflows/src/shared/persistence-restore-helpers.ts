@@ -83,6 +83,7 @@ export function _buildStageSnapshots(
 			const skippedReason = entry.payload.skippedReason;
 			const sessionId = entry.payload.sessionId;
 			const sessionFile = entry.payload.sessionFile;
+			const modelAttempts = entry.payload.modelAttempts;
 			if (typeof stageId !== "string") continue;
 			endedStages.add(stageId);
 			const snap = stageMap.get(stageId);
@@ -102,6 +103,7 @@ export function _buildStageSnapshots(
 				if (typeof skippedReason === "string") snap.skippedReason = skippedReason;
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
+				if (Array.isArray(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
 				Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
 			}
 		}
@@ -197,25 +199,55 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 	if (!isRecord(value)) return undefined;
 	const maxDurationMs = numericDuration(value.maxDurationMs);
+	const maxTokens = numericDuration(value.maxTokens);
+	const maxCost = numericDuration(value.maxCost);
 	const warnAtPercent = numericDuration(value.warnAtPercent);
-	return maxDurationMs === undefined || warnAtPercent === undefined ? undefined : { maxDurationMs, warnAtPercent };
+	if (maxDurationMs === undefined || warnAtPercent === undefined) return undefined;
+	return {
+		maxDurationMs,
+		...(maxTokens !== undefined ? { maxTokens } : {}),
+		...(maxCost !== undefined ? { maxCost } : {}),
+		warnAtPercent,
+	};
 }
 function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
-	const duration = isRecord(value.duration) ? value.duration : {};
-	const report = (candidate: Record<string, unknown>): RunBudgetState["duration"] | undefined => {
+	const report = (
+		candidate: unknown,
+		dimension: "duration" | "tokens" | "cost",
+	): RunBudgetState["warning"] | undefined => {
+		if (!isRecord(candidate)) return undefined;
 		const reading = numericDuration(candidate.reading);
 		const ceiling = numericDuration(candidate.ceiling);
 		const percent = numericDuration(candidate.percent);
 		return reading === undefined || ceiling === undefined || percent === undefined
 			? undefined
-			: { dimension: "duration", reading, ceiling, percent };
+			: { dimension, reading, ceiling, percent };
 	};
-	const restoredDuration = report(duration);
-	const warning = isRecord(value.warning) ? report(value.warning) : undefined;
+	const duration = report(value.duration, "duration") as RunBudgetState["duration"];
+	const tokens = report(value.tokens, "tokens") as RunBudgetState["tokens"];
+	const cost = report(value.cost, "cost") as RunBudgetState["cost"];
+	const warningValue = isRecord(value.warning) ? value.warning : undefined;
+	const warningDimension = warningValue?.dimension;
+	const warning =
+		warningValue !== undefined &&
+		(warningDimension === "duration" || warningDimension === "tokens" || warningDimension === "cost")
+			? report(warningValue, warningDimension)
+			: undefined;
+	const warnings: Partial<Record<"duration" | "tokens" | "cost", RunBudgetState["warning"]>> = {};
+	const warningValues = isRecord(value.warnings) ? value.warnings : undefined;
+	for (const dimension of ["duration", "tokens", "cost"] as const) {
+		const restored = report(warningValues?.[dimension], dimension);
+		if (restored !== undefined) warnings[dimension] = restored;
+	}
+	const accounting = isRecord(value.accounting) ? (value.accounting as RunBudgetState["accounting"]) : undefined;
 	const state = {
-		...(restoredDuration !== undefined ? { duration: restoredDuration } : {}),
+		...(duration !== undefined ? { duration } : {}),
+		...(tokens !== undefined ? { tokens } : {}),
+		...(cost !== undefined ? { cost } : {}),
 		...(warning !== undefined ? { warning } : {}),
+		...(Object.keys(warnings).length > 0 ? { warnings } : {}),
+		...(accounting !== undefined ? { accounting } : {}),
 		...(value.warned === true ? { warned: true } : {}),
 		...(value.wrapUpDelivered === true ? { wrapUpDelivered: true } : {}),
 		...(value.wrapUpCompleted === true ? { wrapUpCompleted: true } : {}),
