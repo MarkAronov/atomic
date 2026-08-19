@@ -85,9 +85,10 @@ export function createRunBudgetController(input: {
 		};
 	};
 	const stopAtBoundary = (frontierStage?: string): void => {
-		const check = checkpoint(frontierStage);
+		const resolvedFrontierStage = frontierStage ?? handlers.at(-1)?.frontierStage;
+		const check = checkpoint(resolvedFrontierStage);
 		if (check.kind === "wrap_up" || check.kind === "exhausted")
-			throw finishWrapUp(frontierStage, undefined, undefined, false);
+			throw finishWrapUp(resolvedFrontierStage, undefined, undefined, false);
 	};
 	const rethrowIfSystemOwnedStop = (frontierStage?: string): void => {
 		if (state?.systemOwnedStop === true)
@@ -105,6 +106,8 @@ export function createRunBudgetController(input: {
 
 	const deliverWrapUp = (frontierStage: string): Promise<never> => {
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
+		if (state?.systemOwnedStop === true && state.wrapUpCompleted !== true)
+			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage) ?? handlers.at(-1);
 		if (registration === undefined) throw finishWrapUp(frontierStage, undefined, undefined, false);
 		wrapUpPromise = registration.handler();
