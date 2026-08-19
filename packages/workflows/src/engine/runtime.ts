@@ -43,6 +43,7 @@ export interface EngineRuntimeInput {
 	readonly stageRegistry: StageControlRegistry;
 	readonly exit: WorkflowExitManager;
 	readonly budget: RunBudgetController;
+	readonly rootBudget: RunBudgetController;
 	readonly classifyExecutorFailure: LiveStageRuntime["classifyExecutorFailure"];
 }
 
@@ -86,6 +87,7 @@ export class EngineRuntime {
 	readonly inputRuntimeDefaults: Partial<StageOptions>;
 	readonly workflowInvocationCwd: string;
 	readonly budget: RunBudgetController;
+	readonly rootBudget: RunBudgetController;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
 
@@ -114,6 +116,7 @@ export class EngineRuntime {
 		this.inputRuntimeDefaults = input.inputRuntimeDefaults;
 		this.workflowInvocationCwd = input.workflowInvocationCwd;
 		this.budget = input.budget;
+		this.rootBudget = input.rootBudget;
 		this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
 

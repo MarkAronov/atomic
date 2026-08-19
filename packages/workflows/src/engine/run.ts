@@ -133,7 +133,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
 	const priorRun =
-		opts.continuation === undefined && opts.runId !== undefined
+		opts.rootBudget === undefined && opts.continuation === undefined && opts.runId !== undefined
 			? activeStore.runs().find((candidate) => candidate.id === runId)
 			: undefined;
 	const continuedBudget = opts.continuation?.source.budget ?? priorRun?.budget;
@@ -223,6 +223,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const budget = createRunBudgetController({
 		run: runSnapshot,
 		budget: resolvedBudget,
+		rootBudget: opts.rootBudget,
 		onWarning: (report) => {
 			activeStore.recordNotice({
 				id: `workflow-budget-warning:${runId}:${report.dimension}`,
@@ -233,6 +234,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			});
 		},
 	});
+	const rootBudget = opts.rootBudget ?? budget;
 	const classifiedFailures = new Map<unknown, WorkflowFailure>();
 	const classifyExecutorFailure = (error: unknown): WorkflowFailure => {
 		const cached = classifiedFailures.get(error);
@@ -380,6 +382,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		onStageStart: opts.onStageStart,
 		onStageEnd: opts.onStageEnd,
 		onStageSession: opts.onStageSession,
+		rootBudget,
 		durableBackend,
 		durableRootBackend: rootBackend,
 	};
@@ -405,6 +408,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
 		exit,
 		classifyExecutorFailure,
+		rootBudget,
 		budget,
 	});
 	const workflowBoundaryReplayCounts = new Map<string, number>();
@@ -679,19 +683,21 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
 		await admittedTools.closeAndDrain();
 		if (err instanceof WorkflowBudgetExceededError) {
-			const report = err.report;
+			const pendingBudgetError = await budget.awaitPendingWrapUp();
+			const selectedBudgetError = pendingBudgetError ?? err;
+			const report = selectedBudgetError.report;
 			const frontierStageId =
 				runSnapshot.stages.find((stage) => stage.name === report.frontierStage)?.id ??
 				runSnapshot.stages.at(-1)?.id;
 			for (const stage of runSnapshot.stages) scheduler.blockKnownNonTerminalDescendants(stage.id);
 			const result: WorkflowOutputValues = { status: "budget_exceeded", ...report };
 			return recordActiveBlockedFailure(runId, runSnapshot, activeStore, opts.persistence, {
-				errorMessage: err.message,
+				errorMessage: selectedBudgetError.message,
 				failureKind: "unknown",
 				failureCode: "unknown",
 				failureRecoverability: "recoverable",
 				failureDisposition: "active_blocked",
-				failureMessage: err.message,
+				failureMessage: selectedBudgetError.message,
 				...(frontierStageId !== undefined ? { failedStageId: frontierStageId } : {}),
 				resumable: true,
 				result,

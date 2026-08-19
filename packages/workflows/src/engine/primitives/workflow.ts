@@ -129,6 +129,7 @@ export function createChildWorkflowRunner(input: {
 				},
 				signal: childController.signal,
 				budget: options.budget,
+				rootBudget: runtime.rootBudget,
 				deferWorkflowStart: false,
 				...(durableInvocation !== undefined ? { durableScope: durableInvocation.scope } : {}),
 			});
