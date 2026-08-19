@@ -684,6 +684,72 @@ describe("token and cost budget metering", () => {
 		assert.equal(report?.ceiling, 12);
 	});
 
+	test("budget same-id dispatch enforces duration with a token ceiling", async () => {
+		vi.useFakeTimers();
+		const startedAt = 10_000;
+		const priorDurationMs = 5;
+		const maxDurationMs = 1_000;
+		const workDurationMs = maxDurationMs + 1;
+		const maxTokens = 1_000_000;
+		vi.setSystemTime(startedAt);
+		const runId = "budget-same-id-duration-with-tokens";
+		const messages: AgentSession["messages"] = [];
+		let promptCount = 0;
+		let lastAssistantText = "";
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return makeMockSession({
+					messages,
+					async prompt() {
+						lastAssistantText = promptCount++ === 0 ? "work complete" : "wrap summary";
+						if (promptCount === 1) vi.advanceTimersByTime(workDurationMs);
+						messages.push(
+							assistantMessageWithUsage(lastAssistantText, {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: 0,
+							}),
+						);
+					},
+					getLastAssistantText: () => lastAssistantText,
+				}).session;
+			},
+		};
+		const definition = workflow({
+			name: "budget-same-id-duration-with-tokens",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("duration-frontier", { model: "test/model" }).prompt("work") }),
+		});
+		const store = createStore();
+		store.recordRunStart(
+			budgetRun({
+				id: runId,
+				name: definition.name,
+				status: "completed",
+				startedAt: startedAt - priorDurationMs,
+				endedAt: startedAt,
+				durationMs: priorDurationMs,
+				budget: { maxDurationMs, maxTokens, warnAtPercent: 80 },
+			}),
+		);
+
+		const result = await run(
+			definition,
+			{},
+			{ runId, store, budget: { maxDurationMs, maxTokens }, adapters: { agentSession } },
+		);
+
+		const report = budgetOutcome(result.result);
+		assert.equal(report?.status, "budget_exceeded");
+		assert.equal(report?.dimension, "duration");
+		assert.equal(report?.reading, workDurationMs);
+		assert.equal(report?.ceiling, maxDurationMs);
+	});
+
 	test("budget prior-run carry charges fresh store usage", async () => {
 		const runId = "budget-prior-run-accounting";
 		const definition = workflow({
