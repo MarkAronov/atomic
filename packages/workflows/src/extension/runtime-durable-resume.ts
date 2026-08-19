@@ -18,6 +18,7 @@ import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import type { WorkflowBudget } from "../shared/budget.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
@@ -27,7 +28,11 @@ import { discoverWorkflows } from "./discovery.js";
 export interface DurableResumeRuntime {
 	resumeDurableWorkflow(
 		workflowId: string,
-		options?: { readonly policy?: WorkflowExecutionPolicy; readonly actor?: WorkflowActor },
+		options?: {
+			readonly policy?: WorkflowExecutionPolicy;
+			readonly actor?: WorkflowActor;
+			readonly budget?: WorkflowBudget;
+		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
@@ -83,6 +88,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				registry: deps.registry,
 				baseRunOpts: {
 					...deps.baseRunOpts(options?.policy),
+					...(options?.budget === undefined ? {} : { budget: options.budget }),
 					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				},
 				durableBackend: backend,
