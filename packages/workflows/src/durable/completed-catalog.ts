@@ -32,8 +32,9 @@ import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-
  * to skip them or they surface as phantom cached tool nodes.
  */
 function isReservedRunCheckpointHash(argsHash: string): boolean {
-	return [RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME].includes(
-		argsHash,
+	return (
+		[RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME].includes(argsHash) ||
+		argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME
 	);
 }
 

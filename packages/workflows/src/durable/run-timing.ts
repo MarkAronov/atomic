@@ -12,7 +12,6 @@
  * phantom stages appear in durable inspection. Repeated updates use distinct
  * checkpoint ids; the latest record (by `completedAt`) wins on hydration
  * because the in-memory mirror replays checkpoints in completion order.
- * Token/cost accounting uses sibling `workflow-run-usage` with the same mechanics.
  *
  * cross-ref: packages/workflows/src/shared/timing.ts elapsedRunMs
  */
@@ -56,7 +55,6 @@ export function priorRunAccounting(
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
 	return restoreBudgetState({ accounting: (output as Record<string, unknown>).accounting })?.accounting;
 }
-
 /**
  * Record the run's current total elapsed time (prior + this session) durably.
  *
@@ -70,11 +68,9 @@ export function recordRunTimingCheckpoint(
 	run: RunSnapshot,
 	options?: { readonly debounce?: boolean; readonly now?: number },
 ): boolean {
-	const timing = runTimingCheckpoint(backend, run, options);
-	const usage = runUsageCheckpoint(backend, run, options?.now);
-	if (timing === undefined && usage === undefined) return false;
-	if (timing !== undefined) backend.recordCheckpoint(timing);
-	if (usage !== undefined) backend.recordCheckpoint(usage);
+	const checkpoints = [runTimingCheckpoint(backend, run, options), runUsageCheckpoint(backend, run, options?.now)];
+	if (checkpoints.every((checkpoint) => checkpoint === undefined)) return false;
+	for (const checkpoint of checkpoints) if (checkpoint !== undefined) backend.recordCheckpoint(checkpoint);
 	return true;
 }
 
@@ -84,11 +80,9 @@ export async function recordRunTimingCheckpointAsync(
 	run: RunSnapshot,
 	options?: { readonly debounce?: boolean; readonly now?: number },
 ): Promise<boolean> {
-	const timing = runTimingCheckpoint(backend, run, options);
-	const usage = runUsageCheckpoint(backend, run, options?.now);
-	if (timing === undefined && usage === undefined) return false;
-	if (timing !== undefined) await backend.recordCheckpointAsync(timing);
-	if (usage !== undefined) await backend.recordCheckpointAsync(usage);
+	const checkpoints = [runTimingCheckpoint(backend, run, options), runUsageCheckpoint(backend, run, options?.now)];
+	if (checkpoints.every((checkpoint) => checkpoint === undefined)) return false;
+	for (const checkpoint of checkpoints) if (checkpoint !== undefined) await backend.recordCheckpointAsync(checkpoint);
 	return true;
 }
 

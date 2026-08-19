@@ -23,17 +23,11 @@ export type StageStatus =
 	| "failed"
 	| "skipped";
 
-export type RunBudgetSnapshot = {
-	readonly maxDurationMs: number;
-	readonly maxTokens?: number;
-	readonly maxCost?: number;
-	readonly warnAtPercent: number;
-};
+export type RunBudgetSnapshot = Readonly<Record<"maxDurationMs" | "warnAtPercent", number>> &
+	Readonly<Partial<Record<"maxTokens" | "maxCost", number>>>;
 export type RunBudgetUsageBaseline = RunMeterCounters & { readonly cost: number };
-export type RunBudgetAccountingState = {
+export type RunBudgetAccountingState = Readonly<Record<"tokens" | "cost", number>> & {
 	readonly baseline: RunBudgetUsageBaseline;
-	readonly tokens: number;
-	readonly cost: number;
 	readonly perCounter: RunMeterCounters;
 };
 export interface RunBudgetState

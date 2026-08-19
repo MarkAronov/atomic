@@ -200,8 +200,8 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 	if (!isRecord(value)) return undefined;
 	const maxDurationMs = numericDuration(value.maxDurationMs);
-	const maxTokens = numericDuration(value.maxTokens);
-	const maxCost = numericDuration(value.maxCost);
+	const maxTokens = numericDuration(value.maxTokens),
+		maxCost = numericDuration(value.maxCost);
 	const warnAtPercent = numericDuration(value.warnAtPercent);
 	if (maxDurationMs === undefined || warnAtPercent === undefined) return undefined;
 	return {
@@ -213,11 +213,9 @@ function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 }
 export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
-	const report = (
-		candidate: unknown,
-		dimension: "duration" | "tokens" | "cost",
-	): RunBudgetState["warning"] | undefined => {
-		if (!isRecord(candidate)) return undefined;
+	const report = (candidate: unknown, dimension: "duration" | "tokens" | "cost") => {
+		if (!isRecord(candidate) || (dimension !== "duration" && dimension !== "tokens" && dimension !== "cost"))
+			return undefined;
 		const reading = numericDuration(candidate.reading);
 		const ceiling = numericDuration(candidate.ceiling);
 		const percent = numericDuration(candidate.percent);
@@ -228,13 +226,9 @@ export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	const duration = report(value.duration, "duration") as RunBudgetState["duration"];
 	const tokens = report(value.tokens, "tokens") as RunBudgetState["tokens"];
 	const cost = report(value.cost, "cost") as RunBudgetState["cost"];
-	const warningValue = isRecord(value.warning) ? value.warning : undefined;
-	const warningDimension = warningValue?.dimension;
-	const warning =
-		warningValue !== undefined &&
-		(warningDimension === "duration" || warningDimension === "tokens" || warningDimension === "cost")
-			? report(warningValue, warningDimension)
-			: undefined;
+	const warning = isRecord(value.warning)
+		? report(value.warning, value.warning.dimension as "duration" | "tokens" | "cost")
+		: undefined;
 	const warnings: Partial<Record<"duration" | "tokens" | "cost", RunBudgetState["warning"]>> = {};
 	const warningValues = isRecord(value.warnings) ? value.warnings : undefined;
 	for (const dimension of ["duration", "tokens", "cost"] as const) {

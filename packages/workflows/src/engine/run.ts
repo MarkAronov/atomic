@@ -208,18 +208,16 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		(durableAccounting === undefined ? undefined : { accounting: durableAccounting });
 	const sameBudget =
 		budgetSnapshot !== undefined &&
-		(continuedBudget?.maxDurationMs ?? 0) === budgetSnapshot.maxDurationMs &&
-		(continuedBudget?.maxTokens ?? 0) === (budgetSnapshot.maxTokens ?? 0) &&
-		(continuedBudget?.maxCost ?? 0) === (budgetSnapshot.maxCost ?? 0) &&
-		continuedBudget?.warnAtPercent === budgetSnapshot.warnAtPercent;
+		continuedBudget?.warnAtPercent === budgetSnapshot.warnAtPercent &&
+		(["maxDurationMs", "maxTokens", "maxCost"] as const).every(
+			(field) => (continuedBudget?.[field] ?? 0) === (budgetSnapshot[field] ?? 0),
+		);
 	const continuationBudgetState =
-		continuedBudgetState === undefined
+		continuedBudgetState === undefined || (!sameBudget && continuedBudgetState.accounting === undefined)
 			? undefined
 			: sameBudget
 				? continuedBudgetState
-				: continuedBudgetState.accounting === undefined
-					? undefined
-					: { accounting: continuedBudgetState.accounting };
+				: { accounting: continuedBudgetState.accounting };
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,

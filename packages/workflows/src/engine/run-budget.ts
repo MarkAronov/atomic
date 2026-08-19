@@ -5,24 +5,16 @@ import {
 	enforceUsageBudget,
 } from "../shared/budget.js";
 import { meter_run, type RunMeters, type RunUsageTree } from "../shared/budget-meter.js";
-import type {
-	RunBudgetAccountingState,
-	RunBudgetState,
-	RunBudgetUsageBaseline,
-	RunSnapshot,
-} from "../shared/store-types.js";
+import type { RunBudgetAccountingState, RunBudgetState, RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowModelUsage } from "../shared/types.js";
-
 export const BUDGET_WRAP_UP_PROMPT =
 	"The workflow budget is exhausted. Stop substantive work, summarize useful progress, identify remaining work or blockers, and leave a clear next step. Do not start any new stages.";
-
 export interface BudgetExceededReport extends BudgetReport {
 	readonly frontierStage: string;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: WorkflowModelUsage;
 }
-
 export class WorkflowBudgetExceededError extends Error {
 	readonly report: BudgetExceededReport;
 	constructor(report: BudgetExceededReport) {
@@ -34,7 +26,6 @@ export class WorkflowBudgetExceededError extends Error {
 		this.report = report;
 	}
 }
-
 export interface BudgetCheckpointContinue {
 	readonly kind: "continue";
 }
@@ -55,7 +46,6 @@ export type BudgetCheckpoint =
 	| BudgetCheckpointWarning
 	| BudgetCheckpointWrapUp
 	| BudgetCheckpointExhausted;
-
 export interface RunBudgetController {
 	readonly enabled: boolean;
 	readonly checkpoint: (frontierStage?: string) => BudgetCheckpoint;
@@ -72,7 +62,6 @@ export interface RunBudgetController {
 	readonly stopAtBoundaryAsync: (frontierStage?: string) => Promise<void>;
 	readonly awaitPendingWrapUp: () => Promise<WorkflowBudgetExceededError | undefined>;
 }
-
 const withFrontier = (
 	report: BudgetReport,
 	frontierStage: string | undefined,
@@ -84,17 +73,10 @@ const withFrontier = (
 		summary === undefined ? {} : { wrapUpSummary: summary },
 		usage === undefined ? {} : { wrapUpUsage: usage },
 	);
-
-const zeroBaseline = (): RunBudgetUsageBaseline => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-const zeroCounters = (): RunMeters["perCounter"] => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-const saturatingDelta = (reading: number, baseline: number): number => Math.max(0, reading - baseline);
-const usageFields = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
-const counterFields = ["input", "output", "cacheRead", "cacheWrite"] as const;
-const mapCounters = (fn: (field: (typeof counterFields)[number]) => number): RunMeters["perCounter"] =>
-	Object.assign(zeroCounters(), Object.fromEntries(counterFields.map((field) => [field, fn(field)])));
-const mapUsage = (fn: (field: (typeof usageFields)[number]) => number): RunBudgetUsageBaseline =>
-	Object.assign(zeroBaseline(), Object.fromEntries(usageFields.map((field) => [field, fn(field)])));
-
+const usageFields = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const,
+	counterFields = ["input", "output", "cacheRead", "cacheWrite"] as const;
+const mapFields = <F extends string>(fields: readonly F[], fn: (field: F) => number = () => 0): Record<F, number> =>
+	Object.fromEntries(fields.map((field) => [field, fn(field)])) as Record<F, number>;
 export function createRunBudgetController(input: {
 	readonly run: RunSnapshot;
 	readonly budget: EffectiveBudget;
@@ -111,12 +93,13 @@ export function createRunBudgetController(input: {
 	const previousAccounting = state?.accounting;
 	const initial =
 		previousAccounting && usageEnabled ? meter_run(input.usageTree?.() ?? { run }, Date.now()) : undefined;
-	let baseline = mapUsage((field) => (field === "cost" ? initial?.cost : initial?.perCounter[field]) ?? 0);
+	const initialAccounting = initial === undefined ? undefined : { ...initial.perCounter, cost: initial.cost };
+	let baseline = mapFields(usageFields, (field) => initialAccounting?.[field] ?? 0);
 	let charged: RunBudgetAccountingState = {
 		baseline,
 		tokens: previousAccounting?.tokens ?? 0,
 		cost: previousAccounting?.cost ?? 0,
-		perCounter: { ...(previousAccounting?.perCounter ?? zeroCounters()) },
+		perCounter: { ...(previousAccounting?.perCounter ?? mapFields(counterFields)) },
 	};
 	let exhaustedReport: BudgetReport | undefined;
 	let lastReports: readonly BudgetReport[] = [];
@@ -129,20 +112,20 @@ export function createRunBudgetController(input: {
 	};
 	const accountUsage = (meters: RunMeters): RunMeters => {
 		const current = { ...meters.perCounter, cost: meters.cost };
-		const delta = mapUsage((field) => saturatingDelta(current[field], baseline[field]));
-		baseline = mapUsage((field) => Math.max(baseline[field], current[field]));
+		const delta = mapFields(usageFields, (field) => Math.max(0, current[field] - baseline[field]));
+		baseline = mapFields(usageFields, (field) => Math.max(baseline[field], current[field]));
 		charged = {
 			baseline,
 			tokens: charged.tokens + delta.input + delta.output,
 			cost: charged.cost + delta.cost,
-			perCounter: mapCounters((field) => charged.perCounter[field] + delta[field]),
+			perCounter: mapFields(counterFields, (field) => charged.perCounter[field] + delta[field]),
 		};
 		updateState({ accounting: charged });
 		return Object.assign(meters, { tokens: charged.tokens, cost: charged.cost, perCounter: charged.perCounter });
 	};
 	const measure = (): RunMeters => {
 		const durationMs = elapsedRunMs(run);
-		if (!usageEnabled) return { durationMs, tokens: 0, cost: 0, perCounter: zeroCounters() };
+		if (!usageEnabled) return { durationMs, tokens: 0, cost: 0, perCounter: mapFields(counterFields) };
 		return { ...accountUsage(meter_run(input.usageTree?.() ?? { run }, Date.now())), durationMs };
 	};
 	const warningWasSent = (report: BudgetReport): boolean =>
@@ -155,16 +138,10 @@ export function createRunBudgetController(input: {
 		});
 		input.onWarning?.(report);
 	};
+	const ceilings = { duration: budget.maxDurationMs, tokens: budget.maxTokens, cost: budget.maxCost };
 	const setReports = (reports: readonly BudgetReport[]): void => {
 		for (const report of reports) {
-			if (
-				(report.dimension === "duration"
-					? budget.maxDurationMs
-					: report.dimension === "tokens"
-						? budget.maxTokens
-						: budget.maxCost) <= 0
-			)
-				continue;
+			if (ceilings[report.dimension] <= 0) continue;
 			updateState({ [report.dimension]: report } as Partial<RunBudgetState>);
 		}
 	};
@@ -176,14 +153,9 @@ export function createRunBudgetController(input: {
 	): WorkflowBudgetExceededError => {
 		updateState({
 			systemOwnedStop: true,
-			...(delivered
-				? {
-						wrapUpDelivered: true,
-						wrapUpCompleted: true,
-						...(summary === undefined ? {} : { wrapUpSummary: summary }),
-						...(usage === undefined ? {} : { wrapUpUsage: usage }),
-					}
-				: {}),
+			...(delivered ? { wrapUpDelivered: true, wrapUpCompleted: true } : {}),
+			...(delivered && summary !== undefined ? { wrapUpSummary: summary } : {}),
+			...(delivered && usage !== undefined ? { wrapUpUsage: usage } : {}),
 		});
 		const report =
 			exhaustedReport ??
@@ -210,22 +182,20 @@ export function createRunBudgetController(input: {
 		lastReports = checks.map((check) => check.report);
 		setReports(lastReports);
 		let warning: BudgetReport | undefined;
-		for (const check of checks) {
+		for (const check of checks)
 			if (check.kind === "continue" && check.warning && !warningWasSent(check.report)) {
 				warning ??= check.report;
 				recordWarning(check.report);
 			}
-		}
 		const exhausted = checks.find((check) => check.kind === "exhausted");
-		if (exhausted !== undefined) {
-			exhaustedReport ??= exhausted.report;
-			if (state?.wrapUpCompleted !== true) return { kind: "wrap_up", report: exhausted.report };
-			return {
-				kind: "exhausted",
-				report: withFrontier(exhaustedReport, frontierStage, state.wrapUpSummary, state.wrapUpUsage),
-			};
-		}
-		return warning === undefined ? { kind: "continue" } : { kind: "warn", report: warning };
+		if (exhausted === undefined)
+			return warning === undefined ? { kind: "continue" } : { kind: "warn", report: warning };
+		exhaustedReport ??= exhausted.report;
+		if (state?.wrapUpCompleted !== true) return { kind: "wrap_up", report: exhausted.report };
+		return {
+			kind: "exhausted",
+			report: withFrontier(exhaustedReport, frontierStage, state.wrapUpSummary, state.wrapUpUsage),
+		};
 	};
 	const boundaryCheckpoint = (
 		frontierStage?: string,

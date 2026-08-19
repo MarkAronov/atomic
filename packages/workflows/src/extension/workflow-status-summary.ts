@@ -158,13 +158,9 @@ function awaitingInputEntries(run: RunSnapshot): WorkflowStatusAwaitingInput[] {
 	return entries;
 }
 
-const budgetReport = <D extends "duration" | "tokens" | "cost">(dimension: D, reading: number, ceiling: number) => ({
-	dimension,
-	reading,
-	ceiling,
-	percent: (reading / ceiling) * 100,
-});
-
+function budgetReport(dimension: "duration" | "tokens" | "cost", reading: number, ceiling: number) {
+	return { dimension, reading, ceiling, percent: ceiling === 0 ? 0 : (reading / ceiling) * 100 };
+}
 /** Reduce one run snapshot to its concise status summary. */
 export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
@@ -185,15 +181,14 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 						ceiling: run.budget.maxDurationMs,
 						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
 					});
-	const tokens =
-		run.budget?.maxTokens !== undefined && run.budget.maxTokens > 0
-			? (run.budgetState?.tokens ??
-				budgetReport("tokens", run.budgetState?.accounting?.tokens ?? 0, run.budget.maxTokens))
-			: undefined;
-	const cost =
-		run.budget?.maxCost !== undefined && run.budget.maxCost > 0
-			? (run.budgetState?.cost ?? budgetReport("cost", run.budgetState?.accounting?.cost ?? 0, run.budget.maxCost))
-			: undefined;
+	const usageBudgetReport = (dimension: "tokens" | "cost", ceiling: number | undefined) => {
+		if (ceiling === undefined || ceiling <= 0) return undefined;
+		return (
+			run.budgetState?.[dimension] ?? budgetReport(dimension, run.budgetState?.accounting?.[dimension] ?? 0, ceiling)
+		);
+	};
+	const tokens = usageBudgetReport("tokens", run.budget?.maxTokens) as RunBudgetState["tokens"];
+	const cost = usageBudgetReport("cost", run.budget?.maxCost) as RunBudgetState["cost"];
 	const budgetState =
 		run.budget === undefined
 			? undefined

@@ -317,11 +317,8 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		for (const warning of budgetWarningReports(run)) {
 			const key = budgetWarningKey(run, warning.dimension);
 			if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) continue;
-			if (state.suppressionDepth > 0) {
-				state.deliveredTerminalRuns.add(key);
-				continue;
-			}
-			delivery.deliver(key, makeBudgetWarningNotice(run, warning));
+			if (state.suppressionDepth > 0) state.deliveredTerminalRuns.add(key);
+			else delivery.deliver(key, makeBudgetWarningNotice(run, warning));
 		}
 	};
 
@@ -482,7 +479,6 @@ function budgetWarningReports(run: RunSnapshot): readonly BudgetReport[] {
 	);
 	return warnings.length > 0 ? warnings : run.budgetState?.warning === undefined ? [] : [run.budgetState.warning];
 }
-
 function makeBudgetWarningNotice(run: RunSnapshot, warning: BudgetReport): WorkflowLifecycleNoticeDetails {
 	return {
 		kind: "budget_warning",

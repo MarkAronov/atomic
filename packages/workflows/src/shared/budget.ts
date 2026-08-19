@@ -1,17 +1,14 @@
 /** Pure workflow run-budget declarations and resolution. */
 
 export type BudgetDimension = "duration" | "tokens" | "cost";
-
 export interface BudgetReport {
 	readonly dimension: BudgetDimension;
 	readonly reading: number;
 	readonly ceiling: number;
 	readonly percent: number;
 }
-
 export type DurationBudgetReport = BudgetReport & { readonly dimension: "duration" };
 export type UsageBudgetReport = BudgetReport & { readonly dimension: "tokens" | "cost" };
-
 export interface WorkflowBudget {
 	readonly maxDurationMs?: number;
 	readonly maxTokens?: number;
@@ -41,7 +38,6 @@ export function enforceDurationBudget(
 export type UsageBudgetCheck =
 	| { readonly kind: "continue"; readonly report: UsageBudgetReport; readonly warning: boolean }
 	| { readonly kind: "exhausted"; readonly report: UsageBudgetReport };
-
 export function enforceUsageBudget(
 	dimension: "tokens" | "cost",
 	reading: number,
