@@ -8,6 +8,7 @@ import {
 	type TuiInputListener,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
+import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
@@ -312,6 +313,18 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	}
 
 	/**
+	 * Last stop before pi-tui turns the composited screen into bytes, and where
+	 * it already removes its own `CURSOR_MARKER`. Every component tree that this
+	 * renderer paints converges here, so one strip covers the overlay, inline,
+	 * widget, and workflows stage-chat mounts at once — including hosts that
+	 * never call `ReservedBottomOverlay.takeActiveRow`. The mark is zero-width,
+	 * so removing it after cursor extraction cannot move a column.
+	 */
+	protected override applyLineResets(lines: string[]): string[] {
+		return stripOverlayActiveRowMarker(super.applyLineResets(lines));
+	}
+
+	/**
 	 * Keep pi-tui's private predicate as the fallback for its single-report
 	 * grammar. Injected terminals can deliver coalesced reports, so parse those
 	 * chunks locally before asking pi-tui about an unparsed value.
@@ -532,6 +545,13 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 	);
 }
 
+/** Main-screen fallback renderer, carrying the same central mark strip as the fullscreen one. */
+class AtomicTuiMainScreen extends TuiMainScreen {
+	protected override applyLineResets(lines: string[]): string[] {
+		return stripOverlayActiveRowMarker(super.applyLineResets(lines));
+	}
+}
+
 /** Creates the fullscreen renderer for interactive TTY sessions. */
 export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
 	const usesInjectedTerminal = options.terminal !== undefined;
@@ -539,7 +559,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): Interactiv
 	if (!shouldUseFullscreenTui(usesInjectedTerminal)) {
 		// The normal CLI never reaches the interactive mode without a TTY. Keep a
 		// main-screen renderer for internal harnesses and guarded fallback paths.
-		return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+		return new AtomicTuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
 	}
 	return createFullscreenTui({ ...options, terminal });
 }
