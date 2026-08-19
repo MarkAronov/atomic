@@ -4735,6 +4735,9 @@ Best practices:
 - Record a progress magnitude in the ledger beside the boolean stop bit; a flat or decreasing series is the stall signal that the loop is burning iterations without moving.
 - Treat the trend as a monitoring and escalate-to-human signal, never a kill switch: the explicit stop condition remains authoritative. See [Verification scaling](#verification-scaling).
 
+- The builtin defaults `max_iterations=5`, `progress_scoring=true`, and `progress_repeats=1`; set `progress_scoring` false to omit advisory scoring, while `progress_repeats` is the repeat count passed to the scoring primitive. Each scored iteration adds a `progress` entry to `progress-ledger.json` with `score`, `perRepeat` (null for an invalid repeat), `trend`, and the classifier `window`; the ledger also emits `progress_curve`, `final_trend`, and `progress_disclaimer`.
+- Progress scores use the anchored 1–20 scale and average valid repeat scores per checkpoint. `classify_trend` uses `window=3`, `riseDelta=1.5`, and `fallDelta=-1.5`; it compares equal leading/trailing halves of the trailing two windows, drops an odd middle sample, and classifies inclusive threshold crossings as `rising`, `flat`, or `regressing`. A short series is `flat` evidence.
+- The trend is monitoring and escalation evidence only: it never kills, terminates, or approves a loop, and the explicit evaluator stop condition remains authoritative. `progress_curve`, `final_trend`, and `progress_disclaimer` are advisory outputs, not alternate closure signals.
 ##### 7. Constructive quorum
 
 This prompt-level reviewer pattern is used by the `goal` and `ralph` builtins; it does not add a reducer or quorum mechanism.
