@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.14-alpha.6] - 2026-08-19
+
 ### Fixed
 
 - Fixed consumer TypeScript errors in `selection-math` when `noUncheckedIndexedAccess` is enabled ([#2543](https://github.com/bastani-inc/atomic/issues/2543)).
