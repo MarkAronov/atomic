@@ -576,6 +576,44 @@ describe("token and cost budget metering", () => {
 		assert.equal(report?.wrapUpSummary, "wrap summary");
 	});
 
+	test("budget executor enforces a definition token budget through default-model store usage", async () => {
+		const messages: AgentSession["messages"] = [];
+		let promptCount = 0;
+		let lastAssistantText = "";
+		const usage = { input: 2, output: 3, cacheRead: 8, cacheWrite: 9, cost: 0.25 };
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return makeMockSession({
+					model: { provider: "anthropic", id: "default-budget" } as AgentSession["model"],
+					messages,
+					async prompt() {
+						lastAssistantText = promptCount++ === 0 ? "progress" : "wrap summary";
+						messages.push(assistantMessageWithUsage(lastAssistantText, usage));
+					},
+					getLastAssistantText: () => lastAssistantText,
+				}).session;
+			},
+		};
+		const definition = workflow({
+			name: "budget-definition-default-model",
+			description: "",
+			budget: { maxTokens: 1 },
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("default-frontier").prompt("progress") }),
+		});
+		const store = createStore();
+		const result = await run(definition, {}, { store, adapters: { agentSession } });
+
+		const report = budgetOutcome(result.result);
+		assert.equal(report?.status, "budget_exceeded");
+		assert.equal(report?.dimension, "tokens");
+		assert.equal(report?.reading, 5);
+		assert.equal(report?.frontierStage, "default-frontier");
+		assert.equal(report?.wrapUpSummary, "wrap summary");
+		assert.deepEqual(store.runs()[0]?.stages[0]?.modelAttempts?.[0]?.usage, { ...usage, turns: 1 });
+	});
+
 	test("budget status reports token and cost dimensions alongside duration", () => {
 		const run = budgetRun({
 			budget: { maxDurationMs: 100, maxTokens: 10, maxCost: 1, warnAtPercent: 80 },
