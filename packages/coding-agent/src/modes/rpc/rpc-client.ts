@@ -113,7 +113,6 @@ export class RpcClient extends RpcClientApi {
 	}
 
 	async start(): Promise<void> {
-		if (this.stopPromise) await this.stopPromise;
 		if (this.process) {
 			throw new Error("Client already started");
 		}
@@ -338,6 +337,9 @@ export class RpcClient extends RpcClientApi {
 	async restart(sessionFile: string | undefined): Promise<void> {
 		const permit = this.restartRevision;
 		await this.stopCurrentGeneration();
+		// Join an in-flight stop before the permit check: waiting after it would
+		// reopen the window this fence exists to close.
+		if (this.stopPromise) await this.stopPromise;
 		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
 		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
 		await this.start();

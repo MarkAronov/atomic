@@ -210,6 +210,7 @@ serialTest(
 				() => undefined,
 				(error: unknown) => error,
 			);
+			await sleep(5);
 			const secondStop = client.stop();
 			assert.strictEqual(secondStop, firstStop, "concurrent stops must share the teardown");
 
