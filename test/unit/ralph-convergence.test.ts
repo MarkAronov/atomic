@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
+import { renderReviewerPrompt } from "../../packages/workflows/builtin/goal-prompts.js";
+import { REVIEWER_CALIBRATION_RULES } from "../../packages/workflows/builtin/shared-prompts.js";
+import { renderRalphReviewerPrompt } from "../../packages/workflows/builtin/ralph-reviewer-prompt.js";
+import { workflowCwdContextSection } from "../../packages/workflows/builtin/ralph-core.js";
 
 describe("Ralph convergence", () => {
 	let tempCwd: string | undefined;
@@ -95,3 +99,36 @@ describe("Ralph convergence", () => {
 		assert.match(pullRequestPrompt, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
 	});
 });
+
+	test("reviewer calibration convergence prompts retain existing contract sections", () => {
+		const goalPrompt = renderReviewerPrompt({
+			reviewerRole: "Completion Reviewer",
+			focus: "Check the objective evidence.",
+			objective: "Keep the objective true",
+			ledgerPath: "/tmp/goal-ledger.json",
+			orchestratorReceiptPath: "/tmp/orchestrator-receipt.md",
+			comparisonBaseBranch: "main",
+			reviewQuorum: 2,
+			blockerThreshold: 3,
+			createPr: false,
+		});
+		const ralphPrompt = renderRalphReviewerPrompt({
+			workflowPrompt: "Keep the objective true",
+			acceptanceCriteria: "Keep the objective true",
+			workflowCwdContext: workflowCwdContextSection("/tmp/project"),
+			comparisonBaseBranch: "main",
+			researchPath: "/tmp/research.md",
+			implementationNotesPath: "/tmp/implementation-notes.md",
+			orchestratorReportPath: "/tmp/orchestrator-report.md",
+			qaVideoPath: "/tmp/qa-evidence.webm",
+			createPr: false,
+		});
+
+		for (const prompt of [goalPrompt, ralphPrompt]) {
+			assert.equal(prompt.includes(REVIEWER_CALIBRATION_RULES), true);
+			assert.match(prompt, /Literal objective contract:/);
+			assert.match(prompt, /Independent verification:/);
+			assert.match(prompt, /Convergence flag \(stop_review_loop\):/);
+			assert.match(prompt, /discrete, actionable/);
+		}
+	});
