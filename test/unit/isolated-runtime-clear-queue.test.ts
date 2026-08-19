@@ -18,8 +18,7 @@ function servicesFor(harness: Harness) {
 
 function createClearQueueClient() {
 	let eventListener: ((event: RpcEvent) => void) | undefined;
-	const clearRequest = Promise.withResolvers<void>();
-	let clearCalls = 0;
+	const clearRequests: PromiseWithResolvers<void>[] = [];
 	const client = {
 		onEvent(listener: (event: RpcEvent) => void) {
 			eventListener = listener;
@@ -30,8 +29,9 @@ function createClearQueueClient() {
 		onGenerationEnded: () => () => {},
 		requestInternal<T>(command: { type: string }): Promise<T> {
 			if (command.type === "clear_queue") {
-				clearCalls += 1;
-				return clearRequest.promise as Promise<T>;
+				const request = Promise.withResolvers<void>();
+				clearRequests.push(request);
+				return request.promise as Promise<T>;
 			}
 			return Promise.resolve(undefined as T);
 		},
@@ -43,11 +43,13 @@ function createClearQueueClient() {
 		emit(event: RpcEvent): void {
 			eventListener?.(event);
 		},
-		reject(error: Error): void {
-			clearRequest.reject(error);
+		reject(error: Error, index = 0): void {
+			const request = clearRequests[index];
+			if (request === undefined) throw new Error(`no clear_queue request at index ${index}`);
+			request.reject(error);
 		},
 		get clearCalls(): number {
-			return clearCalls;
+			return clearRequests.length;
 		},
 	};
 }
@@ -156,6 +158,55 @@ test("clearQueue keeps an authoritative empty queue_update when the remote clear
 		session.clearQueue();
 		probe.emit({ type: "queue_update", steering: [], followUp: [] });
 		probe.reject(new Error("engine unavailable"));
+		await settleRejectedClear();
+
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("an older failed clear cannot overwrite a newer clear's state", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const session = runtime.session;
+		probe.emit({ type: "queue_update", steering: ["before steer"], followUp: ["before follow-up"] });
+
+		assert.deepEqual(session.clearQueue(), { steering: ["before steer"], followUp: ["before follow-up"] });
+		assert.deepEqual(session.clearQueue(), { steering: [], followUp: [] });
+		assert.equal(probe.clearCalls, 2);
+
+		probe.reject(new Error("engine unavailable"), 0);
+		await settleRejectedClear();
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+
+		probe.reject(new Error("engine unavailable"), 1);
+		await settleRejectedClear();
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("overlapping failed clears settle identically when rejected newest-first", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const session = runtime.session;
+		probe.emit({ type: "queue_update", steering: ["before steer"], followUp: ["before follow-up"] });
+
+		session.clearQueue();
+		session.clearQueue();
+
+		probe.reject(new Error("engine unavailable"), 1);
+		await settleRejectedClear();
+		probe.reject(new Error("engine unavailable"), 0);
 		await settleRejectedClear();
 
 		assert.deepEqual(session.getSteeringMessages(), []);

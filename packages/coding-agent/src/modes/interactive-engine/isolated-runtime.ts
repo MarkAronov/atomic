@@ -38,7 +38,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
-	private queueUpdateGeneration = 0;
+	/**
+	 * Bumped by every authoritative queue_update and every optimistic local
+	 * clear. A failed clear_queue restores its snapshot only while the
+	 * generation it captured is still current, so neither an engine update nor
+	 * a newer clear can be overwritten by a stale rollback.
+	 */
+	private queueGeneration = 0;
 	private engineCallbackActive = false;
 	private readonly queuePause: RemoteQueuePause;
 	private autoCompactionEnabled = true;
@@ -407,18 +413,21 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: () => {
 					const queued = { steering: [...this.steeringMessages], followUp: [...this.followUpMessages] };
-					const generation = this.queueUpdateGeneration;
+					this.queueGeneration += 1;
+					const generation = this.queueGeneration;
 					this.steeringMessages = [];
 					this.followUpMessages = [];
 					const clearRequest = this.client.requestInternal({ type: "clear_queue" });
 					this.dispatchBestEffort(
 						"clear queue",
 						clearRequest.catch((error: Error) => {
-							// A later queue_update is engine truth, including an empty one. Length
-							// cannot stand in for that: an authoritative empty update looks like
-							// "no update arrived" and would restore messages the engine already
-							// removed. Restore the snapshot only when no update followed this clear.
-							if (this.queueUpdateGeneration === generation) {
+							// A later queue_update is engine truth, including an empty one, and a
+							// later overlapping clear owns a newer snapshot. Array length cannot
+							// stand in for either: an authoritative empty update looks like "no
+							// update arrived" and would resurrect messages the engine removed,
+							// while concurrent rollbacks would make the result depend on rejection
+							// order. Restore only while this clear's generation is still current.
+							if (this.queueGeneration === generation) {
 								this.steeringMessages = [...queued.steering];
 								this.followUpMessages = [...queued.followUp];
 							}
@@ -585,7 +594,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.compactionReason = undefined;
 				break;
 			case "queue_update":
-				this.queueUpdateGeneration += 1;
+				this.queueGeneration += 1;
 				this.steeringMessages = [...event.steering];
 				this.followUpMessages = [...event.followUp];
 				break;
