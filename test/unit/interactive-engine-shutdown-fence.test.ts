@@ -10,11 +10,14 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "vitest";
+import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import type { ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import { EngineHealthController } from "../../packages/coding-agent/src/modes/interactive-engine/engine-health.ts";
+import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { RESTART_CANCELLED_MESSAGE } from "../../packages/coding-agent/src/modes/rpc/rpc-command-timeouts.ts";
+import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 import { bunExecutable, moduleDir, sleep } from "../helpers/runtime.js";
 
 const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
@@ -35,6 +38,49 @@ function ended(): InteractiveEngineGenerationEnded {
 		kind: "exit",
 		expected: false,
 	};
+}
+
+function createBlockingClient(): RpcClient {
+	return new RpcClient({
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
+		provider: "isolation-fixture",
+		model: "blocking-model",
+		args: [
+			"--no-session",
+			"--no-extensions",
+			"--extension",
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
+			"--approve",
+		],
+		interactiveEngine: { onDiagnostic: () => {} },
+	});
+}
+
+function createIsolatedRuntime(harness: Harness, client: RpcClient): IsolatedInteractiveRuntime {
+	const localRuntime = new AgentSessionRuntime(
+		harness.session,
+		{
+			cwd: harness.tempDir,
+			agentDir: harness.tempDir,
+			settingsManager: harness.settingsManager,
+		} as never,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+	);
+	return new IsolatedInteractiveRuntime(
+		localRuntime,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+		client,
+	);
 }
 
 test("shutdown stops the child, joins the in-flight attempt, and reports no failure", async () => {
@@ -145,6 +191,82 @@ serialTest(
 			assert.equal(isAlive(firstPid), false, "the original child outlived the stop");
 		} finally {
 			await client.stop();
+		}
+	},
+	60_000,
+);
+
+serialTest(
+	"a second stop after restart begins still cancels the replacement",
+	async () => {
+		const client = createBlockingClient();
+		try {
+			await client.start();
+			const firstPid = client.getEnginePid();
+			assert.ok(firstPid, "engine child never reported its pid");
+
+			const firstStop = client.stop();
+			const restart = client.restart(undefined).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await sleep(5);
+			const secondStop = client.stop();
+			assert.strictEqual(secondStop, firstStop, "concurrent stops must share the teardown");
+
+			await firstStop;
+			const outcome = await restart;
+			await sleep(250);
+			const observedPid = client.getEnginePid();
+			assert.equal(
+				observedPid,
+				firstPid,
+				`a replacement child was spawned after the second stop (firstPid=${firstPid}, observedPid=${observedPid})`,
+			);
+			assert.ok(outcome instanceof Error, "a superseded restart must not report success");
+			assert.match((outcome as Error).message, /restart cancelled/i);
+			assert.equal(isAlive(firstPid), false, "the original child outlived the stop");
+		} finally {
+			await client.stop();
+		}
+	},
+	60_000,
+);
+
+serialTest(
+	"isolated runtime disposal leaves no child after an overlapping replacement",
+	async () => {
+		const harness = await createHarness();
+		const client = createBlockingClient();
+		const runtime = createIsolatedRuntime(harness, client);
+		try {
+			await client.start();
+			const firstPid = client.getEnginePid();
+			assert.ok(firstPid, "engine child never reported its pid");
+
+			const firstStop = client.stop();
+			const restart = client.restart(undefined).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			const disposal = runtime.dispose();
+
+			await firstStop;
+			await disposal;
+			const outcome = await restart;
+			await sleep(250);
+			const observedPid = runtime.getEnginePid();
+			assert.equal(
+				observedPid,
+				firstPid,
+				`a replacement child survived disposal (firstPid=${firstPid}, observedPid=${observedPid})`,
+			);
+			assert.ok(outcome instanceof Error, "disposal must cancel an overlapping restart");
+			assert.match((outcome as Error).message, /restart cancelled/i);
+			assert.equal(isAlive(firstPid), false, "the original child outlived disposal");
+		} finally {
+			await runtime.dispose();
+			harness.cleanup();
 		}
 	},
 	60_000,

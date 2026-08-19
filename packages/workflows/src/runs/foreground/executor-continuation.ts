@@ -62,6 +62,20 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 			markPromptAnswerReplayed: () => {},
 		};
 	}
+	if (continuation.resumeFromStageId === undefined) {
+		if (continuation.source.stages.length > 0)
+			throw new Error(
+				`atomic-workflows: insufficient_state: continuation has no resume stage in source run ${continuation.source.id}`,
+			);
+		return {
+			decide: (input) => ({
+				kind: "execute",
+				parentIds: input.parentIds,
+				answerReplay: "unavailable",
+			}),
+			markPromptAnswerReplayed: () => {},
+		};
+	}
 	const resumeStage = continuation.source.stages.find((stage) => stage.id === continuation.resumeFromStageId);
 	if (resumeStage === undefined) {
 		throw new Error(

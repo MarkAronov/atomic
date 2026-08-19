@@ -18,6 +18,7 @@ import type { TSchema } from "typebox";
 import type * as AuthoringContract from "./authoring-contract.js";
 import type { ToolNodeSnapshot } from "./store-types.js";
 
+export type { EffectiveBudget, ResolveBudgetLayers, WorkflowBudget } from "./budget.js";
 export type { AgentSessionEvent, ModelCycleResult, PromptOptions, TSchema, VerbatimCompactionResult };
 
 export type StageUserMessageContent = Parameters<AgentSession["sendUserMessage"]>[0];
@@ -108,6 +109,8 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 	readonly inputs?: TInputs;
 	/** Parent boundary stage display name. Defaults to workflow:<workflow-name>. */
 	readonly stageName?: string;
+	/** Additional subtree-scoped duration budget; parent run overrides do not flow here. */
+	readonly budget?: import("./budget.js").WorkflowBudget;
 }
 
 type WorkflowRequiredKeys<T extends object> = {

@@ -1,6 +1,7 @@
 import { runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
+import type { RunBudgetController } from "../../engine/run-budget.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
@@ -58,6 +59,7 @@ export function createWorkflowStageFactory(input: {
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly stageRegistry: StageControlRegistry;
 	readonly exit: WorkflowExitManager;
+	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
 }): (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) => StageContextWithMeta {
@@ -381,6 +383,7 @@ export function createWorkflowStageFactory(input: {
 			scheduler: input.scheduler,
 			signal: input.signal,
 			exit: input.exit,
+			budget: input.budget,
 			classifyExecutorFailure: input.classifyExecutorFailure,
 			mcpScope: input.createMcpScope(stageId, options),
 			...(stageFailFastScope !== undefined ? { stageFailFastScope } : {}),
