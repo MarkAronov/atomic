@@ -466,13 +466,13 @@ describe("token and cost budget metering", () => {
 			id: "budget-resumed",
 			resumedFromRunId: source.id,
 			budgetState: source.budgetState,
-			stages: [usageStage("next", [budgetAttempt("next", { input: 3, output: 1, cost: 0.25 })])],
 		});
 		const resumedController = createRunBudgetController({
 			run: resumed,
 			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
 			usageTree: () => ({ run: resumed }),
 		});
+		resumed.stages.push(usageStage("next", [budgetAttempt("next", { input: 3, output: 1, cost: 0.25 })]));
 		assert.equal(resumedController.checkpoint("next").kind, "continue");
 		assert.equal(resumed.budgetState?.tokens?.reading, 11);
 		assert.equal(resumed.budgetState?.cost?.reading, 0.75);
@@ -498,18 +498,18 @@ describe("token and cost budget metering", () => {
 			id: "budget-replayed-resumed",
 			resumedFromRunId: source.id,
 			budgetState: source.budgetState,
-			stages: [
-				{ ...usageStage("source", source.stages[0].modelAttempts ?? []), replayed: true },
-				usageStage("next", [
-					budgetAttempt("next", { input: 3, output: 1, cacheRead: 17, cacheWrite: 19, cost: 0.25 }),
-				]),
-			],
+			stages: [{ ...usageStage("source", source.stages[0].modelAttempts ?? []), replayed: true }],
 		});
 		const resumedController = createRunBudgetController({
 			run: resumed,
 			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
 			usageTree: () => ({ run: resumed }),
 		});
+		resumed.stages.push(
+			usageStage("next", [
+				budgetAttempt("next", { input: 3, output: 1, cacheRead: 17, cacheWrite: 19, cost: 0.25 }),
+			]),
+		);
 
 		assert.equal(resumedController.checkpoint("next").kind, "continue");
 		assert.equal(resumed.budgetState?.tokens?.reading, 11);
@@ -729,6 +729,59 @@ describe("token and cost budget metering", () => {
 		assert.equal(report?.dimension, "tokens");
 		assert.equal(report?.reading, 280);
 		assert.equal(current?.budgetState?.accounting?.tokens, 280);
+	});
+
+	test("budget prior-run carry with stages does not recharge persisted usage", async () => {
+		const runId = "budget-prior-run-stages-accounting";
+		const definition = workflow({
+			name: "budget-prior-run-stages-accounting",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({
+				result: await ctx.stage("fresh-spend", { model: "test/model" }).prompt("fresh work"),
+			}),
+		});
+		const store = createStore();
+		store.recordRunStart(
+			budgetRun({
+				id: runId,
+				name: definition.name,
+				budget: { maxDurationMs: 0, maxTokens: 250, warnAtPercent: 80 },
+				stages: [usageStage("prior-spend", [budgetAttempt("test/model", { input: 120, output: 80 })])],
+				budgetState: {
+					accounting: {
+						baseline: { input: 120, output: 80, cacheRead: 0, cacheWrite: 0, cost: 0 },
+						tokens: 200,
+						cost: 0,
+						perCounter: { input: 120, output: 80, cacheRead: 0, cacheWrite: 0 },
+					},
+				},
+			}),
+		);
+
+		const result = await run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				budget: { maxTokens: 250 },
+				adapters: { agentSession: budgetUsageSession({ input: 50, output: 30 }) },
+			},
+		);
+
+		const report = budgetOutcome(result.result);
+		const snapshots = store.runs().filter((candidate) => candidate.id === runId);
+		assert.equal(report?.status, "budget_exceeded");
+		assert.equal(report?.dimension, "tokens");
+		assert.equal(report?.reading, 280);
+		assert.equal(report?.ceiling, 250);
+		assert.deepEqual(
+			snapshots[0]?.stages.map((stage) => stage.name),
+			["prior-spend", "fresh-spend"],
+		);
+		assert.equal(snapshots[1]?.budgetState?.accounting?.tokens, 280);
 	});
 
 	test("budget status reports token and cost dimensions alongside duration", () => {

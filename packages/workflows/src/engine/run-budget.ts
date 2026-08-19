@@ -109,7 +109,9 @@ export function createRunBudgetController(input: {
 	const enabled = ownEnabled || root !== undefined;
 	let state: RunBudgetState | undefined = run.budgetState === undefined ? undefined : { ...run.budgetState };
 	const previousAccounting = state?.accounting;
-	let baseline = zeroBaseline();
+	const initial =
+		previousAccounting && usageEnabled ? meter_run(input.usageTree?.() ?? { run }, Date.now()) : undefined;
+	let baseline = mapUsage((field) => (field === "cost" ? initial?.cost : initial?.perCounter[field]) ?? 0);
 	let charged: RunBudgetAccountingState = {
 		baseline,
 		tokens: previousAccounting?.tokens ?? 0,
