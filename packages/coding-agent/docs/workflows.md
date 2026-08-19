@@ -782,6 +782,7 @@ All six can run by name or as nested definitions. Prefer composition over copyin
 Goal persists the literal objective and immutable acceptance criteria in a run ledger, delegates implementation through bounded orchestrator turns, records receipts, and asks independent reviewers to inspect the current delta. A TypeScript reducer returns `complete`, `blocked`, or `needs_human` rather than trusting free-form completion claims.
 
 Goal reviewers derive checks from the literal objective before consulting implementation receipts, inspect the actual checkout delta, and report commands, observed output, and file:line evidence rather than internal reasoning. Shared contracts cover acceptance-matrix traceability, contract-fidelity risks, end-to-end and QA-video evidence, and independent verification. `stop_review_loop` is the authoritative convergence signal: it remains `false` for P0–P2 findings, any `required_by_objective` finding, or unproven implementation/validation requirements; it becomes `true` only when independent evidence proves the objective and only non-blocking or authorized post-approval work remains. The deterministic reducer consumes that signal without reinterpreting free-form prose.
+Goal and Ralph share the same low-confidence finding re-verification and per-round convergence evidence, documented under [`ralph`](#ralph).
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -804,6 +805,12 @@ Declared outputs include `result`, `status`, `approved`, `goal_id`, `objective`,
 Ralph starts from the raw task, refines it into a research question, runs codebase research, delegates implementation from the research artifact, and sends the patch to independent model-family reviewers. It repeats research, orchestration, and review until reviewers approve or `max_loops` is exhausted.
 
 Ralph uses the same canonical reviewer evidence and convergence contracts as Goal. Its reviewer prompt receives artifacts first and the review objective last, requires independently derived probes before implementation-authored evidence, and preserves unresolved findings when the bounded loop ends. Forked continuation prompts send only changed state and artifact paths instead of repeating the full established contract.
+
+Goal and Ralph re-verify only an eligible consolidated finding: it must still be blocking, have exactly one reviewer, carry a finite `confidence_score` strictly below `DEFAULT_REVERIFY_THRESHOLD=0.7`, and not be aligned `beyond_objective` or `contradicts_objective`; missing confidence is not eligible. Eligible findings are rescored in fresh contexts with the primitive's default `DEFAULT_REPEATS=3`, and an invalid repeat is re-asked once before its audit entry records a null score.
+
+Re-verification has two demotion bars. For an ordinary in-scope finding, demotion requires at least `ceil(repeatCount / 2)` valid scores and a mean below `STANDARD_CONFIRM_THRESHOLD=10`; for `required_by_objective`, every repeat must be valid and the mean must be below `REQUIRED_CONFIRM_THRESHOLD=6`. The original finding remains in the review record while the durable `reverification` audit records the verdict, mean, per-repeat scores, and evidence.
+
+Each parsed Goal review round and Ralph review round appends convergence evidence with `unresolvedBlockingCount`, `meanFindingConfidence`, `fractionProven`, `demotions`, and folded `usage`. Goal persists it in the goal ledger's `convergence` array beside `reverification`; Ralph exposes the same per-round series in `review-round-latest.json`. The convergence classifier reports blocker and proven trends, and its escalation text is evidence only: `stop_review_loop` remains the authoritative closure signal, while review scores and convergence evidence are audit/advisory data that never approve or terminate a loop.
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -4661,6 +4668,15 @@ Best practices:
 - Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it. Keep pure transformations as ordinary TypeScript rather than wrapping every model-stage action in `ctx.tool`.
 - Decompose the rubric into named criteria and score each in its own call. Compound rubrics can latch onto one salient factor; the reference scan reports 76.4% for the best single criterion versus 78.3% for a three-criterion ensemble (§4.3).
 - Aggregate by mean plus an explicit veto for genuinely disqualifying findings, never a unanimity AND across verifiers: unanimity makes false-reject grow as 1−(1−p)^K while the false-accept it buys only decays as (1−p)^K. See [Verification scaling](#verification-scaling).
+- The shipped `adversarial-verification` builtin accepts `criteria` as a record of criterion names to descriptions or as a `criteria.md` Markdown string; the shared `verification-criteria` module also canonicalizes string lists and `CriterionInput` lists. Its public doors are `parse_rubric`, `normalize_criteria`, `select_criteria`, and `decide_verification`, using the `Criterion`, `CriterionInput`, `CriterionScore`, and `Finding` shapes; `NoCriteria` and `EmptyCriterion` are explicit rubric errors.
+- A `criteria.md` rubric may have a `#` title, an optional `##` section whose heading contains `ground truth` (normally `## Ground Truth Note`; the first such section wins), and must include a `##` section whose heading contains `criteri` (normally `## Criteria`) whose `### Name {#id}` headings own non-empty criterion bodies. HTML comments are ignored; an omitted `{#id}` is slugged to lowercase alphanumeric/underscore text (up to 40 characters), with a fallback `criterion` id and encounter-order `_2`/`_3` deduplication. `parse_rubric` rejects a rubric with no criterion headings or an empty criterion body.
+- `VERIFICATION_SCALE` anchors integer scores from 1 (certainly fails) through 20 (verified correct). `select_criteria` preserves the requested id order and rejects unknown ids; `decide_verification` accepts only with quorum, a mean at or above the policy threshold, and no `veto` finding, while an invalid report remains metadata rather than a score.
+- Keep a scoring family in the `SHARED HEAD ‖ VARYING TAIL` layout from `verification-prompts`: the byte-identical head contains the task, ground-truth note, candidate bodies (or caller-provided read paths), and scale anchors in that order; the tail contains only the criterion name and description plus the output-format instruction. Candidate-specific bodies stay in the shared head, not the varying tail, so sibling criteria can reuse the cached prefix.
+- Inline the whole candidate family only while every body is at most `32 * 1024` UTF-8 bytes (`MAX_INLINE_CANDIDATE_BYTES`). If any body is larger, switch the whole family to caller-bound paths, preserving path order and duplicates; an oversized pathless family is rejected rather than guessed.
+- `warm_first_fan_out` schedules the first-seen step for each prefix before releasing the remaining steps, establishing the provider's warm prefix before sibling criteria or pair slots vary. Warm failures are observed without fail-fast, the remaining phase is still attempted before the error is rethrown, and successful results return in input order.
+- The builtin input defaults are `verifier_count=3`, `max_repairs=2`, `accept_mean=14` on the 1–20 scale, and `reask_limit=1`; omitted `criteria` uses the `task_fit`, `evidence`, and `completeness` record. A round expects one schema-valid score for every criterion/verifier cell, and the normal call shape is criteria length multiplied by verifier count.
+- Invalid criterion reports are written as invalid artifacts and re-asked in bounded waves up to `reask_limit`; an invalid or missing report is counted in `invalidCount` only and is never converted into a fail vote or included in the mean. If the required quorum is still missing after the re-asks, the round is `indeterminate` rather than silently narrowing the decision.
+- `score_table_path` names the durable `verification-summary-<round>.json` for the final round. Its object contains `scores` (`criterion_id`, integer `score`, `evidence`, and `findings` with `finding` plus `severity`), `mean`, `invalidCount`, the `decision` (`accept`, `repair`, or `indeterminate` with its corresponding mean/findings or missing count), and folded `usage`; `review_report_path` carries repair guidance or quorum evidence.
 
 ##### 4. Generate-and-filter
 
@@ -4688,6 +4704,7 @@ Best practices:
 - Dedupe before judging so near-identical candidates do not dominate the shortlist.
 - Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
 - When the filter ranks candidates rather than applying a threshold, use the same judge guidance as Tournament: graded per-criterion integer scores rather than binary keep/drop, a Bradley–Terry preference from the score gap so near-ties stay near-ties, and K repeats with candidates swapped between the A and B slots. See [Verification scaling](#verification-scaling).
+- For a custom ranking filter, reuse the shared `verification-criteria` module and its `criteria.md` parser rather than inventing a binary keep/drop rubric; stable criterion ids let the judge select the same criteria in each comparison. See [Adversarial verification](#3-adversarial-verification) for the accepted shapes and score decision.
 
 ##### 5. Tournament
 
@@ -4719,6 +4736,8 @@ Best practices:
 - Have judges emit graded per-criterion integer scores rather than a binary winner, then derive a Bradley–Terry preference from the score gap so near-ties stay near-ties.
 - Repeat each pair K times with the candidates swapped between the A and B slots; the swap cancels positional bias within the pair and variance falls as O(1/K). In the reference scan's discrete-judge study, 26.7% of pairs tied at K=1; with slot swaps, the reported K=1→16 result moved from 74.7% to 77.5%.
 - See [Verification scaling](#verification-scaling) for score granularity and call-budget trade-offs.
+- The shipped tournament inputs use `num_attempts=4` and `max_concurrency=4`; `n_evaluations=2` repeats each criterion/directed pair, `pivots=1` selects the second comparison phase's pivot candidates, and `seed=0` drives the deterministic schedule. `criteria` is optional and accepts a markdown rubric, a string-to-description record, a string list, or a `CriterionInput` list; omission uses the shipped three-criterion Correctness, Completeness, and Evidence and task fit rubric. Optional ordered `models` ids are assigned round-robin to attempt slots.
+- `comparisons_path` points to `comparisons.json`, whose ledger records the task and seed, `params` (`n`, `pivots`, `n_evaluations`, and normalized `criteria`), per-job `comparisons` rows (`a`, `b`, phase, criterion id, repeat, slot-swap flag, scores or an `invalid` marker, preference, and judge artifact path), aggregate `pairs`, weights/counts, the complete `ranking`, and optional model assignment. Its `budget` records planned versus executed judge stages, including re-asks; invalid reports remain auditable rows and an all-invalid pair remains marked invalid rather than becoming a score.
 
 ##### 6. Loop until done
 
@@ -4746,6 +4765,9 @@ Best practices:
 - Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
 - Record a progress magnitude in the ledger beside the boolean stop bit; a flat or decreasing series is the stall signal that the loop is burning iterations without moving.
 - Treat the trend as a monitoring and escalate-to-human signal, never a kill switch: the explicit stop condition remains authoritative. See [Verification scaling](#verification-scaling).
+- The builtin defaults `max_iterations=5`, `progress_scoring=true`, and `progress_repeats=1`; set `progress_scoring` false to omit advisory scoring, while `progress_repeats` is the repeat count passed to the scoring primitive. Each scored iteration adds a `progress` entry to `progress-ledger.json` with `score`, `perRepeat` (null for an invalid repeat), `trend`, and the classifier `window`; the ledger also emits `progress_curve`, `final_trend`, and `progress_disclaimer`.
+- Progress scores use the anchored 1–20 scale and average valid repeat scores per checkpoint. `classify_trend` uses `window=3`, `riseDelta=1.5`, and `fallDelta=-1.5`; it compares equal leading/trailing halves of the trailing two windows, drops an odd middle sample, and classifies inclusive threshold crossings as `rising`, `flat`, or `regressing`. A short series is `flat` evidence.
+- The trend is monitoring and escalation evidence only: it never kills, terminates, or approves a loop, and the explicit evaluator stop condition remains authoritative. `progress_curve`, `final_trend`, and `progress_disclaimer` are advisory outputs, not alternate closure signals.
 
 ##### 7. Constructive quorum
 
@@ -4931,6 +4953,7 @@ This is authoring guidance for custom workflows, not a description of shipped bu
 - Treat pool diversity as a bet on the selector's oracle ceiling. In the reference scan's pivot tournament, best-of-3 selection reached 86.5% ±1.1 against 79.4% pass@1 with a 92.1% oracle ceiling, while best-of-5 reached 88.0% ±0.6 against 78.7% pass@1 with a 96.6% oracle ceiling. A chance-level selector can make a more diverse pool worse, so widen the pool only once the judge beats chance.
 - Self-verification—having the same model judge its own rollouts—still gained +7.1 over pass@1 in the best-of-3 comparison (86.5% versus 79.4%) and +9.3 in the best-of-5 comparison (88.0% versus 78.7%).
 - For a cheap operating point, an author can use one pivot and K=2 repeats for a best-of-3-shaped comparison budget; this is an authoring recipe, not a shipped default.
+- For the shipped primitive references, see [Adversarial verification](#3-adversarial-verification) for criteria parsing, warm-first scoring, re-asks, and score summaries; [Tournament](#5-tournament) for inputs and `comparisons.json`; [Loop until done](#6-loop-until-done) for progress ledger/trend outputs; and [Goal](#goal)/[Ralph](#ralph) for re-verification and convergence evidence.
 
 #### Choosing a common workflow pattern
 
