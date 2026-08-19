@@ -76,6 +76,10 @@ The bundled `/skill:prompt-engineer` creates, optimizes, evaluates, and troubles
 
 The skill no longer recommends response prefilling, which returns an error on Claude 4.6 and later, or visible chain-of-thought as a primary technique. Use explicit output instructions, schemas, tools, or post-processing instead of prefilling. Request conclusions, citations, commands, and observed results rather than reconstructed private reasoning; such requests can trigger Claude Fable 5's `reasoning_extraction` safeguard and force a model fallback.
 
+### Built-in visual explanation guidance
+
+The bundled `/skill:show-me` from [HumanLayer](https://github.com/humanlayer/skills) helps explain the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts. It is distributed under the MIT License.
+
 ## Skill Commands
 
 Skills register as `/skill:name` commands:
