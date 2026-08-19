@@ -28,6 +28,14 @@ export function classifyReturnedRunStatus(
 		};
 	}
 	const returnedStatus = normalizeReturnedWorkflowStatus(result?.status);
+	if (
+		returnedStatus === "budget_exceeded" &&
+		(runSnapshot?.budgetState?.wrapUpCompleted !== true ||
+			runSnapshot.failureDisposition !== "active_blocked" ||
+			runSnapshot.failureRecoverability !== "recoverable")
+	)
+		// Only the system-owned budget door may produce this status.
+		return { status: "completed" };
 	if (returnedStatus === undefined || returnedStatus === "completed" || returnedStatus === "complete") {
 		return { status: "completed" };
 	}

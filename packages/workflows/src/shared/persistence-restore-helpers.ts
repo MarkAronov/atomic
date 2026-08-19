@@ -3,6 +3,8 @@ import type { NormalizedSessionEntry as SessionEntry } from "./persistence-resto
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
 import type {
+	RunBudgetSnapshot,
+	RunBudgetState,
 	RunStatus,
 	StageSnapshot,
 	StageStatus,
@@ -21,7 +23,7 @@ import {
 } from "./workflow-failures.js";
 
 interface RestoredRunBlockedMetadata {
-	readonly failedStageId: string;
+	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -30,6 +32,9 @@ interface RestoredRunBlockedMetadata {
 	readonly failureMessage?: string;
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
+	readonly endedAt?: number;
+	readonly result?: WorkflowOutputValues;
+	readonly budgetState?: RunBudgetState;
 	readonly ts: number;
 }
 
@@ -145,12 +150,12 @@ function markRestoredBlockedFailureStage(snap: StageSnapshot, blockedMeta: Resto
 	snap.failureMessage = blockedMeta.failureMessage;
 	snap.retryAfterMs = blockedMeta.retryAfterMs;
 }
-
 function restoreBlockedStageState(
 	stageMap: Map<string, StageSnapshot>,
 	endedStages: ReadonlySet<string>,
 	blockedMeta: RestoredRunBlockedMetadata,
 ): void {
+	if (blockedMeta.failedStageId === undefined) return;
 	for (const [stageId, snap] of stageMap) {
 		if (endedStages.has(stageId)) continue;
 		if (stageId === blockedMeta.failedStageId) {
@@ -189,6 +194,37 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 	return serializableObject(value) ?? {};
 }
 
+function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
+	if (!isRecord(value)) return undefined;
+	const maxDurationMs = numericDuration(value.maxDurationMs);
+	const warnAtPercent = numericDuration(value.warnAtPercent);
+	return maxDurationMs === undefined || warnAtPercent === undefined ? undefined : { maxDurationMs, warnAtPercent };
+}
+function restoreBudgetState(value: unknown): RunBudgetState | undefined {
+	if (!isRecord(value)) return undefined;
+	const duration = isRecord(value.duration) ? value.duration : {};
+	const report = (candidate: Record<string, unknown>): RunBudgetState["duration"] | undefined => {
+		const reading = numericDuration(candidate.reading);
+		const ceiling = numericDuration(candidate.ceiling);
+		const percent = numericDuration(candidate.percent);
+		return reading === undefined || ceiling === undefined || percent === undefined
+			? undefined
+			: { dimension: "duration", reading, ceiling, percent };
+	};
+	const restoredDuration = report(duration);
+	const warning = isRecord(value.warning) ? report(value.warning) : undefined;
+	const state = {
+		...(restoredDuration !== undefined ? { duration: restoredDuration } : {}),
+		...(warning !== undefined ? { warning } : {}),
+		...(value.warned === true ? { warned: true } : {}),
+		...(value.wrapUpDelivered === true ? { wrapUpDelivered: true } : {}),
+		...(value.wrapUpCompleted === true ? { wrapUpCompleted: true } : {}),
+		...(value.systemOwnedStop === true ? { systemOwnedStop: true } : {}),
+		...(typeof value.wrapUpSummary === "string" ? { wrapUpSummary: value.wrapUpSummary } : {}),
+		...(isRecord(value.wrapUpUsage) ? { wrapUpUsage: value.wrapUpUsage as RunBudgetState["wrapUpUsage"] } : {}),
+	};
+	return Object.keys(state).length > 0 ? state : undefined;
+}
 function isWorkflowChildReplayStatus(status: unknown): status is WorkflowExitStatus {
 	return (
 		status === "completed" ||
@@ -327,19 +363,21 @@ export function findRunBlockedMetadata(
 		const retryAfterMs = numericRetryAfterMs(entry.payload.retryAfterMs);
 		const resumable = entry.payload.resumable;
 		const ts = entry.payload.ts;
+		const result = serializableObject(entry.payload.result);
+		const budgetState = restoreBudgetState(entry.payload.budgetState);
+		const isBudgetStop = budgetState?.systemOwnedStop === true && result?.status === "budget_exceeded";
 		if (
-			typeof failedStageId !== "string" ||
 			typeof error !== "string" ||
 			typeof failureKind !== "string" ||
 			!isWorkflowFailureKind(failureKind) ||
 			failureRecoverability !== "recoverable" ||
 			resumable !== true ||
-			typeof ts !== "number"
-		) {
+			typeof ts !== "number" ||
+			(!isBudgetStop && typeof failedStageId !== "string")
+		)
 			continue;
-		}
 		latest = {
-			failedStageId,
+			...(typeof failedStageId === "string" ? { failedStageId } : {}),
 			error,
 			failureKind,
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
@@ -350,12 +388,14 @@ export function findRunBlockedMetadata(
 			...(typeof failureMessage === "string" ? { failureMessage } : {}),
 			...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
 			resumable: true,
+			...(typeof entry.payload.endedAt === "number" ? { endedAt: entry.payload.endedAt } : {}),
+			...(result !== undefined ? { result } : {}),
+			...(budgetState !== undefined ? { budgetState } : {}),
 			ts,
 		};
 	}
 	return latest;
 }
-
 export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): void {
 	const started = new Map<
 		string,
@@ -422,6 +462,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			...(runMeta.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 				: {}),
+			...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+			...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
 		});
 
 		const error = end.error;
@@ -501,6 +543,8 @@ export function findRunStartMetadata(
 	readonly resumeFromStageId?: string;
 	readonly accumulatedDurationMs?: number;
 	readonly origin?: WorkflowActor;
+	readonly budget?: RunBudgetSnapshot;
+	readonly budgetState?: RunBudgetState;
 } {
 	for (const entry of entries) {
 		if (entry.type !== "workflow.run.start" || entry.payload.runId !== runId) continue;
@@ -510,6 +554,8 @@ export function findRunStartMetadata(
 		const resumedFromRunId = entry.payload.resumedFromRunId;
 		const resumeFromStageId = entry.payload.resumeFromStageId;
 		const accumulatedDurationMs = entry.payload.accumulatedDurationMs;
+		const budget = restoreBudgetSnapshot(entry.payload.budget);
+		const budgetState = restoreBudgetState(entry.payload.budgetState);
 		const origin = entry.payload.origin;
 		return {
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
@@ -523,6 +569,8 @@ export function findRunStartMetadata(
 				? { accumulatedDurationMs }
 				: {}),
 			...(origin === "user" || origin === "agent" ? { origin } : {}),
+			...(budget !== undefined ? { budget } : {}),
+			...(budgetState !== undefined ? { budgetState } : {}),
 		};
 	}
 	return {};

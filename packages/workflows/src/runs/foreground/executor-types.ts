@@ -29,7 +29,7 @@ export interface ResolvedInputs extends WorkflowInputValues {}
 
 export interface RunContinuationOpts {
 	readonly source: RunSnapshot;
-	readonly resumeFromStageId: string;
+	readonly resumeFromStageId?: string;
 }
 
 export interface StageSessionCheckpointOptions {
@@ -140,6 +140,8 @@ export interface RunOpts
 		readonly stageId: string;
 		readonly rootRunId: string;
 	};
+	/** Internal root budget scope shared by nested workflow runs. */
+	rootBudget?: import("../../engine/run-budget.js").RunBudgetController;
 	onRunStart?: (snapshot: RunSnapshot) => void;
 	onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
 	onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;

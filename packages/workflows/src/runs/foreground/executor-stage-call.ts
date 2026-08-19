@@ -1,5 +1,6 @@
+import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
 import { rebasedStageStartedAt } from "../../shared/timing.js";
-import type { StageOptions } from "../../shared/types.js";
+import type { StageOptions, WorkflowModelUsage } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { raceAbort } from "./executor-abort.js";
 import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
@@ -119,10 +120,26 @@ export function createTrackedStageCaller(input: {
 		captureChatAnswer();
 		return { result, chatAnswerObserved };
 	};
+	const deliverBudgetWrapUp = async (): Promise<never> => {
+		let summary: string | undefined;
+		let usage: WorkflowModelUsage | undefined;
+		try {
+			const response = await runtime.raceStageSessionHeartbeat(
+				raceAbort(runtime.innerCtx.prompt(BUDGET_WRAP_UP_PROMPT), runtime.signal),
+			);
+			summary = typeof response === "string" ? response : runtime.innerCtx.__getLastAssistantText();
+			usage = runtime.innerCtx.__modelFallbackMeta().modelAttempts?.at(-1)?.usage;
+		} catch {
+			// A failed or aborted wrap-up did not deliver a summary and must not
+			// consume the once-per-run delivery allowance.
+		}
+		throw runtime.budget.finishWrapUp(runtime.name, summary, usage, summary !== undefined);
+	};
 
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
+		if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(runtime.name);
 		await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
@@ -142,6 +159,8 @@ export function createTrackedStageCaller(input: {
 		// final durable checkpoint can replace it without touching a real
 		// failure/skip classification recorded by the catch block.
 		let terminalStateIsSuccess = false;
+		let stageResultBeforeBudget: string | undefined;
+		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
 			if (
@@ -210,8 +229,10 @@ export function createTrackedStageCaller(input: {
 				runtime.state.askUserQuestionObservedThisTurn = false;
 				runtime.state.chatAnswerObservedThisTurn = false;
 				result = await runtime.raceStageSessionHeartbeat(raceAbort(call(), runtime.signal));
+				if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 				const initialDrain = await drainResumeContinuations(result);
 				result = initialDrain.result;
+				if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 				let repeatReadinessAfterChatTurn = initialDrain.chatAnswerObserved;
 
 				if (
@@ -239,6 +260,7 @@ export function createTrackedStageCaller(input: {
 								result = (await runtime.raceStageSessionHeartbeat(
 									raceAbort(runtime.innerCtx.prompt(decision.message), runtime.signal),
 								)) as T;
+								if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 							} else {
 								runtime.state.waitingForStageChatTurn = true;
 								try {
@@ -256,10 +278,15 @@ export function createTrackedStageCaller(input: {
 									runtime.state.waitingForStageChatTurn = false;
 								}
 								if (runtime.signal.aborted) break;
-								result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
+								const responseText = runtime.innerCtx.__getLastAssistantText();
+								if (responseText !== undefined) {
+									result = responseText as T;
+									if (runtime.budget.enabled) stageResultBeforeBudget = responseText;
+								}
 							}
 							const continuationDrain = await drainResumeContinuations(result);
 							result = continuationDrain.result;
+							if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 							repeatReadinessAfterChatTurn ||= continuationDrain.chatAnswerObserved;
 							if (runtime.innerCtx.__structuredOutputFinalized()) break;
 						}
@@ -272,6 +299,11 @@ export function createTrackedStageCaller(input: {
 			} finally {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
+			if (runtime.budget.enabled) stageResultBeforeBudget ??= runtime.innerCtx.__getLastAssistantText();
+			const afterBudget = runtime.budget.checkpoint(runtime.name);
+			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
+			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
+				await runtime.budget.stopAtBoundaryAsync(runtime.name);
 			await runtime.innerCtx.__closeGeneration();
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
@@ -285,7 +317,9 @@ export function createTrackedStageCaller(input: {
 			}
 			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
 			if (trackStageLifecycle) {
-				const assistantText = runtime.innerCtx.__getLastAssistantText();
+				const assistantText = runtime.budget.enabled
+					? (stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText())
+					: runtime.innerCtx.__getLastAssistantText();
 				terminalStateIsSuccess = true;
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
@@ -295,7 +329,29 @@ export function createTrackedStageCaller(input: {
 			return result;
 		} catch (err) {
 			const workflowExitAbort = runtime.signal.aborted ? runtime.exit.currentWorkflowExitAbortReason() : undefined;
-			if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
+			const budgetError = err instanceof WorkflowBudgetExceededError ? err : undefined;
+			if (budgetError !== undefined && trackStageLifecycle && !runtime.state.skippedForParallelFailFast) {
+				let selectedBudgetError = budgetError;
+				if (
+					runtime.activeStore.runs().find((run) => run.id === runtime.runId)?.budgetState?.wrapUpCompleted !== true
+				) {
+					try {
+						await runtime.budget.deliverWrapUp(runtime.name);
+					} catch (wrapUpError) {
+						if (wrapUpError instanceof WorkflowBudgetExceededError) selectedBudgetError = wrapUpError;
+					}
+				}
+				applyTerminalStageState = () => {
+					if (stageResultBeforeBudget !== undefined) {
+						runtime.stageSnapshot.status = "completed";
+						runtime.stageSnapshot.result = stageResultBeforeBudget;
+					} else {
+						runtime.stageSnapshot.status = "failed";
+						runtime.stageSnapshot.error = selectedBudgetError.message;
+					}
+				};
+				throw selectedBudgetError;
+			} else if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
 				runtime.state.stageClosedByWorkflowExit = true;
 				if (trackStageLifecycle && !isTerminalStage(runtime.stageSnapshot)) {
 					const skippedReason = runtime.exit.workflowExitSkippedReason(workflowExitAbort.reason);
@@ -310,6 +366,7 @@ export function createTrackedStageCaller(input: {
 			}
 			throw err;
 		} finally {
+			unregisterBudgetWrapUp();
 			// Finalization, handle release, and limiter release are each independent.
 			// If finalizeStageSnapshot() throws, the limiter must still be released
 			// so the concurrency semaphore is not leaked.

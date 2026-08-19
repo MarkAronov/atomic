@@ -2,7 +2,14 @@ import type { RunEndMetadata } from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, WorkflowFailureKind } from "./store-types.js";
 import type { WorkflowOutputValues } from "./types.js";
 
-const RETURNED_BLOCKED_STATUSES = new Set(["blocked", "needs_human", "incomplete", "auth_blocked", "active"]);
+const RETURNED_BLOCKED_STATUSES = new Set([
+	"blocked",
+	"needs_human",
+	"incomplete",
+	"auth_blocked",
+	"budget_exceeded",
+	"active",
+]);
 
 export interface StructuredRecoverableWorkflowFailure {
 	readonly error: string;
@@ -47,8 +54,31 @@ export function structuredRecoverableWorkflowFailure(
 		| "failedStageId"
 		| "retryAfterMs"
 		| "stages"
+		| "result"
+		| "budgetState"
 	>,
 ): StructuredRecoverableWorkflowFailure | undefined {
+	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
+	if (
+		returnedStatus === "budget_exceeded" &&
+		run.budgetState?.systemOwnedStop === true &&
+		run.failureDisposition === "active_blocked" &&
+		run.failureRecoverability === "recoverable"
+	) {
+		const error = run.error ?? run.failureMessage ?? "Workflow budget exceeded.";
+		return {
+			error,
+			metadata: {
+				...(run.failureCode !== undefined ? { failureCode: run.failureCode } : {}),
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: run.failureMessage ?? error,
+				...(run.failedStageId !== undefined ? { failedStageId: run.failedStageId } : {}),
+				resumable: true,
+				...(run.retryAfterMs !== undefined ? { retryAfterMs: run.retryAfterMs } : {}),
+			},
+		};
+	}
 	const runFailure = structuredRecoverableFailureFromSnapshot(run);
 	if (runFailure !== undefined) return runFailure;
 	if (run.failedStageId === undefined) return undefined;
@@ -69,19 +99,22 @@ export function structuredRecoverableWorkflowFailureText(
 		| "failedStageId"
 		| "retryAfterMs"
 		| "stages"
+		| "result"
+		| "budgetState"
 	>,
 ): string | undefined {
 	return structuredRecoverableWorkflowFailure(run)?.error;
 }
 
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
+	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
 		(run.status === "running" || run.status === "completed") &&
 		structuredRecoverableWorkflowFailure(run) !== undefined
 	)
 		return "blocked";
+	if (returnedStatus === "budget_exceeded") return run.status;
 	if (run.status !== "completed") return run.status;
-	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (returnedStatus === "failed") return "failed";
 	if (returnedStatus !== undefined && isReturnedBlockedWorkflowStatus(returnedStatus)) return "blocked";
 	return run.status;
