@@ -142,8 +142,8 @@ export function createRunBudgetController(input: {
 		return Object.assign(meters, { tokens: charged.tokens, cost: charged.cost, perCounter: charged.perCounter });
 	};
 	const measure = (): RunMeters => {
-		const measured = meter_run(input.usageTree?.() ?? { run }, Date.now());
-		return usageEnabled ? accountUsage(measured) : measured;
+		if (!usageEnabled) return { durationMs: elapsedRunMs(run), tokens: 0, cost: 0, perCounter: zeroCounters() };
+		return accountUsage(meter_run(input.usageTree?.() ?? { run }, Date.now()));
 	};
 	const warningWasSent = (report: BudgetReport): boolean =>
 		report.dimension === "duration" ? state?.warned === true : state?.warnings?.[report.dimension] !== undefined;
