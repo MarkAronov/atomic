@@ -1,4 +1,6 @@
 import type { ReviewConvergenceSummary } from "./review-convergence.js";
+import type { ReverifyAuditEntry } from "./goal-reverify.js";
+import type { ConvergenceEntry } from "./goal-convergence.js";
 
 export const DEFAULT_MAX_TURNS = 10;
 // Goal Runner runs three independent reviewer personas; two approvals form a majority.
@@ -55,6 +57,7 @@ export type ReviewerError = {
 
 export type ReviewDecision = {
   readonly findings: readonly ReviewFinding[];
+  readonly criterion_scores?: readonly { readonly criterion_id: string; readonly score: number }[];
   readonly overall_correctness: "patch is correct" | "patch is incorrect";
   readonly overall_explanation: string;
   readonly overall_confidence_score: number;
@@ -123,6 +126,9 @@ export type GoalLedger = {
   blockers: BlockerObservation[];
   decisions: ReducerDecision[];
   lifecycle: GoalLifecycleEvent[];
+  /** V9 audit records; the original findings remain in `reviews`. */
+  reverification?: ReverifyAuditEntry<ReviewFinding>[];
+  convergence?: ConvergenceEntry[];
 };
 
 export type ReducerOutcome = {

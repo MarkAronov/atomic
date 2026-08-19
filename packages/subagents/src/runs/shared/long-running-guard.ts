@@ -1,4 +1,5 @@
 import type { ResolvedControlConfig } from "../../shared/types.js";
+import { progressAwareThreshold } from "./progress-trend.js";
 
 interface LongRunningNoticeMetrics {
 	startedAt: number;
@@ -121,7 +122,8 @@ export function nextLongRunningTrigger(
 	config: ResolvedControlConfig,
 	metrics: LongRunningNoticeMetrics,
 ): LongRunningTriggerReason | undefined {
-	if (metrics.now - metrics.startedAt >= config.activeNoticeAfterMs) return "time_threshold";
+	const activeNoticeAfterMs = progressAwareThreshold(config.activeNoticeAfterMs, config.progressScores);
+	if (metrics.now - metrics.startedAt >= activeNoticeAfterMs) return "time_threshold";
 	if (config.activeNoticeAfterTurns !== undefined && metrics.turns >= config.activeNoticeAfterTurns)
 		return "turn_threshold";
 	if (config.activeNoticeAfterTokens !== undefined && metrics.tokens >= config.activeNoticeAfterTokens)

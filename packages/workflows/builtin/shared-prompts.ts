@@ -49,6 +49,11 @@ export function withSteeringPropagation(prompt: string): string {
   return `${prompt.slice(0, instructionAt)}\n\n${tagged}${prompt.slice(instructionAt)}`;
 }
 
+export const REVIEWER_CALIBRATION_RULES = [
+  "Trust observed output over the agent's narration.",
+  'Agent declarations of success ("done", "all tests pass") are ZERO evidence on their own.',
+].join("\n");
+
 export const WORKER_PREFLIGHT_CONTRACT = [
   "Before implementation delegation, infer the checkout's language, framework, build system, and setup requirements from repository evidence rather than ecosystem assumptions.",
   "Inspect source layout, setup docs, manifests, lockfiles, toolchain and codegen files, CI/workflow configuration, scripts, and generated-artifact conventions for missing dependencies, generated files, toolchains, submodules, or other initialization artifacts.",

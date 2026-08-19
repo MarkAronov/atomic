@@ -93,6 +93,11 @@ const ControlOverrides = Type.Object({
 			description: "Consecutive mutating-tool failures before escalating to needs_attention (default: 3)",
 		}),
 	),
+	progressScores: Type.Optional(
+		Type.Array(Type.Number(), {
+			description: "Optional injected progress scores used only to raise attention priority; never a run outcome.",
+		}),
+	),
 	notifyOn: Type.Optional(
 		Type.Array(Type.String({ enum: ["active_long_running", "needs_attention"] }), {
 			description:
