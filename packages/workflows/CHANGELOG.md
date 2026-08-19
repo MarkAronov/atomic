@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.14-alpha.5] - 2026-08-19
+
 ### Added
 
 - Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs or resumes. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status; these declarations provide the resolution core for the duration enforcement below ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
