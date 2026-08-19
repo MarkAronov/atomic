@@ -98,7 +98,9 @@ export function createTrackedToolPrimitive(input: {
 		},
 	});
 	const lifecycle = createToolNodeLifecycle(input);
-	const budgetBoundary = (): Promise<void> => input.budget.stopAtBoundaryAsync(input.run.stages.at(-1)?.name);
+	const budgetBoundary = input.budget.enabled
+		? (): Promise<void> => input.budget.stopAtBoundaryAsync(input.run.stages.at(-1)?.name)
+		: undefined;
 	const tool = createToolPrimitive({
 		workflowId: input.workflowId,
 		backend: input.backend,
@@ -131,8 +133,7 @@ export function createTrackedToolPrimitive(input: {
 			if (!admission.accepted) observedQuit ??= admission.error;
 			return admission;
 		},
-		beforeToolCall: budgetBoundary,
-		afterToolCall: budgetBoundary,
+	...(budgetBoundary !== undefined ? { beforeToolCall: budgetBoundary, afterToolCall: budgetBoundary } : {}),
 		...lifecycle,
 	});
 	const abandonInFlightAsCancelled = (reason: unknown): readonly string[] => {

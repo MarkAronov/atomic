@@ -169,7 +169,7 @@ export class EngineRuntime {
 		options?: StageOptions,
 		failFastScope?: ParallelFailFastScope,
 	): StageContextWithMeta => {
-		this.budget.stopAtBoundary();
+		if (this.budget.enabled) this.budget.stopAtBoundary();
 		const handle = this.spawnStage(name, {
 			kind: "agent",
 			...(options !== undefined ? { options } : {}),

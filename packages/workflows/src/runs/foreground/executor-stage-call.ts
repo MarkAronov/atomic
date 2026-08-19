@@ -139,7 +139,7 @@ export function createTrackedStageCaller(input: {
 	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
-		await runtime.budget.stopAtBoundaryAsync(runtime.name);
+		if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(runtime.name);
 		await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
@@ -294,7 +294,8 @@ export function createTrackedStageCaller(input: {
 			stageResultBeforeBudget = runtime.innerCtx.__getLastAssistantText();
 			const afterBudget = runtime.budget.checkpoint(runtime.name);
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
-			if (afterBudget.kind === "exhausted") await runtime.budget.stopAtBoundaryAsync(runtime.name);
+			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
+				await runtime.budget.stopAtBoundaryAsync(runtime.name);
 			await runtime.innerCtx.__closeGeneration();
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
