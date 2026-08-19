@@ -74,7 +74,8 @@ export function createRunBudgetController(input: {
 }) {
 	const { run, budget } = input;
 	const ownEnabled = budget.maxDurationMs > 0;
-	const enabled = ownEnabled || input.rootBudget?.enabled === true;
+	const root = input.rootBudget?.enabled === true ? input.rootBudget : undefined;
+	const enabled = ownEnabled || root !== undefined;
 	let state = run.budgetState === undefined ? undefined : { ...run.budgetState };
 	let exhaustedReport: DurationBudgetReport | undefined;
 	let wrapUpPromise: Promise<never> | undefined;
@@ -122,47 +123,75 @@ export function createRunBudgetController(input: {
 			report: withFrontier(exhaustedReport, frontierStage, state.wrapUpSummary, state.wrapUpUsage),
 		};
 	};
-	const checkpoint = (frontierStage?: string): BudgetCheckpoint => {
-		const rootCheck = input.rootBudget?.enabled === true ? input.rootBudget.checkpoint(frontierStage) : undefined;
+	const boundaryCheckpoint = (
+		frontierStage?: string,
+	): { readonly check: BudgetCheckpoint; readonly owner?: RunBudgetController } => {
+		const rootCheck = root?.checkpoint(frontierStage);
 		if (rootCheck?.kind === "wrap_up") rootWrapUpPending = true;
-		if (rootCheck?.kind === "wrap_up" || rootCheck?.kind === "exhausted") return rootCheck;
-		return ownCheckpoint(frontierStage);
+		if (rootCheck?.kind === "wrap_up" || rootCheck?.kind === "exhausted") return { check: rootCheck, owner: root };
+		return { check: ownCheckpoint(frontierStage) };
+	};
+	const checkpoint = (frontierStage?: string): BudgetCheckpoint => boundaryCheckpoint(frontierStage).check;
+	const finishBoundary = (owner: RunBudgetController | undefined, frontierStage: string | undefined): never => {
+		throw (
+			owner?.finishWrapUp(frontierStage, undefined, undefined, false) ??
+			finishWrapUp(frontierStage, undefined, undefined, false)
+		);
+	};
+	const deliverBoundary = (owner: RunBudgetController | undefined, frontierStage: string): void => {
+		void (owner?.deliverWrapUp(frontierStage) ?? deliverWrapUp(frontierStage));
 	};
 	const stopAtBoundary = (frontierStage?: string): void => {
 		const resolvedFrontierStage = frontierStage ?? handlers.at(-1)?.frontierStage;
-		if (input.rootBudget?.enabled === true) {
-			const rootCheck = input.rootBudget.checkpoint(resolvedFrontierStage);
-			if (rootCheck.kind === "wrap_up") {
-				void input.rootBudget.deliverWrapUp(resolvedFrontierStage ?? "workflow frontier");
-				throw input.rootBudget.finishWrapUp(resolvedFrontierStage, undefined, undefined, false);
-			}
-			if (rootCheck.kind === "exhausted")
-				throw input.rootBudget.finishWrapUp(resolvedFrontierStage, undefined, undefined, false);
+		const { check, owner } = boundaryCheckpoint(resolvedFrontierStage);
+		if (check.kind === "wrap_up") {
+			deliverBoundary(owner, resolvedFrontierStage ?? "workflow frontier");
+			finishBoundary(owner, resolvedFrontierStage);
 		}
-		const check = ownCheckpoint(resolvedFrontierStage);
-		if (check.kind === "wrap_up" || check.kind === "exhausted") {
-			if (check.kind === "wrap_up") void deliverWrapUp(resolvedFrontierStage ?? "workflow frontier");
-			throw finishWrapUp(resolvedFrontierStage, undefined, undefined, false);
-		}
+		if (check.kind === "exhausted") finishBoundary(owner, resolvedFrontierStage);
 	};
 	const rethrowIfSystemOwnedStop = (frontierStage?: string): void => {
-		input.rootBudget?.rethrowIfSystemOwnedStop(frontierStage);
+		root?.rethrowIfSystemOwnedStop(frontierStage);
 		if (state?.systemOwnedStop === true)
 			throw finishWrapUp(frontierStage, state.wrapUpSummary, state.wrapUpUsage, state.wrapUpCompleted === true);
 	};
-	const registerWrapUp = (frontierStage: string, handler: () => Promise<never>): (() => void) => {
-		if (!ownEnabled) return () => {};
-		const registration = { frontierStage, handler };
+	const registerLocalWrapUp = (registration: {
+		readonly frontierStage: string;
+		readonly handler: () => Promise<never>;
+	}): (() => void) => {
 		handlers.push(registration);
 		return () => {
 			const index = handlers.indexOf(registration);
 			if (index >= 0) handlers.splice(index, 1);
 		};
 	};
+	const registerWrapUp = (frontierStage: string, handler: () => Promise<never>): (() => void) => {
+		const registration = { frontierStage, handler };
+		const unregisterOwn = ownEnabled ? registerLocalWrapUp(registration) : undefined;
+		const unregisterRoot = root
+			? root.registerWrapUp(frontierStage, async () => {
+					try {
+						return await handler();
+					} catch (error) {
+						if (!(error instanceof WorkflowBudgetExceededError)) throw error;
+						throw root.finishWrapUp(
+							error.report.frontierStage,
+							error.report.wrapUpSummary,
+							error.report.wrapUpUsage,
+							error.report.wrapUpSummary !== undefined,
+						);
+					}
+				})
+			: undefined;
+		return () => {
+			unregisterOwn?.();
+			unregisterRoot?.();
+		};
+	};
 
 	const deliverWrapUp = (frontierStage: string): Promise<never> => {
 		if (wrapUpPromise !== undefined) return wrapUpPromise;
-		if (rootWrapUpPending && input.rootBudget !== undefined) return input.rootBudget.deliverWrapUp(frontierStage);
+		if (rootWrapUpPending && root !== undefined) return root.deliverWrapUp(frontierStage);
 		if (state?.systemOwnedStop === true && state.wrapUpCompleted !== true)
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage) ?? handlers.at(-1);
@@ -171,7 +200,7 @@ export function createRunBudgetController(input: {
 		return wrapUpPromise;
 	};
 	const stopAtBoundaryAsync = async (frontierStage?: string): Promise<void> => {
-		if (input.rootBudget?.enabled === true) await input.rootBudget.stopAtBoundaryAsync(frontierStage);
+		if (root !== undefined) await root.stopAtBoundaryAsync(frontierStage);
 		const check = ownCheckpoint(frontierStage);
 		if (check.kind === "continue" || check.kind === "warn") return;
 		if (check.kind === "wrap_up") {
@@ -181,7 +210,7 @@ export function createRunBudgetController(input: {
 		throw finishWrapUp(frontierStage, state?.wrapUpSummary, state?.wrapUpUsage, state?.wrapUpCompleted === true);
 	};
 	const awaitPendingWrapUp = async (): Promise<WorkflowBudgetExceededError | undefined> => {
-		const rootError = await input.rootBudget?.awaitPendingWrapUp();
+		const rootError = await root?.awaitPendingWrapUp();
 		if (rootError !== undefined) return rootError;
 		if (wrapUpPromise === undefined) return undefined;
 		try {
