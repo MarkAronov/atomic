@@ -943,7 +943,7 @@ describe("budget executor boundaries", () => {
 		);
 		assert.equal(resumed.status, "completed");
 		assert.equal(String(resumed.result?.first).includes("WRAP-UP BOILERPLATE"), false);
-		assert.equal(resumed.result?.second.includes("real-answer(1)"), true);
+		assert.equal(String(resumed.result?.second).includes("real-answer(1)"), true);
 	});
 
 	test("budget live stage before-dispatch boundary spends no discarded wrap-up", async () => {
