@@ -36,34 +36,25 @@ export type RunUsageTree =
 	| (RunSnapshot & { readonly children?: readonly RunUsageTree[] });
 const treeRun = (tree: RunUsageTree): RunSnapshot => ("run" in tree ? tree.run : tree);
 type UsageCounters = RunMeterCounters & { readonly cost: number };
-const addUsage = (left: UsageCounters, right: UsageCounters): UsageCounters => ({
-	input: left.input + right.input,
-	output: left.output + right.output,
-	cacheRead: left.cacheRead + right.cacheRead,
-	cacheWrite: left.cacheWrite + right.cacheWrite,
-	cost: left.cost + right.cost,
-});
+const usageFields = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
+const addUsage = (left: UsageCounters, right: UsageCounters): UsageCounters =>
+	Object.fromEntries(usageFields.map((field) => [field, left[field] + right[field]])) as unknown as UsageCounters;
 
 function foldTreeUsage(tree: RunUsageTree): UsageCounters {
 	const run = treeRun(tree);
 	const folded = fold_usage(
 		run.stages
 			.filter((stage) => stage.replayed !== true)
-			.map((stage) => ({
-				stageName: stage.name,
-				text: stage.result ?? "",
-				...(stage.modelAttempts !== undefined ? { modelAttempts: stage.modelAttempts } : {}),
-			})),
+			.map((stage) => ({ stageName: stage.name, text: stage.result ?? "", modelAttempts: stage.modelAttempts })),
 	);
-	const own: UsageCounters = {
-		input: folded.input,
-		output: folded.output,
-		cacheRead: folded.cacheRead,
-		cacheWrite: folded.cacheWrite,
-		cost: folded.cost,
-	};
-	return (tree.children ?? []).reduce((total, child) => addUsage(total, foldTreeUsage(child)), own);
+	return (tree.children ?? []).reduce<UsageCounters>((total, child) => addUsage(total, foldTreeUsage(child)), folded);
 }
+const meterCounters = (usage: UsageCounters): RunMeterCounters => ({
+	input: usage.input,
+	output: usage.output,
+	cacheRead: usage.cacheRead,
+	cacheWrite: usage.cacheWrite,
+});
 
 /** Measure one run scope without mutating it or charging a budget. */
 export function meter_run(tree: RunUsageTree, now: number): RunMeters {
@@ -72,12 +63,7 @@ export function meter_run(tree: RunUsageTree, now: number): RunMeters {
 		durationMs: elapsedRunMs(treeRun(tree), now),
 		tokens: usage.input + usage.output,
 		cost: usage.cost,
-		perCounter: {
-			input: usage.input,
-			output: usage.output,
-			cacheRead: usage.cacheRead,
-			cacheWrite: usage.cacheWrite,
-		},
+		perCounter: meterCounters(usage),
 	};
 }
 
@@ -118,12 +104,7 @@ export function enforceUsageBudget(
 	warnAtPercent: number,
 	options: { readonly warned?: boolean } = {},
 ): UsageBudgetCheck {
-	const report: UsageBudgetReport = {
-		dimension,
-		reading,
-		ceiling,
-		percent: ceiling === 0 ? 0 : (reading / ceiling) * 100,
-	};
+	const report: UsageBudgetReport = { dimension, reading, ceiling, percent: ceiling ? (reading / ceiling) * 100 : 0 };
 	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
 	const warning = options.warned !== true && warnAtPercent > 0 && report.percent >= warnAtPercent;
 	return { kind: "continue", report, warning };

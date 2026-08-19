@@ -1,13 +1,11 @@
 import {
 	type BudgetReport,
-	type DurationBudgetReport,
 	type EffectiveBudget,
 	enforceDurationBudget,
 	enforceUsageBudget,
 	meter_run,
 	type RunMeters,
 	type RunUsageTree,
-	type UsageBudgetReport,
 } from "../shared/budget.js";
 import type {
 	RunBudgetAccountingState,
@@ -93,11 +91,11 @@ const zeroBaseline = (): RunBudgetUsageBaseline => ({ input: 0, output: 0, cache
 const zeroCounters = (): RunMeters["perCounter"] => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const saturatingDelta = (reading: number, baseline: number): number => Math.max(0, reading - baseline);
 const usageFields = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
+const counterFields = ["input", "output", "cacheRead", "cacheWrite"] as const;
+const mapCounters = (fn: (field: (typeof counterFields)[number]) => number): RunMeters["perCounter"] =>
+	Object.assign(zeroCounters(), Object.fromEntries(counterFields.map((field) => [field, fn(field)])));
 const mapUsage = (fn: (field: (typeof usageFields)[number]) => number): RunBudgetUsageBaseline =>
-	Object.assign(
-		{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-		Object.fromEntries(usageFields.map((field) => [field, fn(field)])),
-	);
+	Object.assign(zeroBaseline(), Object.fromEntries(usageFields.map((field) => [field, fn(field)])));
 
 export function createRunBudgetController(input: {
 	readonly run: RunSnapshot;
@@ -138,20 +136,10 @@ export function createRunBudgetController(input: {
 			baseline,
 			tokens: charged.tokens + delta.input + delta.output,
 			cost: charged.cost + delta.cost,
-			perCounter: {
-				input: charged.perCounter.input + delta.input,
-				output: charged.perCounter.output + delta.output,
-				cacheRead: charged.perCounter.cacheRead + delta.cacheRead,
-				cacheWrite: charged.perCounter.cacheWrite + delta.cacheWrite,
-			},
+			perCounter: mapCounters((field) => charged.perCounter[field] + delta[field]),
 		};
 		updateState({ accounting: charged });
-		return {
-			durationMs: meters.durationMs,
-			tokens: charged.tokens,
-			cost: charged.cost,
-			perCounter: charged.perCounter,
-		};
+		return Object.assign(meters, { tokens: charged.tokens, cost: charged.cost, perCounter: charged.perCounter });
 	};
 	const measure = (): RunMeters => {
 		const measured = meter_run(input.usageTree?.() ?? { run }, Date.now());
@@ -168,18 +156,17 @@ export function createRunBudgetController(input: {
 		input.onWarning?.(report);
 	};
 	const setReports = (reports: readonly BudgetReport[]): void => {
-		const duration = reports.find(
-			(candidate): candidate is DurationBudgetReport => candidate.dimension === "duration",
-		);
-		const tokens = reports.find((candidate): candidate is UsageBudgetReport => candidate.dimension === "tokens");
-		const cost = reports.find((candidate): candidate is UsageBudgetReport => candidate.dimension === "cost");
-		updateState({
-			...(duration !== undefined && budget.maxDurationMs > 0 ? { duration } : {}),
-			...(tokens !== undefined && budget.maxTokens > 0
-				? { tokens: { ...tokens, dimension: "tokens" as const } }
-				: {}),
-			...(cost !== undefined && budget.maxCost > 0 ? { cost: { ...cost, dimension: "cost" as const } } : {}),
-		});
+		for (const report of reports) {
+			if (
+				(report.dimension === "duration"
+					? budget.maxDurationMs
+					: report.dimension === "tokens"
+						? budget.maxTokens
+						: budget.maxCost) <= 0
+			)
+				continue;
+			updateState({ [report.dimension]: report } as Partial<RunBudgetState>);
+		}
 	};
 	const finishWrapUp = (
 		frontierStage: string | undefined,
@@ -211,20 +198,14 @@ export function createRunBudgetController(input: {
 		);
 	};
 	const ownCheckpoint = (frontierStage?: string): BudgetCheckpoint => {
+		const usageCheck = (dimension: "tokens" | "cost", reading: number, ceiling: number, warned: boolean) =>
+			ceiling > 0 ? enforceUsageBudget(dimension, reading, ceiling, budget.warnAtPercent, { warned }) : undefined;
 		if (!ownEnabled) return { kind: "continue" };
 		const meters = measure();
 		const checks = [
 			enforceDurationBudget(meters.durationMs, budget, { warned: state?.warned }),
-			budget.maxTokens > 0
-				? enforceUsageBudget("tokens", meters.tokens, budget.maxTokens, budget.warnAtPercent, {
-						warned: state?.warnings?.tokens !== undefined,
-					})
-				: undefined,
-			budget.maxCost > 0
-				? enforceUsageBudget("cost", meters.cost, budget.maxCost, budget.warnAtPercent, {
-						warned: state?.warnings?.cost !== undefined,
-					})
-				: undefined,
+			usageCheck("tokens", meters.tokens, budget.maxTokens, state?.warnings?.tokens !== undefined),
+			usageCheck("cost", meters.cost, budget.maxCost, state?.warnings?.cost !== undefined),
 		].filter((check): check is Exclude<typeof check, undefined> => check !== undefined);
 		lastReports = checks.map((check) => check.report);
 		setReports(lastReports);
