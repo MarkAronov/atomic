@@ -10,6 +10,12 @@ import { renderReviewerPrompt } from "../../packages/workflows/builtin/goal-prom
 import { REVIEWER_CALIBRATION_RULES } from "../../packages/workflows/builtin/shared-prompts.js";
 import { renderRalphReviewerPrompt } from "../../packages/workflows/builtin/ralph-reviewer-prompt.js";
 import { workflowCwdContextSection } from "../../packages/workflows/builtin/ralph-core.js";
+import { Value } from "typebox/value";
+import { reduceGoalDecision } from "../../packages/workflows/builtin/goal-reducer.js";
+import { reviewDecisionSchema as goalReviewDecisionSchema } from "../../packages/workflows/builtin/goal-schemas.js";
+import { reviewDecisionApproved } from "../../packages/workflows/builtin/ralph-review-gate.js";
+import { reviewDecisionSchema as ralphReviewDecisionSchema } from "../../packages/workflows/builtin/ralph-core.js";
+import { findingBlocksClosure } from "../../packages/workflows/builtin/review-convergence.js";
 
 describe("Ralph convergence", () => {
 	let tempCwd: string | undefined;
@@ -131,4 +137,138 @@ describe("Ralph convergence", () => {
 			assert.match(prompt, /Convergence flag \(stop_review_loop\):/);
 			assert.match(prompt, /discrete, actionable/);
 		}
+	});
+
+	test("criterion-score convergence schemas stay optional and audit-only", () => {
+		const criterionScores = [{ criterion_id: "criterion-1", score: 10 }];
+		const goalDecision = {
+			findings: [],
+			overall_correctness: "patch is correct",
+			overall_explanation: "all requirements proven",
+			overall_confidence_score: 0.9,
+			goal_oracle_satisfied: true,
+			requirements_traceability: [{
+				requirement: "complete objective",
+				status: "proven",
+				evidence: "focused checks passed",
+			}],
+			receipt_assessment: "receipt corroborated",
+			verification_remaining: "none",
+			stop_review_loop: true,
+			reviewer_error: null,
+		};
+		const ralphDecision = {
+			findings: [],
+			overall_correctness: "patch is correct",
+			overall_explanation: "all requirements proven",
+			overall_confidence_score: 0.9,
+			requirements_traceability: [{
+				requirement: "complete objective",
+				status: "proven",
+				evidence: "focused checks passed",
+			}],
+			stop_review_loop: true,
+			reviewer_error: null,
+		};
+
+		for (const [schema, decision] of [
+			[goalReviewDecisionSchema, goalDecision],
+			[ralphReviewDecisionSchema, ralphDecision],
+		]) {
+			assert.equal(Value.Check(schema, decision), true);
+			assert.equal(Value.Check(schema, { ...decision, criterion_scores: criterionScores }), true);
+			assert.equal(
+				Value.Check(schema, { ...decision, criterion_scores: [{ criterion_id: "criterion-1", score: 0 }] }),
+				false,
+			);
+			assert.equal(
+				Value.Check(schema, { ...decision, criterion_scores: [{ criterion_id: "criterion-1", score: 21 }] }),
+				false,
+			);
+		}
+
+		const finding = {
+			title: "[P2] Audit-only finding",
+			body: "A concrete objective-relevant finding remains.",
+			confidence_score: 0.9,
+			objective_alignment: "consistent_with_objective",
+			priority: 2,
+			code_location: {
+				absolute_file_path: "/repo/changed.ts",
+				line_range: { start: 1, end: 1 },
+			},
+		};
+		const goalRecord = (includeCriterionScores: boolean) => ({
+			...goalDecision,
+			findings: [finding],
+			overall_correctness: "patch is incorrect",
+			goal_oracle_satisfied: false,
+			requirements_traceability: [{
+				requirement: "complete objective",
+				status: "missing",
+				evidence: "work remains",
+			}],
+			verification_remaining: "work remains",
+			stop_review_loop: false,
+			...(includeCriterionScores ? { criterion_scores: criterionScores } : {}),
+			decision: "continue",
+			evidence: ["receipt corroborated"],
+			gaps: ["work remains"],
+			blocker: null,
+			confidence_score: 0.9,
+			explanation: "work remains",
+			turn: 1,
+			reviewer: "reviewer-a",
+			artifact_path: "/tmp/reviewer-a.json",
+			parsed: true,
+			approved: false,
+			parse_diagnostics: [],
+			convergence_decision: {
+				parsed: true,
+				approved: false,
+				stopReviewLoop: false,
+				nextAction: "implementation",
+				finalActionRemaining: false,
+				diagnostics: [],
+			},
+		});
+		const withoutCriterionScores = goalRecord(false);
+		const withCriterionScores = goalRecord(true);
+		assert.equal(
+			findingBlocksClosure(withoutCriterionScores.findings[0]),
+			findingBlocksClosure(withCriterionScores.findings[0]),
+		);
+		assert.equal(reviewDecisionApproved(ralphDecision), reviewDecisionApproved({
+			...ralphDecision,
+			criterion_scores: criterionScores,
+		}));
+
+		const makeLedger = () => {
+			const now = new Date().toISOString();
+			return {
+				goal_id: "criterion-score-convergence",
+				objective: "Complete the objective",
+				acceptance_criteria: "Complete the objective",
+				status: "active",
+				turns: 1,
+				created_at: now,
+				updated_at: now,
+				receipts: [],
+				reviews: [],
+				blockers: [],
+				decisions: [],
+				lifecycle: [],
+			};
+		};
+		const reducerOptions = {
+			turn: 1,
+			maxTurns: 2,
+			reviewQuorum: 2,
+			blockerThreshold: 3,
+			nextActionOnComplete: "finish",
+		};
+		assert.deepEqual(
+			reduceGoalDecision(makeLedger(), [withoutCriterionScores], reducerOptions),
+			reduceGoalDecision(makeLedger(), [withCriterionScores], reducerOptions),
+		);
 	});
