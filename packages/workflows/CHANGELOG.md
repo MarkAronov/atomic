@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a shared `verification-criteria` module (`parse_rubric`, `normalize_criteria`, `select_criteria`, `VERIFICATION_SCALE`, `decide_verification`) so verification builtins can score one criterion at a time on an anchored 1–20 scale and accept only when a quorum mean clears the threshold with no veto finding. Unparseable reports cannot become scores and cannot shift the mean ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Fixed
