@@ -306,6 +306,9 @@ export async function runRalphWorkflow(
         });
     const findings = reviewEntries.flatMap((review) => review.decision.findings);
     const traceability = reviewEntries.flatMap((review) => review.decision.requirements_traceability);
+    // A failed reviewer batch produced no decisions, so recording a
+    // zero-blocker round would fabricate progress and can suppress the
+    // escalation evidence on the very escalation it triggers.
     if (!reviewerBatchFailed) {
       convergenceEntries.push(record_convergence({
         unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
@@ -318,10 +321,6 @@ export async function runRalphWorkflow(
         demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
         usage: fold_usage([orchestrator, ...reviews]),
       }));
-    } else {
-      // A failed reviewer batch produced no decisions, so recording a
-      // zero-blocker round would fabricate progress and can suppress the
-      // escalation evidence on the very escalation it triggers.
     }
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),

@@ -307,6 +307,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       const findings = latestReviews.flatMap((review) => review.findings);
       const traceability = latestReviews.flatMap((review) => review.requirements_traceability);
       ledger.convergence ??= [];
+      // A failed reviewer batch produced no decisions, so recording a
+      // zero-blocker round would fabricate progress and can suppress the
+      // escalation evidence on the very escalation it triggers.
       if (!reviewerBatchFailed) {
         ledger.convergence.push(record_convergence({
           unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
@@ -319,10 +322,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
           usage: fold_usage([orchestrator, ...reviewResults]),
         }));
-      } else {
-        // A failed reviewer batch produced no decisions, so recording a
-        // zero-blocker round would fabricate progress and can suppress the
-        // escalation evidence on the very escalation it triggers.
       }
       ledger.reviews.push(...latestReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
