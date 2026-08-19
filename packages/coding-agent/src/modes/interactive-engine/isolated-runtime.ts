@@ -6,6 +6,7 @@ import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
+import { isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
 import type {
 	RpcAutocompleteItem,
 	RpcEvent,
@@ -60,6 +61,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private remoteSessionFile: string | undefined;
 	private readonly health: EngineHealthController;
 	private readonly remoteCommands: RemoteCommandCatalog;
+	private disposed = false;
+	private disposePromise: Promise<void> | undefined;
 	private readonly remoteModelCatalog: RemoteModelCatalog;
 	private resourceOverlaps: ResourceOverlap[] = [];
 
@@ -101,34 +104,40 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return session;
 	}
 	async initializeFromEngine(): Promise<void> {
-		const state = await this.client.getState();
-		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
-		if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
-			await super.switchSession(state.sessionFile);
+		if (this.disposed) return;
+		try {
+			const state = await this.client.getState();
+			const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
+			if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
+				await super.switchSession(state.sessionFile);
+			}
+			const session = super.session;
+			this.remoteModelCatalog.apply(catalog);
+			this.remoteModelCatalog.patch(session);
+			(session.agent.state as { model?: Model<Api> }).model = state.model;
+			session.agent.state.thinkingLevel = state.thinkingLevel;
+			session.agent.steeringMode = state.steeringMode;
+			session.agent.followUpMode = state.followUpMode;
+			this.autoCompactionEnabled = state.autoCompactionEnabled;
+			this.resourceOverlaps = state.resourceOverlaps ?? [];
+			this.remoteSessionName = state.sessionName;
+			this.remoteSessionFile = state.sessionFile;
+			this.streaming = state.isStreaming;
+			this.compacting = state.isCompacting;
+			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
+			this.queuePause.synchronize(state.queuedMessagesPaused === true);
+			this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
+			this.refreshSessionView();
+			this.engineCallbackActive = false;
+			this.health.clearUnresponsive();
+			this.health.markCooperativeAbortSettled();
+			// Non-blocking refresh so isolated autocomplete lists engine-only extension
+			// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
+			this.remoteCommands.refresh();
+		} catch (error) {
+			if (this.disposed && isRpcTransportFailure(error)) return;
+			throw error;
 		}
-		const session = super.session;
-		this.remoteModelCatalog.apply(catalog);
-		this.remoteModelCatalog.patch(session);
-		(session.agent.state as { model?: Model<Api> }).model = state.model;
-		session.agent.state.thinkingLevel = state.thinkingLevel;
-		session.agent.steeringMode = state.steeringMode;
-		session.agent.followUpMode = state.followUpMode;
-		this.autoCompactionEnabled = state.autoCompactionEnabled;
-		this.resourceOverlaps = state.resourceOverlaps ?? [];
-		this.remoteSessionName = state.sessionName;
-		this.remoteSessionFile = state.sessionFile;
-		this.streaming = state.isStreaming;
-		this.compacting = state.isCompacting;
-		this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
-		this.queuePause.synchronize(state.queuedMessagesPaused === true);
-		this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
-		this.refreshSessionView();
-		this.engineCallbackActive = false;
-		this.health.clearUnresponsive();
-		this.health.markCooperativeAbortSettled();
-		// Non-blocking refresh so isolated autocomplete lists engine-only extension
-		// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
-		this.remoteCommands.refresh();
 	}
 
 	override async loginOAuthProvider(provider: string, callbacks: AtomicOAuthLoginCallbacks) {
@@ -173,8 +182,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.client.requestInternal<void>({ type: "invoke_shortcut", key });
 	}
 
-	waitUntilBound(): Promise<void> {
-		return this.client.waitForInteractiveEngineBound();
+	async waitUntilBound(): Promise<void> {
+		try {
+			await this.client.waitForInteractiveEngineBound();
+		} catch (error) {
+			if (this.disposed && isRpcTransportFailure(error)) return;
+			throw error;
+		}
 	}
 	getEnginePid(): number | undefined {
 		return this.client.getEnginePid();
@@ -311,12 +325,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 */
 	protected override async settleActiveResponseBeforeTeardown(): Promise<void> {}
 
-	override async dispose(): Promise<void> {
-		// Joins any in-flight replacement: shutdown voids the client's restart
-		// permit and waits for the attempt, so nothing spawns after this returns.
-		await this.health.shutdown();
-		await this.client.stop();
-		await super.dispose();
+	override dispose(): Promise<void> {
+		if (this.disposePromise) return this.disposePromise;
+		this.disposed = true;
+		this.disposePromise = (async () => {
+			// EngineHealthController owns the first client stop and joins recovery.
+			await this.health.shutdown();
+			// A replacement may have spawned while shutdown joined recovery; the
+			// idempotent trailing stop closes that child before disposal returns.
+			await this.client.stop();
+			await super.dispose();
+		})();
+		return this.disposePromise;
 	}
 
 	private patchSession(session: AgentSession): void {
