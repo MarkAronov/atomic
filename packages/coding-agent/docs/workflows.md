@@ -4681,6 +4681,7 @@ Best practices:
 - Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
 - When the filter ranks candidates rather than applying a threshold, use the same judge guidance as Tournament: graded per-criterion integer scores rather than binary keep/drop, a Bradley–Terry preference from the score gap so near-ties stay near-ties, and K repeats with candidates swapped between the A and B slots. See [Verification scaling](#verification-scaling).
 
+- For a custom ranking filter, reuse the shared `verification-criteria` module and its `criteria.md` parser rather than inventing a binary keep/drop rubric; stable criterion ids let the judge select the same criteria in each comparison. See [Adversarial verification](#adversarial-verification) for the accepted shapes and score decision.
 ##### 5. Tournament
 
 Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
