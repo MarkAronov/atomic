@@ -199,7 +199,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				}
 			: undefined;
 	const durableAccounting =
-		opts.parentRun === undefined && opts.continuation === undefined && priorRun === undefined
+		hasBudgetDeclaration && opts.parentRun === undefined && opts.continuation === undefined && priorRun === undefined
 			? priorRunAccounting(durableBackend, runId)
 			: undefined;
 	const continuedBudgetState =
