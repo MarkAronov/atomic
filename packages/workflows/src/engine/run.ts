@@ -47,7 +47,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
-import { resolve_budget } from "../shared/budget.js";
+import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -132,8 +132,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
+	// A budget OBJECT is always materialized by the shipped config defaults, so
+	// presence proves nothing. Only a positive duration ceiling means this run is
+	// budgeted; anything else must take the unbudgeted path untouched (R10).
+	const declaresDuration = (budget: WorkflowBudget | undefined): boolean => (budget?.maxDurationMs ?? 0) > 0;
 	const hasBudgetDeclaration =
-		opts.budget !== undefined || def.budget !== undefined || opts.config?.budget !== undefined;
+		declaresDuration(opts.budget) || declaresDuration(def.budget) || declaresDuration(opts.config?.budget);
 	const priorRun =
 		hasBudgetDeclaration &&
 		opts.rootBudget === undefined &&
