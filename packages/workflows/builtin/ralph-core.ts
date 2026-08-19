@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
+import { VERIFICATION_SCALE } from "./verification-criteria.js";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
@@ -19,6 +20,8 @@ import {
   type ParsedReviewDecision,
   type ReviewConvergenceSummary,
 } from "./review-convergence.js";
+import type { ConvergenceEntry } from "./goal-convergence.js";
+import type { ReverifyAuditEntry } from "./goal-reverify.js";
 
 
 export const DEFAULT_MAX_LOOPS = 10;
@@ -104,6 +107,12 @@ export const reviewDecisionSchema = Type.Object(
     ]),
     overall_explanation: Type.String(),
     overall_confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    criterion_scores: Type.Optional(
+      Type.Array(Type.Object({
+        criterion_id: Type.String(),
+        score: VERIFICATION_SCALE.schema,
+      }, { additionalProperties: false })),
+    ),
     requirements_traceability: Type.Array(requirementsTraceabilitySchema),
     stop_review_loop: Type.Boolean(),
     reviewer_error: Type.Optional(
@@ -294,7 +303,9 @@ type ReviewArtifact = {
 
 type ReviewRoundArtifact = {
   readonly convergence_decision: ReviewConvergenceSummary;
+  readonly convergence: readonly ConvergenceEntry[];
   readonly consolidated_findings?: readonly ConsolidatedFinding<ReviewFinding>[];
+  readonly reverification?: readonly ReverifyAuditEntry<ReviewFinding>[];
   readonly reviews: readonly {
     readonly reviewer: string;
     readonly artifact_path: string;

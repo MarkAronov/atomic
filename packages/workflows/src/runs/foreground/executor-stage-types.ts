@@ -1,4 +1,5 @@
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
+import type { RunBudgetController } from "../../engine/run-budget.js";
 import type { Store } from "../../shared/store.js";
 import type { StageNotice, StageSnapshot } from "../../shared/store-types.js";
 import type { StageContext } from "../../shared/types.js";
@@ -44,6 +45,7 @@ export interface LiveStageRuntime {
 	readonly scheduler: StageScheduler;
 	readonly signal: AbortSignal;
 	readonly exit: WorkflowExitManager;
+	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly mcpScope: StageMcpScope;
 	readonly stageFailFastScope?: ParallelFailFastScope;

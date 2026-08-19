@@ -1,3 +1,4 @@
+import type { DurationBudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -33,6 +34,7 @@ export type WorkflowLifecycleNoticeKind =
 	| "completed"
 	| "failed"
 	| "blocked"
+	| "budget_warning"
 	| "awaiting_input"
 	| "paused"
 	| "quit"
@@ -45,12 +47,12 @@ export type WorkflowLifecycleNoticeKind =
  * action to a user.
  */
 type WorkflowControlNoticeKind = "started" | "paused" | "quit" | "resumed";
-
 export const WORKFLOW_LIFECYCLE_NOTICE_KINDS = [
 	"started",
 	"completed",
 	"failed",
 	"blocked",
+	"budget_warning",
 	"awaiting_input",
 	"paused",
 	"quit",
@@ -156,6 +158,7 @@ export function seedWorkflowLifecycleNotificationState(
 				state.deliveredTerminalRuns.add(controlKey);
 			}
 		}
+		if (run.budgetState?.warning !== undefined) state.deliveredTerminalRuns.add(budgetWarningKey(run));
 		if (run.pendingPrompt !== undefined) {
 			state.deliveredInputPrompts.add(runAwaitingInputKey(run.id, run.pendingPrompt));
 		}
@@ -308,6 +311,18 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		// through workflow status/connect surfaces instead of the main chat context.
 	};
 
+	const emitBudgetWarningOnce = (run: RunSnapshot): void => {
+		const warning = run.budgetState?.warning;
+		if (warning === undefined) return;
+		const key = budgetWarningKey(run);
+		if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) return;
+		if (state.suppressionDepth > 0) {
+			state.deliveredTerminalRuns.add(key);
+			return;
+		}
+		delivery.deliver(key, makeBudgetWarningNotice(run, warning));
+	};
+
 	const inspect = (snapshot: StoreSnapshot): void => {
 		for (const run of snapshot.runs) {
 			if (!isTopLevelWorkflowRun(run)) continue;
@@ -316,6 +331,7 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 			emitTerminalNoticeOnce(run, "blocked");
 			emitControlNoticesOnce(run);
 
+			if (notifyOn.has("budget_warning")) emitBudgetWarningOnce(run);
 			if (!notifyOn.has("awaiting_input")) continue;
 			emitRunAwaitingInputNoticeOnce(run);
 			for (const stage of run.stages) {
@@ -386,6 +402,10 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
 		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
 	}
+	if (details.kind === "budget_warning") {
+		const warningText = details.error ? `: ${details.error}` : "";
+		return `! Workflow "${workflowName}" is approaching its duration budget (run ${details.runId})${origin}${warningText}. Inspect: /workflow status ${details.runId}`;
+	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
 		// "(run 8c31), which you started, at stage review" — the stage clause takes a
@@ -448,13 +468,24 @@ function makeTerminalNotice(
 		...(failedToolNodeId !== undefined ? { toolNodeId: failedToolNodeId } : {}),
 		...(failedTool !== undefined ? { toolName: failedTool.name } : {}),
 		...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
-		// Attribution renders on every kind, and is omitted for a run that never
-		// recorded an origin rather than guessed at.
 		...(run.origin !== undefined ? { origin: run.origin } : {}),
 		createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
 	};
 }
 
+function makeBudgetWarningNotice(run: RunSnapshot, warning: DurationBudgetReport): WorkflowLifecycleNoticeDetails {
+	return {
+		kind: "budget_warning",
+		scope: "run",
+		runId: run.id,
+		workflowName: run.name,
+		status: run.status,
+		error: `At ${warning.percent.toFixed(1)}% of the duration budget (${warning.reading} / ${warning.ceiling}).`,
+		durationMs: warning.reading,
+		...(run.origin !== undefined ? { origin: run.origin } : {}),
+		createdAt: run.startedAt,
+	};
+}
 function makeControlNotice(run: RunSnapshot, occurrence: ControlOccurrence): WorkflowLifecycleNoticeDetails {
 	const stage = occurrence.stage ?? restingStage(run);
 	const elapsedMs = run.durationMs ?? (occurrence.at >= run.startedAt ? occurrence.at - run.startedAt : undefined);
@@ -530,6 +561,9 @@ function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "b
 function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapshot): string {
 	const occurrence = kind === "blocked" ? (run.blockedAt ?? lifecycleOccurrenceAt(run, kind)) : "";
 	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
+}
+function budgetWarningKey(run: RunSnapshot): string {
+	return `budget_warning:${run.id}:${run.budgetState?.warning?.dimension ?? "duration"}`;
 }
 
 /** One deliberate control action a run currently carries. */
@@ -697,12 +731,12 @@ function renderLifecycleNoticeCard(
 		...(opts.theme ? { theme: opts.theme } : {}),
 	});
 }
-
 function lifecycleNoticeTone(kind: WorkflowLifecycleNoticeKind): WorkflowNoticeTone {
 	switch (kind) {
 		case "failed":
 			return "error";
 		case "blocked":
+		case "budget_warning":
 		case "awaiting_input":
 		case "paused":
 		case "quit":
@@ -718,6 +752,8 @@ function lifecycleNoticeTitle(kind: WorkflowLifecycleNoticeKind): string {
 			return "WORKFLOW STARTED";
 		case "failed":
 			return "WORKFLOW FAILED";
+		case "budget_warning":
+			return "WORKFLOW BUDGET WARNING";
 		case "awaiting_input":
 			return "WORKFLOW INPUT";
 		case "blocked":
@@ -737,6 +773,8 @@ function lifecycleNoticeGlyph(kind: WorkflowLifecycleNoticeKind): string {
 	switch (kind) {
 		case "failed":
 			return "✗";
+		case "budget_warning":
+			return "!";
 		case "awaiting_input":
 			return "？";
 		case "blocked":
@@ -761,6 +799,8 @@ function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): strin
 			return `Workflow "${name}" started`;
 		case "failed":
 			return `Workflow "${name}" failed`;
+		case "budget_warning":
+			return `Workflow "${name}" is approaching its duration budget`;
 		case "awaiting_input":
 			return `Workflow "${name}" needs input`;
 		case "blocked":
