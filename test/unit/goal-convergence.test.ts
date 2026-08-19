@@ -138,17 +138,19 @@ function goalReviewJsonWithFinding(
 	statuses: readonly ("proven" | "missing")[],
 ): string {
 	return JSON.stringify({
-		findings: [{
-			title,
-			body: "A concrete objective-relevant blocker remains.",
-			confidence_score: confidenceScore,
-			objective_alignment: "required_by_objective",
-			priority: 2,
-			code_location: {
-				absolute_file_path: "/repo/changed.ts",
-				line_range: { start: 1, end: 1 },
+		findings: [
+			{
+				title,
+				body: "A concrete objective-relevant blocker remains.",
+				confidence_score: confidenceScore,
+				objective_alignment: "required_by_objective",
+				priority: 2,
+				code_location: {
+					absolute_file_path: "/repo/changed.ts",
+					line_range: { start: 1, end: 1 },
+				},
 			},
-		}],
+		],
 		overall_correctness: "patch is incorrect",
 		overall_explanation: "The mock review leaves a blocker unresolved.",
 		overall_confidence_score: 0.5,
@@ -305,7 +307,16 @@ describe("goal convergence", () => {
 				"output",
 				"turns",
 			]);
-			for (const key of ["calls", "input", "output", "cacheRead", "cacheWrite", "cost", "turns", "cacheHitRate"] as const) {
+			for (const key of [
+				"calls",
+				"input",
+				"output",
+				"cacheRead",
+				"cacheWrite",
+				"cost",
+				"turns",
+				"cacheHitRate",
+			] as const) {
 				assert.equal(typeof round.usage[key], "number", key);
 			}
 		}
@@ -334,11 +345,13 @@ describe("goal convergence", () => {
 
 		const result = await mod.default.run(ctx);
 		const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
-			readonly convergence: readonly [{
-				readonly unresolvedBlockingCount: number;
-				readonly meanFindingConfidence: number | null;
-				readonly fractionProven: number;
-			}];
+			readonly convergence: readonly [
+				{
+					readonly unresolvedBlockingCount: number;
+					readonly meanFindingConfidence: number | null;
+					readonly fractionProven: number;
+				},
+			];
 			readonly reviews: readonly {
 				readonly findings: readonly unknown[];
 				readonly requirements_traceability: readonly { readonly status: string }[];
