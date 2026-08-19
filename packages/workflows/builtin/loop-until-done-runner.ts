@@ -7,12 +7,15 @@ import type {
   WorkflowSerializableValue,
   WorkflowTaskResult,
 } from "../src/shared/types.js";
+import { classify_trend, score_progress, type Trend } from "./progress-scoring.js";
 import {
   renderCompletionPrompt,
   renderEvaluationPrompt,
   renderIterationPrompt,
 } from "./loop-until-done-prompts.js";
 import { stableArtifactRoot } from "./pattern-artifact-root.js";
+
+const PROGRESS_DISCLAIMER = "Progress scores are a monitoring signal; VOC separation +0.079; never authoritative.";
 
 const evaluationSchema = Type.Object({
   done: Type.Boolean(),
@@ -26,6 +29,8 @@ const evaluationSchema = Type.Object({
 type LoopInputs = {
   readonly prompt: string;
   readonly max_iterations: number;
+  readonly progress_scoring?: boolean;
+  readonly progress_repeats?: number;
 } & Record<string, WorkflowSerializableValue>;
 
 type Evaluation = {
@@ -35,6 +40,12 @@ type Evaluation = {
   readonly failures: readonly string[];
   readonly validationEvidence: readonly string[];
   readonly remainingWork: string;
+};
+type LedgerProgress = {
+  readonly score: number;
+  readonly perRepeat: (number | null)[][];
+  readonly trend: Trend;
+  readonly window: number;
 };
 type LedgerEntry = {
   readonly iteration: number;
@@ -46,7 +57,57 @@ type LedgerEntry = {
   readonly validation_evidence: readonly string[];
   readonly done: boolean;
   readonly remaining_work: string;
+  readonly progress?: LedgerProgress;
 };
+
+function progressCurve(entries: readonly LedgerEntry[]): number[] {
+  return entries.flatMap((entry) => (entry.progress === undefined ? [] : [entry.progress.score]));
+}
+
+function progressReport(entries: readonly LedgerEntry[]): { curve: number[]; trend: Trend } {
+  const curve = progressCurve(entries);
+  return { curve, trend: classify_trend(curve).trend };
+}
+
+function formatProgressReport(report: { curve: readonly number[]; trend: Trend }): string {
+  return [
+    `Progress curve: ${JSON.stringify(report.curve)}`,
+    `Final trend: ${report.trend}`,
+    PROGRESS_DISCLAIMER,
+  ].join("\n");
+}
+
+function repeatCount(input: LoopInputs): number {
+  const repeats = input.progress_repeats;
+  return typeof repeats === "number" && Number.isInteger(repeats) && repeats > 0 ? repeats : 1;
+}
+
+async function scoreIteration(
+  ctx: WorkflowRunContext<LoopInputs>,
+  task: string,
+  entries: readonly LedgerEntry[],
+  repeats: number,
+): Promise<LedgerProgress | undefined> {
+  try {
+    const curve = await score_progress(ctx, {
+      problem: task,
+      steps: entries.map((entry) => entry.summary),
+      checkpoints: [entries.length],
+      repeats,
+    });
+    const score = curve.scores[0];
+    if (score === null || score === undefined) return undefined;
+    const trend = classify_trend([...progressCurve(entries), score]);
+    return {
+      score,
+      perRepeat: curve.perRepeat,
+      trend: trend.trend,
+      window: trend.evidence.window,
+    };
+  } catch {
+    return undefined;
+  }
+}
 function serializableObject(
   value: WorkflowSerializableValue | undefined,
 ): WorkflowSerializableObject | undefined {
@@ -79,14 +140,23 @@ function evaluationFrom(result: WorkflowTaskResult): Evaluation {
   return { done, summary, newFindings, failures, validationEvidence, remainingWork };
 }
 
-async function writeLedger(path: string, task: string, maxIterations: number, status: string,
-  entries: readonly LedgerEntry[]): Promise<void> {
+async function writeLedger(
+  path: string,
+  task: string,
+  maxIterations: number,
+  status: string,
+  entries: readonly LedgerEntry[],
+): Promise<void> {
+  const report = progressReport(entries);
   await writeFile(path, `${JSON.stringify({
     task,
     max_iterations: maxIterations,
     status,
     iterations_completed: entries.length,
     entries,
+    progress_curve: report.curve,
+    final_trend: report.trend,
+    progress_disclaimer: PROGRESS_DISCLAIMER,
   }, null, 2)}\n`);
 }
 
@@ -135,7 +205,7 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
     // runner persists the structured decision itself so evaluation-N.json
     // stays schema-shaped JSON rather than stage prose.
     await writeFile(evaluationPath, `${JSON.stringify(evaluator.structured, null, 2)}\n`);
-    entries.push({
+    const entry: LedgerEntry = {
       iteration,
       artifact_path: iterationPath,
       evaluation_artifact_path: evaluationPath,
@@ -145,7 +215,12 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
       validation_evidence: decision.validationEvidence,
       done: decision.done,
       remaining_work: decision.remainingWork,
-    });
+    };
+    entries.push(entry);
+    if (ctx.inputs.progress_scoring !== false) {
+      const progress = await scoreIteration(ctx, ctx.inputs.prompt, entries, repeatCount(ctx.inputs));
+      if (progress !== undefined) entries[entries.length - 1] = { ...entry, progress };
+    }
     await writeLedger(
       ledgerPath,
       ctx.inputs.prompt,
@@ -154,6 +229,7 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
       entries,
     );
     if (decision.done) {
+      const report = progressReport(entries);
       const resultPath = join(artifactDir, "result.md");
       const final = await ctx.task("completion-summary", {
         prompt: renderCompletionPrompt({ task: ctx.inputs.prompt, ledgerPath, iterationPath }),
@@ -164,8 +240,9 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
         // `result_path` below carries it for callers that want the contents.
         outputMode: "file-only",
       });
+      const result = `${final.text ? `${final.text.trimEnd()}\n\n` : ""}${formatProgressReport(report)}\n`;
       return {
-        result: final.text,
+        result,
         status: "complete" as const,
         iterations_completed: iteration,
         ledger_path: ledgerPath,
@@ -174,14 +251,22 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
         result_path: resultPath,
         remaining_work: "",
         artifact_dir: artifactDir,
+        progress_curve: report.curve,
+        final_trend: report.trend,
+        progress_disclaimer: PROGRESS_DISCLAIMER,
       };
     }
   }
 
   const last = entries.at(-1)!;
+  const report = progressReport(entries);
   await writeLedger(ledgerPath, ctx.inputs.prompt, ctx.inputs.max_iterations, "failed", entries);
+  const result = [
+    `Iteration limit exhausted after ${ctx.inputs.max_iterations} iterations. Inspect ${ledgerPath}.`,
+    formatProgressReport(report),
+  ].join("\n\n");
   return {
-    result: `Iteration limit exhausted after ${ctx.inputs.max_iterations} iterations. Inspect ${ledgerPath}.`,
+    result,
     status: "failed" as const,
     iterations_completed: ctx.inputs.max_iterations,
     ledger_path: ledgerPath,
@@ -190,5 +275,8 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
     result_path: ledgerPath,
     remaining_work: last.remaining_work,
     artifact_dir: artifactDir,
+    progress_curve: report.curve,
+    final_trend: report.trend,
+    progress_disclaimer: PROGRESS_DISCLAIMER,
   };
 }

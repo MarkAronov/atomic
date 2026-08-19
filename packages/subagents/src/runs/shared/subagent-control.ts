@@ -6,6 +6,7 @@ import type {
 	ControlNotificationChannel,
 	ResolvedControlConfig,
 } from "../../shared/types.js";
+import { progressAwareThreshold } from "./progress-trend.js";
 
 const CONTROL_EVENT_TYPES: ControlEventType[] = ["active_long_running", "needs_attention"];
 const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "intercom"];
@@ -34,6 +35,12 @@ function parseControlList<T extends string>(value: unknown, allowed: readonly T[
 	return parsed.length > 0 ? Array.from(new Set(parsed)) : undefined;
 }
 
+function parseProgressScores(value: unknown): number[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const parsed = value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry));
+	return parsed.length > 0 || value.length === 0 ? parsed : undefined;
+}
+
 export function resolveControlConfig(globalConfig?: ControlConfig, override?: ControlConfig): ResolvedControlConfig {
 	const enabled = override?.enabled ?? globalConfig?.enabled ?? DEFAULT_CONTROL_CONFIG.enabled;
 	const needsAttentionAfterMs =
@@ -52,6 +59,8 @@ export function resolveControlConfig(globalConfig?: ControlConfig, override?: Co
 		parsePositiveInt(override?.failedToolAttemptsBeforeAttention) ??
 		parsePositiveInt(globalConfig?.failedToolAttemptsBeforeAttention) ??
 		DEFAULT_CONTROL_CONFIG.failedToolAttemptsBeforeAttention;
+	const progressScores =
+		parseProgressScores(override?.progressScores) ?? parseProgressScores(globalConfig?.progressScores);
 	const notifyOn =
 		parseControlList(override?.notifyOn, CONTROL_EVENT_TYPES) ??
 		parseControlList(globalConfig?.notifyOn, CONTROL_EVENT_TYPES) ??
@@ -67,6 +76,7 @@ export function resolveControlConfig(globalConfig?: ControlConfig, override?: Co
 		activeNoticeAfterTurns,
 		activeNoticeAfterTokens,
 		failedToolAttemptsBeforeAttention,
+		...(progressScores === undefined ? {} : { progressScores: [...progressScores] }),
 		notifyOn: [...notifyOn],
 		notifyChannels: [...notifyChannels],
 	};
@@ -82,7 +92,8 @@ export function deriveActivityState(input: {
 	const now = input.now ?? Date.now();
 	const lastActivity = input.lastActivityAt ?? input.startedAt;
 	const ageMs = Math.max(0, now - lastActivity);
-	return ageMs > input.config.needsAttentionAfterMs ? "needs_attention" : undefined;
+	const attentionThreshold = progressAwareThreshold(input.config.needsAttentionAfterMs, input.config.progressScores);
+	return ageMs > attentionThreshold ? "needs_attention" : undefined;
 }
 
 export function buildControlEvent(input: {

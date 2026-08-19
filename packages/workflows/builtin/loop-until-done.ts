@@ -18,6 +18,15 @@ export default workflow({
       default: 5,
       description: "Maximum work/evaluation iterations before returning an inspectable failed status (1-20).",
     }),
+    progress_scoring: Type.Boolean({
+      default: true,
+      description: "Enable advisory progress scoring after each completed iteration.",
+    }),
+    progress_repeats: Type.Integer({
+      minimum: 1,
+      default: 1,
+      description: "Number of advisory progress-scoring repeats per iteration.",
+    }),
   },
   outputs: {
     result: Type.String({ description: "Compact reference to the evidence-backed completion report, or the deterministic exhaustion report; read `result_path` for the full report." }),
@@ -31,6 +40,12 @@ export default workflow({
     result_path: Type.String({ description: "Path to the final report, or the ledger on exhausted failure." }),
     remaining_work: Type.String({ description: "Actionable remaining work; empty only after proven completion." }),
     artifact_dir: Type.String({ description: "Run-specific directory containing loop artifacts." }),
+    progress_curve: Type.Array(Type.Number(), { description: "Advisory progress scores in iteration order." }),
+    final_trend: Type.Union(
+      [Type.Literal("rising"), Type.Literal("flat"), Type.Literal("regressing")],
+      { description: "Final advisory trend classification; never a stop decision." },
+    ),
+    progress_disclaimer: Type.String({ description: "Calibration disclaimer for the advisory progress signal." }),
   },
   run: async (ctx) => await runLoopUntilDone(withSteeringPropagationContext(ctx)),
 });
