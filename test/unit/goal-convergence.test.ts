@@ -132,6 +132,39 @@ function goalReviewJson(): string {
 	});
 }
 
+function goalReviewJsonWithFinding(
+	title: string,
+	confidenceScore: number,
+	statuses: readonly ("proven" | "missing")[],
+): string {
+	return JSON.stringify({
+		findings: [{
+			title,
+			body: "A concrete objective-relevant blocker remains.",
+			confidence_score: confidenceScore,
+			objective_alignment: "required_by_objective",
+			priority: 2,
+			code_location: {
+				absolute_file_path: "/repo/changed.ts",
+				line_range: { start: 1, end: 1 },
+			},
+		}],
+		overall_correctness: "patch is incorrect",
+		overall_explanation: "The mock review leaves a blocker unresolved.",
+		overall_confidence_score: 0.5,
+		goal_oracle_satisfied: false,
+		requirements_traceability: statuses.map((status, index) => ({
+			requirement: `objective clause ${index + 1}`,
+			status,
+			evidence: status === "proven" ? "observed proof" : "work remains",
+		})),
+		receipt_assessment: "mock receipt",
+		verification_remaining: "work remains",
+		stop_review_loop: false,
+		reviewer_error: null,
+	});
+}
+
 describe("goal convergence", () => {
 	test("record_convergence shapes exactly five fields and folds usage", () => {
 		const usage = fold_usage([usageResult("orchestrator", 10, 20), usageResult("reviewer", 30, 40)]);
@@ -192,7 +225,7 @@ describe("goal convergence", () => {
 		const text = evidence.join("\n");
 		assert.match(text, /6 rounds/);
 		assert.match(text, /flat/);
-		assert.match(text, /no convergence/);
+		assert.match(text, /no observed convergence/);
 		assert.match(text, /\[4,4,4,4,4,4\]/);
 		assert.match(text, /no findings were filed/);
 		assert.match(text, /EVIDENCE only/);
@@ -204,6 +237,12 @@ describe("goal convergence", () => {
 		);
 		assert.match(outcome.decision.reason, /6 rounds/);
 		assert.match(outcome.decision.reason, /flat/);
+	});
+
+	test("convergence escalation evidence uses singular round grammar and observed wording", () => {
+		const text = convergence_escalation_evidence([entry()]).join("\n");
+		assert.match(text, /1 round recorded; no observed convergence/);
+		assert.doesNotMatch(text, /1 rounds recorded/);
 	});
 
 	test("runGoalWorkflow convergence ledger records one usage block per round and failed-review escalation", async () => {
@@ -236,7 +275,16 @@ describe("goal convergence", () => {
 				readonly meanFindingConfidence: number | null;
 				readonly fractionProven: number;
 				readonly demotions: number;
-				readonly usage: { readonly calls: number };
+				readonly usage: {
+					readonly calls: number;
+					readonly input: number;
+					readonly output: number;
+					readonly cacheRead: number;
+					readonly cacheWrite: number;
+					readonly cost: number;
+					readonly turns: number;
+					readonly cacheHitRate: number;
+				};
 			}[];
 			readonly decisions: readonly { readonly reason: string }[];
 		};
@@ -247,11 +295,65 @@ describe("goal convergence", () => {
 			assert.equal(round.meanFindingConfidence, null);
 			assert.equal(round.fractionProven, 0);
 			assert.equal(round.demotions, 0);
-			assert.equal(typeof round.usage.calls, "number");
+			assert.deepEqual(Object.keys(round.usage).sort(), [
+				"cacheHitRate",
+				"cacheRead",
+				"cacheWrite",
+				"calls",
+				"cost",
+				"input",
+				"output",
+				"turns",
+			]);
+			for (const key of ["calls", "input", "output", "cacheRead", "cacheWrite", "cost", "turns", "cacheHitRate"] as const) {
+				assert.equal(typeof round.usage[key], "number", key);
+			}
 		}
 		assert.match(saved.decisions.at(-1)?.reason ?? "", /6 rounds/);
 		assert.match(saved.decisions.at(-1)?.reason ?? "", /flat/);
 		assert.match(saved.decisions.at(-1)?.reason ?? "", /EVIDENCE only/);
+	});
+
+	test("runGoalWorkflow convergence ledger computes confidence and traceability arithmetic from findings", async () => {
+		const mod = await import("../../packages/workflows/builtin/goal.js");
+		const responses = new Map([
+			["completion-reviewer-1", goalReviewJsonWithFinding("[P2] Completion gap", 0.8, ["proven", "missing"])],
+			["evidence-reviewer-1", goalReviewJsonWithFinding("[P2] Evidence gap", 0.9, ["proven"])],
+			["risk-reviewer-1", goalReviewJsonWithFinding("[P2] Risk gap", 0.7, ["missing"])],
+		]);
+		const ctx = makeMockCtx(
+			{
+				objective: "Keep the objective true",
+				max_turns: 1,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{ task: (name) => responses.get(name) },
+		);
+
+		const result = await mod.default.run(ctx);
+		const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
+			readonly convergence: readonly [{
+				readonly unresolvedBlockingCount: number;
+				readonly meanFindingConfidence: number | null;
+				readonly fractionProven: number;
+			}];
+			readonly reviews: readonly {
+				readonly findings: readonly unknown[];
+				readonly requirements_traceability: readonly { readonly status: string }[];
+			}[];
+		};
+		const [round] = saved.convergence;
+		assert.equal(result.status, "needs_human");
+		assert.ok(round.unresolvedBlockingCount > 0);
+		assert.equal(round.meanFindingConfidence, (0.8 + 0.9 + 0.7) / 3);
+		assert.equal(round.fractionProven, 2 / 4);
+		assert.equal(saved.reviews.flatMap((review) => review.findings).length, 3);
+		assert.deepEqual(
+			saved.reviews.flatMap((review) => review.requirements_traceability.map((entry) => entry.status)).sort(),
+			["missing", "missing", "proven", "proven"],
+		);
 	});
 
 	test("convergence evidence never changes complete blocked or continue decisions", () => {
