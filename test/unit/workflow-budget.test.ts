@@ -805,7 +805,7 @@ describe("budget executor boundaries", () => {
 		assert.equal(snapshot?.result?.status, "budget_exceeded");
 	});
 
-	test("budget live stage does not burn wrap-up allowance when its boundary summary is lost", async () => {
+	test("budget live stage routes a boundary wrap-up and preserves its summary", async () => {
 		const sleep = (milliseconds: number): Promise<void> =>
 			new Promise((resolve) => setTimeout(resolve, milliseconds));
 		const definition = workflow({
@@ -845,12 +845,14 @@ describe("budget executor boundaries", () => {
 				},
 			},
 		);
+		await sleep(450);
 		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
 		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
-		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, undefined);
-		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
-		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, "wrap-up from the live turn");
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, true);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, true);
 		assert.equal(prompts.length, 1);
+		assert.equal(snapshot?.stages.find((stage) => stage.name === "live-frontier")?.status, "failed");
 	});
 
 	test("budget resume carries elapsed time, repeats no wrap-up at the same ceiling, and continues when raised", async () => {
@@ -930,6 +932,66 @@ describe("budget executor boundaries", () => {
 		const raisedSnapshot = raisedStore.runs().find((candidate) => candidate.id === raised.runId);
 		assert.equal(raisedSnapshot?.accumulatedDurationMs, sourceElapsed);
 		assert.ok((raisedSnapshot?.durationMs ?? 0) >= sourceElapsed);
+	});
+
+	test("budget wrap-up never replaces the frontier result during raised resume", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		let completeCalls = 0;
+		const definition = workflow({
+			name: "budget-frontier-result",
+			description: "",
+			inputs: {},
+			outputs: { first: Type.String(), second: Type.String() },
+			run: async (ctx) => {
+				const first = await ctx.stage("frontier").complete("do the real work");
+				const second = await ctx.stage("downstream").complete(`downstream saw: ${first}`);
+				return { first, second };
+			},
+		});
+		const sourceStore = createStore();
+		const sourceResult = await run(
+			definition,
+			{},
+			{
+				store: sourceStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							completeCalls += 1;
+							vi.advanceTimersByTime(2);
+							return completeCalls === 1 ? "frontier-product" : `downstream-product: ${text}`;
+						},
+					},
+					prompt: { prompt: async () => "WRAP-UP BOILERPLATE" },
+				},
+			},
+		);
+		const source = sourceStore.runs().find((candidate) => candidate.id === sourceResult.runId)!;
+		assert.equal(budgetOutcome(sourceResult.result)?.status, "budget_exceeded");
+		assert.equal(source.stages.find((stage) => stage.name === "frontier")?.result, "frontier-product");
+		assert.equal(source.stages.find((stage) => stage.name === "frontier")?.status, "completed");
+
+		const resumedStore = createStore();
+		const resumed = await run(
+			definition,
+			{},
+			{
+				store: resumedStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				continuation: { source, resumeFromStageId: source.failedStageId! },
+				adapters: { complete: { complete: async (text) => `downstream-product: ${text}` } },
+			},
+		);
+		assert.equal(resumed.status, "completed");
+		assert.deepEqual(resumed.result, {
+			first: "frontier-product",
+			second: "downstream-product: downstream saw: frontier-product",
+		});
 	});
 
 	test("budget successful body preserves outputs after non-stage work past the ceiling", async () => {
