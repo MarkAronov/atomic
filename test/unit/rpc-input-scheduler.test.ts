@@ -77,6 +77,58 @@ test("pause_queued_messages reaches a running prompt before abort", async () => 
 	await sleep(0);
 });
 
+test("clear_queue reaches a running prompt without waiting for it to finish", async () => {
+	const prompt = deferred();
+	const clearHandled = deferred();
+	const calls: string[] = [];
+	const dispatch = createRpcInputScheduler(async (line) => {
+		const type = (JSON.parse(line) as { type: string }).type;
+		calls.push(`${type}:start`);
+		if (type === "prompt") await prompt.promise;
+		if (type === "clear_queue") clearHandled.resolve();
+		calls.push(`${type}:end`);
+	});
+
+	dispatch('{"type":"prompt"}');
+	dispatch('{"type":"clear_queue"}');
+	await Promise.race([
+		clearHandled.promise,
+		sleep(50).then(() => {
+			throw new Error("clear_queue remained queued behind prompt");
+		}),
+	]);
+	assert.deepEqual(calls, ["prompt:start", "clear_queue:start", "clear_queue:end"]);
+
+	prompt.resolve();
+	await sleep(0);
+});
+
+test("resume_queued_messages reaches a running prompt without waiting for it to finish", async () => {
+	const prompt = deferred();
+	const resumeHandled = deferred();
+	const calls: string[] = [];
+	const dispatch = createRpcInputScheduler(async (line) => {
+		const type = (JSON.parse(line) as { type: string }).type;
+		calls.push(`${type}:start`);
+		if (type === "prompt") await prompt.promise;
+		if (type === "resume_queued_messages") resumeHandled.resolve();
+		calls.push(`${type}:end`);
+	});
+
+	dispatch('{"type":"prompt"}');
+	dispatch('{"type":"resume_queued_messages"}');
+	await Promise.race([
+		resumeHandled.promise,
+		sleep(50).then(() => {
+			throw new Error("resume_queued_messages remained queued behind prompt");
+		}),
+	]);
+	assert.deepEqual(calls, ["prompt:start", "resume_queued_messages:start", "resume_queued_messages:end"]);
+
+	prompt.resolve();
+	await sleep(0);
+});
+
 test("ordinary RPC commands remain ordered while a command is running", async () => {
 	const compact = deferred();
 	const calls: string[] = [];
@@ -116,9 +168,18 @@ test("host protocol responses bypass a running RPC command", async () => {
 });
 
 test("only validated cancellation and host-control frames bypass the ordinary lane", () => {
-	for (const type of ["abort", "abort_compaction", "abort_retry", "abort_bash", "pause_queued_messages"]) {
+	for (const type of [
+		"abort",
+		"abort_compaction",
+		"abort_retry",
+		"abort_bash",
+		"pause_queued_messages",
+		"resume_queued_messages",
+		"clear_queue",
+	]) {
 		assert.equal(isConcurrentRpcControlLine(JSON.stringify({ type })), true, type);
 	}
+
 	assert.equal(isConcurrentRpcControlLine('{"type":"extension_ui_response","id":"ui-1","cancelled":true}'), true);
 	assert.equal(
 		isConcurrentRpcControlLine('{"type":"engine_custom_input","componentId":"ui-1","requestId":1,"data":"escape"}'),
