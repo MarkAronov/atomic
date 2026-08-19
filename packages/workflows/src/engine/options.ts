@@ -40,4 +40,5 @@ export type EngineChildRunOptions = Pick<
 	| "onStageSession"
 	| "durableBackend"
 	| "durableRootBackend"
+	| "rootBudget"
 >;

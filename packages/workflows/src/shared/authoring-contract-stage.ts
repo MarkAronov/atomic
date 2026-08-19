@@ -446,6 +446,7 @@ export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionField
 export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {
 	readonly inputs?: TInputs;
 	readonly stageName?: string;
+	readonly budget?: import("./budget.js").WorkflowBudget;
 }
 
 type WorkflowRequiredKeys<T extends object> = {
