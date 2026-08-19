@@ -5,6 +5,7 @@ import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowToolPrimitive } from "../shared/types.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
+import type { RunBudgetController } from "./run-budget.js";
 import { durableRunTopology } from "./run-durable-topology.js";
 import type { RunTerminalEventArbiter } from "./run-terminal-event.js";
 import type { ToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
@@ -71,6 +72,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly sourceToReplayedNodeIds: Map<string, string>;
 	readonly toolControls: ToolControlRegistry;
 	readonly toolAdmission: ToolAdmissionBoundary;
+	readonly budget: RunBudgetController;
 }): {
 	readonly tool: WorkflowToolPrimitive;
 	readonly admittedTools: AdmittedToolExecutionTracker;
@@ -96,6 +98,9 @@ export function createTrackedToolPrimitive(input: {
 		},
 	});
 	const lifecycle = createToolNodeLifecycle(input);
+	const budgetBoundary = input.budget.enabled
+		? (): Promise<void> => input.budget.stopAtBoundaryAsync(input.run.stages.at(-1)?.name)
+		: undefined;
 	const tool = createToolPrimitive({
 		workflowId: input.workflowId,
 		backend: input.backend,
@@ -128,6 +133,7 @@ export function createTrackedToolPrimitive(input: {
 			if (!admission.accepted) observedQuit ??= admission.error;
 			return admission;
 		},
+		...(budgetBoundary !== undefined ? { beforeToolCall: budgetBoundary, afterToolCall: budgetBoundary } : {}),
 		...lifecycle,
 	});
 	const abandonInFlightAsCancelled = (reason: unknown): readonly string[] => {

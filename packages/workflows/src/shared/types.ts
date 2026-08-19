@@ -109,6 +109,8 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 	readonly inputs?: TInputs;
 	/** Parent boundary stage display name. Defaults to workflow:<workflow-name>. */
 	readonly stageName?: string;
+	/** Additional subtree-scoped duration budget; parent run overrides do not flow here. */
+	readonly budget?: import("./budget.js").WorkflowBudget;
 }
 
 type WorkflowRequiredKeys<T extends object> = {

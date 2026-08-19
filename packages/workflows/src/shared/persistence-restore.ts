@@ -217,6 +217,7 @@ export function restoreOnSessionStart(
 				status: "running",
 				stages,
 				startedAt: run.startTs,
+				...(blockedMeta.endedAt !== undefined ? { endedAt: blockedMeta.endedAt } : {}),
 				...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 				...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
@@ -226,6 +227,8 @@ export function restoreOnSessionStart(
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),
+				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
 			};
 			store.recordRunStart(runSnapshot);
 			store.recordRunBlocked(run.runId, blockedMeta.error, {
@@ -236,9 +239,12 @@ export function restoreOnSessionStart(
 					? { failureDisposition: blockedMeta.failureDisposition }
 					: {}),
 				...(blockedMeta.failureMessage !== undefined ? { failureMessage: blockedMeta.failureMessage } : {}),
-				failedStageId: blockedMeta.failedStageId,
+				...(blockedMeta.failedStageId !== undefined ? { failedStageId: blockedMeta.failedStageId } : {}),
 				resumable: true,
 				...(blockedMeta.retryAfterMs !== undefined ? { retryAfterMs: blockedMeta.retryAfterMs } : {}),
+				...(blockedMeta.endedAt !== undefined ? { endedAt: blockedMeta.endedAt } : {}),
+				...(blockedMeta.result !== undefined ? { result: blockedMeta.result } : {}),
+				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
 				blockedAt: blockedMeta.ts,
 			});
 			continue;
@@ -259,6 +265,8 @@ export function restoreOnSessionStart(
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
 				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+				...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),
@@ -284,6 +292,8 @@ export function restoreOnSessionStart(
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
 				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
+				...(runMeta.budgetState !== undefined ? { budgetState: runMeta.budgetState } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 					: {}),

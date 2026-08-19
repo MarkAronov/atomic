@@ -148,7 +148,7 @@ describe("loadWorkflowConfig — workflowNotifications", () => {
 			assert.equal(result.diagnostics.length, 1);
 			assert.equal(
 				result.diagnostics[0]?.message,
-				'Invalid config shape: "workflowNotifications.notifyOn" entries must be "started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", or "resumed", got "killed"',
+				'Invalid config shape: "workflowNotifications.notifyOn" entries must be "started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", or "resumed", got "killed"',
 			);
 		} finally {
 			await rm(home, { recursive: true, force: true });

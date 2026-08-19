@@ -1072,7 +1072,7 @@ Workflow outputs are runtime contracts for completed workflow runs and for paren
 
 **Return convention:** outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.foo`, the child workflow's `run` must both declare `outputs: { foo: schema }` and return `{ foo: value }`. `result` is not special, and Atomic never adds it: to expose `result`, declare it in `outputs` and return `{ result }` exactly like any other output. Returning a key that is not declared in `outputs` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it in outputs or remove it from the run return`.
 
-**Reserved `status` output convention and structured failures:** if a workflow declares and returns a top-level `status` output with the string value `"failed"`, Atomic treats the run as failed instead of recording a successful completion. Returned `"blocked"`, `"needs_human"`, `"incomplete"`, `"active"`, `"auth_blocked"`, and `"budget_exceeded"` statuses are treated as blocked/incomplete terminal states rather than successful completions.
+**Reserved `status` output convention and structured failures:** if a workflow declares and returns a top-level `status` output with the string value `"failed"`, Atomic treats the run as failed instead of recording a successful completion. Returned `"blocked"`, `"needs_human"`, `"incomplete"`, `"active"`, and `"auth_blocked"` statuses are treated as blocked/incomplete terminal states rather than successful completions. The engine's own system-owned `budget_exceeded` stop is likewise blocked; a workflow-returned `budget_exceeded` value cannot forge that stop and is treated as a normal completion.
 
 Independently of that convention, Atomic uses structured failure metadata captured from the run's blocking stage (`failedStageId`) or run-level failure metadata to keep recoverable auth, rate-limit, and provider fallback exhaustion blocked/resumable even when the workflow did not declare a `status` output. Atomic does not infer failure state by scanning arbitrary output text or by scanning every failed stage in an otherwise completed non-fail-fast branch.
 
@@ -3242,7 +3242,7 @@ Deliberate control actions on a top-level run report themselves too. `/workflow 
 
 **One notice per request.** A whole-run pause or resume reports at run scope. A stage-scoped `/workflow pause <run> <stage>` that leaves other stages running reports at stage scope, and one that stops the last active stage reports the run instead — never a stage card and a run card for the same request. A quit reports only the quit, never the pause it publishes on the way. Because control actions are reversible, these notices are deduplicated by run id *and* the occurrence timestamp, so pause → resume → pause → resume emits four notices while repeated snapshot invalidations at one unchanged state emit one. Resuming reports a resume and never a start, whoever asked for it — a resumed run re-enters the dispatch path, so keying that on the resume rather than on the requester is what stops an agent-requested resume of a user-started run from being announced as a fresh launch. Resuming a failed or blocked run launches a continuation under a fresh run id, and its notice names both ("run 4d7e, continuing run 8c31"); resuming a quit run reuses the original workflow id so durable checkpoints replay, so that notice names the one id. A run that is already started, paused, or quit when notifications install — restore, replay, `/reload`, or a session-preserving reinstall — is seeded as delivered and stays silent, and nested `ctx.workflow(...)` child runs never notify at top level.
 
-Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]`). A config that pins `notifyOn` explicitly keeps exactly the kinds it lists, so `notifyOn: ["failed"]` suppresses every control notice.
+Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]`). A config that pins `notifyOn` explicitly keeps exactly the kinds it lists, so `notifyOn: ["failed"]` suppresses every control notice. `budget_warning` is delivered once per run and dimension through the same lifecycle-notice renderer.
 
 **Heartbeats are separate from lifecycle notices.** A lifecycle notice reports a transition; a heartbeat reports that nothing has transitioned yet. While a top-level run is active, Atomic raises one `workflows:workflow-heartbeat` card per `startedAt + n × heartbeatIntervalMinutes` boundary, on the same queued-steer delivery (`triggerTurn`, `deliverAs: "steer"`, `persistWhenStreaming`) and the same notice-card renderer, under its own custom type. The cadence is per workflow definition — `15` minutes by default, `0` to disable — and is documented under [`heartbeatIntervalMinutes`](#heartbeatintervalminutes). `workflowNotifications.notifyOn` selects lifecycle kinds only; it does not list or filter heartbeats. Heartbeats stop when the run reaches a terminal state: one idempotent cleanup pass drops its timer, its schedule, and any heartbeat still queued inside the scheduler, a later process discards those records rather than replaying them, and a card the parent's queue had already accepted is excluded from the model's context when it is read ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
 
@@ -3514,7 +3514,7 @@ A successful rescan may still contain per-resource diagnostics. Both reload surf
 
 ## Run budgets
 
-Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, or a `workflow({ action: "run" })` tool call. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
+Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, a `workflow({ action: "run" })` tool call, or a `workflow({ action: "resume" })` continuation to raise or narrow the ceiling. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
 
 ```ts
 export default workflow({
@@ -3529,9 +3529,9 @@ export default workflow({
 });
 ```
 
-`maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and retain the root config default.
+`maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and remain subject to the root run's duration scope; a root exhaustion wins simultaneous child exhaustion, while a child-only exhaustion soft-lands that child run and returns to the parent.
 
-This initial budget slice only resolves and validates declarations. It does not meter, warn, pause, or stop a workflow, so configuring a budget does not change a run's behavior yet.
+`maxDurationMs` is enforced at stage and durable-tool boundaries using elapsed run time (paused time is excluded and resumed runs carry prior elapsed time). A `budget_warning` lifecycle notice is emitted once at `warnAtPercent` (default `80`); exhaustion gives an already-live frontier stage one current-turn wrap-up, then records a resumable `budget_exceeded` blocked result with its reading, ceiling, frontier, wrap-up summary, and the wrap-up turn's own `wrapUpUsage` when model usage is available. No new stage is created just to host a wrap-up; when no stage turn is live at the exhausting boundary, the run stops with no wrap-up summary and leaves the once-per-run delivery allowance unused. A resumed run does not receive a second wrap-up for the same budget; pass a raised resume budget to continue with the prior elapsed spend. B2 reports the single wrap-up attempt's usage but does not aggregate token/cost meters across the run tree; that accounting belongs to B3. A nested child's declared budget bounds that child run's own boundaries rather than its whole subtree: only the root scope is threaded into deeper descendants, so a grandchild is bounded by the root ceiling and not by an intermediate child's narrower one. Child-only exhaustion returns to the parent as a blocked child result while the parent continues. `maxTokens` and `maxCost` are currently validated and resolved but are not metered by this duration slice.
 
 ## Workflow Configuration
 
@@ -3559,13 +3559,13 @@ Example config:
   },
   "defaultConcurrency": 4,
   "maxDepth": 4,
-  "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 0 },
+  "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 80 },
   "persistRuns": true,
   "statusFile": false,
   "resumeInFlight": "ask",
   "workflowNotifications": {
     "enabled": true,
-    "notifyOn": ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]
+    "notifyOn": ["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]
   },
   "worktree": {
     "symlinkDirectories": ["node_modules"]
@@ -3579,12 +3579,12 @@ Runtime config defaults:
 |-----|---------|---------|
 | `defaultConcurrency` | `4` | Default concurrency for authored `ctx.parallel(...)` execution |
 | `maxDepth` | `4` | Maximum workflow nesting depth |
-| `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 0 }` | Default per-run budget declaration; `0` disables a dimension |
+| `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 80 }` | Default per-run budget declaration; `0` disables a dimension; warnings default to `80` percent |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
-| `workflowNotifications.notifyOn` | `["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes, active recoverable blocks, and the user-initiated `started`/`paused`/`quit`/`resumed` control actions on a top-level run create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
+| `workflowNotifications.notifyOn` | `["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes, active recoverable blocks, duration budget warnings, and the user-initiated `started`/`paused`/`quit`/`resumed` control actions on a top-level run create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
 | `worktree.symlinkDirectories` | `["node_modules"]` | Main-root directories symlinked into each runner-managed temporary worktree during post-creation setup |
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.

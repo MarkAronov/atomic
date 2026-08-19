@@ -141,10 +141,17 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			run.failureRecoverability = metadata.failureRecoverability;
 			run.failureDisposition = metadata.failureDisposition;
 			run.failureMessage = metadata.failureMessage;
-			run.failedStageId = metadata.failedStageId;
+			if (metadata.failedStageId === undefined) delete run.failedStageId;
+			else run.failedStageId = metadata.failedStageId;
 			run.resumable = metadata.resumable;
 			run.blockedAt = metadata.blockedAt ?? Date.now();
+			if (metadata.endedAt !== undefined) {
+				run.endedAt = metadata.endedAt;
+				run.durationMs = elapsedRunMs(run, metadata.endedAt);
+			}
 			if (metadata.retryAfterMs !== undefined) run.retryAfterMs = metadata.retryAfterMs;
+			if (metadata.result !== undefined) run.result = metadata.result;
+			if (metadata.budgetState !== undefined) run.budgetState = metadata.budgetState;
 			context.bumpAndNotify();
 			return true;
 		},
