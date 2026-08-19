@@ -133,7 +133,7 @@ export function createTrackedToolPrimitive(input: {
 			if (!admission.accepted) observedQuit ??= admission.error;
 			return admission;
 		},
-	...(budgetBoundary !== undefined ? { beforeToolCall: budgetBoundary, afterToolCall: budgetBoundary } : {}),
+		...(budgetBoundary !== undefined ? { beforeToolCall: budgetBoundary, afterToolCall: budgetBoundary } : {}),
 		...lifecycle,
 	});
 	const abandonInFlightAsCancelled = (reason: unknown): readonly string[] => {
