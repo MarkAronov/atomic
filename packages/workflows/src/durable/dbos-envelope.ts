@@ -458,7 +458,7 @@ function stageRunTopology(
 	};
 }
 
-function isModelAttempts(value: WorkflowSerializableValue | undefined): boolean {
+export function isModelAttempts(value: unknown): boolean {
 	return (
 		Array.isArray(value) &&
 		value.every((attempt) => {

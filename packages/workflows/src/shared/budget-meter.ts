@@ -2,19 +2,8 @@ import { fold_usage } from "../../builtin/verification-usage.js";
 import type { RunSnapshot } from "./store-types.js";
 import { elapsedRunMs } from "./timing.js";
 
-export interface RunMeterCounters {
-	readonly input: number;
-	readonly output: number;
-	readonly cacheRead: number;
-	readonly cacheWrite: number;
-}
-
-export interface RunMeters {
-	readonly durationMs: number;
-	readonly tokens: number;
-	readonly cost: number;
-	readonly perCounter: RunMeterCounters;
-}
+export type RunMeterCounters = Readonly<Record<"input" | "output" | "cacheRead" | "cacheWrite", number>>;
+export type RunMeters = Readonly<{ durationMs: number; tokens: number; cost: number; perCounter: RunMeterCounters }>;
 
 /** A run and its nested child scopes, used by the tree-wide usage meter. */
 export type RunUsageTree =

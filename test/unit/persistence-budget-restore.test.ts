@@ -148,6 +148,75 @@ test("token and cost baselines survive durable budget-stop restore", async () =>
 	assert.equal(restored?.budgetState?.accounting?.cost, 0.25);
 });
 
+test("budget restore rejects malformed accounting and model attempts", async () => {
+	const entries: Array<{ readonly id: string; readonly type: string; readonly payload: Record<string, unknown> }> = [];
+	const persistence = {
+		appendEntry(type: string, payload: Record<string, unknown>): string {
+			const id = `corrupt-budget-entry-${entries.length + 1}`;
+			entries.push({ id, type, payload });
+			return id;
+		},
+	};
+	const messages: AgentSession["messages"] = [];
+	const agentSession: AgentSessionAdapter = {
+		async create() {
+			return makeMockSession({
+				messages,
+				async prompt() {
+					messages.push(
+						assistantMessageWithUsage("usage", {
+							input: 2,
+							output: 3,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0.25,
+						}),
+					);
+				},
+			}).session;
+		},
+	};
+	const definition = workflow({
+		name: "corrupt-budget-restore",
+		description: "",
+		inputs: {},
+		outputs: { result: Type.String() },
+		budget: { maxTokens: 1 },
+		run: async (ctx) => ({ result: await ctx.stage("usage", { model: "test/model" }).prompt("work") }),
+	});
+	const sourceStore = createStore();
+	const source = await run(definition, {}, { store: sourceStore, persistence, adapters: { agentSession } });
+	const blocked = entries.find((entry) => entry.type === "workflow.run.blocked");
+	const stageEnd = entries.find((entry) => entry.type === "workflow.stage.end");
+	assert.ok(blocked, JSON.stringify({ result: source, entries }, null, 2));
+	assert.ok(stageEnd);
+	blocked.payload.budgetState = {
+		...(blocked.payload.budgetState as Record<string, unknown>),
+		accounting: {
+			baseline: { input: "x", output: null, cacheRead: 0, cacheWrite: 0, cost: 0 },
+			tokens: "50",
+			cost: "oops",
+			perCounter: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0 },
+		},
+	};
+	stageEnd.payload.modelAttempts = [{ model: "corrupt", success: true, usage: { input: "bad", output: 3 } }];
+
+	const restoredStore = createStore();
+	restoreOnSessionStart(
+		{ getEntries: () => entries as unknown as SessionEntry[] },
+		{ resumeInFlight: "never", persistRuns: true },
+		restoredStore,
+	);
+	const restored = restoredStore.runs().find((candidate) => candidate.id === source.runId);
+	assert.deepEqual(
+		{
+			accountingRejected: restored?.budgetState?.accounting === undefined,
+			modelAttemptsRejected: restored?.stages[0]?.modelAttempts === undefined,
+		},
+		{ accountingRejected: true, modelAttemptsRejected: true },
+	);
+});
+
 test("budget resume eligibility admits ended system stops but rejects ended non-budget stops", () => {
 	const endedBudgetStop = {
 		status: "running" as const,

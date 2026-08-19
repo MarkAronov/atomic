@@ -1,4 +1,5 @@
 import { Value } from "typebox/value";
+import { isModelAttempts } from "../durable/dbos-envelope.js";
 import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
@@ -103,7 +104,7 @@ export function _buildStageSnapshots(
 				if (typeof skippedReason === "string") snap.skippedReason = skippedReason;
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
-				if (Array.isArray(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
+				if (isModelAttempts(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
 				Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
 			}
 		}
@@ -240,7 +241,16 @@ function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 		const restored = report(warningValues?.[dimension], dimension);
 		if (restored !== undefined) warnings[dimension] = restored;
 	}
-	const accounting = isRecord(value.accounting) ? (value.accounting as RunBudgetState["accounting"]) : undefined;
+	const requiredNumbers = (candidate: unknown, fields: readonly string[]): boolean =>
+		isRecord(candidate) && fields.every((field) => numericDuration(candidate[field]) !== undefined);
+	const accountingValue = value.accounting;
+	const accounting =
+		isRecord(accountingValue) &&
+		requiredNumbers(accountingValue, ["tokens", "cost"]) &&
+		requiredNumbers(accountingValue.baseline, ["input", "output", "cacheRead", "cacheWrite", "cost"]) &&
+		requiredNumbers(accountingValue.perCounter, ["input", "output", "cacheRead", "cacheWrite"])
+			? (accountingValue as RunBudgetState["accounting"])
+			: undefined;
 	const state = {
 		...(duration !== undefined ? { duration } : {}),
 		...(tokens !== undefined ? { tokens } : {}),
