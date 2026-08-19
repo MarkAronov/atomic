@@ -86,6 +86,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.streaming = false;
 				this.compacting = false;
 				this.compactionReason = undefined;
+				this.pendingQueueClear = undefined;
 				this.engineCallbackActive = false;
 				this.health.markCooperativeAbortSettled();
 			},

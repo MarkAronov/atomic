@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
+import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcEvent } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
@@ -18,6 +19,7 @@ function servicesFor(harness: Harness) {
 
 function createClearQueueClient() {
 	let eventListener: ((event: RpcEvent) => void) | undefined;
+	let generationEndedListener: ((event: InteractiveEngineGenerationEnded) => void) | undefined;
 	const clearRequests: PromiseWithResolvers<void>[] = [];
 	const client = {
 		onEvent(listener: (event: RpcEvent) => void) {
@@ -26,7 +28,12 @@ function createClearQueueClient() {
 				if (eventListener === listener) eventListener = undefined;
 			};
 		},
-		onGenerationEnded: () => () => {},
+		onGenerationEnded(listener: (event: InteractiveEngineGenerationEnded) => void) {
+			generationEndedListener = listener;
+			return () => {
+				if (generationEndedListener === listener) generationEndedListener = undefined;
+			};
+		},
 		requestInternal<T>(command: { type: string }): Promise<T> {
 			if (command.type === "clear_queue") {
 				const request = Promise.withResolvers<void>();
@@ -42,6 +49,9 @@ function createClearQueueClient() {
 		client,
 		emit(event: RpcEvent): void {
 			eventListener?.(event);
+		},
+		emitGenerationEnded(event: InteractiveEngineGenerationEnded): void {
+			generationEndedListener?.(event);
 		},
 		reject(error: Error, index = 0): void {
 			const request = clearRequests[index];
@@ -211,6 +221,31 @@ test("overlapping failed clears restore the original queue when rejected newest-
 
 		assert.deepEqual(session.getSteeringMessages(), ["before steer"]);
 		assert.deepEqual(session.getFollowUpMessages(), ["before follow-up"]);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("clearQueue does not restore a retired engine's queue after replacement", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		const session = runtime.session;
+		probe.emit({ type: "queue_update", steering: ["before steer"], followUp: ["before follow-up"] });
+
+		session.clearQueue();
+		probe.emitGenerationEnded({
+			generation: 1,
+			error: new Error("engine replaced"),
+			kind: "explicit-stop",
+			expected: true,
+		});
+		probe.reject(new Error("engine unavailable"));
+		await settleRejectedClear();
+
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
 	} finally {
 		harness.cleanup();
 	}
