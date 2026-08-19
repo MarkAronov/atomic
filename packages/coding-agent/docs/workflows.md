@@ -1072,7 +1072,7 @@ Workflow outputs are runtime contracts for completed workflow runs and for paren
 
 **Return convention:** outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.foo`, the child workflow's `run` must both declare `outputs: { foo: schema }` and return `{ foo: value }`. `result` is not special, and Atomic never adds it: to expose `result`, declare it in `outputs` and return `{ result }` exactly like any other output. Returning a key that is not declared in `outputs` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it in outputs or remove it from the run return`.
 
-**Reserved `status` output convention and structured failures:** if a workflow declares and returns a top-level `status` output with the string value `"failed"`, Atomic treats the run as failed instead of recording a successful completion. Returned `"blocked"`, `"needs_human"`, `"incomplete"`, `"active"`, and `"auth_blocked"` statuses are treated as blocked/incomplete terminal states rather than successful completions.
+**Reserved `status` output convention and structured failures:** if a workflow declares and returns a top-level `status` output with the string value `"failed"`, Atomic treats the run as failed instead of recording a successful completion. Returned `"blocked"`, `"needs_human"`, `"incomplete"`, `"active"`, `"auth_blocked"`, and `"budget_exceeded"` statuses are treated as blocked/incomplete terminal states rather than successful completions.
 
 Independently of that convention, Atomic uses structured failure metadata captured from the run's blocking stage (`failedStageId`) or run-level failure metadata to keep recoverable auth, rate-limit, and provider fallback exhaustion blocked/resumable even when the workflow did not declare a `status` output. Atomic does not infer failure state by scanning arbitrary output text or by scanning every failed stage in an otherwise completed non-fail-fast branch.
 
@@ -3512,6 +3512,27 @@ The `/workflow` argument-completion popup reads that same live registry. Project
 
 A successful rescan may still contain per-resource diagnostics. Both reload surfaces show `CONFIG_INVALID`, `IMPORT_FAILED`, `INVALID_DEFINITION`, `PATH_NOT_FOUND`, and duplicate-name diagnostics instead of reporting bare success while silently skipping a resource. Valid sibling workflows remain available. Fix the reported source/path and reload again; no process restart is required.
 
+## Run budgets
+
+Set an optional `budget` on workflow extension config, an authored `workflow({...})` definition, or a `workflow({ action: "run" })` tool call. Each field resolves independently: run override, then definition, then config default. An omitted field falls through; a present `0` disables that dimension.
+
+```ts
+export default workflow({
+  name: "bounded-review",
+  description: "Review a change within an operator-selected budget.",
+  budget: { maxDurationMs: 900_000, maxTokens: 50_000, maxCost: 5, warnAtPercent: 80 },
+  outputs: {},
+  run: async (ctx) => {
+    // ...
+    return {};
+  },
+});
+```
+
+`maxDurationMs` and `maxTokens` must be non-negative finite integers. `maxCost` and `warnAtPercent` must be non-negative finite numbers. Invalid config produces `CONFIG_INVALID`; invalid authored or direct-run declarations throw a `TypeError` before the workflow body runs. Nested `ctx.workflow(child)` calls use the child's own declared budget and retain the root config default.
+
+This initial budget slice only resolves and validates declarations. It does not meter, warn, pause, or stop a workflow, so configuring a budget does not change a run's behavior yet.
+
 ## Workflow Configuration
 
 Configured workflow paths live in workflow extension config. Project config paths are relative to the project root. Global config paths are relative to `~/.atomic/agent`.
@@ -3538,6 +3559,7 @@ Example config:
   },
   "defaultConcurrency": 4,
   "maxDepth": 4,
+  "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 0 },
   "persistRuns": true,
   "statusFile": false,
   "resumeInFlight": "ask",
@@ -3557,6 +3579,7 @@ Runtime config defaults:
 |-----|---------|---------|
 | `defaultConcurrency` | `4` | Default concurrency for authored `ctx.parallel(...)` execution |
 | `maxDepth` | `4` | Maximum workflow nesting depth |
+| `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 0 }` | Default per-run budget declaration; `0` disables a dimension |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
