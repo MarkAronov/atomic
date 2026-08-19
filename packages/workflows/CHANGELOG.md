@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status. This core slice only resolves and validates budgets; it does not meter or stop runs yet ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
+- Added a shared `verification-criteria` module (`parse_rubric`, `normalize_criteria`, `select_criteria`, `VERIFICATION_SCALE`, `decide_verification`) so verification builtins can score one criterion at a time on an anchored 1–20 scale and accept only when a quorum mean clears the threshold with no veto finding. Unparseable reports cannot become scores and cannot shift the mean ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Fixed
