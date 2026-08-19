@@ -229,10 +229,10 @@ export function createTrackedStageCaller(input: {
 				runtime.state.askUserQuestionObservedThisTurn = false;
 				runtime.state.chatAnswerObservedThisTurn = false;
 				result = await runtime.raceStageSessionHeartbeat(raceAbort(call(), runtime.signal));
-				if (typeof result === "string") stageResultBeforeBudget = result;
+				if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 				const initialDrain = await drainResumeContinuations(result);
 				result = initialDrain.result;
-				if (typeof result === "string") stageResultBeforeBudget = result;
+				if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 				let repeatReadinessAfterChatTurn = initialDrain.chatAnswerObserved;
 
 				if (
@@ -260,7 +260,7 @@ export function createTrackedStageCaller(input: {
 								result = (await runtime.raceStageSessionHeartbeat(
 									raceAbort(runtime.innerCtx.prompt(decision.message), runtime.signal),
 								)) as T;
-								if (typeof result === "string") stageResultBeforeBudget = result;
+								if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 							} else {
 								runtime.state.waitingForStageChatTurn = true;
 								try {
@@ -281,12 +281,12 @@ export function createTrackedStageCaller(input: {
 								const responseText = runtime.innerCtx.__getLastAssistantText();
 								if (responseText !== undefined) {
 									result = responseText as T;
-									stageResultBeforeBudget = responseText;
+									if (runtime.budget.enabled) stageResultBeforeBudget = responseText;
 								}
 							}
 							const continuationDrain = await drainResumeContinuations(result);
 							result = continuationDrain.result;
-							if (typeof result === "string") stageResultBeforeBudget = result;
+							if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 							repeatReadinessAfterChatTurn ||= continuationDrain.chatAnswerObserved;
 							if (runtime.innerCtx.__structuredOutputFinalized()) break;
 						}
@@ -299,7 +299,7 @@ export function createTrackedStageCaller(input: {
 			} finally {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
-			stageResultBeforeBudget ??= runtime.innerCtx.__getLastAssistantText();
+			if (runtime.budget.enabled) stageResultBeforeBudget ??= runtime.innerCtx.__getLastAssistantText();
 			const afterBudget = runtime.budget.checkpoint(runtime.name);
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
 			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
@@ -317,7 +317,9 @@ export function createTrackedStageCaller(input: {
 			}
 			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
 			if (trackStageLifecycle) {
-				const assistantText = stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText();
+				const assistantText = runtime.budget.enabled
+					? (stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText())
+					: runtime.innerCtx.__getLastAssistantText();
 				terminalStateIsSuccess = true;
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
