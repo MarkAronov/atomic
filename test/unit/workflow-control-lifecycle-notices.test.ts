@@ -49,6 +49,7 @@ const ALL_KINDS: readonly WorkflowLifecycleNoticeKind[] = [
 	"completed",
 	"failed",
 	"blocked",
+	"budget_warning",
 	"awaiting_input",
 	"paused",
 	"quit",
@@ -266,6 +267,32 @@ describe("workflow control lifecycle notices", () => {
 			startRun(store, "run-agent", { name: "ralph", origin: "agent" });
 			startRun(store, "run-unattributed", { name: "ralph" });
 			assert.deepEqual(kinds(sent), ["started"], "a tool launch and an unattributed launch stay silent");
+		} finally {
+			unsubscribe();
+		}
+	});
+
+	test("budget warning uses the lifecycle notice renderer exactly once", () => {
+		const store = createStore();
+		const { sent, unsubscribe } = installOn(store, { notifyOn: ["budget_warning"] });
+		try {
+			store.recordRunStart({
+				id: "budget-warning-run",
+				name: "budget-warning",
+				inputs: {},
+				status: "running",
+				stages: [],
+				startedAt: 100,
+				budget: { maxDurationMs: 200, warnAtPercent: 80 },
+				budgetState: {
+					warning: { dimension: "duration", reading: 180, ceiling: 200, percent: 90 },
+				},
+			});
+			assert.deepEqual(kinds(sent), ["budget_warning"]);
+			assert.equal(sent[0]?.customType, LIFECYCLE_NOTICE_CUSTOM_TYPE);
+			assert.match(sent[0]?.content ?? "", /approaching its duration budget/);
+			invalidate(store, "budget-warning-invalidate");
+			assert.deepEqual(kinds(sent), ["budget_warning"]);
 		} finally {
 			unsubscribe();
 		}

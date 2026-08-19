@@ -34,6 +34,7 @@ function modelVisibleLedger(ledger: GoalLedger): ModelVisibleGoalLedger {
     blockers: ledger.blockers.map(withoutTurn),
     decisions: ledger.decisions.map(withoutTurn),
     lifecycle: ledger.lifecycle.map(withoutTurn),
+    reverification: ledger.reverification ?? [],
   };
 }
 
@@ -73,6 +74,7 @@ export async function createGoalLedger(
     blockers: [],
     decisions: [],
     lifecycle: [],
+    reverification: [],
   };
   appendLifecycleEvent(ledger, "created", "Goal created.", 0);
   const ledgerPath = join(artifactDir, LEDGER_FILENAME);

@@ -23,6 +23,8 @@ export interface WorkflowRunResumeCandidate {
 	/** Explicitly false when durable state or referenced artifacts are missing. */
 	readonly hasDurableCheckpoint?: boolean;
 	readonly artifactsIntact?: boolean;
+	/** True only for the engine-owned budget_exceeded blocked rail. */
+	readonly budgetSystemOwnedStop?: boolean;
 }
 
 /** Derive the paused/blocked state used by every workflow resume surface. */
@@ -46,9 +48,9 @@ export function isWorkflowRunResumable(candidate: WorkflowRunResumeCandidate): b
 	}
 	return (
 		(candidate.status === "failed" && candidate.endedAt !== undefined && candidate.resumable !== false) ||
-		(candidate.endedAt === undefined &&
-			candidate.resumable === true &&
-			candidate.failureRecoverability === "recoverable")
+		(candidate.resumable === true &&
+			candidate.failureRecoverability === "recoverable" &&
+			(candidate.endedAt === undefined || candidate.budgetSystemOwnedStop === true))
 	);
 }
 

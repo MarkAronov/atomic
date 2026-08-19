@@ -1,0 +1,10 @@
+{
+  "name": "atomic-test-slash-autosend-extension",
+  "private": true,
+  "type": "module",
+  "atomic": {
+    "extensions": [
+      "./extension.ts"
+    ]
+  }
+}
