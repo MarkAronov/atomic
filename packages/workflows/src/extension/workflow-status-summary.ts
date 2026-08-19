@@ -170,11 +170,21 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 	const awaitingInput = awaitingInputEntries(run);
 	const elapsedMs = elapsedRunMs(run, now);
 	const duration =
-		run.budget?.maxDurationMs !== undefined && run.budget.maxDurationMs > 0
-			? run.endedAt === undefined
-				? budgetReport("duration", elapsedMs, run.budget.maxDurationMs)
-				: (run.budgetState?.duration ?? budgetReport("duration", elapsedMs, run.budget.maxDurationMs))
-			: undefined;
+		run.budget === undefined
+			? undefined
+			: run.endedAt === undefined
+				? {
+						dimension: "duration" as const,
+						reading: elapsedMs,
+						ceiling: run.budget.maxDurationMs,
+						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
+					}
+				: (run.budgetState?.duration ?? {
+						dimension: "duration" as const,
+						reading: elapsedMs,
+						ceiling: run.budget.maxDurationMs,
+						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
+					});
 	const tokens =
 		run.budget?.maxTokens !== undefined && run.budget.maxTokens > 0
 			? (run.budgetState?.tokens ??
@@ -189,7 +199,7 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 			? undefined
 			: {
 					...(run.budgetState ?? {}),
-					...(duration !== undefined ? { duration } : {}),
+					duration,
 					...(tokens !== undefined ? { tokens } : {}),
 					...(cost !== undefined ? { cost } : {}),
 				};

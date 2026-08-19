@@ -89,13 +89,7 @@ const withFrontier = (
 		usage === undefined ? {} : { wrapUpUsage: usage },
 	);
 
-const zeroBaseline = (): RunBudgetUsageBaseline => ({
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	cost: 0,
-});
+const zeroBaseline = (): RunBudgetUsageBaseline => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
 const zeroCounters = (): RunMeters["perCounter"] => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const saturatingDelta = (reading: number, baseline: number): number => Math.max(0, reading - baseline);
 const usageFields = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
