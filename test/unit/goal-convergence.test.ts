@@ -207,7 +207,7 @@ describe("goal convergence", () => {
 		);
 	});
 
-	test("classify_convergence uses V7 trends and preserves raw series evidence", () => {
+	test("classify_convergence preserves blocking trends and raw series evidence", () => {
 		const entries = [
 			entry({ unresolvedBlockingCount: 4, fractionProven: 0.1 }),
 			entry({ unresolvedBlockingCount: 4, fractionProven: 0.2 }),
@@ -217,9 +217,27 @@ describe("goal convergence", () => {
 		];
 		const result = classify_convergence(entries);
 		assert.equal(result.blocking.trend, "regressing");
-		assert.equal(result.proven.trend, "flat");
+		assert.equal(result.proven.trend, "rising");
 		assert.deepEqual(result.blocking.evidence.series, [4, 4, 3, 2, 1]);
 		assert.deepEqual(result.proven.evidence.series, [0.1, 0.2, 0.3, 0.4, 0.5]);
+	});
+
+	test("convergence classifies fraction-proven directions and suppresses rising escalation", () => {
+		const climbing = [0, 0.2, 0.4, 0.6, 0.8, 1].map((fractionProven) =>
+			entry({ unresolvedBlockingCount: 4, fractionProven }),
+		);
+		assert.equal(classify_convergence(climbing).proven.trend, "rising");
+		assert.deepEqual(convergence_escalation_evidence(climbing), []);
+
+		const falling = [1, 0.8, 0.6, 0.4, 0.2, 0].map((fractionProven) =>
+			entry({ unresolvedBlockingCount: 4, fractionProven }),
+		);
+		assert.equal(classify_convergence(falling).proven.trend, "regressing");
+
+		const wobble = [0.5, 0.51, 0.5, 0.53, 0.52, 0.54].map((fractionProven) =>
+			entry({ unresolvedBlockingCount: 4, fractionProven }),
+		);
+		assert.equal(classify_convergence(wobble).proven.trend, "flat");
 	});
 
 	test("convergence escalation evidence cites six flat rounds before exhaustion", () => {

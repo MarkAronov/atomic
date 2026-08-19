@@ -4,7 +4,24 @@
  * `needs_human`-class escalation text.
  */
 import type { UsageTotals } from "./verification-usage.js";
-import { classify_trend, type TrendResult } from "./progress-scoring.js";
+import {
+	classify_trend,
+	DEFAULT_FALL_DELTA,
+	DEFAULT_RISE_DELTA,
+	type TrendResult,
+} from "./progress-scoring.js";
+import { VERIFICATION_SCALE } from "./verification-criteria.js";
+
+/**
+ * `fractionProven` remains in its natural [0, 1] units. V7's hysteresis
+ * thresholds span a proportional part of `VERIFICATION_SCALE`, so applying
+ * that same proportion to the unit interval keeps the two series comparable
+ * without hard-coding a fraction-specific magic number.
+ */
+export const FRACTION_TREND_RISE_DELTA =
+	DEFAULT_RISE_DELTA / (VERIFICATION_SCALE.max - VERIFICATION_SCALE.min);
+export const FRACTION_TREND_FALL_DELTA =
+	DEFAULT_FALL_DELTA / (VERIFICATION_SCALE.max - VERIFICATION_SCALE.min);
 
 export type ConvergenceEntry = {
 	readonly unresolvedBlockingCount: number;
@@ -37,7 +54,10 @@ export function classify_convergence(entries: readonly ConvergenceEntry[]): {
 } {
 	return {
 		blocking: classify_trend(entries.map((entry) => entry.unresolvedBlockingCount)),
-		proven: classify_trend(entries.map((entry) => entry.fractionProven)),
+		proven: classify_trend(entries.map((entry) => entry.fractionProven), {
+			riseDelta: FRACTION_TREND_RISE_DELTA,
+			fallDelta: FRACTION_TREND_FALL_DELTA,
+		}),
 	};
 }
 
