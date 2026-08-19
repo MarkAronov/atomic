@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added pure progress-trend evidence and injected control score-series support that can raise wall-clock attention priority without creating failure states, suppressing signals, or scheduling model calls ([#2489](https://github.com/bastani-inc/atomic/issues/2489)).
+
 ## [0.9.14-alpha.3] - 2026-08-17
 
 ### Changed
