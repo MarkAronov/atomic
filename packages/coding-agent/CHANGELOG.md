@@ -5,6 +5,7 @@
 ### Fixed
 
 - Interactive startup now exits quietly when Ctrl+C stops the engine during first-paint binding, without leaking expected in-flight RPC transport failures.
+- Bare `/` and slash-command drafts typed while explicitly loaded extension and workflow packages finish loading now remain in the interactive editor until Enter is pressed.
 - Queue-control RPC frames now remain reachable during long-running prompts. When all overlapping remote `clear_queue` calls fail, Atomic restores the pre-clear host queue only if no later `queue_update` has supplied engine truth, including an empty queue ([#2516](https://github.com/bastani-inc/atomic/issues/2516)).
 
 ## [0.9.14-alpha.4] - 2026-08-18
