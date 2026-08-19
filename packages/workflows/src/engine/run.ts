@@ -132,8 +132,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
+	const hasBudgetDeclaration =
+		opts.budget !== undefined || def.budget !== undefined || opts.config?.budget !== undefined;
 	const priorRun =
-		opts.rootBudget === undefined && opts.continuation === undefined && opts.runId !== undefined
+		hasBudgetDeclaration &&
+		opts.rootBudget === undefined &&
+		opts.continuation === undefined &&
+		opts.runId !== undefined
 			? activeStore.runs().find((candidate) => candidate.id === runId)
 			: undefined;
 	const continuedBudget = opts.continuation?.source.budget ?? priorRun?.budget;
