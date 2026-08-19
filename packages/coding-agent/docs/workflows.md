@@ -805,6 +805,12 @@ Ralph starts from the raw task, refines it into a research question, runs codeba
 
 Ralph uses the same canonical reviewer evidence and convergence contracts as Goal. Its reviewer prompt receives artifacts first and the review objective last, requires independently derived probes before implementation-authored evidence, and preserves unresolved findings when the bounded loop ends. Forked continuation prompts send only changed state and artifact paths instead of repeating the full established contract.
 
+Goal and Ralph re-verify only an eligible consolidated finding: it must still be blocking, have exactly one reviewer, carry a finite `confidence_score` strictly below `DEFAULT_REVERIFY_THRESHOLD=0.7`, and not be aligned `beyond_objective` or `contradicts_objective`; missing confidence is not eligible. Eligible findings are rescored in fresh contexts with the primitive's default `DEFAULT_REPEATS=3`, and an invalid repeat is re-asked once before its audit entry records a null score.
+
+Re-verification has two demotion bars. For an ordinary in-scope finding, demotion requires at least a half-repeat quorum of valid scores and a mean below `STANDARD_CONFIRM_THRESHOLD=10`; for `required_by_objective`, every repeat must be valid and the mean must be below `REQUIRED_CONFIRM_THRESHOLD=6`. The original finding remains in the review record while the durable `reverification` audit records the verdict, mean, per-repeat scores, and evidence.
+
+Each parsed Goal review round and Ralph review round appends convergence evidence with `unresolvedBlockingCount`, `meanFindingConfidence`, `fractionProven`, `demotions`, and folded `usage`. Goal persists it in the goal ledger's `convergence` array beside `reverification`; Ralph exposes the same per-round series in `review-round-latest.json`. The convergence classifier reports blocker and proven trends, and its escalation text is evidence only: `stop_review_loop` remains the authoritative closure signal, while review scores and convergence evidence are audit/advisory data that never approve or terminate a loop.
+
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `prompt` | text | yes | — | Task, issue, or spec to research, implement, and review. Keep PR/MR creation out of this text. |
