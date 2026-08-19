@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Bare `/` and slash-command drafts typed while explicitly loaded extension and workflow packages finish loading now remain in the interactive editor until Enter is pressed.
+
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Changed

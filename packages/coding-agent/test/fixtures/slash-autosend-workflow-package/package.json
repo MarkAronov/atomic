@@ -1,0 +1,10 @@
+{
+  "name": "atomic-test-slash-autosend-workflow",
+  "private": true,
+  "type": "module",
+  "atomic": {
+    "workflows": [
+      "./noop-workflow.ts"
+    ]
+  }
+}
