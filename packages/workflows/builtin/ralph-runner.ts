@@ -41,6 +41,7 @@ import {
   type RalphWorkflowResult,
 } from "./ralph-core.js";
 import { consolidateFindingsBatch, summarizeReviewConvergence } from "./review-convergence.js";
+import { reverify_consolidated_batch } from "./goal-reverify.js";
 import {
   orchestratorModelConfig,
   promptEngineerModelConfig,
@@ -279,19 +280,27 @@ export async function runRalphWorkflow(
       finalActionRemaining: approved && createPr,
       diagnostics: reviewEntries.flatMap((review) => review.convergence_decision.diagnostics),
     });
+    const consolidatedFindings = consolidateFindingsBatch(
+      reviewEntries.map((review) => ({
+        reviewer: review.reviewer,
+        findings: review.decision.findings,
+      })),
+    );
+    const reverified = approved
+      ? { batch: consolidatedFindings, audits: [] as const }
+      : await reverify_consolidated_batch(ctx, {
+          batch: consolidatedFindings,
+          context: {
+            objective: workflowPrompt,
+            candidateRefs: [researchPath, implementationNotesPath, orchestratorReportPath],
+          },
+        });
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
       {
         convergence_decision: roundConvergenceDecision,
-        // Deduplicated cross-reviewer findings batch so the next research and
-        // orchestrator passes repair the round's findings together instead of
-        // one at a time.
-        consolidated_findings: consolidateFindingsBatch(
-          reviewEntries.map((review) => ({
-            reviewer: review.reviewer,
-            findings: review.decision.findings,
-          })),
-        ),
+        consolidated_findings: reverified.batch,
+        reverification: reverified.audits,
         reviews: reviewEntries,
       },
     );

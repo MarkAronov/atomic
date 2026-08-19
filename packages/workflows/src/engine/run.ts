@@ -47,6 +47,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
+import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { store as defaultStore } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -67,6 +68,7 @@ import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
 import { createContinuationReplayIndex } from "./replay.js";
+import { createRunBudgetController, WorkflowBudgetExceededError } from "./run-budget.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
@@ -130,6 +132,22 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
+	// A budget OBJECT is always materialized by the shipped config defaults, so
+	// presence proves nothing. Only a positive duration ceiling means this run is
+	// budgeted; anything else must take the unbudgeted path untouched (R10).
+	const declaresDuration = (budget: WorkflowBudget | undefined): boolean => (budget?.maxDurationMs ?? 0) > 0;
+	const hasBudgetDeclaration =
+		declaresDuration(opts.budget) || declaresDuration(def.budget) || declaresDuration(opts.config?.budget);
+	const priorRun =
+		hasBudgetDeclaration &&
+		opts.rootBudget === undefined &&
+		opts.continuation === undefined &&
+		opts.runId !== undefined
+			? activeStore.runs().find((candidate) => candidate.id === runId)
+			: undefined;
+	const continuedBudget = opts.continuation?.source.budget ?? priorRun?.budget;
+	const runBudget = opts.budget === undefined ? continuedBudget : { ...(continuedBudget ?? {}), ...opts.budget };
+	const resolvedBudget = resolve_budget({ config: opts.config?.budget, definition: def.budget, run: runBudget });
 	const exitScope = Symbol(`workflow-exit:${runId}`);
 	const ownController = new AbortController();
 	const terminalEvents = createRunTerminalEventArbiter(runId);
@@ -165,6 +183,16 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
 			: undefined;
 	const continuationOrigin = opts.continuation !== undefined ? opts.continuation.source.origin : opts.origin;
+	const budgetSnapshot =
+		resolvedBudget.maxDurationMs > 0
+			? { maxDurationMs: resolvedBudget.maxDurationMs, warnAtPercent: resolvedBudget.warnAtPercent }
+			: undefined;
+	const continuationBudgetState =
+		budgetSnapshot !== undefined &&
+		continuedBudget?.maxDurationMs === budgetSnapshot.maxDurationMs &&
+		continuedBudget?.warnAtPercent === budgetSnapshot.warnAtPercent
+			? (opts.continuation?.source.budgetState ?? priorRun?.budgetState)
+			: undefined;
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -183,7 +211,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		...(opts.continuation !== undefined
 			? {
 					resumedFromRunId: opts.continuation.source.id,
-					resumeFromStageId: opts.continuation.resumeFromStageId,
+					...(opts.continuation.resumeFromStageId !== undefined
+						? { resumeFromStageId: opts.continuation.resumeFromStageId }
+						: {}),
 				}
 			: {}),
 		// A continuation keeps the attribution of the run it continues rather than
@@ -196,7 +226,24 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			? { resumeActor: opts.resumeActor, resumeSource: "run_control" as const }
 			: {}),
 		...(inheritedElapsedMs !== undefined ? { accumulatedDurationMs: inheritedElapsedMs } : {}),
+		...(budgetSnapshot !== undefined ? { budget: budgetSnapshot } : {}),
+		...(continuationBudgetState !== undefined ? { budgetState: continuationBudgetState } : {}),
 	};
+	const budget = createRunBudgetController({
+		run: runSnapshot,
+		budget: resolvedBudget,
+		rootBudget: opts.rootBudget,
+		onWarning: (report) => {
+			activeStore.recordNotice({
+				id: `workflow-budget-warning:${runId}:${report.dimension}`,
+				runId,
+				level: "warning",
+				message: `Workflow "${def.name}" is at ${report.percent.toFixed(1)}% of its ${report.dimension} budget (${report.reading} / ${report.ceiling}).`,
+				createdAt: Date.now(),
+			});
+		},
+	});
+	const rootBudget = opts.rootBudget ?? budget;
 	const classifiedFailures = new Map<unknown, WorkflowFailure>();
 	const classifyExecutorFailure = (error: unknown): WorkflowFailure => {
 		const cached = classifiedFailures.get(error);
@@ -231,6 +278,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			...(runSnapshot.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
 				: {}),
+			...(runSnapshot.budget !== undefined ? { budget: runSnapshot.budget } : {}),
+			...(runSnapshot.budgetState !== undefined ? { budgetState: runSnapshot.budgetState } : {}),
 			ts: runSnapshot.startedAt,
 		});
 	}
@@ -342,6 +391,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		onStageStart: opts.onStageStart,
 		onStageEnd: opts.onStageEnd,
 		onStageSession: opts.onStageSession,
+		rootBudget,
 		durableBackend,
 		durableRootBackend: rootBackend,
 	};
@@ -367,6 +417,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
 		exit,
 		classifyExecutorFailure,
+		rootBudget,
+		budget,
 	});
 	const workflowBoundaryReplayCounts = new Map<string, number>();
 	const nextWorkflowBoundaryReplayKey = (name: string): string => {
@@ -422,6 +474,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		sourceToReplayedNodeIds,
 		toolControls,
 		toolAdmission,
+		budget,
 	});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
@@ -571,8 +624,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						},
 		});
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
+		const sourceFrontierStage = opts.continuation?.source;
+		const sourceFrontierId = sourceFrontierStage?.failedStageId ?? opts.continuation?.resumeFromStageId;
+		const startupFrontierStage =
+			sourceFrontierStage?.stages.find((stage) => stage.id === sourceFrontierId)?.name ?? "workflow frontier";
+		if (budget.enabled) await budget.stopAtBoundaryAsync(startupFrontierStage);
 		const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
 		await admittedTools.closeAndDrain();
+		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
 		const normalTerminalEvent = terminalEvents.winner();
 		if (normalTerminalEvent?.kind === "cancellation") {
 			const selectedExit = findWorkflowExitSignal(normalTerminalEvent.reason, exitScope);
@@ -632,6 +691,28 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
 		await admittedTools.closeAndDrain();
+		if (err instanceof WorkflowBudgetExceededError) {
+			const pendingBudgetError = await budget.awaitPendingWrapUp();
+			const selectedBudgetError = pendingBudgetError ?? err;
+			const report = selectedBudgetError.report;
+			const frontierStageId =
+				runSnapshot.stages.find((stage) => stage.name === report.frontierStage)?.id ??
+				runSnapshot.stages.at(-1)?.id;
+			for (const stage of runSnapshot.stages) scheduler.blockKnownNonTerminalDescendants(stage.id);
+			const result: WorkflowOutputValues = { status: "budget_exceeded", ...report };
+			return recordActiveBlockedFailure(runId, runSnapshot, activeStore, opts.persistence, {
+				errorMessage: selectedBudgetError.message,
+				failureKind: "unknown",
+				failureCode: "unknown",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: selectedBudgetError.message,
+				...(frontierStageId !== undefined ? { failedStageId: frontierStageId } : {}),
+				resumable: true,
+				result,
+				budgetState: runSnapshot.budgetState,
+			});
+		}
 		const observedAdmittedToolFailure = selectedAdmittedToolFailure ?? admittedTools.uniqueFailureFor(err);
 		const selectedExit =
 			findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);

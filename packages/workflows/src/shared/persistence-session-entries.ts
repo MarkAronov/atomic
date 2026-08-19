@@ -46,6 +46,8 @@ export interface RunStartPayload {
 	readonly resumeFromStageId?: string;
 	/** Elapsed ms inherited from prior sessions of a resumed run. */
 	readonly accumulatedDurationMs?: number;
+	readonly budget?: import("./store-types.js").RunBudgetSnapshot;
+	readonly budgetState?: import("./store-types.js").RunBudgetState;
 	readonly ts: number;
 }
 
@@ -124,7 +126,7 @@ export interface RunEndPayload {
 
 export interface RunBlockedPayload {
 	readonly runId: string;
-	readonly failedStageId: string;
+	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -133,6 +135,9 @@ export interface RunBlockedPayload {
 	readonly failureDisposition?: WorkflowFailureDisposition;
 	readonly retryAfterMs?: number;
 	readonly resumable: true;
+	readonly endedAt?: number;
+	readonly result?: WorkflowOutputValues;
+	readonly budgetState?: import("./store-types.js").RunBudgetState;
 	readonly ts: number;
 }
 
@@ -157,6 +162,8 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
 		...(payload.origin !== undefined ? { origin: payload.origin } : {}),
 		...(payload.resumeFromStageId !== undefined ? { resumeFromStageId: payload.resumeFromStageId } : {}),
 		...(payload.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: payload.accumulatedDurationMs } : {}),
+		...(payload.budget !== undefined ? { budget: payload.budget } : {}),
+		...(payload.budgetState !== undefined ? { budgetState: payload.budgetState } : {}),
 		ts: payload.ts,
 	});
 	if (entryId && typeof api.setLabel === "function") {
@@ -277,7 +284,7 @@ export function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload
 	if (typeof api.appendEntry !== "function") return;
 	api.appendEntry("workflow.run.blocked", {
 		runId: payload.runId,
-		failedStageId: payload.failedStageId,
+		...(payload.failedStageId !== undefined ? { failedStageId: payload.failedStageId } : {}),
 		error: payload.error,
 		failureKind: payload.failureKind,
 		...(payload.failureCode !== undefined ? { failureCode: payload.failureCode } : {}),
@@ -286,6 +293,9 @@ export function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload
 		...(payload.failureDisposition !== undefined ? { failureDisposition: payload.failureDisposition } : {}),
 		...(payload.retryAfterMs !== undefined ? { retryAfterMs: payload.retryAfterMs } : {}),
 		resumable: payload.resumable,
+		...(payload.endedAt !== undefined ? { endedAt: payload.endedAt } : {}),
+		...(payload.result !== undefined ? { result: payload.result } : {}),
+		...(payload.budgetState !== undefined ? { budgetState: payload.budgetState } : {}),
 		ts: payload.ts,
 	});
 }

@@ -268,6 +268,63 @@ describe("ralph", () => {
 		assert.doesNotMatch(reviewerPrompt, /output_format/i);
 	});
 
+	test("skips re-verification when the Ralph review round is already approved", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const cwd = requireRalphTempCwd();
+		const approvedFindingReview = JSON.stringify({
+			findings: [
+				{
+					title: "[P2] Low-confidence finding",
+					body: "A low-confidence blocking finding is present for the approved-round fixture.",
+					confidence_score: 0.4,
+					objective_alignment: "consistent_with_objective",
+					priority: 2,
+					code_location: {
+						absolute_file_path: join(cwd, "src/example.ts"),
+						line_range: { start: 1, end: 1 },
+					},
+				},
+			],
+			overall_correctness: "patch is correct",
+			overall_explanation: "The reviewer explicitly approved this round.",
+			overall_confidence_score: 0.9,
+			requirements_traceability: [
+				{
+					requirement: "Review the requested change",
+					status: "proven",
+					evidence: "Current state proves the requested change.",
+				},
+			],
+			stop_review_loop: true,
+			reviewer_error: null,
+		});
+		const ctx = makeMockCtx(
+			{
+				prompt: "Review approved-round re-verification",
+				max_loops: 1,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => (name === "reviewer-a" || name === "reviewer-b" ? approvedFindingReview : undefined),
+			},
+		);
+
+		const result = await mod.default.run({ ...ctx, cwd });
+		assert.equal(result.approved, true);
+		assert.equal(
+			ctx.calls.task.some((name) => name.startsWith("reverify-")),
+			false,
+		);
+		const round = JSON.parse(readFileSync(String(result.review_report_path), "utf8")) as {
+			readonly consolidated_findings: readonly { readonly blocking: boolean }[];
+			readonly reverification: readonly { readonly verdict: string }[];
+		};
+		assert.equal(round.consolidated_findings[0]?.blocking, true);
+		assert.deepEqual(round.reverification, []);
+	});
+
 	test("passes Ralph review artifacts into follow-up research", async () => {
 		const mod = await import("../../packages/workflows/builtin/ralph.js");
 		const cwd = requireRalphTempCwd();

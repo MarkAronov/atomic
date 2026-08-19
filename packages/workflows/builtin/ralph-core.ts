@@ -19,6 +19,7 @@ import {
   type ParsedReviewDecision,
   type ReviewConvergenceSummary,
 } from "./review-convergence.js";
+import type { ReverifyAuditEntry } from "./goal-reverify.js";
 
 
 export const DEFAULT_MAX_LOOPS = 10;
@@ -295,6 +296,7 @@ type ReviewArtifact = {
 type ReviewRoundArtifact = {
   readonly convergence_decision: ReviewConvergenceSummary;
   readonly consolidated_findings?: readonly ConsolidatedFinding<ReviewFinding>[];
+  readonly reverification?: readonly ReverifyAuditEntry<ReviewFinding>[];
   readonly reviews: readonly {
     readonly reviewer: string;
     readonly artifact_path: string;

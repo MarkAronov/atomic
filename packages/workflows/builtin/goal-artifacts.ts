@@ -3,8 +3,10 @@ import { join } from "node:path";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
 import {
   consolidateFindingsBatch,
+  type ConsolidatedFinding,
   type ReviewConvergenceSummary,
 } from "./review-convergence.js";
+import type { ReverifyAuditEntry, ReverifiableFinding } from "./goal-reverify.js";
 
 export function artifactSafeName(value: string): string {
   const safe = value
@@ -42,20 +44,19 @@ export async function writeReviewArtifact(
 export async function writeReviewRoundArtifact(
   artifactDir: string,
   reviews: readonly ReviewRecord[],
-): Promise<string> {
-  const artifactPath = join(artifactDir, "review-round-latest.json");
-  const visibleReviews = reviews.map(withoutTurn);
-  // Deduplicated cross-reviewer findings batch so the next orchestrator turn can
-  // plan and repair the round's findings together instead of one at a time.
-  const consolidatedFindings = consolidateFindingsBatch(
+  consolidatedFindings: readonly ConsolidatedFinding<ReverifiableFinding>[] = consolidateFindingsBatch(
     reviews.map((review) => ({
       reviewer: review.reviewer,
       findings: review.findings,
     })),
-  );
+  ),
+  reverification: readonly ReverifyAuditEntry<ReverifiableFinding>[] = [],
+): Promise<string> {
+  const artifactPath = join(artifactDir, "review-round-latest.json");
+  const visibleReviews = reviews.map(withoutTurn);
   await writeFile(
     artifactPath,
-    `${JSON.stringify({ reviews: visibleReviews, consolidated_findings: consolidatedFindings }, null, 2)}\n`,
+    `${JSON.stringify({ reviews: visibleReviews, consolidated_findings: consolidatedFindings, reverification }, null, 2)}\n`,
     { encoding: "utf8" },
   );
   return artifactPath;
