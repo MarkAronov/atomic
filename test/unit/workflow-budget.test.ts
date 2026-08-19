@@ -426,7 +426,7 @@ describe("token and cost budget metering", () => {
 		assert.equal(secondCheck.kind, "continue");
 	});
 
-	test("budget resume carries token and cost baselines without charging replayed spend", () => {
+	test("budget resume carries token and cost baselines across a fresh continuation", () => {
 		const source = budgetRun({
 			id: "budget-source",
 			stages: [usageStage("source", [budgetAttempt("source", { input: 5, output: 2, cost: 0.5 })])],
@@ -451,6 +451,50 @@ describe("token and cost budget metering", () => {
 		assert.equal(resumedController.checkpoint("next").kind, "continue");
 		assert.equal(resumed.budgetState?.tokens?.reading, 11);
 		assert.equal(resumed.budgetState?.cost?.reading, 0.75);
+	});
+
+	test("budget resume excludes replayed stages from token and cost re-accounting", () => {
+		const source = budgetRun({
+			id: "budget-replayed-source",
+			stages: [
+				usageStage("source", [
+					budgetAttempt("source", { input: 5, output: 2, cacheRead: 11, cacheWrite: 13, cost: 0.5 }),
+				]),
+			],
+		});
+		const sourceController = createRunBudgetController({
+			run: source,
+			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
+			usageTree: () => ({ run: source }),
+		});
+		assert.equal(sourceController.checkpoint("source").kind, "continue");
+
+		const resumed = budgetRun({
+			id: "budget-replayed-resumed",
+			resumedFromRunId: source.id,
+			budgetState: source.budgetState,
+			stages: [
+				{ ...usageStage("source", source.stages[0].modelAttempts ?? []), replayed: true },
+				usageStage("next", [
+					budgetAttempt("next", { input: 3, output: 1, cacheRead: 17, cacheWrite: 19, cost: 0.25 }),
+				]),
+			],
+		});
+		const resumedController = createRunBudgetController({
+			run: resumed,
+			budget: resolve_budget({ run: { maxTokens: 100, maxCost: 10 } }),
+			usageTree: () => ({ run: resumed }),
+		});
+
+		assert.equal(resumedController.checkpoint("next").kind, "continue");
+		assert.equal(resumed.budgetState?.tokens?.reading, 11);
+		assert.equal(resumed.budgetState?.cost?.reading, 0.75);
+		assert.deepEqual(resumed.budgetState?.accounting?.perCounter, {
+			input: 8,
+			output: 3,
+			cacheRead: 28,
+			cacheWrite: 32,
+		});
 	});
 
 	test("budget cache counters are reported, cost charges cache-heavy spend, and tokens do not", () => {
