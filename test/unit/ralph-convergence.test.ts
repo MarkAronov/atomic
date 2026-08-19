@@ -19,6 +19,33 @@ import { findingBlocksClosure } from "../../packages/workflows/builtin/review-co
 import { REVIEWER_CALIBRATION_RULES } from "../../packages/workflows/builtin/shared-prompts.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
+function ralphReviewJsonWithBlockingFindings(): string {
+	return JSON.stringify({
+		findings: Array.from({ length: 5 }, (_, index) => ({
+			title: `[P1] Required objective blocker ${index + 1}`,
+			body: "A concrete required objective blocker remains.",
+			confidence_score: 0.95,
+			objective_alignment: "required_by_objective",
+			priority: 1,
+			code_location: {
+				absolute_file_path: "/repo/changed.ts",
+				line_range: { start: index + 1, end: index + 1 },
+			},
+		})),
+		overall_correctness: "patch is incorrect",
+		overall_explanation: "The mock review leaves required objective blockers unresolved.",
+		overall_confidence_score: 0.95,
+		requirements_traceability: [
+			{
+				requirement: "complete objective",
+				status: "missing",
+				evidence: "required objective blockers remain",
+			},
+		],
+		stop_review_loop: false,
+		reviewer_error: null,
+	});
+}
 describe("Ralph convergence", () => {
 	let tempCwd: string | undefined;
 
@@ -96,6 +123,46 @@ describe("Ralph convergence", () => {
 		assert.equal(
 			saved.reviews.every((review) => review.decision.stop_review_loop === false),
 			true,
+		);
+
+		const pullRequestPrompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";
+		assert.equal(ctx.calls.task.includes("pull-request"), true);
+		assert.match(pullRequestPrompt, /2 rounds recorded/);
+		assert.match(pullRequestPrompt, /flat/);
+		assert.match(pullRequestPrompt, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
+	});
+
+	test("Ralph convergence omits a failed reviewer batch from the review ledger and pull-request evidence", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const cwd = tempCwd!;
+		const reviewerPayload = ralphReviewJsonWithBlockingFindings();
+		const ctx = makeMockCtx(
+			{
+				prompt: "Keep the objective true",
+				acceptance_criteria: "Keep the objective true",
+				max_loops: 3,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: true,
+			},
+			{
+				task: (name) => (name === "reviewer-a" || name === "reviewer-b" ? reviewerPayload : undefined),
+				parallel: async (_steps, _options, calls) => {
+					if (calls.parallel.length === 3) throw new Error("mock reviewer execution failure");
+					return undefined;
+				},
+			},
+		);
+
+		const result = await mod.default.run({ ...ctx, cwd });
+		const saved = JSON.parse(readFileSync(String(result.review_report_path), "utf8")) as {
+			readonly convergence: readonly { readonly unresolvedBlockingCount: number }[];
+		};
+		assert.equal(result.approved, false);
+		assert.equal(result.iterations_completed, 3);
+		assert.deepEqual(
+			saved.convergence.map((entry) => entry.unresolvedBlockingCount),
+			[5, 5],
 		);
 
 		const pullRequestPrompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";

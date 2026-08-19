@@ -167,6 +167,37 @@ function goalReviewJsonWithFinding(
 	});
 }
 
+function goalReviewJsonWithBlockingFindings(): string {
+	return JSON.stringify({
+		findings: Array.from({ length: 5 }, (_, index) => ({
+			title: `[P1] Required objective blocker ${index + 1}`,
+			body: "A concrete required objective blocker remains.",
+			confidence_score: 0.95,
+			objective_alignment: "required_by_objective",
+			priority: 1,
+			code_location: {
+				absolute_file_path: "/repo/changed.ts",
+				line_range: { start: index + 1, end: index + 1 },
+			},
+		})),
+		overall_correctness: "patch is incorrect",
+		overall_explanation: "The mock review leaves required objective blockers unresolved.",
+		overall_confidence_score: 0.95,
+		goal_oracle_satisfied: false,
+		requirements_traceability: [
+			{
+				requirement: "complete objective",
+				status: "missing",
+				evidence: "required objective blockers remain",
+			},
+		],
+		receipt_assessment: "mock receipt",
+		verification_remaining: "required objective blockers remain",
+		stop_review_loop: false,
+		reviewer_error: null,
+	});
+}
+
 describe("goal convergence", () => {
 	test("record_convergence shapes exactly five fields and folds usage", () => {
 		const usage = fold_usage([usageResult("orchestrator", 10, 20), usageResult("reviewer", 30, 40)]);
@@ -386,7 +417,7 @@ describe("goal convergence", () => {
 			readonly decisions: readonly { readonly reason: string }[];
 		};
 		assert.equal(result.status, "needs_human");
-		assert.equal(saved.convergence.length, 6);
+		assert.equal(saved.convergence.length, 5);
 		for (const round of saved.convergence) {
 			assert.equal(round.unresolvedBlockingCount, 0);
 			assert.equal(round.meanFindingConfidence, null);
@@ -415,7 +446,7 @@ describe("goal convergence", () => {
 				assert.equal(typeof round.usage[key], "number", key);
 			}
 		}
-		assert.match(saved.decisions.at(-1)?.reason ?? "", /6 rounds/);
+		assert.match(saved.decisions.at(-1)?.reason ?? "", /5 rounds/);
 		assert.match(saved.decisions.at(-1)?.reason ?? "", /flat/);
 		assert.match(saved.decisions.at(-1)?.reason ?? "", /EVIDENCE only/);
 	});
@@ -462,6 +493,49 @@ describe("goal convergence", () => {
 			saved.reviews.flatMap((review) => review.requirements_traceability.map((entry) => entry.status)).sort(),
 			["missing", "missing", "proven", "proven"],
 		);
+	});
+
+	test("goal convergence omits a failed reviewer batch from the blocking ledger and escalation evidence", async () => {
+		const mod = await import("../../packages/workflows/builtin/goal.js");
+		const reviewerPayload = goalReviewJsonWithBlockingFindings();
+		const ctx = makeMockCtx(
+			{
+				objective: "Keep the objective true",
+				max_turns: 10,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) =>
+					name.startsWith("completion-reviewer-") ||
+					name.startsWith("evidence-reviewer-") ||
+					name.startsWith("risk-reviewer-")
+						? reviewerPayload
+						: undefined,
+				parallel: async (steps) => {
+					if (steps[0]?.name.endsWith("-6")) throw new Error("mock reviewer execution failure");
+					return undefined;
+				},
+			},
+		);
+		const result = await mod.default.run(ctx);
+		const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
+			readonly status: string;
+			readonly convergence: readonly { readonly unresolvedBlockingCount: number }[];
+			readonly decisions: readonly { readonly reason: string }[];
+		};
+
+		assert.equal(result.status, "needs_human");
+		assert.equal(saved.status, "needs_human");
+		assert.deepEqual(
+			saved.convergence.map((round) => round.unresolvedBlockingCount),
+			[5, 5, 5, 5, 5],
+		);
+		const reason = saved.decisions.at(-1)?.reason ?? "";
+		assert.match(reason, /5 rounds recorded/);
+		assert.match(reason, /flat/);
+		assert.match(reason, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
 	});
 
 	test("convergence evidence never changes complete blocked or continue decisions", () => {

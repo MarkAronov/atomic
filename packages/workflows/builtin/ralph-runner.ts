@@ -211,6 +211,7 @@ export async function runRalphWorkflow(
       createPr,
     });
     let reviews: WorkflowTaskResult[];
+    let reviewerBatchFailed = false;
     try {
       reviews = await ctx.parallel(
         [
@@ -242,6 +243,7 @@ export async function runRalphWorkflow(
         },
       );
     } catch (err) {
+      reviewerBatchFailed = true;
       reviews = [reviewerErrorResult(err)];
     }
     const reviewEntries = await Promise.all(reviews.map(async (review) => {
@@ -304,17 +306,23 @@ export async function runRalphWorkflow(
         });
     const findings = reviewEntries.flatMap((review) => review.decision.findings);
     const traceability = reviewEntries.flatMap((review) => review.decision.requirements_traceability);
-    convergenceEntries.push(record_convergence({
-      unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
-      meanFindingConfidence: findings.length === 0
-        ? null
-        : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
-      fractionProven: traceability.length === 0
-        ? 0
-        : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
-      demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
-      usage: fold_usage([orchestrator, ...reviews]),
-    }));
+    if (!reviewerBatchFailed) {
+      convergenceEntries.push(record_convergence({
+        unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
+        meanFindingConfidence: findings.length === 0
+          ? null
+          : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
+        fractionProven: traceability.length === 0
+          ? 0
+          : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
+        demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
+        usage: fold_usage([orchestrator, ...reviews]),
+      }));
+    } else {
+      // A failed reviewer batch produced no decisions, so recording a
+      // zero-blocker round would fabricate progress and can suppress the
+      // escalation evidence on the very escalation it triggers.
+    }
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
       {

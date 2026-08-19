@@ -307,17 +307,23 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       const findings = latestReviews.flatMap((review) => review.findings);
       const traceability = latestReviews.flatMap((review) => review.requirements_traceability);
       ledger.convergence ??= [];
-      ledger.convergence.push(record_convergence({
-        unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
-        meanFindingConfidence: findings.length === 0
-          ? null
-          : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
-        fractionProven: traceability.length === 0
-          ? 0
-          : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
-        demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
-        usage: fold_usage([orchestrator, ...reviewResults]),
-      }));
+      if (!reviewerBatchFailed) {
+        ledger.convergence.push(record_convergence({
+          unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
+          meanFindingConfidence: findings.length === 0
+            ? null
+            : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
+          fractionProven: traceability.length === 0
+            ? 0
+            : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
+          demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
+          usage: fold_usage([orchestrator, ...reviewResults]),
+        }));
+      } else {
+        // A failed reviewer batch produced no decisions, so recording a
+        // zero-blocker round would fabricate progress and can suppress the
+        // escalation evidence on the very escalation it triggers.
+      }
       ledger.reviews.push(...latestReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
