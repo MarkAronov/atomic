@@ -314,8 +314,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
 		this.disposePromise = (async () => {
-			// EngineHealthController owns the one client stop and joins recovery.
+			// EngineHealthController owns the first client stop and joins recovery.
 			await this.health.shutdown();
+			// A replacement may have spawned while shutdown joined recovery; the
+			// idempotent trailing stop closes that child before disposal returns.
+			await this.client.stop();
 			await super.dispose();
 		})();
 		return this.disposePromise;

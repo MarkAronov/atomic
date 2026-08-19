@@ -85,8 +85,6 @@ export class RpcClient extends RpcClientApi {
 	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
 	private restartRevision = 0;
 	private stopPromise: Promise<void> | undefined;
-	/** Keeps the explicit-stop fence armed while restart has no child between generations. */
-	private restartInFlight = 0;
 	private readonly terminalDrain = new RpcTerminalDrain();
 	private stdoutDrained: Promise<void> = Promise.resolve();
 	private requestId = 0;
@@ -194,9 +192,8 @@ export class RpcClient extends RpcClientApi {
 	 * between its own stop and start can never spawn after this returns.
 	 */
 	stop(): Promise<void> {
-		if (this.stopPromise) return this.stopPromise;
-		if (!this.process && this.restartInFlight === 0) return Promise.resolve();
 		this.restartRevision += 1;
+		if (this.stopPromise) return this.stopPromise;
 		if (!this.process) return Promise.resolve();
 		const stopPromise = this.stopCurrentGeneration().finally(() => {
 			if (this.stopPromise === stopPromise) this.stopPromise = undefined;
@@ -339,17 +336,12 @@ export class RpcClient extends RpcClientApi {
 	 * quietly, because callers go on to initialize against the new child.
 	 */
 	async restart(sessionFile: string | undefined): Promise<void> {
-		this.restartInFlight += 1;
-		try {
-			const permit = this.restartRevision;
-			await this.stopCurrentGeneration();
-			if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
-			this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
-			await this.start();
-			await this.waitForInteractiveEngineBound();
-		} finally {
-			this.restartInFlight -= 1;
-		}
+		const permit = this.restartRevision;
+		await this.stopCurrentGeneration();
+		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
+		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
+		await this.start();
+		await this.waitForInteractiveEngineBound();
 	}
 
 	async requestInternal<T>(command: RpcCommandBody): Promise<T> {

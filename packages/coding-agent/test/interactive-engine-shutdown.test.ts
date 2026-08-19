@@ -103,7 +103,11 @@ describe("isolated interactive startup shutdown", () => {
 			assert.strictEqual(firstDispose, secondDispose);
 			await firstDispose;
 			await startup;
-			assert.equal(stop.mock.calls.length, 1);
+			assert.equal(
+				stop.mock.calls.length,
+				2,
+				"shutdown requests the idempotent stop during health and trailing cleanup",
+			);
 		} finally {
 			harness.cleanup();
 		}
@@ -131,7 +135,11 @@ describe("isolated interactive startup shutdown", () => {
 			await Promise.resolve();
 			await runtime.dispose();
 			await startup;
-			assert.equal(stop.mock.calls.length, 1);
+			assert.equal(
+				stop.mock.calls.length,
+				2,
+				"shutdown requests the idempotent stop during health and trailing cleanup",
+			);
 		} finally {
 			harness.cleanup();
 		}
@@ -158,7 +166,11 @@ describe("isolated interactive startup shutdown", () => {
 			await waitForInteractiveEngineBound(runtime);
 			await runtime.dispose();
 			await Promise.resolve();
-			assert.equal(stop.mock.calls.length, 1);
+			assert.equal(
+				stop.mock.calls.length,
+				2,
+				"shutdown requests the idempotent stop during health and trailing cleanup",
+			);
 		} finally {
 			harness.cleanup();
 		}
