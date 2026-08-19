@@ -22,6 +22,16 @@ import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngine
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
+
+type QueueSnapshot = { steering: string[]; followUp: string[] };
+
+type PendingQueueClear = {
+	snapshot: QueueSnapshot;
+	queueUpdateGeneration: number;
+	count: number;
+	succeeded: boolean;
+};
+
 /**
  * Owns Atomic's local interactive host facade and child-process engine.
  *
@@ -38,13 +48,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
-	/**
-	 * Bumped by every authoritative queue_update and every optimistic local
-	 * clear. A failed clear_queue restores its snapshot only while the
-	 * generation it captured is still current, so neither an engine update nor
-	 * a newer clear can be overwritten by a stale rollback.
-	 */
-	private queueGeneration = 0;
+	/** Bumped by every authoritative queue_update. */
+	private queueUpdateGeneration = 0;
+	/** Clears started before the next queue_update share one rollback snapshot. */
+	private pendingQueueClear: PendingQueueClear | undefined;
 	private engineCallbackActive = false;
 	private readonly queuePause: RemoteQueuePause;
 	private autoCompactionEnabled = true;
@@ -412,27 +419,29 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			clearQueue: {
 				configurable: true,
 				value: () => {
-					const queued = { steering: [...this.steeringMessages], followUp: [...this.followUpMessages] };
-					this.queueGeneration += 1;
-					const generation = this.queueGeneration;
+					const queued: QueueSnapshot = {
+						steering: [...this.steeringMessages],
+						followUp: [...this.followUpMessages],
+					};
+					const pendingClear = this.pendingQueueClear ?? {
+						snapshot: queued,
+						queueUpdateGeneration: this.queueUpdateGeneration,
+						count: 0,
+						succeeded: false,
+					};
+					this.pendingQueueClear = pendingClear;
+					pendingClear.count += 1;
 					this.steeringMessages = [];
 					this.followUpMessages = [];
-					const clearRequest = this.client.requestInternal({ type: "clear_queue" });
 					this.dispatchBestEffort(
 						"clear queue",
-						clearRequest.catch((error: Error) => {
-							// A later queue_update is engine truth, including an empty one, and a
-							// later overlapping clear owns a newer snapshot. Array length cannot
-							// stand in for either: an authoritative empty update looks like "no
-							// update arrived" and would resurrect messages the engine removed,
-							// while concurrent rollbacks would make the result depend on rejection
-							// order. Restore only while this clear's generation is still current.
-							if (this.queueGeneration === generation) {
-								this.steeringMessages = [...queued.steering];
-								this.followUpMessages = [...queued.followUp];
-							}
-							throw error;
-						}),
+						this.client.requestInternal({ type: "clear_queue" }).then(
+							() => this.settleQueueClear(pendingClear, true),
+							(error: Error) => {
+								this.settleQueueClear(pendingClear, false);
+								throw error;
+							},
+						),
 					);
 					return queued;
 				},
@@ -542,6 +551,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
+	private settleQueueClear(pendingClear: PendingQueueClear, succeeded: boolean): void {
+		if (this.pendingQueueClear !== pendingClear) return;
+
+		pendingClear.count -= 1;
+		pendingClear.succeeded ||= succeeded;
+		if (pendingClear.count > 0) return;
+
+		this.pendingQueueClear = undefined;
+		if (pendingClear.succeeded || this.queueUpdateGeneration !== pendingClear.queueUpdateGeneration) return;
+
+		this.steeringMessages = [...pendingClear.snapshot.steering];
+		this.followUpMessages = [...pendingClear.snapshot.followUp];
+	}
+
 	private resetUnpersistedSessionView(): void {
 		const session = super.session;
 		const manager = SessionManager.create(session.sessionManager.getCwd(), session.sessionManager.getSessionDir());
@@ -594,7 +617,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.compactionReason = undefined;
 				break;
 			case "queue_update":
-				this.queueGeneration += 1;
+				this.queueUpdateGeneration += 1;
+				this.pendingQueueClear = undefined;
 				this.steeringMessages = [...event.steering];
 				this.followUpMessages = [...event.followUp];
 				break;

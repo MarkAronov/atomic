@@ -167,7 +167,7 @@ test("clearQueue keeps an authoritative empty queue_update when the remote clear
 	}
 });
 
-test("an older failed clear cannot overwrite a newer clear's state", async () => {
+test("overlapping failed clears restore the original queue when rejected oldest-first", async () => {
 	const harness = await createHarness();
 	try {
 		const probe = createClearQueueClient();
@@ -186,14 +186,14 @@ test("an older failed clear cannot overwrite a newer clear's state", async () =>
 
 		probe.reject(new Error("engine unavailable"), 1);
 		await settleRejectedClear();
-		assert.deepEqual(session.getSteeringMessages(), []);
-		assert.deepEqual(session.getFollowUpMessages(), []);
+		assert.deepEqual(session.getSteeringMessages(), ["before steer"]);
+		assert.deepEqual(session.getFollowUpMessages(), ["before follow-up"]);
 	} finally {
 		harness.cleanup();
 	}
 });
 
-test("overlapping failed clears settle identically when rejected newest-first", async () => {
+test("overlapping failed clears restore the original queue when rejected newest-first", async () => {
 	const harness = await createHarness();
 	try {
 		const probe = createClearQueueClient();
@@ -209,8 +209,8 @@ test("overlapping failed clears settle identically when rejected newest-first", 
 		probe.reject(new Error("engine unavailable"), 0);
 		await settleRejectedClear();
 
-		assert.deepEqual(session.getSteeringMessages(), []);
-		assert.deepEqual(session.getFollowUpMessages(), []);
+		assert.deepEqual(session.getSteeringMessages(), ["before steer"]);
+		assert.deepEqual(session.getFollowUpMessages(), ["before follow-up"]);
 	} finally {
 		harness.cleanup();
 	}

@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Queue-control RPC frames now remain reachable during long-running prompts. A failed remote `clear_queue` restores host-queued messages only when no later `queue_update` has already supplied engine truth, including an empty queue ([#2516](https://github.com/bastani-inc/atomic/issues/2516)).
+- Queue-control RPC frames now remain reachable during long-running prompts. When all overlapping remote `clear_queue` calls fail, Atomic restores the pre-clear host queue only if no later `queue_update` has supplied engine truth, including an empty queue ([#2516](https://github.com/bastani-inc/atomic/issues/2516)).
 
 ## [0.9.14-alpha.4] - 2026-08-18
 
