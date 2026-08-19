@@ -8,6 +8,8 @@ import { test } from "vitest";
 import adversarialVerification from "../../packages/workflows/builtin/adversarial-verification.js";
 import generateAndFilter from "../../packages/workflows/builtin/generate-and-filter.js";
 import { VERIFICATION_SCALE } from "../../packages/workflows/builtin/verification-criteria.js";
+import { MAX_INLINE_CANDIDATE_BYTES } from "../../packages/workflows/builtin/verification-prompts.js";
+import type { WorkflowTaskOptions } from "../../packages/workflows/src/shared/types.js";
 import {
 	assertOutputTypes,
 	assertWorkflowDefinition,
@@ -32,8 +34,14 @@ function assignCwd<T extends object>(ctx: T, cwd: string): T {
 	return ctx;
 }
 
+function shortlistFromFilter(options: WorkflowTaskOptions): string[] {
+	const filterPath = readPaths(options).find((path) => path.endsWith("filter.json"));
+	if (filterPath === undefined) return [];
+	return (JSON.parse(readFileSync(filterPath, "utf8")) as { shortlist: string[] }).shortlist;
+}
+
 function criterionId(prompt: string): string {
-	const match = prompt.match(/\nid: ([^\n]+)/);
+	const match = prompt.match(/criterion_id \(set to ([A-Za-z0-9_-]+)\)/);
 	assert.ok(match?.[1], "criterion verifier prompt must name its criterion");
 	return match[1];
 }
@@ -113,20 +121,21 @@ test("adversarial-verification fans out one fresh schema-backed stage per criter
 		assert.equal(result.approved, true);
 		assert.equal(result.mean_score, 20);
 		assert.equal(result.repairs_completed, 0);
-		assert.equal(ctx.calls.parallel.length, 1);
-		assert.equal(ctx.calls.parallel[0]?.length, 4);
-		assert.deepEqual(ctx.calls.parallel[0], [
-			"verifier-0-task_fit-1",
+		assert.equal(ctx.calls.parallel.length, 2);
+		assert.deepEqual(ctx.calls.parallel[0], ["verifier-0-task_fit-1"]);
+		assert.deepEqual(ctx.calls.parallel[1], [
 			"verifier-0-task_fit-2",
 			"verifier-0-evidence-1",
 			"verifier-0-evidence-2",
 		]);
-		for (const name of ctx.calls.parallel[0]!) {
+		for (const name of ctx.calls.parallel.flat()) {
 			const options = ctx.calls.taskOptions[name]?.[0];
 			assert.equal(options?.context, "fresh");
 			assert.equal(options?.schema === undefined, false);
-			assert.ok(readPaths(options).some((path) => path.endsWith("candidate.md")));
 			assert.ok(readPaths(options).some((path) => path.endsWith("criteria.md")));
+			assert.match(String(options?.prompt), /<scoring_head>/);
+			assert.match(String(options?.prompt), /<criterion>/);
+			assert.match(String(options?.prompt), /criterion_id \(set to/);
 			const schema = schemaShape(options?.schema);
 			assert.equal(schema.additionalProperties, false);
 			const properties = schemaShape(schema.properties);
@@ -191,9 +200,9 @@ test("adversarial-verification re-asks invalid reports without counting them as 
 		assert.equal(result.approved, true);
 		assert.deepEqual(
 			ctx.calls.parallel.map((steps) => steps.length),
-			[2, 1],
+			[1, 1, 1],
 		);
-		assert.equal(ctx.calls.parallel[1]?.[0], "verifier-0-task_fit-1-reask-1");
+		assert.equal(ctx.calls.parallel[2]?.[0], "verifier-0-task_fit-1-reask-1");
 		const root = dirname(result.score_table_path);
 		assert.deepEqual(JSON.parse(readFileSync(join(root, "verification-0-task_fit-1.json"), "utf8")), {
 			invalid: true,
@@ -396,9 +405,6 @@ test("generate-and-filter fans out, dedupes, optionally judges, and finalizes ar
 		assert.equal(ctx.calls.parallelOptions[0]?.concurrency, 2);
 		assert.deepEqual(ctx.calls.task.slice(-3), ["dedupe-and-filter", "judge", "final-shortlist"]);
 		assert.equal(result.shortlist.length, 2);
-		// `result` carries the compact artifact reference, never the report body:
-		// the full text belongs in `final_path` so it stays out of the caller's
-		// context window.
 		assert.match(result.result, /Saved output to/);
 		assert.doesNotMatch(result.result, /\[mock-task:final-shortlist\]/);
 		assert.match(readFileSync(result.final_path, "utf8"), /\[mock-task:final-shortlist\]/);
@@ -420,6 +426,114 @@ test("generate-and-filter fans out, dedupes, optionally judges, and finalizes ar
 		};
 		assert.ok(judgeReport.shortlist.every((path) => path.includes("candidate-")));
 		assert.equal(judgeReport.rationale, "ranked");
+	});
+});
+test("generate-and-filter prompt-layout rider inlines small candidates without duplicate reads", async () => {
+	await withTempCwd(async (cwd) => {
+		const ctx = assignCwd(
+			makeMockCtx(
+				{ prompt: "generate options", num_candidates: 3, shortlist_size: 2, use_judge: true, max_concurrency: 2 },
+				{
+					task: (name, options) =>
+						name === "dedupe-and-filter"
+							? JSON.stringify({
+									shortlist: readPaths(options)
+										.filter((path) => path.endsWith(".md"))
+										.slice(0, 2),
+									discarded: [],
+								})
+							: name === "judge"
+								? JSON.stringify({
+										shortlist: shortlistFromFilter(options),
+										rationale: "ranked",
+									})
+								: undefined,
+				},
+			),
+			cwd,
+		);
+		const originalTask = ctx.task.bind(ctx);
+		Object.defineProperty(ctx, "task", {
+			value: async (name: string, options: Parameters<typeof ctx.task>[1]) => {
+				const taskResult = await originalTask(name, options);
+				return name === "final-shortlist"
+					? { ...taskResult, text: `Saved output to ${String(options.output)}` }
+					: taskResult;
+			},
+		});
+		const result = await generateAndFilter.run(ctx);
+		assert.deepEqual(ctx.calls.parallel, [["generate-1", "generate-2", "generate-3"]]);
+		assert.equal(ctx.calls.parallelOptions[0]?.concurrency, 2);
+		assert.deepEqual(ctx.calls.task.slice(-3), ["dedupe-and-filter", "judge", "final-shortlist"]);
+		assert.equal(result.shortlist.length, 2);
+		// `result` carries the compact artifact reference, never the report body:
+		// the full text belongs in `final_path` so it stays out of the caller's
+		// context window.
+		assert.match(result.result, /Saved output to/);
+		assert.doesNotMatch(result.result, /\[mock-task:final-shortlist\]/);
+		assert.match(readFileSync(result.final_path, "utf8"), /\[mock-task:final-shortlist\]/);
+		assert.ok(
+			readPaths(ctx.calls.taskOptions["dedupe-and-filter"]?.[0]).some((path) => path.endsWith("manifest.json")),
+		);
+		assert.deepEqual(readPaths(ctx.calls.taskOptions.judge?.[0]), [result.filter_path]);
+		const judgePrompt = ctx.calls.prompts.judge?.[0] ?? "";
+		assert.match(judgePrompt, /<scoring_head>/);
+		assert.match(judgePrompt, /<criterion>/);
+		assert.match(judgePrompt, /<scale_anchors>/);
+		assert.match(judgePrompt, /\[mock-task:generate-1\]/);
+		assert.match(judgePrompt, /\[mock-task:generate-2\]/);
+		assert.doesNotMatch(judgePrompt, /\[mock-task:generate-3\]/);
+		assert.ok(readPaths(ctx.calls.taskOptions["final-shortlist"]?.[0]).some((path) => path.endsWith("judge.json")));
+		const filterReport = JSON.parse(readFileSync(result.filter_path, "utf8")) as {
+			shortlist: string[];
+			discarded: unknown[];
+		};
+		assert.equal(filterReport.shortlist.length, 2);
+		assert.ok(filterReport.shortlist.every((path) => path.includes("candidate-")));
+		assert.deepEqual(filterReport.discarded, []);
+		const judgeReport = JSON.parse(readFileSync(result.judge_path ?? "", "utf8")) as {
+			shortlist: string[];
+			rationale: string;
+		};
+		assert.ok(judgeReport.shortlist.every((path) => path.includes("candidate-")));
+		assert.equal(judgeReport.rationale, "ranked");
+	});
+});
+
+test("generate-and-filter prompt-layout rider reads every candidate when one is oversized", async () => {
+	await withTempCwd(async (cwd) => {
+		const oversizedBody = "é".repeat(Math.floor(MAX_INLINE_CANDIDATE_BYTES / 2) + 1);
+		const ctx = assignCwd(
+			makeMockCtx(
+				{ prompt: "generate options", num_candidates: 2, shortlist_size: 2, use_judge: true, max_concurrency: 2 },
+				{
+					task: (name, options) => {
+						if (name === "generate-1") return "small candidate body";
+						if (name === "generate-2") return oversizedBody;
+						if (name === "dedupe-and-filter") {
+							return JSON.stringify({
+								shortlist: readPaths(options).filter((path) => path.endsWith(".md")),
+								discarded: [],
+							});
+						}
+						if (name === "judge") {
+							return JSON.stringify({ shortlist: shortlistFromFilter(options), rationale: "ranked" });
+						}
+						return undefined;
+					},
+				},
+			),
+			cwd,
+		);
+		const result = await generateAndFilter.run(ctx);
+		const judgePrompt = ctx.calls.prompts.judge?.[0] ?? "";
+		assert.doesNotMatch(judgePrompt, /small candidate body/);
+		assert.equal(judgePrompt.includes("é"), false);
+		assert.match(judgePrompt, /source="read"/);
+		assert.deepEqual(readPaths(ctx.calls.taskOptions.judge?.[0]), [
+			result.filter_path,
+			...result.candidate_artifact_paths,
+		]);
 	});
 });
 

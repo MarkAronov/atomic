@@ -72,6 +72,7 @@ export function workflowRunResumeCandidate(run: RunSnapshot): WorkflowRunResumeC
 	return {
 		...run,
 		hasPausedState: workflowRunHasPausedState(run),
+		budgetSystemOwnedStop: run.budgetState?.systemOwnedStop === true,
 		...(hasDurableCheckpoint === undefined ? {} : { hasDurableCheckpoint }),
 		...(artifactsIntact === undefined ? {} : { artifactsIntact }),
 	};

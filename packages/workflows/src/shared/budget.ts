@@ -11,6 +11,31 @@ export interface WorkflowBudget {
 	readonly warnAtPercent?: number;
 }
 
+export interface DurationBudgetReport {
+	readonly dimension: "duration";
+	readonly reading: number;
+	readonly ceiling: number;
+	readonly percent: number;
+}
+export type DurationBudgetCheck =
+	| { readonly kind: "continue"; readonly report: DurationBudgetReport; readonly warning: boolean }
+	| { readonly kind: "exhausted"; readonly report: DurationBudgetReport };
+export function enforceDurationBudget(
+	reading: number,
+	budget: EffectiveBudget,
+	options: { readonly warned?: boolean } = {},
+): DurationBudgetCheck {
+	const ceiling = budget.maxDurationMs;
+	const report: DurationBudgetReport = {
+		dimension: "duration",
+		reading,
+		ceiling,
+		percent: ceiling === 0 ? 0 : (reading / ceiling) * 100,
+	};
+	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
+	const warning = options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent;
+	return { kind: "continue", report, warning };
+}
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */
 class ResolvedWorkflowBudget {
 	private declare readonly brand: undefined;
@@ -35,7 +60,7 @@ class ResolvedWorkflowBudget {
 			layers.run?.maxDurationMs ?? layers.definition?.maxDurationMs ?? layers.config?.maxDurationMs ?? 0,
 			layers.run?.maxTokens ?? layers.definition?.maxTokens ?? layers.config?.maxTokens ?? 0,
 			layers.run?.maxCost ?? layers.definition?.maxCost ?? layers.config?.maxCost ?? 0,
-			layers.run?.warnAtPercent ?? layers.definition?.warnAtPercent ?? layers.config?.warnAtPercent ?? 0,
+			layers.run?.warnAtPercent ?? layers.definition?.warnAtPercent ?? layers.config?.warnAtPercent ?? 80,
 		);
 	}
 }

@@ -2,22 +2,54 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import {
+	createRunBudgetController,
+	WorkflowBudgetExceededError,
+} from "../../packages/workflows/src/engine/run-budget.js";
 import { loadConfigFile } from "../../packages/workflows/src/extension/config-file-loader.js";
 import { withWorkflowDefaults } from "../../packages/workflows/src/extension/config-loader.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
+import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import {
 	type EffectiveBudget,
+	enforceDurationBudget,
 	resolve_budget,
 	validateWorkflowBudget,
 	type WorkflowBudget,
 } from "../../packages/workflows/src/shared/budget.js";
 import {
+	effectiveRunStatus,
 	isReturnedBlockedWorkflowStatus,
 	isReturnedResumableBlockedWorkflowStatus,
 } from "../../packages/workflows/src/shared/returned-run-status.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import {
+	type AgentSession,
+	type AgentSessionAdapter,
+	assistantMessageWithUsage,
+	makeMockSession,
+} from "./stage-runner-helpers.js";
+
+afterEach(() => vi.useRealTimers());
+
+function budgetRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
+	return {
+		id: "budget-test-run",
+		name: "budget-test",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: 0,
+		...overrides,
+	};
+}
 
 const BUDGET_FIELDS = [
 	["maxDurationMs", 10, 20, 30],
@@ -42,6 +74,27 @@ const effectiveBudgetRejectsUnresolvedDeclarations: IsAssignable<UnresolvedBudge
 	? true
 	: never = true;
 
+interface BudgetOutcome {
+	readonly status?: string;
+	readonly dimension?: string;
+	readonly ceiling?: number;
+	readonly reading?: number;
+	readonly frontierStage?: string;
+	readonly wrapUpSummary?: string;
+	readonly wrapUpUsage?: WorkflowModelUsage;
+}
+
+function budgetOutcome(value: object | undefined): BudgetOutcome | undefined {
+	return value as BudgetOutcome | undefined;
+}
+
+function assertBudgetBlockedSnapshot(snapshot: RunSnapshot | undefined): asserts snapshot is RunSnapshot {
+	assert.ok(snapshot);
+	assert.equal(effectiveRunStatus(snapshot), "blocked");
+	assert.notEqual(snapshot.endedAt, undefined);
+	assert.equal(summarizeRunSnapshot(snapshot).status, "blocked");
+}
+
 describe("workflow budget resolution", () => {
 	test("budget later layers win per field for every layer-presence combination", () => {
 		for (const [field, configValue, definitionValue, runValue] of BUDGET_FIELDS) {
@@ -59,7 +112,9 @@ describe("workflow budget resolution", () => {
 								? definitionValue
 								: configPresent
 									? configValue
-									: 0;
+									: field === "warnAtPercent"
+										? 80
+										: 0;
 
 						assert.equal(
 							resolved[field],
@@ -98,6 +153,155 @@ describe("workflow budget resolution", () => {
 		assert.equal(resolved.maxTokens, 0);
 		assert.equal(resolved.maxCost, 0);
 		assert.equal(resolved.warnAtPercent, 0);
+	});
+});
+
+describe("duration budget enforcement", () => {
+	test("uses the default warning threshold and reports duration readings", () => {
+		const budget = resolve_budget({ run: { maxDurationMs: 100 } });
+		assert.equal(budget.warnAtPercent, 80);
+		assert.deepEqual(enforceDurationBudget(80, budget), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 80, ceiling: 100, percent: 80 },
+			warning: true,
+		});
+		assert.deepEqual(enforceDurationBudget(80, budget, { warned: true }), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 80, ceiling: 100, percent: 80 },
+			warning: false,
+		});
+	});
+
+	test("exhausts at the duration ceiling and leaves unbudgeted runs untouched", () => {
+		const budget = resolve_budget({ run: { maxDurationMs: 1 } });
+		assert.deepEqual(enforceDurationBudget(1, budget), {
+			kind: "exhausted",
+			report: { dimension: "duration", reading: 1, ceiling: 1, percent: 100 },
+		});
+		const unbudgeted = resolve_budget({});
+		assert.deepEqual(enforceDurationBudget(10_000, unbudgeted), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 10_000, ceiling: 0, percent: 0 },
+			warning: false,
+		});
+	});
+});
+
+describe("budget duration controller", () => {
+	test("warns once and excludes paused time from the meter", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10_000);
+		const run = budgetRun({ pausedAt: 9_000, pausedDurationMs: 4_000 });
+		const warnings: number[] = [];
+		const controller = createRunBudgetController({
+			run,
+			budget: resolve_budget({ run: { maxDurationMs: 6_000 } }),
+			onWarning: (report) => warnings.push(report.reading),
+		});
+		assert.equal(controller.checkpoint("work").kind, "warn");
+		assert.equal(controller.checkpoint("work").kind, "continue");
+		assert.deepEqual(warnings, [5_000]);
+		run.pausedAt = undefined;
+		vi.setSystemTime(11_000);
+		assert.equal(controller.checkpoint("work").kind, "wrap_up");
+		assert.equal(run.budgetState?.duration?.reading, 7_000);
+	});
+
+	test("soft landing records exact report fields and usage", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(11);
+		const run = budgetRun();
+		const controller = createRunBudgetController({ run, budget: resolve_budget({ run: { maxDurationMs: 10 } }) });
+		assert.equal(controller.checkpoint("frontier").kind, "wrap_up");
+		controller.registerWrapUp("frontier", async () => {
+			throw controller.finishWrapUp("frontier", "progress", { output: 3 });
+		});
+		await assert.rejects(controller.deliverWrapUp("frontier"), (error: unknown) => {
+			assert.ok(error instanceof WorkflowBudgetExceededError);
+			assert.equal(error.report.dimension, "duration");
+			assert.equal(error.report.reading, 11);
+			assert.equal(error.report.ceiling, 10);
+			assert.ok(Math.abs(error.report.percent - 110) < 1e-9);
+			assert.equal(error.report.frontierStage, "frontier");
+			assert.equal(error.report.wrapUpSummary, "progress");
+			assert.deepEqual(error.report.wrapUpUsage, { output: 3 });
+			return true;
+		});
+		assert.equal(controller.checkpoint("frontier").kind, "exhausted");
+	});
+
+	test("budget executor records the wrap-up turn usage in the exhaustion report", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const messages: AgentSession["messages"] = [];
+		let promptCount = 0;
+		let lastAssistantText = "";
+		const usage = { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 };
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				return makeMockSession({
+					messages,
+					async prompt() {
+						const text = promptCount++ === 0 ? "progress" : "wrap summary";
+						if (promptCount === 1) vi.advanceTimersByTime(2);
+						lastAssistantText = text;
+						messages.push(assistantMessageWithUsage(text, usage));
+					},
+					getLastAssistantText: () => lastAssistantText,
+				}).session;
+			},
+		};
+		const definition = workflow({
+			name: "budget-wrap-up-usage",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("frontier", { model: "test/model" }).prompt("progress") }),
+		});
+		const result = await run(
+			definition,
+			{},
+			{
+				store: createStore(),
+				budget: { maxDurationMs: 1 },
+				adapters: { agentSession },
+			},
+		);
+		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, "wrap summary");
+		assert.deepEqual(budgetOutcome(result.result)?.wrapUpUsage, { ...usage, turns: 1 });
+	});
+
+	test("no budget leaves the run untouched and performs no meter work", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(99_999);
+		const run = budgetRun();
+		const controller = createRunBudgetController({ run, budget: resolve_budget({}) });
+		assert.deepEqual(controller.checkpoint("work"), { kind: "continue" });
+		assert.equal(run.budgetState, undefined);
+		assert.equal(controller.enabled, false);
+	});
+
+	test("same-budget resume is exhausted immediately while a raised ceiling continues", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10);
+		const prior = budgetRun({
+			accumulatedDurationMs: 10,
+			budget: { maxDurationMs: 10, warnAtPercent: 80 },
+			budgetState: {
+				duration: { dimension: "duration", reading: 10, ceiling: 10, percent: 100 },
+				wrapUpDelivered: true,
+				wrapUpCompleted: true,
+				wrapUpSummary: "progress",
+			},
+		});
+		const same = createRunBudgetController({ run: prior, budget: resolve_budget({ run: { maxDurationMs: 10 } }) });
+		assert.equal(same.checkpoint("work").kind, "exhausted");
+		const raised = budgetRun({ accumulatedDurationMs: 8 });
+		const raisedController = createRunBudgetController({
+			run: raised,
+			budget: resolve_budget({ run: { maxDurationMs: 20 } }),
+		});
+		assert.notEqual(raisedController.checkpoint("work").kind, "exhausted");
 	});
 });
 
@@ -188,7 +392,1155 @@ describe("workflow budget plumbing", () => {
 		);
 	});
 });
+describe("budget executor boundaries", () => {
+	test("child budget soft-lands its subtree while the parent continues", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const child = workflow({
+			name: "budget-child-soft-land",
+			description: "",
+			inputs: {},
+			outputs: { value: Type.String() },
+			budget: { maxDurationMs: 1 },
+			run: async (ctx) => ({ value: await ctx.stage("child-frontier").complete("child work") }),
+		});
+		let parentContinued = false;
+		const parent = workflow({
+			name: "budget-parent-soft-land",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child, { stageName: "child-boundary" });
+				assert.equal(childResult.exited, true);
+				assert.equal(childResult.status, "blocked");
+				parentContinued = true;
+				await ctx.stage("parent-after-child").complete("parent continued");
+				return { result: childResult.status };
+			},
+		});
+		const store = createStore();
+		const childPrompts: string[] = [];
+		const result = await run(
+			parent,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 100 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							if (text === "child work") vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							childPrompts.push(text);
+							return "child wrap-up";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.equal(result.result?.result, "blocked");
+		assert.equal(parentContinued, true);
+		assert.equal(childPrompts.length, 1);
+		const childRun = store.runs().find((candidate) => candidate.name === child.name);
+		assert.equal(childRun?.result?.status, "budget_exceeded");
+		assert.equal(childRun?.budgetState?.wrapUpCompleted, true);
+	});
 
+	test("budget root scope stops an unbudgeted child at an internal boundary", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const childStages: string[] = [];
+		const child = workflow({
+			name: "budget-root-scope-child",
+			description: "",
+			inputs: {},
+			outputs: { value: Type.String() },
+			run: async (ctx) => {
+				let value = "";
+				for (let index = 0; index < 4; index++) {
+					value = await ctx.stage(`child-${index}`).complete(`child work ${index}`);
+					childStages.push(value);
+				}
+				return { value };
+			},
+		});
+		const parent = workflow({
+			name: "budget-root-scope-parent",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child, { stageName: "child-boundary" });
+				return { result: childResult.status };
+			},
+		});
+		const store = createStore();
+		const prompts: string[] = [];
+		const result = await run(
+			parent,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(4);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "root wrap-up";
+						},
+					},
+				},
+			},
+		);
+		const rootRun = store.runs().find((candidate) => candidate.name === parent.name);
+		const childRun = store.runs().find((candidate) => candidate.name === child.name);
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.ceiling, 10);
+		assert.equal(outcome?.frontierStage, "child-2");
+		assert.equal(outcome?.wrapUpSummary, "root wrap-up");
+		assert.equal(prompts.length, 1);
+		assert.ok((outcome?.reading ?? 0) < 20);
+		assert.ok(childStages.length < 4);
+		assert.equal(rootRun?.budgetState?.systemOwnedStop, true);
+		assert.equal(rootRun?.budgetState?.wrapUpCompleted, true);
+		assert.equal(childRun?.budget, undefined);
+		assert.equal(childRun?.budgetState?.wrapUpCompleted, true);
+	});
+
+	test("budget root wrap-up reaches a wider-budget child frontier", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const prompts: string[] = [];
+		const child = workflow({
+			name: "budget-wider-child",
+			description: "",
+			inputs: {},
+			outputs: { value: Type.String() },
+			budget: { maxDurationMs: 1_000 },
+			run: async (ctx) => ({ value: await ctx.stage("wider-frontier").complete("child work") }),
+		});
+		const parent = workflow({
+			name: "budget-wider-parent",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child, { stageName: "wider-boundary" });
+				return { result: childResult.status };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			parent,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(20);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "wider child wrap-up";
+						},
+					},
+				},
+			},
+		);
+		const rootRun = store.runs().find((candidate) => candidate.name === parent.name);
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.frontierStage, "wider-frontier");
+		assert.equal(outcome?.wrapUpSummary, "wider child wrap-up");
+		assert.equal(prompts.length, 1);
+		assert.equal(rootRun?.budgetState?.wrapUpCompleted, true);
+	});
+
+	test("root budget wins simultaneous child exhaustion and prevents parent continuation", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const child = workflow({
+			name: "budget-simultaneous-child",
+			description: "",
+			inputs: {},
+			outputs: { value: Type.String() },
+			budget: { maxDurationMs: 1 },
+			run: async (ctx) => ({ value: await ctx.stage("child-frontier").complete("child work") }),
+		});
+		let parentContinued = false;
+		const parent = workflow({
+			name: "budget-simultaneous-root",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				await ctx.workflow(child, { stageName: "child-boundary" });
+				parentContinued = true;
+				await ctx.stage("must-not-run").complete("must not run");
+				return { result: "continued" };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			parent,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "root wrap-up" },
+				},
+			},
+		);
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.dimension, "duration");
+		assert.equal(parentContinued, false);
+		assert.equal(store.runs().find((candidate) => candidate.name === parent.name)?.result?.status, "budget_exceeded");
+		const rootRun = store.runs().find((candidate) => candidate.name === parent.name);
+		assert.equal(rootRun?.budgetState?.wrapUpDelivered, true);
+		assert.equal(rootRun?.budgetState?.wrapUpCompleted, true);
+		const childRun = store.runs().find((candidate) => candidate.name === child.name);
+		assert.equal(childRun?.result?.status, "budget_exceeded");
+		assert.equal(childRun?.budgetState?.wrapUpCompleted, true);
+		assert.equal(outcome?.frontierStage, "child-frontier");
+		assert.equal(outcome?.wrapUpSummary, "root wrap-up");
+		assert.equal(
+			rootRun?.stages.some((stage) => stage.name === "must-not-run"),
+			false,
+		);
+	});
+
+	test("budget executor exhaustion wraps up the current turn without launching a new stage", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const prompts: string[] = [];
+		const completed: string[] = [];
+		const definition = workflow({
+			name: "budget-executor-exhaustion",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const progress = await ctx.stage("frontier").complete("progress");
+				await ctx.stage("after-frontier").complete("must not run");
+				return { result: progress };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							completed.push(text);
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "wrap-up summary";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "running");
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.dimension, "duration");
+		assert.equal(outcome?.ceiling, 1);
+		assert.equal(outcome?.frontierStage, "frontier");
+		assert.equal(outcome?.wrapUpSummary, "wrap-up summary");
+		assert.equal(completed.length, 1);
+		assert.equal(prompts.length, 1);
+		assert.match(prompts[0] ?? "", /budget is exhausted/i);
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(snapshot?.result?.status, "budget_exceeded");
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, true);
+		assert.ok(snapshot);
+		assert.equal(effectiveRunStatus(snapshot), "blocked");
+		assert.equal(
+			snapshot?.stages.some((stage) => stage.name === "after-frontier"),
+			false,
+		);
+	});
+
+	test("budget-free executor runs byte-identically without budget state or notices", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-free-executor",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("ordinary").complete("ordinary") }),
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.equal(result.result?.result, "ordinary");
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(snapshot?.budget, undefined);
+		assert.equal(snapshot?.budgetState, undefined);
+		assert.deepEqual(store.notices(), []);
+	});
+
+	test("budget warning notice reaches the store once across repeated stage boundaries", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-warning-notice",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				let last = "";
+				for (let index = 0; index < 6; index++) last = await ctx.stage(`step-${index}`).complete(`work ${index}`);
+				return { result: last };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				config: withWorkflowDefaults({}),
+				budget: { maxDurationMs: 200 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(30);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "wrap-up summary" },
+				},
+			},
+		);
+
+		// Six boundaries cross the 80% line repeatedly, but the shipped
+		// store.recordNotice wiring must emit exactly one warning per dimension.
+		const notices = store.notices();
+		assert.equal(notices.length, 1);
+		assert.equal(notices[0]?.level, "warning");
+		assert.equal(notices[0]?.id, `workflow-budget-warning:${result.runId}:duration`);
+		assert.match(notices[0]?.message ?? "", /90\.0% of its duration budget \(180 \/ 200\)/);
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(snapshot?.budgetState?.warned, true);
+		// A warning must not stop the run: 180ms of 200ms never reaches the ceiling.
+		assert.equal(result.status, "completed");
+		assert.equal(result.result?.result, "work 5");
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
+	});
+
+	test("budget tool boundary does not consume an undeliverable wrap-up", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const prompts: string[] = [];
+		const definition = workflow({
+			name: "budget-tool-boundary",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				await ctx.tool("burn-budget", {}, async () => {
+					vi.advanceTimersByTime(20);
+					return "burned";
+				});
+				return { result: "must not complete" };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "must not prompt";
+						},
+					},
+				},
+			},
+		);
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.wrapUpSummary, undefined);
+		assert.equal(prompts.length, 0);
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assertBudgetBlockedSnapshot(snapshot);
+	});
+
+	test("budget child-workflow boundary does not consume an undeliverable wrap-up", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const child = workflow({
+			name: "budget-tool-child",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				await ctx.tool("child-burn", {}, async () => {
+					vi.advanceTimersByTime(20);
+					return "burned";
+				});
+				return { result: "child done" };
+			},
+		});
+		const prompts: string[] = [];
+		const parent = workflow({
+			name: "budget-child-boundary",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				await ctx.workflow(child, { stageName: "child-frontier", budget: { maxDurationMs: 0 } });
+				return { result: "must not complete" };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			parent,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "must not prompt";
+						},
+					},
+				},
+			},
+		);
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, undefined);
+		assert.equal(prompts.length, 0);
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assertBudgetBlockedSnapshot(snapshot);
+	});
+
+	test("budget before dispatch creates no new stage when no turn is live", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-before-dispatch",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				vi.advanceTimersByTime(20);
+				return { result: await ctx.stage("must-not-exist").complete("must not run") };
+			},
+		});
+		const store = createStore();
+		const result = await run(definition, {}, { store, budget: { maxDurationMs: 10 } });
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+		assert.deepEqual(snapshot?.stages, []);
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assertBudgetBlockedSnapshot(snapshot);
+	});
+
+	test("budget caught stage error still stops on the system-owned blocked rail", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-caught-stage-error",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				try {
+					await ctx.stage("caught-frontier").complete("progress");
+				} catch {
+					return { result: "swallowed" };
+				}
+				return { result: "completed" };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "caught-stage wrap-up" },
+				},
+			},
+		);
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+		assert.equal(effectiveRunStatus(snapshot!), "blocked");
+		assert.equal(snapshot?.result?.status, "budget_exceeded");
+	});
+
+	test("budget live stage routes a boundary wrap-up and preserves its summary", async () => {
+		const sleep = (milliseconds: number): Promise<void> =>
+			new Promise((resolve) => setTimeout(resolve, milliseconds));
+		const definition = workflow({
+			name: "budget-live-stage-boundary",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const live = ctx.stage("live-frontier").complete("long substantive turn");
+				live.catch(() => undefined);
+				await sleep(160);
+				await ctx.tool("burn", {}, async () => ({ ok: true }));
+				return { result: await live };
+			},
+		});
+		const prompts: string[] = [];
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 100 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							await sleep(400);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "wrap-up from the live turn";
+						},
+					},
+				},
+			},
+		);
+		// The wrap-up settles asynchronously after the run resolves. Poll for the
+		// observable end state instead of sleeping a fixed guess, so the test does
+		// not depend on an idle machine.
+		// Settling happens in two phases: the wrap-up completes, then the live
+		// stage leaves "running". Wait for both.
+		const WRAP_UP_SETTLE_DEADLINE_MS = 5_000;
+		const settleDeadline = Date.now() + WRAP_UP_SETTLE_DEADLINE_MS;
+		const settled = (candidate: RunSnapshot | undefined): boolean =>
+			candidate?.budgetState?.wrapUpCompleted === true &&
+			candidate.stages.find((stage) => stage.name === "live-frontier")?.status !== "running";
+		let snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		while (!settled(snapshot) && Date.now() < settleDeadline) {
+			await sleep(10);
+			snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		}
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, "wrap-up from the live turn");
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, true);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, true);
+		assert.equal(prompts.length, 1);
+		assert.equal(snapshot?.stages.find((stage) => stage.name === "live-frontier")?.status, "failed");
+	});
+
+	test("budget live child boundary preserves the frontier result on raised resume", async () => {
+		const sleep = (milliseconds: number): Promise<void> =>
+			new Promise((resolve) => setTimeout(resolve, milliseconds));
+		const backend = new InMemoryDurableBackend();
+		const child = workflow({
+			name: "budget-live-child",
+			description: "",
+			inputs: {},
+			outputs: { done: Type.String() },
+			run: async (ctx) => ({ done: await ctx.stage("child-work").complete("child work") }),
+		});
+		let completeCalls = 0;
+		const definition = workflow({
+			name: "budget-live-child-boundary",
+			description: "",
+			inputs: {},
+			outputs: { first: Type.String(), second: Type.String() },
+			run: async (ctx) => {
+				const live = ctx.stage("live-frontier").complete("do the real work");
+				live.catch(() => undefined);
+				await sleep(160);
+				await ctx.workflow(child, { stageName: "child-boundary" });
+				const first = await live;
+				const second = await ctx.stage("downstream").complete(`downstream saw: ${first}`);
+				return { first, second };
+			},
+		});
+		const adapters = {
+			complete: {
+				complete: async (text: string) => {
+					completeCalls += 1;
+					await sleep(300);
+					return `real-answer(${completeCalls}) for ${JSON.stringify(text)}`;
+				},
+			},
+			prompt: { prompt: async () => "WRAP-UP BOILERPLATE" },
+		};
+		const firstStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{ store: firstStore, durableBackend: backend, budget: { maxDurationMs: 100 }, adapters },
+		);
+		let source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		const settleDeadline = Date.now() + 5_000;
+		while (
+			(source.budgetState?.wrapUpCompleted !== true ||
+				source.stages.find((stage) => stage.name === "live-frontier")?.status === "running") &&
+			Date.now() < settleDeadline
+		) {
+			await sleep(10);
+			source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		}
+		assert.equal(budgetOutcome(first.result)?.status, "budget_exceeded");
+		assert.equal(
+			source.stages.find((stage) => stage.name === "live-frontier")?.result,
+			'real-answer(1) for "do the real work"',
+		);
+		const resumedStore = createStore();
+		const resumed = await run(
+			definition,
+			{},
+			{
+				store: resumedStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 60_000 },
+				continuation: {
+					source,
+					...(source.failedStageId !== undefined ? { resumeFromStageId: source.failedStageId } : {}),
+				},
+				adapters,
+			},
+		);
+		assert.equal(resumed.status, "completed");
+		assert.equal(String(resumed.result?.first).includes("WRAP-UP BOILERPLATE"), false);
+		assert.equal(String(resumed.result?.second).includes("real-answer(1)"), true);
+	});
+
+	test("budget live stage before-dispatch boundary spends no discarded wrap-up", async () => {
+		const sleep = (milliseconds: number): Promise<void> =>
+			new Promise((resolve) => setTimeout(resolve, milliseconds));
+		const definition = workflow({
+			name: "budget-live-before-dispatch",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const live = ctx.stage("live-frontier").complete("long substantive turn");
+				live.catch(() => undefined);
+				await sleep(160);
+				await ctx.stage("must-not-exist").complete("must not run");
+				return { result: await live };
+			},
+		});
+		const prompts: string[] = [];
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 100 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							await sleep(400);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async () => {
+							prompts.push("wrap-up");
+							return "wrap-up from before dispatch";
+						},
+					},
+				},
+			},
+		);
+		let snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		const settleDeadline = Date.now() + 5_000;
+		while (
+			snapshot?.stages.find((stage) => stage.name === "live-frontier")?.status === "running" &&
+			Date.now() < settleDeadline
+		) {
+			await sleep(10);
+			snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		}
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.frontierStage, "live-frontier");
+		assert.equal(outcome?.wrapUpSummary, "wrap-up from before dispatch");
+		assert.equal(prompts.length, 1);
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, true);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, true);
+		assert.equal(
+			snapshot?.stages.some((stage) => stage.name === "must-not-exist"),
+			false,
+		);
+	});
+
+	test("budget resume carries elapsed time, repeats no wrap-up at the same ceiling, and continues when raised", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-resume",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("resume-frontier").complete("progress") }),
+		});
+		const firstStore = createStore();
+		const prompts: string[] = [];
+		const first = await run(
+			definition,
+			{},
+			{
+				runId: "budget-resume-source",
+				store: firstStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: {
+						prompt: async (text) => {
+							prompts.push(text);
+							return "first wrap-up";
+						},
+					},
+				},
+			},
+		);
+		const source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.equal(budgetOutcome(first.result)?.status, "budget_exceeded");
+		assert.equal(source.failedStageId !== undefined, true);
+
+		const sourceElapsed = source.budgetState?.duration?.reading ?? 0;
+		const sameStore = createStore();
+		const same = await run(
+			definition,
+			{},
+			{
+				store: sameStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId! },
+				adapters: {
+					complete: { complete: async (text) => text },
+					prompt: { prompt: async () => "must not wrap again" },
+				},
+			},
+		);
+		assert.equal(budgetOutcome(same.result)?.status, "budget_exceeded");
+		assert.equal(prompts.length, 1);
+		const sameSnapshot = sameStore.runs().find((candidate) => candidate.id === same.runId);
+		assert.equal(sameSnapshot?.accumulatedDurationMs, sourceElapsed);
+		assert.equal(budgetOutcome(same.result)?.frontierStage, "resume-frontier");
+		const raisedStore = createStore();
+		const raised = await run(
+			definition,
+			{},
+			{
+				store: raisedStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				continuation: { source, resumeFromStageId: source.failedStageId! },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		assert.equal(raised.status, "completed");
+		const raisedSnapshot = raisedStore.runs().find((candidate) => candidate.id === raised.runId);
+		assert.equal(raisedSnapshot?.accumulatedDurationMs, sourceElapsed);
+		assert.ok((raisedSnapshot?.durationMs ?? 0) >= sourceElapsed);
+	});
+
+	test("budget wrap-up never replaces the frontier result during raised resume", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		let completeCalls = 0;
+		const definition = workflow({
+			name: "budget-frontier-result",
+			description: "",
+			inputs: {},
+			outputs: { first: Type.String(), second: Type.String() },
+			run: async (ctx) => {
+				const first = await ctx.stage("frontier").complete("do the real work");
+				const second = await ctx.stage("downstream").complete(`downstream saw: ${first}`);
+				return { first, second };
+			},
+		});
+		const sourceStore = createStore();
+		const sourceResult = await run(
+			definition,
+			{},
+			{
+				store: sourceStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							completeCalls += 1;
+							vi.advanceTimersByTime(2);
+							return completeCalls === 1 ? "frontier-product" : `downstream-product: ${text}`;
+						},
+					},
+					prompt: { prompt: async () => "WRAP-UP BOILERPLATE" },
+				},
+			},
+		);
+		const source = sourceStore.runs().find((candidate) => candidate.id === sourceResult.runId)!;
+		assert.equal(budgetOutcome(sourceResult.result)?.status, "budget_exceeded");
+		assert.equal(source.stages.find((stage) => stage.name === "frontier")?.result, "frontier-product");
+		assert.equal(source.stages.find((stage) => stage.name === "frontier")?.status, "completed");
+
+		const resumedStore = createStore();
+		const resumed = await run(
+			definition,
+			{},
+			{
+				store: resumedStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				continuation: { source, resumeFromStageId: source.failedStageId! },
+				adapters: { complete: { complete: async (text) => `downstream-product: ${text}` } },
+			},
+		);
+		assert.equal(resumed.status, "completed");
+		assert.deepEqual(resumed.result, {
+			first: "frontier-product",
+			second: "downstream-product: downstream saw: frontier-product",
+		});
+	});
+
+	test("budget successful body preserves outputs after non-stage work past the ceiling", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-success-after-body-work",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const result = await ctx.stage("only-stage").complete("real work product");
+				vi.advanceTimersByTime(300);
+				return { result };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 200 },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.deepEqual(result.result, { result: "real work product" });
+		assert.equal(store.runs()[0]?.budgetState?.systemOwnedStop, undefined);
+	});
+
+	test("budget resumed startup exhaustion lands on the blocked rail with no stage", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-resumed-startup-boundary",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("resume-frontier").complete("progress") }),
+		});
+		const sourceStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store: sourceStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "startup-boundary wrap-up" },
+				},
+			},
+		);
+		const source = sourceStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.ok(source.failedStageId);
+
+		const resumedStore = createStore();
+		const resumed = await run(
+			definition,
+			{},
+			{
+				store: resumedStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: {
+					complete: { complete: async (text) => text },
+					prompt: { prompt: async () => "must not wrap again" },
+				},
+			},
+		);
+		const snapshot = resumedStore.runs().find((candidate) => candidate.id === resumed.runId);
+		assert.equal(budgetOutcome(resumed.result)?.status, "budget_exceeded");
+		assert.deepEqual(snapshot?.stages, []);
+		assertBudgetBlockedSnapshot(snapshot);
+		assert.equal(snapshot.failedStageId, undefined);
+	});
+
+	test("budget exhausted generation can resume again from its boundary with a raised ceiling", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-resume-boundary-chain",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("frontier").complete("progress") }),
+		});
+		const firstStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store: firstStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "first chain wrap-up" },
+				},
+			},
+		);
+		const source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.ok(source.failedStageId);
+
+		const secondStore = createStore();
+		const second = await run(
+			definition,
+			{},
+			{
+				store: secondStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		const secondSnapshot = secondStore.runs().find((candidate) => candidate.id === second.runId);
+		assert.equal(budgetOutcome(second.result)?.status, "budget_exceeded");
+		assertBudgetBlockedSnapshot(secondSnapshot);
+		assert.deepEqual(secondSnapshot.stages, []);
+
+		const raisedStore = createStore();
+		// The boundary-only generation has no stage id; resume must still be legal.
+		const raised = await run(
+			definition,
+			{},
+			{
+				store: raisedStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				continuation: { source: secondSnapshot, resumeFromStageId: secondSnapshot.failedStageId! },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		assert.equal(raised.status, "completed");
+		assert.deepEqual(raised.result, { result: "progress" });
+	});
+
+	test("budget failedStageId is a real stage id or absent, never a display name", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-failed-stage-id-shape",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("named-frontier").complete("progress") }),
+		});
+		const firstStore = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store: firstStore,
+				durableBackend: backend,
+				budget: { maxDurationMs: 1 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(2);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "id-shape wrap-up" },
+				},
+			},
+		);
+		const source = firstStore.runs().find((candidate) => candidate.id === first.runId)!;
+		assert.ok(source.failedStageId);
+		assert.ok(source.stages.some((stage) => stage.id === source.failedStageId));
+		assert.notEqual(source.failedStageId, "named-frontier");
+
+		const secondStore = createStore();
+		const second = await run(
+			definition,
+			{},
+			{
+				store: secondStore,
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		const resumed = secondStore.runs().find((candidate) => candidate.id === second.runId);
+		assert.deepEqual(resumed?.stages, []);
+		assert.equal(resumed?.failedStageId, undefined);
+	});
+	test("budget_exceeded returned by stage output cannot forge a system exhaustion", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-forged-status",
+			description: "",
+			inputs: {},
+			outputs: { status: Type.String() },
+			run: async (ctx) => {
+				await ctx.stage("forged-stage").complete("model output");
+				return { status: "budget_exceeded" };
+			},
+		});
+		const store = createStore();
+		const result = await run(definition, {}, { store, adapters: { complete: { complete: async (text) => text } } });
+		assert.equal(result.status, "completed");
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(snapshot?.budgetState, undefined);
+		assert.equal(snapshot?.failureDisposition, undefined);
+	});
+
+	test("budget status output includes duration reading, ceiling, and percent", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const definition = workflow({
+			name: "budget-status-surface",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: await ctx.stage("status-stage").complete("status") }),
+		});
+		const store = createStore();
+		const result = await run(
+			definition,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(5);
+							return text;
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId)!;
+		const summary = summarizeRunSnapshot(snapshot, 5);
+		assert.equal(summary.budget?.maxDurationMs, 10);
+		assert.equal(summary.budgetState?.duration?.reading, 5);
+		assert.equal(summary.budgetState?.duration?.ceiling, 10);
+		assert.equal(summary.budgetState?.duration?.percent, 50);
+	});
+	test("budget live status recomputes duration instead of freezing the last checkpoint", () => {
+		const snapshot = budgetRun({
+			budget: { maxDurationMs: 100_000, warnAtPercent: 80 },
+			budgetState: { duration: { dimension: "duration", reading: 0, ceiling: 100_000, percent: 0 } },
+		});
+		const summary = summarizeRunSnapshot(snapshot, 301);
+		assert.equal(summary.budgetState?.duration?.reading, 301);
+		assert.equal(summary.budgetState?.duration?.percent, 0.301);
+	});
+});
 test("budget_exceeded is a resumable returned blocked status", () => {
 	assert.equal(isReturnedBlockedWorkflowStatus("budget_exceeded"), true);
 	assert.equal(isReturnedResumableBlockedWorkflowStatus("budget_exceeded"), true);

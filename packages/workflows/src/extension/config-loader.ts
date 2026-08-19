@@ -193,11 +193,21 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
 		maxDurationMs: 0,
 		maxTokens: 0,
 		maxCost: 0,
-		warnAtPercent: 0,
+		warnAtPercent: 80,
 	},
 	workflowNotifications: {
 		enabled: true,
-		notifyOn: ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"] as const,
+		notifyOn: [
+			"started",
+			"completed",
+			"failed",
+			"blocked",
+			"budget_warning",
+			"awaiting_input",
+			"paused",
+			"quit",
+			"resumed",
+		] as const,
 	},
 	worktree: {
 		symlinkDirectories: ["node_modules"] as readonly string[],
