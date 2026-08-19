@@ -112,6 +112,48 @@ describe("computeStartupInputCaptureEnabled", () => {
 		}
 	});
 
+	it.each([
+		{
+			resource: "extension",
+			approval: "with --approve",
+			projectTrustOverride: true,
+			resolvedExtensionPathCount: 1,
+			resolvedResourcePathCount: 0,
+		},
+		{
+			resource: "extension",
+			approval: "without --approve",
+			projectTrustOverride: undefined,
+			resolvedExtensionPathCount: 1,
+			resolvedResourcePathCount: 0,
+		},
+		{
+			resource: "resource",
+			approval: "with --approve",
+			projectTrustOverride: true,
+			resolvedExtensionPathCount: 0,
+			resolvedResourcePathCount: 1,
+		},
+		{
+			resource: "resource",
+			approval: "without --approve",
+			projectTrustOverride: undefined,
+			resolvedExtensionPathCount: 0,
+			resolvedResourcePathCount: 1,
+		},
+	])("captures startup input with explicit $resource paths $approval", (testCase) => {
+		const input = baseStartupCaptureInput({
+			resolvedExtensionPathCount: testCase.resolvedExtensionPathCount,
+			resolvedResourcePathCount: testCase.resolvedResourcePathCount,
+		});
+		input.parsed.projectTrustOverride = testCase.projectTrustOverride;
+		try {
+			expect(computeStartupInputCaptureEnabled(input)).toBe(true);
+		} finally {
+			removeTempDir(input.sessionCwd);
+		}
+	});
+
 	it("does not start pre-session input capture for resume picker startup", () => {
 		const input = baseStartupCaptureInput();
 		input.parsed.resume = true;

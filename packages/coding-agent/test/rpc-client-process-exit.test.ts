@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,5 +35,21 @@ process.stdin.resume();
 		await client.start();
 
 		await expect(client.getCommands()).rejects.toThrow(/Agent process exited \(code=43 signal=null\)/);
+	});
+
+	test("shares concurrent stop teardown and makes repeat stop a no-op", async () => {
+		const client = new RpcClient({
+			cliPath: writeChildScript(`
+process.stdin.resume();
+`),
+		});
+
+		await client.start();
+		const firstStop = client.stop();
+		const secondStop = client.stop();
+
+		assert.strictEqual(firstStop, secondStop);
+		await firstStop;
+		await client.stop();
 	});
 });
