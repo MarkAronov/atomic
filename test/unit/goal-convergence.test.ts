@@ -247,6 +247,7 @@ describe("goal convergence", () => {
 		assert.match(text, /flat/);
 		assert.match(text, /no observed convergence/);
 		assert.match(text, /\[4,4,4,4,4,4\]/);
+
 		assert.match(text, /no findings were filed/);
 		assert.match(text, /EVIDENCE only/);
 		assert.deepEqual(convergence_escalation_evidence([]), []);
@@ -257,6 +258,82 @@ describe("goal convergence", () => {
 		);
 		assert.match(outcome.decision.reason, /6 rounds/);
 		assert.match(outcome.decision.reason, /flat/);
+	});
+
+	test("convergence appends prior-round evidence to orchestrator failure escalation", async () => {
+		const mod = await import("../../packages/workflows/builtin/goal.js");
+		const laterTurnCtx = makeMockCtx(
+			{
+				objective: "Keep the objective true",
+				max_turns: 3,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "orchestrator-2") throw new Error("orchestrator failed on second turn");
+					if (
+						name.startsWith("completion-reviewer-") ||
+						name.startsWith("evidence-reviewer-") ||
+						name.startsWith("risk-reviewer-")
+					)
+						return goalReviewJson();
+					return undefined;
+				},
+			},
+		);
+		const laterTurnResult = await mod.default.run(laterTurnCtx);
+		const laterTurnLedger = JSON.parse(readFileSync(String(laterTurnResult.ledger_path), "utf8")) as {
+			readonly decisions: readonly { readonly reason: string }[];
+			readonly lifecycle: readonly { readonly event: string; readonly summary: string }[];
+		};
+		const laterTurnDecision = laterTurnLedger.decisions.at(-1);
+		const laterTurnStatusEvent = laterTurnLedger.lifecycle.filter((event) => event.event === "status_decided").at(-1);
+		const laterTurnReason = laterTurnDecision?.reason ?? "";
+		assert.equal(laterTurnResult.status, "needs_human");
+		assert.equal(laterTurnResult.turns_completed, 2);
+		assert.equal(
+			laterTurnResult.remaining_work,
+			"Orchestrator failed before producing a receipt: orchestrator failed on second turn",
+		);
+		assert.match(
+			laterTurnReason,
+			/Orchestrator failed before producing a receipt: orchestrator failed on second turn/,
+		);
+		assert.match(laterTurnReason, /1 round recorded/);
+		assert.match(laterTurnReason, /flat/);
+		assert.match(laterTurnReason, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
+		assert.equal(laterTurnStatusEvent?.summary, laterTurnReason);
+
+		const firstTurnCtx = makeMockCtx(
+			{
+				objective: "Keep the objective true",
+				max_turns: 3,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "orchestrator-1") throw new Error("orchestrator failed on first turn");
+					return undefined;
+				},
+			},
+		);
+		const firstTurnResult = await mod.default.run(firstTurnCtx);
+		const firstTurnLedger = JSON.parse(readFileSync(String(firstTurnResult.ledger_path), "utf8")) as {
+			readonly decisions: readonly { readonly reason: string }[];
+			readonly lifecycle: readonly { readonly event: string; readonly summary: string }[];
+		};
+		const firstTurnDecision = firstTurnLedger.decisions.at(-1);
+		const firstTurnStatusEvent = firstTurnLedger.lifecycle.filter((event) => event.event === "status_decided").at(-1);
+		const firstTurnReason = "Orchestrator failed before producing a receipt: orchestrator failed on first turn";
+		assert.equal(firstTurnResult.status, "needs_human");
+		assert.equal(firstTurnResult.remaining_work, firstTurnReason);
+		assert.equal(firstTurnDecision?.reason, firstTurnReason);
+		assert.equal(firstTurnStatusEvent?.summary, firstTurnReason);
+		assert.doesNotMatch(firstTurnDecision?.reason ?? "", /round recorded|EVIDENCE only/);
 	});
 
 	test("convergence escalation evidence uses singular round grammar and observed wording", () => {

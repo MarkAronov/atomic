@@ -160,7 +160,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        terminalRemainingWork = `Orchestrator failed before producing a receipt: ${message}`;
+        const baseReason = `Orchestrator failed before producing a receipt: ${message}`;
+        terminalRemainingWork = baseReason;
+        const reason = [baseReason, ...convergence_escalation_evidence(ledger.convergence ?? [])].join("\n");
         latestReviews = [];
         latestReviewArtifactPaths = [];
         latestReviewReportPath = undefined;
@@ -169,7 +171,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         ledger.decisions.push({
           turn,
           decision: "needs_human",
-          reason: terminalRemainingWork,
+          reason,
           complete_votes: 0,
           review_quorum: reviewQuorum,
           parsed: false,
@@ -177,9 +179,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           stopReviewLoop: false,
           nextAction: "needs_human",
           finalActionRemaining: false,
-          diagnostics: [terminalRemainingWork],
+          diagnostics: [baseReason],
         });
-        appendLifecycleEvent(ledger, "status_decided", terminalRemainingWork, turn);
+        appendLifecycleEvent(ledger, "status_decided", reason, turn);
         await writeGoalLedger(ledgerPath, ledger);
         break;
       }
