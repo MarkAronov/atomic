@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
+import type { WorkflowRunContext, WorkflowTaskOptions, WorkflowTaskResult } from "../src/shared/types.js";
 import { fold_usage } from "./verification-usage.js";
 import {
   convergence_escalation_evidence,
@@ -296,9 +296,17 @@ export async function runRalphWorkflow(
         findings: review.decision.findings,
       })),
     );
+    const reverifyResults: WorkflowTaskResult[] = [];
+    const reverifyContext = {
+      task: async (name: string, taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+        const result = await ctx.task(name, taskOptions);
+        reverifyResults.push(result);
+        return result;
+      },
+    };
     const reverified = approved
       ? { batch: consolidatedFindings, audits: [] as const }
-      : await reverify_consolidated_batch(ctx, {
+      : await reverify_consolidated_batch(reverifyContext, {
           batch: consolidatedFindings,
           context: {
             objective: workflowPrompt,
@@ -320,7 +328,7 @@ export async function runRalphWorkflow(
           ? 0
           : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
         demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
-        usage: fold_usage([orchestrator, ...reviews]),
+        usage: fold_usage([orchestrator, ...reviews, ...reverifyResults]),
       }));
     }
     latestReviewReportPath = await writeJsonArtifact(

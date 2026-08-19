@@ -288,7 +288,15 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         })),
       );
       const roundProducedDecisions = latestReviews.some((review) => review.parsed);
-      const reverified = await reverify_consolidated_batch(ctx, {
+      const reverifyResults: WorkflowTaskResult[] = [];
+      const reverifyContext = {
+        task: async (name: string, taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+          const result = await ctx.task(name, taskOptions);
+          reverifyResults.push(result);
+          return result;
+        },
+      };
+      const reverified = await reverify_consolidated_batch(reverifyContext, {
         batch: consolidatedFindings,
         context: {
           objective,
@@ -321,7 +329,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
             ? 0
             : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
           demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
-          usage: fold_usage([orchestrator, ...reviewResults]),
+          usage: fold_usage([orchestrator, ...reviewResults, ...reverifyResults]),
         }));
       }
       ledger.reviews.push(...latestReviews);

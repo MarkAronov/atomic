@@ -132,6 +132,41 @@ describe("Ralph convergence", () => {
 		assert.match(pullRequestPrompt, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
 	});
 
+	test("Ralph convergence skips an all-unparsed reviewer round without fabricating a zero", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const cwd = tempCwd!;
+		const reviewerPayload = ralphReviewJsonWithBlockingFindings();
+		const ctx = makeMockCtx(
+			{
+				prompt: "Keep the objective true",
+				acceptance_criteria: "Keep the objective true",
+				max_loops: 6,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: true,
+			},
+			{
+				task: (name, _options, calls) => {
+					if (name !== "reviewer-a" && name !== "reviewer-b") return undefined;
+					return calls.parallel.length === 6 ? "I could not produce JSON this round." : reviewerPayload;
+				},
+			},
+		);
+
+		const result = await mod.default.run({ ...ctx, cwd });
+		const saved = JSON.parse(readFileSync(String(result.review_report_path), "utf8"));
+
+		assert.equal(result.approved, false);
+		assert.deepEqual(
+			saved.convergence.map((round) => round.unresolvedBlockingCount),
+			[5, 5, 5, 5, 5],
+		);
+		const pullRequestPrompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";
+		assert.match(pullRequestPrompt, /5 rounds recorded/);
+		assert.match(pullRequestPrompt, /flat/);
+		assert.match(pullRequestPrompt, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
+	});
+
 	test("Ralph convergence omits a failed reviewer batch from the review ledger and pull-request evidence", async () => {
 		const mod = await import("../../packages/workflows/builtin/ralph.js");
 		const cwd = tempCwd!;

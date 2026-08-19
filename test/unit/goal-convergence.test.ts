@@ -198,6 +198,112 @@ function goalReviewJsonWithBlockingFindings(): string {
 	});
 }
 
+function goalReviewJsonWithReverifiableFinding(): string {
+	return JSON.stringify({
+		findings: [
+			{
+				title: "[P2] A finding to re-verify",
+				body: "A concrete objective-relevant finding remains.",
+				confidence_score: 0.6,
+				objective_alignment: "consistent_with_objective",
+				priority: 2,
+				code_location: {
+					absolute_file_path: "/repo/changed.ts",
+					line_range: { start: 1, end: 1 },
+				},
+			},
+		],
+		overall_correctness: "patch is incorrect",
+		overall_explanation: "The mock review leaves a finding to re-verify.",
+		overall_confidence_score: 0.6,
+		goal_oracle_satisfied: false,
+		requirements_traceability: [
+			{
+				requirement: "complete objective",
+				status: "missing",
+				evidence: "the finding remains",
+			},
+		],
+		receipt_assessment: "mock receipt",
+		verification_remaining: "the finding remains",
+		stop_review_loop: false,
+		reviewer_error: null,
+	});
+}
+
+test("goal convergence skips an all-unparsed reviewer round without fabricating a zero", async () => {
+	const mod = await import("../../packages/workflows/builtin/goal.js");
+	const reviewerPayload = goalReviewJsonWithBlockingFindings();
+	const ctx = makeMockCtx(
+		{
+			objective: "Keep the objective true",
+			max_turns: 6,
+			base_branch: "origin/main",
+			git_worktree_dir: "",
+			create_pr: false,
+		},
+		{
+			task: (name) => {
+				if (
+					name.startsWith("completion-reviewer-") ||
+					name.startsWith("evidence-reviewer-") ||
+					name.startsWith("risk-reviewer-")
+				) {
+					return name.endsWith("-6") ? "I could not produce JSON this round." : reviewerPayload;
+				}
+				return undefined;
+			},
+		},
+	);
+
+	const result = await mod.default.run(ctx);
+	const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
+		readonly convergence: readonly { readonly unresolvedBlockingCount: number }[];
+		readonly decisions: readonly { readonly reason: string }[];
+	};
+
+	assert.equal(result.status, "needs_human");
+	assert.deepEqual(
+		saved.convergence.map((round) => round.unresolvedBlockingCount),
+		[5, 5, 5, 5, 5],
+	);
+	const reason = saved.decisions.at(-1)?.reason ?? "";
+	assert.match(reason, /5 rounds recorded/);
+	assert.match(reason, /flat/);
+	assert.match(reason, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
+});
+
+test("goal convergence records a partially parsed reviewer round", async () => {
+	const mod = await import("../../packages/workflows/builtin/goal.js");
+	const parsedReviewer = goalReviewJsonWithFinding("[P1] Parsed blocker", 0.8, ["missing"]);
+	const ctx = makeMockCtx(
+		{
+			objective: "Keep the objective true",
+			max_turns: 1,
+			base_branch: "origin/main",
+			git_worktree_dir: "",
+			create_pr: false,
+		},
+		{
+			task: (name) => {
+				if (name.startsWith("completion-reviewer-")) return parsedReviewer;
+				if (name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-"))
+					return "I could not produce JSON this round.";
+				return undefined;
+			},
+		},
+	);
+
+	const result = await mod.default.run(ctx);
+	const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
+		readonly convergence: readonly { readonly unresolvedBlockingCount: number }[];
+	};
+
+	assert.equal(result.status, "needs_human");
+	assert.equal(saved.convergence.length, 1);
+	assert.equal(saved.convergence[0]?.unresolvedBlockingCount, 1);
+});
+
 describe("goal convergence", () => {
 	test("record_convergence shapes exactly five fields and folds usage", () => {
 		const usage = fold_usage([usageResult("orchestrator", 10, 20), usageResult("reviewer", 30, 40)]);
@@ -259,6 +365,16 @@ describe("goal convergence", () => {
 		);
 		assert.equal(classify_convergence(climbing).proven.trend, "rising");
 		assert.deepEqual(convergence_escalation_evidence(climbing), []);
+		const risingBlocking = [1, 2, 3, 4, 5, 6].map((unresolvedBlockingCount, index) =>
+			entry({
+				unresolvedBlockingCount,
+				fractionProven: [0.1, 0.3, 0.5, 0.7, 0.9, 1][index] ?? 0,
+			}),
+		);
+		const risingEvidence = convergence_escalation_evidence(risingBlocking);
+		assert.equal(risingEvidence.length, 5);
+		assert.match(risingEvidence[0] ?? "", /blocking-count trend is rising/);
+		assert.match(risingEvidence.join("\n"), /Blocking-count trend: rising/);
 
 		const falling = [1, 0.8, 0.6, 0.4, 0.2, 0].map((fractionProven) =>
 			entry({ unresolvedBlockingCount: 4, fractionProven }),
@@ -492,6 +608,53 @@ describe("goal convergence", () => {
 		assert.deepEqual(
 			saved.reviews.flatMap((review) => review.requirements_traceability.map((entry) => entry.status)).sort(),
 			["missing", "missing", "proven", "proven"],
+		);
+	});
+
+	test("goal convergence usage includes all reverify stage calls", async () => {
+		const mod = await import("../../packages/workflows/builtin/goal.js");
+		const reverifiableReviewer = goalReviewJsonWithReverifiableFinding();
+		const validReview = goalReviewJson();
+		const ctx = makeMockCtx(
+			{
+				objective: "Keep the objective true",
+				max_turns: 1,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "completion-reviewer-1") return reverifiableReviewer;
+					if (name === "evidence-reviewer-1" || name === "risk-reviewer-1") return validReview;
+					if (name.startsWith("reverify-")) {
+						return {
+							text: JSON.stringify({ score: 10, evidence: ["the finding remains"] }),
+							structured: { score: 10, evidence: ["the finding remains"] },
+						};
+					}
+					return undefined;
+				},
+				modelAttempts: () => [
+					{
+						model: "mock/model",
+						success: true,
+						usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+					},
+				],
+			},
+		);
+
+		const result = await mod.default.run(ctx);
+		const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
+			readonly convergence: readonly { readonly usage: { readonly calls: number } }[];
+		};
+
+		assert.equal(result.status, "needs_human");
+		assert.equal(saved.convergence[0]?.usage.calls, 7);
+		assert.deepEqual(
+			ctx.calls.task.filter((name) => name.startsWith("reverify-")),
+			["reverify-1", "reverify-2", "reverify-3"],
 		);
 	});
 

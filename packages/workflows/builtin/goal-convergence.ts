@@ -63,14 +63,16 @@ export function classify_convergence(entries: readonly ConvergenceEntry[]): {
 
 /**
  * A FALLING `unresolvedBlockingCount` (classified "regressing" on the raw
- * series) and a RISING `fractionProven` are the converging directions.
+ * series) and a RISING `fractionProven` are the converging directions. A
+ * rising blocking count is never suppressed because it is the worsening
+ * direction on the axis the objective names first.
  */
 export function convergence_escalation_evidence(
 	entries: readonly ConvergenceEntry[],
 ): readonly string[] {
 	if (entries.length === 0) return [];
 	const { blocking, proven } = classify_convergence(entries);
-	if (blocking.trend === "regressing" || proven.trend === "rising") return [];
+	if (blocking.trend === "regressing" || (proven.trend === "rising" && blocking.trend !== "rising")) return [];
 
 	const latest = entries[entries.length - 1]?.meanFindingConfidence;
 	return [
