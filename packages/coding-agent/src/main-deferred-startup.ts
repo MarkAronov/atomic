@@ -46,6 +46,10 @@ export interface ComputeStartupInputCaptureInput {
 export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCaptureInput): boolean {
 	if (input.parsed.resume || input.parsed.session !== undefined) return false;
 	const hasTrustInputs = hasProjectTrustInputs(input.sessionCwd);
+	// Explicit extension and resource paths make startup slower without adding a
+	// pre-TUI stdin consumer, so their longer typing window makes capture more
+	// necessary. Ignore their counts here while computeDeferExtensions continues
+	// to use the real counts when deciding whether to defer the actual loading.
 	return (
 		input.deprecationWarningCount === 0 &&
 		computeDeferExtensions({
@@ -56,8 +60,8 @@ export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCapt
 			listModels: input.parsed.listModels,
 			shouldResolveProjectTrust: input.parsed.projectTrustOverride === undefined && hasTrustInputs,
 			storedProjectTrust: hasTrustInputs ? input.projectTrustStore.get(input.sessionCwd) : null,
-			resolvedExtensionPathCount: input.resolvedExtensionPathCount,
-			resolvedResourcePathCount: input.resolvedResourcePathCount,
+			resolvedExtensionPathCount: 0,
+			resolvedResourcePathCount: 0,
 			hasSystemPromptInput:
 				input.parsed.systemPrompt !== undefined || (input.parsed.appendSystemPrompt?.length ?? 0) > 0,
 			unknownFlagCount: input.parsed.unknownFlags.size,

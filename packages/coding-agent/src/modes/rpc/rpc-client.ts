@@ -84,6 +84,7 @@ export class RpcClient extends RpcClientApi {
 	private readonly pendingRequests = new RpcPendingRequests();
 	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
 	private restartRevision = 0;
+	private stopPromise: Promise<void> | undefined;
 	private readonly terminalDrain = new RpcTerminalDrain();
 	private stdoutDrained: Promise<void> = Promise.resolve();
 	private requestId = 0;
@@ -189,9 +190,15 @@ export class RpcClient extends RpcClientApi {
 	 * Explicit stop. Voids any in-flight restart permit, so a replacement caught
 	 * between its own stop and start can never spawn after this returns.
 	 */
-	async stop(): Promise<void> {
+	stop(): Promise<void> {
 		this.restartRevision += 1;
-		await this.stopCurrentGeneration();
+		if (this.stopPromise) return this.stopPromise;
+		if (!this.process) return Promise.resolve();
+		const stopPromise = this.stopCurrentGeneration().finally(() => {
+			if (this.stopPromise === stopPromise) this.stopPromise = undefined;
+		});
+		this.stopPromise = stopPromise;
+		return stopPromise;
 	}
 
 	/**
@@ -330,6 +337,9 @@ export class RpcClient extends RpcClientApi {
 	async restart(sessionFile: string | undefined): Promise<void> {
 		const permit = this.restartRevision;
 		await this.stopCurrentGeneration();
+		// Join an in-flight stop before the permit check: waiting after it would
+		// reopen the window this fence exists to close.
+		if (this.stopPromise) await this.stopPromise;
 		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
 		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
 		await this.start();

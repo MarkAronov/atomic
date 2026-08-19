@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.14-alpha.4] - 2026-08-18
+
+### Changed
+
+- The interactive search curator is now opt-in. `web_search` returns raw results unless you set `"workflow": "summary-review"` in web-search config or run `/curator on`.
+
+### Removed
+
+- The `workflow` parameter on `web_search`. The curator is no longer selectable per tool call; enable it with web-search config or `/curator`.
+
 ## [0.9.14-alpha.3] - 2026-08-17
 
 ### Fixed
