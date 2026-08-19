@@ -2,7 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { getDurableBackend } from "../durable/factory.js";
-import { inheritedRunElapsedMs, recordRunTimingCheckpoint } from "../durable/run-timing.js";
+import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
 	createDurableStagePrimitive,
@@ -198,7 +198,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 					warnAtPercent: resolvedBudget.warnAtPercent,
 				}
 			: undefined;
-	const continuedBudgetState = opts.continuation?.source.budgetState ?? priorRun?.budgetState;
+	const durableAccounting =
+		opts.parentRun === undefined && opts.continuation === undefined && priorRun === undefined
+			? priorRunAccounting(durableBackend, runId)
+			: undefined;
+	const continuedBudgetState =
+		opts.continuation?.source.budgetState ??
+		priorRun?.budgetState ??
+		(durableAccounting === undefined ? undefined : { accounting: durableAccounting });
 	const sameBudget =
 		budgetSnapshot !== undefined &&
 		(continuedBudget?.maxDurationMs ?? 0) === budgetSnapshot.maxDurationMs &&

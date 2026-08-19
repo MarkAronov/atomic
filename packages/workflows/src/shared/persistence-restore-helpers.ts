@@ -211,7 +211,7 @@ function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 		warnAtPercent,
 	};
 }
-function restoreBudgetState(value: unknown): RunBudgetState | undefined {
+export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
 	const report = (
 		candidate: unknown,

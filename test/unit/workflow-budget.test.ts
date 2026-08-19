@@ -850,6 +850,70 @@ describe("token and cost budget metering", () => {
 		assert.equal(snapshots[1]?.budgetState?.accounting?.tokens, 280);
 	});
 
+	test("budget durable resume carries token and cost accounting after the prior snapshot is removed", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const runId = "budget-durable-accounting";
+		const backend = new InMemoryDurableBackend();
+		const definition = workflow({
+			name: "budget-durable-accounting",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				let result = "";
+				for (let index = 1; index <= 6; index++)
+					result = await ctx.stage(`durable-spend-${index}`, { model: "test/model" }).prompt("work");
+				return { result };
+			},
+		});
+		const store = createStore();
+		let promptCount = 0;
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				const messages: AgentSession["messages"] = [];
+				let answer = "";
+				return makeMockSession({
+					messages,
+					async prompt() {
+						promptCount++;
+						answer = "durable budget answer";
+						messages.push(
+							assistantMessageWithUsage(answer, {
+								input: 2,
+								output: 3,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: 0.5,
+							}),
+						);
+					},
+					getLastAssistantText: () => answer,
+				}).session;
+			},
+		};
+		const opts = {
+			runId,
+			store,
+			durableBackend: backend,
+			budget: { maxTokens: 12, maxCost: 100 },
+			adapters: { agentSession },
+		};
+
+		const first = await run(definition, {}, opts);
+		assert.equal(budgetOutcome(first.result)?.reading, 15);
+		assert.equal(store.runs()[0]?.budgetState?.accounting?.cost, 1.5);
+		assert.equal(promptCount, 4);
+		assert.equal(store.removeRun(runId), true);
+
+		const resumed = await run(definition, {}, opts);
+		assert.equal(budgetOutcome(resumed.result)?.status, "budget_exceeded");
+		assert.equal(budgetOutcome(resumed.result)?.dimension, "tokens");
+		assert.equal(budgetOutcome(resumed.result)?.reading, 15);
+		assert.equal(store.runs()[0]?.budgetState?.accounting?.cost, 1.5);
+		assert.equal(promptCount, 4, "durable resume must not grant a fresh usage allowance");
+	});
+
 	test("budget status reports token and cost dimensions alongside duration", () => {
 		const run = budgetRun({
 			budget: { maxDurationMs: 100, maxTokens: 10, maxCost: 1, warnAtPercent: 80 },

@@ -34,8 +34,7 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 	const durableStatus = toDurableStatus(status);
 	if (durableStatus !== undefined) {
 		// Failed/blocked runs may be resumed cross-session by workflow id; persist
-		// the exact accumulated elapsed so the resumed dashboard total continues
-		// from the prior sessions instead of restarting at zero.
+		// exact elapsed and usage meters so a resumed run continues both totals.
 		if (durableStatus === "failed" || durableStatus === "blocked") {
 			recordRunTimingCheckpoint(input.durableBackend, input.runSnapshot);
 		}

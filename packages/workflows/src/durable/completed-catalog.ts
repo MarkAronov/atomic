@@ -23,7 +23,7 @@ import {
 } from "./completed-catalog-stage-groups.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
-import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME } from "./run-timing.js";
+import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME } from "./run-timing.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
 
 /**
@@ -32,7 +32,9 @@ import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-
  * to skip them or they surface as phantom cached tool nodes.
  */
 function isReservedRunCheckpointHash(argsHash: string): boolean {
-	return argsHash === RUN_TIMING_CHECKPOINT_NAME || argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME;
+	return [RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME].includes(
+		argsHash,
+	);
 }
 
 import {
