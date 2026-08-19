@@ -262,7 +262,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			const children = (childrenByParent.get(run.id) ?? []).map(build);
 			return children.length === 0 ? { run } : { run, children };
 		};
-		return build(snapshots.findLast((snapshot) => snapshot.id === runSnapshot.id) ?? runSnapshot);
+		return build(snapshots.find((snapshot) => snapshot.id === runSnapshot.id) ?? runSnapshot);
 	};
 	const budget = createRunBudgetController({
 		run: runSnapshot,

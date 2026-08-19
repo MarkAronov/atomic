@@ -68,6 +68,31 @@ function usageStage(name: string, modelAttempts: readonly WorkflowModelAttempt[]
 	};
 }
 
+function budgetUsageSession(usage: WorkflowModelUsage): AgentSessionAdapter {
+	return {
+		async create() {
+			const messages: AgentSession["messages"] = [];
+			let answer = "";
+			return makeMockSession({
+				messages,
+				async prompt() {
+					answer = "budget usage answer";
+					messages.push(
+						assistantMessageWithUsage(answer, {
+							input: usage.input ?? 0,
+							output: usage.output ?? 0,
+							cacheRead: usage.cacheRead ?? 0,
+							cacheWrite: usage.cacheWrite ?? 0,
+							cost: usage.cost ?? 0,
+						}),
+					);
+				},
+				getLastAssistantText: () => answer,
+			}).session;
+		},
+	};
+}
+
 const BUDGET_FIELDS = [
 	["maxDurationMs", 10, 20, 30],
 	["maxTokens", 11, 21, 31],
@@ -612,6 +637,51 @@ describe("token and cost budget metering", () => {
 		assert.equal(report?.frontierStage, "default-frontier");
 		assert.equal(report?.wrapUpSummary, "wrap summary");
 		assert.deepEqual(store.runs()[0]?.stages[0]?.modelAttempts?.[0]?.usage, { ...usage, turns: 1 });
+	});
+
+	test("budget same-id dispatch meters the store-resolved run snapshot", async () => {
+		const runId = "budget-same-id-dispatch";
+		const definition = workflow({
+			name: "budget-same-id-dispatch",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				let result = "";
+				for (let index = 0; index < 6; index++)
+					result = await ctx.stage(`same-id-${index}`, { model: "test/model" }).prompt("work");
+				return { result };
+			},
+		});
+		const store = createStore();
+		store.recordRunStart(
+			budgetRun({
+				id: runId,
+				name: definition.name,
+				budget: { maxDurationMs: 0, maxTokens: 12, warnAtPercent: 80 },
+			}),
+		);
+
+		const result = await run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				budget: { maxTokens: 12 },
+				adapters: { agentSession: budgetUsageSession({ input: 2, output: 3 }) },
+			},
+		);
+
+		const report = budgetOutcome(result.result);
+		const snapshots = store.runs().filter((candidate) => candidate.id === runId);
+		assert.equal(snapshots.length, 2);
+		assert.equal(snapshots[0]?.stages.length, 3);
+		assert.equal(snapshots[1]?.stages.length, 0);
+		assert.equal(report?.status, "budget_exceeded");
+		assert.equal(report?.dimension, "tokens");
+		assert.equal(report?.reading, 15);
+		assert.equal(report?.ceiling, 12);
 	});
 
 	test("budget status reports token and cost dimensions alongside duration", () => {
