@@ -226,10 +226,10 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
   const expectedCount = resolvedCriteria.criteria.length * verifierCount;
   let repairsCompleted = 0;
   let consecutiveIndeterminate = 0;
-  let finalDecision: VerificationDecision = { kind: "indeterminate", missing: expectedCount };
+  let finalDecision: VerificationDecision;
   let finalMean = 0;
-  let scoreTablePath = join(root, "verification-summary-0.json");
-  let reviewReportPath = join(root, "review-0.json");
+  let scoreTablePath: string;
+  let reviewReportPath: string;
   let remainingWork: string[] = [];
 
   for (let round = 0; ; round += 1) {
