@@ -684,6 +684,53 @@ describe("token and cost budget metering", () => {
 		assert.equal(report?.ceiling, 12);
 	});
 
+	test("budget prior-run carry charges fresh store usage", async () => {
+		const runId = "budget-prior-run-accounting";
+		const definition = workflow({
+			name: "budget-prior-run-accounting",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({
+				result: await ctx.stage("fresh-spend", { model: "test/model" }).prompt("fresh work"),
+			}),
+		});
+		const store = createStore();
+		store.recordRunStart(
+			budgetRun({
+				id: runId,
+				name: definition.name,
+				budget: { maxDurationMs: 0, maxTokens: 250, warnAtPercent: 80 },
+				budgetState: {
+					accounting: {
+						baseline: { input: 120, output: 80, cacheRead: 0, cacheWrite: 0, cost: 0 },
+						tokens: 200,
+						cost: 0,
+						perCounter: { input: 120, output: 80, cacheRead: 0, cacheWrite: 0 },
+					},
+				},
+			}),
+		);
+
+		const result = await run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				budget: { maxTokens: 250 },
+				adapters: { agentSession: budgetUsageSession({ input: 50, output: 30 }) },
+			},
+		);
+
+		const report = budgetOutcome(result.result);
+		const current = store.runs().filter((candidate) => candidate.id === runId)[1];
+		assert.equal(report?.status, "budget_exceeded");
+		assert.equal(report?.dimension, "tokens");
+		assert.equal(report?.reading, 280);
+		assert.equal(current?.budgetState?.accounting?.tokens, 280);
+	});
+
 	test("budget status reports token and cost dimensions alongside duration", () => {
 		const run = budgetRun({
 			budget: { maxDurationMs: 100, maxTokens: 10, maxCost: 1, warnAtPercent: 80 },

@@ -109,8 +109,7 @@ export function createRunBudgetController(input: {
 	const enabled = ownEnabled || root !== undefined;
 	let state: RunBudgetState | undefined = run.budgetState === undefined ? undefined : { ...run.budgetState };
 	const previousAccounting = state?.accounting;
-	let baseline: RunBudgetUsageBaseline =
-		run.resumedFromRunId === undefined ? { ...(previousAccounting?.baseline ?? zeroBaseline()) } : zeroBaseline();
+	let baseline = zeroBaseline();
 	let charged: RunBudgetAccountingState = {
 		baseline,
 		tokens: previousAccounting?.tokens ?? 0,
