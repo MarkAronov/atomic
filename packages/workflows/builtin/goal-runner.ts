@@ -1,5 +1,11 @@
 import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import { fold_usage } from "./verification-usage.js";
+import {
+  convergence_escalation_evidence,
+  record_convergence,
+  type ConvergenceEntry,
+} from "./goal-convergence.js";
 import { orchestratorModelConfig, reviewerModelConfig } from "./goal-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
@@ -81,11 +87,13 @@ function reviewerExecutionFailedDecision(input: {
   readonly reviewQuorum: number;
   readonly reviews: readonly ReviewRecord[];
   readonly reason: string;
+  readonly convergence?: readonly ConvergenceEntry[];
 }): ReducerDecision {
+  const evidence = convergence_escalation_evidence(input.convergence ?? []);
   return {
     turn: input.turn,
     decision: "needs_human",
-    reason: input.reason,
+    reason: [input.reason, ...evidence].join("\n"),
     complete_votes: input.reviews.filter((review) => review.decision === "complete").length,
     review_quorum: input.reviewQuorum,
     parsed: input.reviews.every((review) => review.parsed),
@@ -152,7 +160,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        terminalRemainingWork = `Orchestrator failed before producing a receipt: ${message}`;
+        const baseReason = `Orchestrator failed before producing a receipt: ${message}`;
+        terminalRemainingWork = baseReason;
+        const reason = [baseReason, ...convergence_escalation_evidence(ledger.convergence ?? [])].join("\n");
         latestReviews = [];
         latestReviewArtifactPaths = [];
         latestReviewReportPath = undefined;
@@ -161,7 +171,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         ledger.decisions.push({
           turn,
           decision: "needs_human",
-          reason: terminalRemainingWork,
+          reason,
           complete_votes: 0,
           review_quorum: reviewQuorum,
           parsed: false,
@@ -169,9 +179,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           stopReviewLoop: false,
           nextAction: "needs_human",
           finalActionRemaining: false,
-          diagnostics: [terminalRemainingWork],
+          diagnostics: [baseReason],
         });
-        appendLifecycleEvent(ledger, "status_decided", terminalRemainingWork, turn);
+        appendLifecycleEvent(ledger, "status_decided", reason, turn);
         await writeGoalLedger(ledgerPath, ledger);
         break;
       }
@@ -277,7 +287,16 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           findings: review.findings,
         })),
       );
-      const reverified = await reverify_consolidated_batch(ctx, {
+      const roundProducedDecisions = latestReviews.some((review) => review.parsed);
+      const reverifyResults: WorkflowTaskResult[] = [];
+      const reverifyContext = {
+        task: async (name: string, taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+          const result = await ctx.task(name, taskOptions);
+          reverifyResults.push(result);
+          return result;
+        },
+      };
+      const reverified = await reverify_consolidated_batch(reverifyContext, {
         batch: consolidatedFindings,
         context: {
           objective,
@@ -294,6 +313,25 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         ledger.reverification ??= [];
         ledger.reverification.push(...reverified.audits);
       }
+      const findings = latestReviews.flatMap((review) => review.findings);
+      const traceability = latestReviews.flatMap((review) => review.requirements_traceability);
+      ledger.convergence ??= [];
+      // A thrown reviewer batch or an all-unparsed reviewer batch produced no
+      // decisions, so recording a zero-blocker round would fabricate progress
+      // and can suppress the escalation evidence on the very escalation it triggers.
+      if (!reviewerBatchFailed && roundProducedDecisions) {
+        ledger.convergence.push(record_convergence({
+          unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
+          meanFindingConfidence: findings.length === 0
+            ? null
+            : findings.reduce((total, finding) => total + finding.confidence_score, 0) / findings.length,
+          fractionProven: traceability.length === 0
+            ? 0
+            : traceability.filter((entry) => entry.status === "proven").length / traceability.length,
+          demotions: reverified.audits.filter((audit) => audit.verdict === "demoted").length,
+          usage: fold_usage([orchestrator, ...reviewResults, ...reverifyResults]),
+        }));
+      }
       ledger.reviews.push(...latestReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
@@ -306,14 +344,16 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       if (reviewerBatchFailed) {
         terminalRemainingWork = collectRemainingWork(latestReviews);
         const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${terminalRemainingWork}`;
-        ledger.decisions.push(reviewerExecutionFailedDecision({
+        const decision = reviewerExecutionFailedDecision({
           turn,
           reviewQuorum,
           reviews: latestReviews,
           reason,
-        }));
+          convergence: ledger.convergence,
+        });
+        ledger.decisions.push(decision);
         ledger.status = "needs_human";
-        appendLifecycleEvent(ledger, "status_decided", reason, turn);
+        appendLifecycleEvent(ledger, "status_decided", decision.reason, turn);
         await writeGoalLedger(ledgerPath, ledger);
         break;
       }
@@ -324,6 +364,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         reviewQuorum,
         blockerThreshold,
         nextActionOnComplete: createPr ? "pull-request" : "finish",
+        convergence: ledger.convergence,
       });
       if (reducerOutcome.blockerObservation !== undefined) {
         ledger.blockers.push(reducerOutcome.blockerObservation);

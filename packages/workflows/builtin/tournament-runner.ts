@@ -7,6 +7,7 @@ import { build_scoring_prompt, scoring_prompt_reads, warm_first_fan_out, type Sc
 import { normalize_criteria, parse_rubric, VERIFICATION_SCALE, type Criterion, type CriterionInput } from "./verification-criteria.js";
 import { DEFAULT_TOURNAMENT_CRITERIA, renderComparisonsReducerPrompt, renderTournamentAttemptPrompt } from "./tournament-prompts.js";
 import { stableArtifactRoot } from "./pattern-artifact-root.js";
+import { fold_usage, type UsageTotals } from "./verification-usage.js";
 
 const judgeScoreSchema = Type.Object({
 	criterion_id: Type.String(),
@@ -115,6 +116,32 @@ function modelAssignment(
 	return assignment;
 }
 
+function combineUsage(totals: readonly UsageTotals[]): UsageTotals {
+	const combined = {
+		calls: 0,
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+		turns: 0,
+	};
+	for (const total of totals) {
+		combined.calls += total.calls;
+		combined.input += total.input;
+		combined.output += total.output;
+		combined.cacheRead += total.cacheRead;
+		combined.cacheWrite += total.cacheWrite;
+		combined.cost += total.cost;
+		combined.turns += total.turns;
+	}
+	const cacheDenominator = combined.input + combined.cacheRead;
+	return {
+		...combined,
+		cacheHitRate: cacheDenominator === 0 ? 0 : combined.cacheRead / cacheDenominator,
+	};
+}
+
 export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 	const artifactDir = await stableArtifactRoot(ctx, "tournament");
 	const attemptsDir = join(artifactDir, "attempts");
@@ -130,7 +157,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 	const attemptArtifactPaths = Array.from({ length: numAttempts }, (_, index) =>
 		join(attemptsDir, `attempt-${index + 1}.md`));
 	const models = ctx.inputs.models;
-	await ctx.parallel(
+	const attemptResults = await ctx.parallel(
 		attemptArtifactPaths.map((path, index) => ({
 			name: `attempt-${index + 1}`,
 			prompt: renderTournamentAttemptPrompt(ctx.inputs.prompt, index + 1),
@@ -165,7 +192,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 	const runPhase = async (
 		phase: "ring" | "pivot",
 		jobs: readonly ScoringJob[],
-	): Promise<Preference[]> => {
+	): Promise<{ readonly preferences: readonly Preference[]; readonly results: readonly WorkflowTaskResult[] }> => {
 		const stages: JudgeStage[] = jobs.map((job) => {
 			const slot1 = job.swapped ? job.b : job.a;
 			const slot2 = job.swapped ? job.a : job.b;
@@ -200,7 +227,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 				},
 			};
 		});
-		if (stages.length === 0) return [];
+		if (stages.length === 0) return { preferences: [], results: [] };
 		executed += stages.length;
 		const results = await warm_first_fan_out(
 			ctx,
@@ -208,6 +235,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 			(_step, index) => `${stages[index]!.slot1}:${stages[index]!.slot2}`,
 			{ concurrency: maxConcurrency, failFast: false },
 		);
+		const phaseResults = [...results];
 		for (const stage of stages) {
 			let report = judgeReport(resultFor(results, stage.name)?.structured);
 			if (report === undefined) {
@@ -218,6 +246,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 					reads: stage.step.reads,
 					schema: judgeScoreSchema,
 				});
+				phaseResults.push(retried);
 				report = judgeReport(retried.structured);
 			}
 			if (report === undefined) {
@@ -282,16 +311,16 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 			});
 			preferences.push({ a: first.a, b: first.b, p });
 		}
-		return preferences;
+		return { preferences, results: phaseResults };
 	};
 
 	const ringJobs = plan.jobs(plan.ring, criterionIds);
-	const ringPreferences = await runPhase("ring", ringJobs);
-	accumulate(ringPreferences, weights, counts);
+	const ringPhase = await runPhase("ring", ringJobs);
+	accumulate(ringPhase.preferences, weights, counts);
 	const pivotIndices = select_pivots(weights, counts, pivotCount);
 	const pivotJobs = plan.jobs(plan.pivotRounds(pivotIndices), criterionIds);
-	const pivotPreferences = await runPhase("pivot", pivotJobs);
-	accumulate(pivotPreferences, weights, counts);
+	const pivotPhase = await runPhase("pivot", pivotJobs);
+	accumulate(pivotPhase.preferences, weights, counts);
 	const ranking = rank_candidates(weights, counts).map((entry) => ({
 		label: entrants[entry.index]!.label,
 		index: entry.index,
@@ -305,7 +334,12 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 		criteria.length * nEvaluations;
 	const comparisonPath = join(artifactDir, "comparisons.json");
 	const assignment = modelAssignment(entrants, models);
-	const ledger = {
+	const phaseUsage = {
+		attempts: fold_usage(attemptResults),
+		ring: fold_usage(ringPhase.results),
+		pivots: fold_usage(pivotPhase.results),
+	};
+	const baseLedger = {
 		task: ctx.inputs.prompt,
 		seed,
 		params: {
@@ -323,7 +357,15 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 		budget: { planned: comparisonBudget, executed },
 		...(assignment === undefined ? {} : { model_assignment: assignment }),
 	};
-	await writeFile(comparisonPath, `${JSON.stringify(ledger, null, 2)}\n`);
+	const writeLedger = async (reducerUsage: UsageTotals): Promise<void> => {
+		const usage = {
+			...phaseUsage,
+			reducer: reducerUsage,
+			total: combineUsage([phaseUsage.attempts, phaseUsage.ring, phaseUsage.pivots, reducerUsage]),
+		};
+		await writeFile(comparisonPath, `${JSON.stringify({ ...baseLedger, usage }, null, 2)}\n`);
+	};
+	await writeLedger(fold_usage([]));
 
 	const winner = ranking[0]!;
 	const winnerEntrant = entrants[winner.index]!;
@@ -341,6 +383,7 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
 		output: resultPath,
 		outputMode: "file-only",
 	});
+	await writeLedger(fold_usage([reducer]));
 
 	return {
 		result: reducer.text,

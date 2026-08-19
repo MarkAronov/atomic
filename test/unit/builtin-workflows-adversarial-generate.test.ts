@@ -54,6 +54,27 @@ function criterionReport(
 	return JSON.stringify({ criterion_id: criterionId(prompt), score, evidence: ["checked"], findings });
 }
 
+const VERIFIER_USAGE = { input: 11, output: 2, cacheRead: 7, cacheWrite: 1, cost: 2, turns: 1 };
+const REASK_USAGE = { input: 29, output: 5, cacheRead: 3, cacheWrite: 2, cost: 5, turns: 2 };
+
+function expectedVerifierUsage(initialCount: number, reaskCount: number) {
+	const totals = {
+		calls: initialCount + reaskCount,
+		input: initialCount * VERIFIER_USAGE.input + reaskCount * REASK_USAGE.input,
+		output: initialCount * VERIFIER_USAGE.output + reaskCount * REASK_USAGE.output,
+		cacheRead: initialCount * VERIFIER_USAGE.cacheRead + reaskCount * REASK_USAGE.cacheRead,
+		cacheWrite: initialCount * VERIFIER_USAGE.cacheWrite + reaskCount * REASK_USAGE.cacheWrite,
+		cost: initialCount * VERIFIER_USAGE.cost + reaskCount * REASK_USAGE.cost,
+		turns: initialCount * VERIFIER_USAGE.turns + reaskCount * REASK_USAGE.turns,
+	};
+	const denominator = totals.input + totals.cacheRead;
+	return { ...totals, cacheHitRate: denominator === 0 ? 0 : totals.cacheRead / denominator };
+}
+
+function fixtureModelAttempts(usage: typeof VERIFIER_USAGE) {
+	return [{ model: "fixture-model", success: true, usage }];
+}
+
 function schemaShape(schema: unknown): Record<string, unknown> {
 	return schema as Record<string, unknown>;
 }
@@ -113,6 +134,8 @@ test("adversarial-verification fans out one fresh schema-backed stage per criter
 				{
 					task: (name, options) =>
 						name.startsWith("verifier-") ? criterionReport(String(options.prompt)) : undefined,
+					modelAttempts: (name) =>
+						name.startsWith("verifier-") ? fixtureModelAttempts(VERIFIER_USAGE) : undefined,
 				},
 			),
 			cwd,
@@ -162,7 +185,9 @@ test("adversarial-verification fans out one fresh schema-backed stage per criter
 			mean: number;
 			invalidCount: number;
 			decision: { kind: string };
+			usage: Record<string, number>;
 		};
+		assert.deepEqual(summary.usage, expectedVerifierUsage(4, 0));
 		assert.equal(summary.scores.length, 4);
 		assert.equal(summary.mean, 20);
 		assert.equal(summary.invalidCount, 0);
@@ -192,6 +217,10 @@ test("adversarial-verification re-asks invalid reports without counting them as 
 						if (name === "verifier-0-task_fit-1") return "prose instead of structured output";
 						return criterionReport(String(options.prompt));
 					},
+					modelAttempts: (name) => {
+						if (!name.startsWith("verifier-")) return undefined;
+						return fixtureModelAttempts(name.endsWith("-reask-1") ? REASK_USAGE : VERIFIER_USAGE);
+					},
 				},
 			),
 			cwd,
@@ -219,7 +248,9 @@ test("adversarial-verification re-asks invalid reports without counting them as 
 			mean: number;
 			invalidCount: number;
 			decision: { kind: string };
+			usage: Record<string, number>;
 		};
+		assert.deepEqual(summary.usage, expectedVerifierUsage(2, 1));
 		assert.equal(summary.scores.length, 2);
 		assert.equal(summary.invalidCount, 1);
 		assert.equal(summary.mean, 20);
@@ -257,6 +288,10 @@ test("adversarial-verification preserves confirmed findings and reads the succes
 						}
 						return undefined;
 					},
+					modelAttempts: (name) => {
+						if (!name.startsWith("verifier-")) return undefined;
+						return fixtureModelAttempts(name.endsWith("-reask-1") ? REASK_USAGE : VERIFIER_USAGE);
+					},
 				},
 			),
 			cwd,
@@ -280,7 +315,9 @@ test("adversarial-verification preserves confirmed findings and reads the succes
 		const summary = JSON.parse(readFileSync(result.score_table_path, "utf8")) as {
 			invalidCount: number;
 			decision: { kind: string; mean: number };
+			usage: Record<string, number>;
 		};
+		assert.deepEqual(summary.usage, expectedVerifierUsage(2, 1));
 		assert.equal(summary.invalidCount, 1);
 		assert.equal(summary.decision.kind, "repair");
 		assert.equal(summary.decision.mean, 20);
@@ -303,7 +340,13 @@ test("adversarial-verification repeats indeterminate rounds once and records quo
 					accept_mean: 14,
 					reask_limit: 1,
 				},
-				{ task: (name) => (name.startsWith("verifier-") ? "permanently invalid" : undefined) },
+				{
+					task: (name) => (name.startsWith("verifier-") ? "permanently invalid" : undefined),
+					modelAttempts: (name) => {
+						if (!name.startsWith("verifier-")) return undefined;
+						return fixtureModelAttempts(name.endsWith("-reask-1") ? REASK_USAGE : VERIFIER_USAGE);
+					},
+				},
 			),
 			cwd,
 		);
@@ -333,7 +376,9 @@ test("adversarial-verification repeats indeterminate rounds once and records quo
 			scores: unknown[];
 			invalidCount: number;
 			decision: { kind: string; missing: number };
+			usage: Record<string, number>;
 		};
+		assert.deepEqual(summary.usage, expectedVerifierUsage(1, 1));
 		assert.deepEqual(summary.scores, []);
 		assert.equal(summary.invalidCount, 2);
 		assert.equal(summary.decision.kind, "indeterminate");
