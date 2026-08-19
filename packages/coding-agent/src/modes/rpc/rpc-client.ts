@@ -84,6 +84,9 @@ export class RpcClient extends RpcClientApi {
 	private readonly pendingRequests = new RpcPendingRequests();
 	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
 	private restartRevision = 0;
+	private stopPromise: Promise<void> | undefined;
+	/** Keeps the explicit-stop fence armed while restart has no child between generations. */
+	private restartInFlight = 0;
 	private readonly terminalDrain = new RpcTerminalDrain();
 	private stdoutDrained: Promise<void> = Promise.resolve();
 	private requestId = 0;
@@ -112,6 +115,7 @@ export class RpcClient extends RpcClientApi {
 	}
 
 	async start(): Promise<void> {
+		if (this.stopPromise) await this.stopPromise;
 		if (this.process) {
 			throw new Error("Client already started");
 		}
@@ -189,9 +193,16 @@ export class RpcClient extends RpcClientApi {
 	 * Explicit stop. Voids any in-flight restart permit, so a replacement caught
 	 * between its own stop and start can never spawn after this returns.
 	 */
-	async stop(): Promise<void> {
+	stop(): Promise<void> {
+		if (this.stopPromise) return this.stopPromise;
+		if (!this.process && this.restartInFlight === 0) return Promise.resolve();
 		this.restartRevision += 1;
-		await this.stopCurrentGeneration();
+		if (!this.process) return Promise.resolve();
+		const stopPromise = this.stopCurrentGeneration().finally(() => {
+			if (this.stopPromise === stopPromise) this.stopPromise = undefined;
+		});
+		this.stopPromise = stopPromise;
+		return stopPromise;
 	}
 
 	/**
@@ -328,12 +339,17 @@ export class RpcClient extends RpcClientApi {
 	 * quietly, because callers go on to initialize against the new child.
 	 */
 	async restart(sessionFile: string | undefined): Promise<void> {
-		const permit = this.restartRevision;
-		await this.stopCurrentGeneration();
-		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
-		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
-		await this.start();
-		await this.waitForInteractiveEngineBound();
+		this.restartInFlight += 1;
+		try {
+			const permit = this.restartRevision;
+			await this.stopCurrentGeneration();
+			if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
+			this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
+			await this.start();
+			await this.waitForInteractiveEngineBound();
+		} finally {
+			this.restartInFlight -= 1;
+		}
 	}
 
 	async requestInternal<T>(command: RpcCommandBody): Promise<T> {

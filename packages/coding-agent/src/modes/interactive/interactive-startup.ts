@@ -231,6 +231,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
 	this.ui.start();
 	await waitForInteractiveEngineBound(this.runtimeHost);
+	if (this.isShuttingDown) return;
 	recordTimeSinceReset("time-to-first-frame");
 	this.footerDataProvider.onBranchChange(() => {
 		this.ui.requestRender();
@@ -297,6 +298,7 @@ InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveM
 
 InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
 	await this.init();
+	if (this.isShuttingDown) return;
 
 	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 

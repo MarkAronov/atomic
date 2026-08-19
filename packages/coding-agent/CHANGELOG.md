@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Interactive startup now exits quietly when Ctrl+C stops the engine during first-paint binding, without leaking expected in-flight RPC transport failures.
+
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Changed
