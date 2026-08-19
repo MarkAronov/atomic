@@ -845,8 +845,21 @@ describe("budget executor boundaries", () => {
 				},
 			},
 		);
-		await sleep(450);
-		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		// The wrap-up settles asynchronously after the run resolves. Poll for the
+		// observable end state instead of sleeping a fixed guess, so the test does
+		// not depend on an idle machine.
+		// Settling happens in two phases: the wrap-up completes, then the live
+		// stage leaves "running". Wait for both.
+		const WRAP_UP_SETTLE_DEADLINE_MS = 5_000;
+		const settleDeadline = Date.now() + WRAP_UP_SETTLE_DEADLINE_MS;
+		const settled = (candidate: RunSnapshot | undefined): boolean =>
+			candidate?.budgetState?.wrapUpCompleted === true &&
+			candidate.stages.find((stage) => stage.name === "live-frontier")?.status !== "running";
+		let snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		while (!settled(snapshot) && Date.now() < settleDeadline) {
+			await sleep(10);
+			snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		}
 		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
 		assert.equal(budgetOutcome(result.result)?.wrapUpSummary, "wrap-up from the live turn");
 		assert.equal(snapshot?.budgetState?.wrapUpDelivered, true);
