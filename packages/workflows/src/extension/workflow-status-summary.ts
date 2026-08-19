@@ -158,6 +158,9 @@ function awaitingInputEntries(run: RunSnapshot): WorkflowStatusAwaitingInput[] {
 	return entries;
 }
 
+function budgetReport(dimension: "duration" | "tokens" | "cost", reading: number, ceiling: number) {
+	return { dimension, reading, ceiling, percent: ceiling === 0 ? 0 : (reading / ceiling) * 100 };
+}
 /** Reduce one run snapshot to its concise status summary. */
 export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
@@ -178,7 +181,23 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 						ceiling: run.budget.maxDurationMs,
 						percent: run.budget.maxDurationMs === 0 ? 0 : (elapsedMs / run.budget.maxDurationMs) * 100,
 					});
-	const budgetState = run.budget === undefined ? undefined : { ...(run.budgetState ?? {}), duration };
+	const usageBudgetReport = (dimension: "tokens" | "cost", ceiling: number | undefined) => {
+		if (ceiling === undefined || ceiling <= 0) return undefined;
+		return (
+			run.budgetState?.[dimension] ?? budgetReport(dimension, run.budgetState?.accounting?.[dimension] ?? 0, ceiling)
+		);
+	};
+	const tokens = usageBudgetReport("tokens", run.budget?.maxTokens) as RunBudgetState["tokens"];
+	const cost = usageBudgetReport("cost", run.budget?.maxCost) as RunBudgetState["cost"];
+	const budgetState =
+		run.budget === undefined
+			? undefined
+			: {
+					...(run.budgetState ?? {}),
+					duration,
+					...(tokens !== undefined ? { tokens } : {}),
+					...(cost !== undefined ? { cost } : {}),
+				};
 	return {
 		runId: run.id,
 		name: run.name,

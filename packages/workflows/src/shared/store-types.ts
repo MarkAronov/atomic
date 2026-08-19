@@ -3,7 +3,8 @@
  * cross-ref: spec §5.5
  */
 
-import type { DurationBudgetReport } from "./budget.js";
+import type { BudgetDimension, BudgetReport, DurationBudgetReport, UsageBudgetReport } from "./budget.js";
+import type { RunMeterCounters } from "./budget-meter.js";
 import type {
 	WorkflowExitStatus,
 	WorkflowInputValues,
@@ -22,11 +23,22 @@ export type StageStatus =
 	| "failed"
 	| "skipped";
 
-export type RunBudgetSnapshot = { readonly maxDurationMs: number; readonly warnAtPercent: number };
+export type RunBudgetSnapshot = Readonly<Record<"maxDurationMs" | "warnAtPercent", number>> &
+	Readonly<Partial<Record<"maxTokens" | "maxCost", number>>>;
+export type RunBudgetUsageBaseline = RunMeterCounters & { readonly cost: number };
+export type RunBudgetAccountingState = Readonly<Record<"tokens" | "cost", number>> & {
+	readonly baseline: RunBudgetUsageBaseline;
+	readonly perCounter: RunMeterCounters;
+};
 export interface RunBudgetState
 	extends Partial<Record<"warned" | "wrapUpDelivered" | "wrapUpCompleted" | "systemOwnedStop", boolean>> {
 	readonly duration?: DurationBudgetReport;
-	readonly warning?: DurationBudgetReport;
+	readonly tokens?: UsageBudgetReport & { readonly dimension: "tokens" };
+	readonly cost?: UsageBudgetReport & { readonly dimension: "cost" };
+	/** Latest warning retained for legacy consumers; `warnings` keeps each dimension. */
+	readonly warning?: BudgetReport;
+	readonly warnings?: Partial<Record<BudgetDimension, BudgetReport>>;
+	readonly accounting?: RunBudgetAccountingState;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: import("./types.js").WorkflowModelUsage;
 }

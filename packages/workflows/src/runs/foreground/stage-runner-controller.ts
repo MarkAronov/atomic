@@ -424,7 +424,16 @@ export class StageSessionController {
 				const activeSession = await this.ensureSession(consumer);
 				const resumedText = this.pendingCreationResumeMessage;
 				this.pendingCreationResumeMessage = undefined;
-				await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+				const value = activeSession.model ?? "default";
+				const candidate = { id: workflowModelId(value) ?? "default", value };
+				this.beginAttemptUsage(activeSession);
+				try {
+					await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+				} catch (error) {
+					await this.handleCandidateFailure(error, candidate, [candidate], 0);
+					throw error;
+				}
+				this.recordSuccessfulAttempt(candidate);
 			} catch (error) {
 				if (error instanceof StageSessionCreationCancelled) return;
 				throw error;

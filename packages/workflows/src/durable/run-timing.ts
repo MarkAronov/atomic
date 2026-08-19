@@ -16,13 +16,16 @@
  * cross-ref: packages/workflows/src/shared/timing.ts elapsedRunMs
  */
 
-import type { RunSnapshot } from "../shared/store-types.js";
+import { restoreBudgetState } from "../shared/persistence-restore-helpers.js";
+import type { RunBudgetAccountingState, RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { durableHash } from "./durable-hash.js";
 import type { DurableToolCheckpoint } from "./types.js";
 
-/** Reserved checkpoint name AND args-hash for run-level timing records. */
+/** Reserved checkpoint names AND args-hashes for run-level meter records. */
 export const RUN_TIMING_CHECKPOINT_NAME = "workflow-run-timing";
+export const RUN_USAGE_CHECKPOINT_NAME = "workflow-run-usage";
 
 /**
  * Debounce granularity for run-timing updates, matching the stage-session
@@ -43,34 +46,43 @@ export function priorRunElapsedMs(backend: DurableWorkflowBackend, workflowId: s
 	return elapsedMs;
 }
 
+/** Prior token/cost accounting recorded durably, or undefined when absent/malformed. */
+export function priorRunAccounting(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+): RunBudgetAccountingState | undefined {
+	const output = backend.getToolOutput(workflowId, RUN_USAGE_CHECKPOINT_NAME);
+	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
+	return restoreBudgetState({ accounting: (output as Record<string, unknown>).accounting })?.accounting;
+}
 /**
  * Record the run's current total elapsed time (prior + this session) durably.
  *
  * Skipped when the workflow has no durable progress yet (a timing record with
  * nothing to resume would only manufacture resumability), when the elapsed
  * value did not grow past the last record, or — with `debounce` — while the
- * value stays inside the last 30 s bucket.
+ * value stays inside the last 30 s bucket. Usage shares only the progress guard.
  */
 export function recordRunTimingCheckpoint(
 	backend: DurableWorkflowBackend,
 	run: RunSnapshot,
 	options?: { readonly debounce?: boolean; readonly now?: number },
 ): boolean {
-	const checkpoint = runTimingCheckpoint(backend, run, options);
-	if (checkpoint === undefined) return false;
-	backend.recordCheckpoint(checkpoint);
+	const checkpoints = [runTimingCheckpoint(backend, run, options), runUsageCheckpoint(backend, run, options?.now)];
+	if (checkpoints.every((checkpoint) => checkpoint === undefined)) return false;
+	for (const checkpoint of checkpoints) if (checkpoint !== undefined) backend.recordCheckpoint(checkpoint);
 	return true;
 }
 
-/** Await the timing write so an active turn observes persistent storage faults at once. */
+/** Await the timing and usage writes so an active turn observes persistent storage faults at once. */
 export async function recordRunTimingCheckpointAsync(
 	backend: DurableWorkflowBackend,
 	run: RunSnapshot,
 	options?: { readonly debounce?: boolean; readonly now?: number },
 ): Promise<boolean> {
-	const checkpoint = runTimingCheckpoint(backend, run, options);
-	if (checkpoint === undefined) return false;
-	await backend.recordCheckpointAsync(checkpoint);
+	const checkpoints = [runTimingCheckpoint(backend, run, options), runUsageCheckpoint(backend, run, options?.now)];
+	if (checkpoints.every((checkpoint) => checkpoint === undefined)) return false;
+	for (const checkpoint of checkpoints) if (checkpoint !== undefined) await backend.recordCheckpointAsync(checkpoint);
 	return true;
 }
 
@@ -95,6 +107,25 @@ function runTimingCheckpoint(
 		name: RUN_TIMING_CHECKPOINT_NAME,
 		argsHash: RUN_TIMING_CHECKPOINT_NAME,
 		output: { elapsedMs },
+		completedAt: now,
+	};
+}
+function runUsageCheckpoint(
+	backend: DurableWorkflowBackend,
+	run: RunSnapshot,
+	now = Date.now(),
+): DurableToolCheckpoint | undefined {
+	const accounting = run.budgetState?.accounting;
+	if (accounting === undefined || backend.listCheckpoints(run.id).length === 0) return undefined;
+	const checkpointId = `run-usage:${durableHash({ accounting })}`;
+	if (backend.getToolCheckpoint(run.id, RUN_USAGE_CHECKPOINT_NAME)?.checkpointId === checkpointId) return undefined;
+	return {
+		kind: "tool",
+		workflowId: run.id,
+		checkpointId,
+		name: RUN_USAGE_CHECKPOINT_NAME,
+		argsHash: RUN_USAGE_CHECKPOINT_NAME,
+		output: { accounting },
 		completedAt: now,
 	};
 }

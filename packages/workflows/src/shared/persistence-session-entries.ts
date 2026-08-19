@@ -13,7 +13,7 @@ import type {
 	WorkflowFailureDisposition,
 	WorkflowFailureKind,
 } from "./store-types.js";
-import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type { WorkflowExitStatus, WorkflowInputValues, WorkflowModelAttempt, WorkflowOutputValues } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Structural API type (subset of ExtensionAPI needed here)
@@ -96,6 +96,7 @@ export interface StageEndPayload {
 	readonly skippedReason?: string;
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
+	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly replayKey?: string;
 	readonly replayedFromStageId?: string;
 	readonly replayed?: boolean;
@@ -217,6 +218,7 @@ export function appendStageEnd(api: PersistenceAPI, payload: StageEndPayload, op
 		...(payload.skippedReason !== undefined ? { skippedReason: payload.skippedReason } : {}),
 		...(payload.sessionId !== undefined ? { sessionId: payload.sessionId } : {}),
 		...(payload.sessionFile !== undefined ? { sessionFile: payload.sessionFile } : {}),
+		...(payload.modelAttempts !== undefined ? { modelAttempts: payload.modelAttempts } : {}),
 		...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
 		...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
 		...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),

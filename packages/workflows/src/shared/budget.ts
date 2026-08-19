@@ -1,9 +1,14 @@
 /** Pure workflow run-budget declarations and resolution. */
 
-/**
- * Optional budget limits for a workflow run. A present `0` disables that
- * dimension; absent fields inherit from the prior layer.
- */
+export type BudgetDimension = "duration" | "tokens" | "cost";
+export interface BudgetReport {
+	readonly dimension: BudgetDimension;
+	readonly reading: number;
+	readonly ceiling: number;
+	readonly percent: number;
+}
+export type DurationBudgetReport = BudgetReport & { readonly dimension: "duration" };
+export type UsageBudgetReport = BudgetReport & { readonly dimension: "tokens" | "cost" };
 export interface WorkflowBudget {
 	readonly maxDurationMs?: number;
 	readonly maxTokens?: number;
@@ -11,12 +16,6 @@ export interface WorkflowBudget {
 	readonly warnAtPercent?: number;
 }
 
-export interface DurationBudgetReport {
-	readonly dimension: "duration";
-	readonly reading: number;
-	readonly ceiling: number;
-	readonly percent: number;
-}
 export type DurationBudgetCheck =
 	| { readonly kind: "continue"; readonly report: DurationBudgetReport; readonly warning: boolean }
 	| { readonly kind: "exhausted"; readonly report: DurationBudgetReport };
@@ -34,6 +33,21 @@ export function enforceDurationBudget(
 	};
 	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
 	const warning = options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent;
+	return { kind: "continue", report, warning };
+}
+export type UsageBudgetCheck =
+	| { readonly kind: "continue"; readonly report: UsageBudgetReport; readonly warning: boolean }
+	| { readonly kind: "exhausted"; readonly report: UsageBudgetReport };
+export function enforceUsageBudget(
+	dimension: "tokens" | "cost",
+	reading: number,
+	ceiling: number,
+	warnAtPercent: number,
+	options: { readonly warned?: boolean } = {},
+): UsageBudgetCheck {
+	const report: UsageBudgetReport = { dimension, reading, ceiling, percent: ceiling ? (reading / ceiling) * 100 : 0 };
+	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
+	const warning = options.warned !== true && warnAtPercent > 0 && report.percent >= warnAtPercent;
 	return { kind: "continue", report, warning };
 }
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */

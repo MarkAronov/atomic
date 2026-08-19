@@ -1,4 +1,5 @@
 import { Value } from "typebox/value";
+import { isModelAttempts } from "../durable/dbos-envelope.js";
 import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
@@ -83,6 +84,7 @@ export function _buildStageSnapshots(
 			const skippedReason = entry.payload.skippedReason;
 			const sessionId = entry.payload.sessionId;
 			const sessionFile = entry.payload.sessionFile;
+			const modelAttempts = entry.payload.modelAttempts;
 			if (typeof stageId !== "string") continue;
 			endedStages.add(stageId);
 			const snap = stageMap.get(stageId);
@@ -102,6 +104,7 @@ export function _buildStageSnapshots(
 				if (typeof skippedReason === "string") snap.skippedReason = skippedReason;
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
+				if (isModelAttempts(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
 				Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
 			}
 		}
@@ -197,25 +200,58 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 function restoreBudgetSnapshot(value: unknown): RunBudgetSnapshot | undefined {
 	if (!isRecord(value)) return undefined;
 	const maxDurationMs = numericDuration(value.maxDurationMs);
+	const maxTokens = numericDuration(value.maxTokens),
+		maxCost = numericDuration(value.maxCost);
 	const warnAtPercent = numericDuration(value.warnAtPercent);
-	return maxDurationMs === undefined || warnAtPercent === undefined ? undefined : { maxDurationMs, warnAtPercent };
+	if (maxDurationMs === undefined || warnAtPercent === undefined) return undefined;
+	return {
+		maxDurationMs,
+		...(maxTokens !== undefined ? { maxTokens } : {}),
+		...(maxCost !== undefined ? { maxCost } : {}),
+		warnAtPercent,
+	};
 }
-function restoreBudgetState(value: unknown): RunBudgetState | undefined {
+export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	if (!isRecord(value)) return undefined;
-	const duration = isRecord(value.duration) ? value.duration : {};
-	const report = (candidate: Record<string, unknown>): RunBudgetState["duration"] | undefined => {
+	const report = (candidate: unknown, dimension: "duration" | "tokens" | "cost") => {
+		if (!isRecord(candidate) || (dimension !== "duration" && dimension !== "tokens" && dimension !== "cost"))
+			return undefined;
 		const reading = numericDuration(candidate.reading);
 		const ceiling = numericDuration(candidate.ceiling);
 		const percent = numericDuration(candidate.percent);
 		return reading === undefined || ceiling === undefined || percent === undefined
 			? undefined
-			: { dimension: "duration", reading, ceiling, percent };
+			: { dimension, reading, ceiling, percent };
 	};
-	const restoredDuration = report(duration);
-	const warning = isRecord(value.warning) ? report(value.warning) : undefined;
+	const duration = report(value.duration, "duration") as RunBudgetState["duration"];
+	const tokens = report(value.tokens, "tokens") as RunBudgetState["tokens"];
+	const cost = report(value.cost, "cost") as RunBudgetState["cost"];
+	const warning = isRecord(value.warning)
+		? report(value.warning, value.warning.dimension as "duration" | "tokens" | "cost")
+		: undefined;
+	const warnings: Partial<Record<"duration" | "tokens" | "cost", RunBudgetState["warning"]>> = {};
+	const warningValues = isRecord(value.warnings) ? value.warnings : undefined;
+	for (const dimension of ["duration", "tokens", "cost"] as const) {
+		const restored = report(warningValues?.[dimension], dimension);
+		if (restored !== undefined) warnings[dimension] = restored;
+	}
+	const requiredNumbers = (candidate: unknown, fields: readonly string[]): boolean =>
+		isRecord(candidate) && fields.every((field) => numericDuration(candidate[field]) !== undefined);
+	const accountingValue = value.accounting;
+	const accounting =
+		isRecord(accountingValue) &&
+		requiredNumbers(accountingValue, ["tokens", "cost"]) &&
+		requiredNumbers(accountingValue.baseline, ["input", "output", "cacheRead", "cacheWrite", "cost"]) &&
+		requiredNumbers(accountingValue.perCounter, ["input", "output", "cacheRead", "cacheWrite"])
+			? (accountingValue as RunBudgetState["accounting"])
+			: undefined;
 	const state = {
-		...(restoredDuration !== undefined ? { duration: restoredDuration } : {}),
+		...(duration !== undefined ? { duration } : {}),
+		...(tokens !== undefined ? { tokens } : {}),
+		...(cost !== undefined ? { cost } : {}),
 		...(warning !== undefined ? { warning } : {}),
+		...(Object.keys(warnings).length > 0 ? { warnings } : {}),
+		...(accounting !== undefined ? { accounting } : {}),
 		...(value.warned === true ? { warned: true } : {}),
 		...(value.wrapUpDelivered === true ? { wrapUpDelivered: true } : {}),
 		...(value.wrapUpCompleted === true ? { wrapUpCompleted: true } : {}),

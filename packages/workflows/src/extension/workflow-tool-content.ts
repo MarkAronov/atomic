@@ -43,11 +43,14 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 	const tools = run.tools ?? [];
 	const toolHint =
 		tools.length > 0 ? `tools: ${tools.map((tool) => `${tool.name} (${tool.status})`).join(", ")}` : undefined;
-	const durationBudget = run.budgetState?.duration;
 	const budgetHint =
-		durationBudget === undefined
-			? undefined
-			: `budget: ${durationBudget.reading}/${durationBudget.ceiling}ms (${durationBudget.percent.toFixed(1)}%)`;
+		[run.budgetState?.duration, run.budgetState?.tokens, run.budgetState?.cost]
+			.filter((budget): budget is NonNullable<typeof budget> => budget !== undefined)
+			.map(
+				(budget) =>
+					`${budget.dimension === "duration" ? "budget" : budget.dimension}: ${budget.reading}/${budget.ceiling}${budget.dimension === "duration" ? "ms" : ""} (${budget.percent.toFixed(1)}%)`,
+			)
+			.join(", ") || undefined;
 	let primary: string | undefined;
 	if (run.awaitingInputCount > 0) {
 		const stages = run.awaitingInput

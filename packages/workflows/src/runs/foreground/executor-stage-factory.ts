@@ -352,6 +352,7 @@ export function createWorkflowStageFactory(input: {
 					...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
 					...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
 					...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
+					...(stageSnapshot.modelAttempts !== undefined ? { modelAttempts: stageSnapshot.modelAttempts } : {}),
 					...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed"
 						? { summary: stageSnapshot.result }
 						: {}),
