@@ -1,20 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
-<<<<<<< HEAD
 import type { WorkflowRunContext, WorkflowSerializableValue, WorkflowTaskResult } from "../src/shared/types.js";
-=======
-import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
->>>>>>> origin/main
 import {
 	renderConsolidatorPrompt,
 	renderRepairPrompt,
 	renderWorkerPrompt,
 } from "./adversarial-verification-prompts.js";
-<<<<<<< HEAD
-=======
-import { stableArtifactRoot } from "./pattern-artifact-root.js";
->>>>>>> origin/main
 import {
 	build_scoring_prompt,
 	scoring_prompt_reads,
@@ -241,7 +233,6 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 	await writeFile(criteriaPath, renderCriteriaMarkdown(resolvedCriteria));
 	await ctx.task("worker", { prompt: renderWorkerPrompt(ctx.inputs.task), context: "fresh", output: candidatePath, outputMode: "file-only" });
 
-<<<<<<< HEAD
 	const verifierCount = ctx.inputs.verifier_count ?? 3;
 	const maxRepairs = ctx.inputs.max_repairs ?? 2;
 	const acceptMean = ctx.inputs.accept_mean ?? 14;
@@ -249,25 +240,11 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 	const expectedCount = resolvedCriteria.criteria.length * verifierCount;
 	let repairsCompleted = 0;
 	let consecutiveIndeterminate = 0;
-	let finalDecision: VerificationDecision = { kind: "indeterminate", missing: expectedCount };
+	let finalDecision: VerificationDecision;
 	let finalMean = 0;
-	let scoreTablePath = join(root, "verification-summary-0.json");
-	let reviewReportPath = join(root, "review-0.json");
+	let scoreTablePath: string;
+	let reviewReportPath: string;
 	let remainingWork: string[] = [];
-=======
-  const verifierCount = ctx.inputs.verifier_count ?? 3;
-  const maxRepairs = ctx.inputs.max_repairs ?? 2;
-  const acceptMean = ctx.inputs.accept_mean ?? 14;
-  const reaskLimit = Math.max(0, Math.floor(ctx.inputs.reask_limit ?? 1));
-  const expectedCount = resolvedCriteria.criteria.length * verifierCount;
-  let repairsCompleted = 0;
-  let consecutiveIndeterminate = 0;
-  let finalDecision: VerificationDecision;
-  let finalMean = 0;
-  let scoreTablePath: string;
-  let reviewReportPath: string;
-  let remainingWork: string[] = [];
->>>>>>> origin/main
 
 	for (let round = 0; ; round += 1) {
 		const candidateBody = await readFile(candidatePath, "utf8");
@@ -337,7 +314,6 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 			if (pending.length === 0) break;
 		}
 
-<<<<<<< HEAD
 		const validReportsByCell = new Map(validResults.map((item) => [item.cell.name, item.report]));
 		const scoreReports = cells.flatMap((cell) => {
 			const report = validReportsByCell.get(cell.name);
@@ -357,20 +333,6 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
 			decision,
 			usage: fold_usage(roundResults),
 		};
-=======
-    const validReportsByCell = new Map(validResults.map((item) => [item.cell.name, item.report]));
-    const scoreReports = cells.flatMap((cell) => {
-      const report = validReportsByCell.get(cell.name);
-      return report === undefined ? [] : [report];
-    });
-    const scores = scoreReports.map(toCriterionScore);
-    const roundResult = { scores, invalidCount, expectedCount };
-    const decision = decide_verification(roundResult, { acceptMean, quorumFraction: QUORUM_FRACTION });
-    finalDecision = decision;
-    finalMean = meanScore(scoreReports);
-    scoreTablePath = join(root, `verification-summary-${round}.json`);
-    reviewReportPath = join(root, `review-${round}.json`);
->>>>>>> origin/main
 
 		if (decision.kind === "accept") {
 			remainingWork = [];
