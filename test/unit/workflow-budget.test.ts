@@ -78,6 +78,7 @@ interface BudgetOutcome {
 	readonly status?: string;
 	readonly dimension?: string;
 	readonly ceiling?: number;
+	readonly reading?: number;
 	readonly frontierStage?: string;
 	readonly wrapUpSummary?: string;
 	readonly wrapUpUsage?: WorkflowModelUsage;
@@ -451,6 +452,63 @@ describe("budget executor boundaries", () => {
 		assert.equal(childRun?.budgetState?.wrapUpCompleted, true);
 	});
 
+	test("budget root scope stops an unbudgeted child at an internal boundary", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const childStages: string[] = [];
+		const child = workflow({
+			name: "budget-root-scope-child",
+			description: "",
+			inputs: {},
+			outputs: { value: Type.String() },
+			run: async (ctx) => {
+				let value = "";
+				for (let index = 0; index < 4; index++) {
+					value = await ctx.stage(`child-${index}`).complete(`child work ${index}`);
+					childStages.push(value);
+				}
+				return { value };
+			},
+		});
+		const parent = workflow({
+			name: "budget-root-scope-parent",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child, { stageName: "child-boundary" });
+				return { result: childResult.status };
+			},
+		});
+		const store = createStore();
+		const result = await run(
+			parent,
+			{},
+			{
+				store,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					complete: {
+						complete: async (text) => {
+							vi.advanceTimersByTime(4);
+							return text;
+						},
+					},
+					prompt: { prompt: async () => "root wrap-up" },
+				},
+			},
+		);
+		const rootRun = store.runs().find((candidate) => candidate.name === parent.name);
+		const childRun = store.runs().find((candidate) => candidate.name === child.name);
+		const outcome = budgetOutcome(result.result);
+		assert.equal(outcome?.status, "budget_exceeded");
+		assert.equal(outcome?.ceiling, 10);
+		assert.ok((outcome?.reading ?? 0) < 20);
+		assert.ok(childStages.length < 4);
+		assert.equal(rootRun?.budgetState?.systemOwnedStop, true);
+		assert.equal(childRun?.budget, undefined);
+	});
+
 	test("root budget wins simultaneous child exhaustion and prevents parent continuation", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
@@ -501,6 +559,9 @@ describe("budget executor boundaries", () => {
 		const rootRun = store.runs().find((candidate) => candidate.name === parent.name);
 		assert.equal(rootRun?.budgetState?.wrapUpDelivered, undefined);
 		assert.equal(rootRun?.budgetState?.wrapUpCompleted, undefined);
+		const childRun = store.runs().find((candidate) => candidate.name === child.name);
+		assert.equal(childRun?.result?.status, "budget_exceeded");
+		assert.equal(childRun?.budgetState?.wrapUpCompleted, undefined);
 		assert.equal(
 			rootRun?.stages.some((stage) => stage.name === "must-not-run"),
 			false,
@@ -979,8 +1040,8 @@ describe("budget executor boundaries", () => {
 					},
 					prompt: {
 						prompt: async () => {
-							prompts.push("unexpected");
-							return "must not be issued";
+							prompts.push("wrap-up");
+							return "wrap-up from before dispatch";
 						},
 					},
 				},
@@ -998,10 +1059,10 @@ describe("budget executor boundaries", () => {
 		const outcome = budgetOutcome(result.result);
 		assert.equal(outcome?.status, "budget_exceeded");
 		assert.equal(outcome?.frontierStage, "live-frontier");
-		assert.equal(outcome?.wrapUpSummary, undefined);
-		assert.equal(prompts.length, 0);
-		assert.equal(snapshot?.budgetState?.wrapUpDelivered, undefined);
-		assert.equal(snapshot?.budgetState?.wrapUpCompleted, undefined);
+		assert.equal(outcome?.wrapUpSummary, "wrap-up from before dispatch");
+		assert.equal(prompts.length, 1);
+		assert.equal(snapshot?.budgetState?.wrapUpDelivered, true);
+		assert.equal(snapshot?.budgetState?.wrapUpCompleted, true);
 		assert.equal(
 			snapshot?.stages.some((stage) => stage.name === "must-not-exist"),
 			false,
