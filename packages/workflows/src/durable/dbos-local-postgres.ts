@@ -11,7 +11,7 @@
  *      binaries are unavailable for this platform and Docker exists.
  */
 
-import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL, ensureEmbeddedDbosPostgres, shutdownEmbeddedDbosPostgres } from "./dbos-embedded-postgres.js";
+import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL, ensureEmbeddedDbosPostgres } from "./dbos-embedded-postgres.js";
 import { commandFailureDetail, delay, runLocalCommand, tcpReachable } from "./local-command.js";
 
 const DOCKER_CONTAINER = "dbos-db";
@@ -42,13 +42,6 @@ export function resolveDbosSystemDatabaseUrl(): Promise<string | undefined> {
 /** Re-ensure the previously resolved local database (launch-retry safety net). */
 export async function provisionResolvedLocalDbos(): Promise<void> {
 	await (resolvedProvider ?? embeddedProvider)();
-}
-
-/** Stop the embedded provider only when this process started it. */
-export async function shutdownResolvedLocalDbos(): Promise<void> {
-	if (resolvedProvider !== embeddedProvider) return;
-	resolvedProvider = undefined;
-	await shutdownEmbeddedDbosPostgres();
 }
 
 export function shouldProvisionLocalDbos(error: unknown): boolean {

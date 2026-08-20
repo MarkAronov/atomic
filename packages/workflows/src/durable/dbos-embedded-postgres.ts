@@ -135,16 +135,13 @@ export async function shutdownEmbeddedDbosPostgres(): Promise<void> {
 
 async function clusterStillRunning(dataDir: string, expectedPid: number): Promise<boolean> {
 	const pid = readPostgresPid(dataDir);
-	if (pid === expectedPid) {
-		try {
-			process.kill(expectedPid, 0);
-			return true;
-		} catch {
-			// Fall through to the listener check; the pid may have exited while
-			// the socket is still draining.
-		}
+	if (pid !== expectedPid) return false;
+	try {
+		process.kill(expectedPid, 0);
+		return true;
+	} catch {
+		return false;
 	}
-	return await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT);
 }
 
 function readPostgresPid(dataDir: string): number | undefined {

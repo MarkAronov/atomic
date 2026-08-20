@@ -3,7 +3,6 @@ import {
 	provisionResolvedLocalDbos,
 	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
-	shutdownResolvedLocalDbos,
 } from "./dbos-local-postgres.js";
 import { getDbosProcessOwner, resetDbosProcessOwner } from "./dbos-process-owner.js";
 import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
@@ -152,7 +151,6 @@ export async function shutdownDbos(): Promise<void> {
 		slot.state = "shutting_down";
 		await durability.backend.flush();
 		await durability.shutdown();
-		await shutdownResolvedLocalDbos();
 		slot.state = "shut_down";
 	})().catch(async (error: unknown) => {
 		slot.failure = await durabilityFailure("shutdown", error);
