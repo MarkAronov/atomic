@@ -39,7 +39,11 @@ import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
-import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+import {
+	buildCopilotDynamicHeaders,
+	hasCopilotVisionInput,
+	preserveCopilotIntegrationHeader,
+} from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -539,10 +543,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				let copilotDynamicHeaders: Record<string, string> | undefined;
 				if (model.provider === "github-copilot") {
 					const hasImages = hasCopilotVisionInput(context.messages);
-					copilotDynamicHeaders = buildCopilotDynamicHeaders({
-						messages: context.messages,
-						hasImages,
-					});
+					copilotDynamicHeaders = preserveCopilotIntegrationHeader(
+						model.headers,
+						buildCopilotDynamicHeaders({
+							messages: context.messages,
+							hasImages,
+							apiKey,
+						}),
+					);
 				}
 
 				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);

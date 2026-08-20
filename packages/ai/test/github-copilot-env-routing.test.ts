@@ -4,7 +4,7 @@ import {
 	type CopilotRoutingEnv,
 	resolveCopilotEnvBaseUrl,
 	withCopilotEnvBaseUrl,
-} from "../src/core/copilot-env-routing.ts";
+} from "../src/providers/github-copilot-env.ts";
 
 const INDIVIDUAL = "https://api.individual.githubcopilot.com";
 const PUBLIC_HUB = "https://api.githubcopilot.com";

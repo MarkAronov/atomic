@@ -443,6 +443,7 @@ function getAliases(): Record<string, string> {
 	const piAiCodexResponsesEntry = resolveWorkspaceOrImport("ai/dist/api/openai-codex-responses.js", "@bastani/pi-ai");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
+	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
 	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/cloudflare-gateway-binding.js",
 		"@bastani/pi-ai",
@@ -457,6 +458,7 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@bastani/pi-ai/oauth": piAiOauthEntry,
 		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
+		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
 		"@bastani/pi-ai/compat": piAiEntry,
 		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
 		"@bastani/pi-ai": piAiEntry,
