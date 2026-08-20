@@ -185,6 +185,23 @@ describe.each(["anthropic-messages", "openai-completions", "openai-responses"] a
 			expect(headerValue(headers, "Copilot-Integration-Id")).toBe("model-override");
 		});
 
+		// Catalog and models.json headers are indistinguishable by provenance here,
+		// so the builtin default is treated as replaceable.
+		test("replaces a provider integration id that matches the builtin vscode-chat default", async () => {
+			const headers = await captureRequestHeaders(api, RAW_TOKEN, undefined, "vscode-chat");
+			expect(headerValue(headers, "Copilot-Integration-Id")).toBe("copilot-developer-cli");
+		});
+
+		test("per-request integration id overrides a provider vscode-chat default", async () => {
+			const headers = await captureRequestHeaders(
+				api,
+				RAW_TOKEN,
+				{ "Copilot-Integration-Id": "request-override" },
+				"vscode-chat",
+			);
+			expect(headerValue(headers, "Copilot-Integration-Id")).toBe("request-override");
+		});
+
 		test("does not infer a raw token when authentication is supplied only by headers", async () => {
 			const headers = await captureRequestHeaders(api, undefined, { Authorization: "Bearer supplied" });
 			expect(headerValue(headers, "Copilot-Integration-Id")).toBe("vscode-chat");
