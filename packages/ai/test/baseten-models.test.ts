@@ -31,6 +31,7 @@ describe("Baseten models", () => {
 				xhigh: null,
 				max: "max",
 			},
+			input: ["text"],
 			contextWindow: 1048576,
 			maxTokens: 262144,
 			cost: {
@@ -51,7 +52,6 @@ describe("Baseten models", () => {
 				chatTemplateArgs: { enable_thinking: { $var: "thinking.enabled" } },
 			},
 		});
-		expect(model?.input).toContain("text");
 	});
 
 	it("models Kimi K2.6 reasoning as an explicit off/on toggle", async () => {
