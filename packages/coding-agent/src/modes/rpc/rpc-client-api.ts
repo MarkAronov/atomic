@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { Credential } from "@bastani/pi-ai";
+import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Credential } from "@earendil-works/pi-ai";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";

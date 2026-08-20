@@ -1,4 +1,4 @@
-import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
+import type { Api, Model, ProviderHeaders } from "@bastani/pi-ai/compat";
 import { APP_NAME } from "../config.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import { isInstallTelemetryEnabled } from "./telemetry.ts";

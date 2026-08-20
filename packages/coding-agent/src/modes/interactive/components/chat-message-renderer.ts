@@ -1,5 +1,5 @@
+import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { parseSkillBlock } from "../../../core/agent-session.ts";

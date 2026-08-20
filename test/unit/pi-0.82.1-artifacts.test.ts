@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { test } from "vitest";
 import {
 	assertPiRuntimeAssets,
+	expectedPiAiPackage,
 	expectedPiVersion,
 } from "../../packages/coding-agent/scripts/assert-pi-runtime-assets.js";
 import { moduleDir, readJson, readText } from "../helpers/runtime.js";
@@ -13,6 +14,7 @@ import { moduleDir, readJson, readText } from "../helpers/runtime.js";
  * purpose. These are the two shapes this file actually reads.
  */
 interface Manifest {
+	name?: string;
 	version?: string;
 	scripts: Record<string, string>;
 	overrides?: Record<string, string>;
@@ -32,7 +34,7 @@ const distBuiltinDir = join(root, "packages/coding-agent/dist/builtin");
 const distAppPath = join(root, "packages/coding-agent/dist/app.js");
 /**
  * One constant drives the whole version contract: the runtime-asset assertion
- * (which reads the installed `@earendil-works/pi-ai`), the lockfile entries, and
+ * (which reads the installed `@bastani/pi-ai`), the lockfile entries, and
  * the workspace manifest ranges below.
  */
 const piVersion = expectedPiVersion;
@@ -86,15 +88,15 @@ const declarations = new Map([
 		"packages/coding-agent",
 		[
 			"@earendil-works/pi-agent-core",
-			"@earendil-works/pi-ai",
+			"@bastani/pi-ai",
 			"@earendil-works/pi-client",
 			"@earendil-works/pi-protocol",
 			"@earendil-works/pi-tui",
 		],
 	],
 	["packages/intercom", ["@earendil-works/pi-tui"]],
-	["packages/mcp", ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]],
-	["packages/subagents", ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]],
+	["packages/mcp", ["@bastani/pi-ai", "@earendil-works/pi-tui"]],
+	["packages/subagents", ["@earendil-works/pi-agent-core", "@bastani/pi-ai", "@earendil-works/pi-tui"]],
 	["packages/web-access", ["@earendil-works/pi-tui"]],
 	["packages/workflows", ["@earendil-works/pi-tui"]],
 ]);
@@ -120,16 +122,20 @@ test("Pi v0.84.2 source declarations and lockfiles stay synchronized", async () 
 		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
 		assert.equal(manifest.version, "0.0.0");
 		for (const name of names) {
-			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], `^${piVersion}`);
+			const range =
+				name === expectedPiAiPackage ? (workspace === "packages/coding-agent" ? "0.0.0" : "*") : `^${piVersion}`;
+			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], range);
 			declarationCount++;
 		}
 	}
 	assert.equal(declarationCount, 13);
 	assert.equal(existsSync(join(root, "packages/cursor")), false, "removed Cursor workspace must not be recreated");
-	for (const workspace of workspacePaths) {
+	for (const workspace of [...workspacePaths, "packages/ai"]) {
 		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
 		assert.equal(manifest.version, "0.0.0", workspace);
 	}
+	const piAiManifest = await readJson<Manifest>(join(root, "packages/ai/package.json"));
+	assert.equal(piAiManifest.name, expectedPiAiPackage);
 
 	// bun.lock was deleted when install moved to `npm ci`. package-lock.json is
 	// now the single verified lockfile: `npm ci` refuses to install when it and
@@ -150,6 +156,7 @@ test("Pi v0.84.2 source declarations and lockfiles stay synchronized", async () 
 			`^${piVersion}`,
 		);
 	}
+	assert.equal(npmLock.packages["node_modules/@bastani/pi-ai"]?.resolved, "packages/ai");
 });
 
 test("protobufjs 7.6.5 is pinned in source and every packaged lock", async () => {

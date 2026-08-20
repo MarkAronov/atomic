@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type FauxResponseFactory, fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
+import { type FauxResponseFactory, fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import type { EditorTheme } from "@earendil-works/pi-tui";
 import { beforeAll, test } from "vitest";
 import { ChatSessionHost, type ChatSessionHostStyle } from "../../packages/coding-agent/src/index.ts";

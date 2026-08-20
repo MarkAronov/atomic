@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";

@@ -59,7 +59,7 @@ On the wire, Atomic narrows `message_update`: every record carries the streaming
 
 ## Message Types
 
-Base messages come from `@earendil-works/pi-ai` (installed as an Atomic dependency):
+Base messages come from `@bastani/pi-ai` (installed as an Atomic dependency):
 - `UserMessage`
 - `AssistantMessage`
 - `ToolResultMessage`

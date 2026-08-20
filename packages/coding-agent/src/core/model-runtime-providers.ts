@@ -1,5 +1,5 @@
-import type { Provider } from "@earendil-works/pi-ai";
-import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
+import type { Provider } from "@bastani/pi-ai";
+import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
 import { type CopilotRoutingEnv, withCopilotEnvBaseUrl } from "./copilot-env-routing.ts";
 import type { ModelConfig } from "./model-config.ts";
 

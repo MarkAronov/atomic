@@ -1,4 +1,4 @@
-import type { AssistantMessage, ImageContent, ToolResultMessage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";

@@ -1,5 +1,5 @@
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "./agent-session.ts";
 import type {
 	LoadExtensionsResult,

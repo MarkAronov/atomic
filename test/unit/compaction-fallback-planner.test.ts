@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import {

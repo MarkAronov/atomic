@@ -1,4 +1,4 @@
-import type { CredentialStore, ModelsStore } from "@earendil-works/pi-ai";
+import type { CredentialStore, ModelsStore } from "@bastani/pi-ai";
 
 export interface CreateModelRuntimeOptions {
 	/** Credential storage. Defaults to the file at authPath. */

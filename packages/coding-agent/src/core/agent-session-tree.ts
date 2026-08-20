@@ -125,7 +125,7 @@ export async function navigateTree(
 		// Run default summarizer if needed
 		let summaryText: string | undefined;
 		let summaryDetails: unknown;
-		let summaryUsage: import("@earendil-works/pi-ai/compat").Usage | undefined;
+		let summaryUsage: import("@bastani/pi-ai/compat").Usage | undefined;
 		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 			const model = this.model!;
 			const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);

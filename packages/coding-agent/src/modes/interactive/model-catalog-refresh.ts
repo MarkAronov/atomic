@@ -1,4 +1,4 @@
-import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/pi-ai";
+import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/pi-ai";
 import type { ModelRuntime } from "../../core/model-runtime.js";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 

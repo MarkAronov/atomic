@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
+import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { test } from "vitest";
 import {
 	_checkCompaction,

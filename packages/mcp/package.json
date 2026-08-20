@@ -32,7 +32,7 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-ai": "^0.84.2",
+    "@bastani/pi-ai": "*",
     "@earendil-works/pi-tui": "^0.84.2",
     "zod": "^3.25.0 || ^4.0.0"
   },
@@ -40,7 +40,7 @@
     "@bastani/atomic": {
       "optional": true
     },
-    "@earendil-works/pi-ai": {
+    "@bastani/pi-ai": {
       "optional": true
     },
     "@earendil-works/pi-tui": {

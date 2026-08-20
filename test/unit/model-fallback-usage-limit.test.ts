@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
 import { describe, test } from "vitest";
 import { _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import {

@@ -1,5 +1,5 @@
+import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 
 function findLatestCompactionBoundary(entries: readonly SessionEntry[]): CompactionEntry | undefined {

@@ -1,4 +1,3 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
@@ -6,7 +5,8 @@ import {
 	type Model,
 	registerApiProvider,
 	unregisterApiProviders,
-} from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai/compat";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { generateBranchSummary, prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
 import { serializeConversation } from "../src/core/compaction/utils.ts";

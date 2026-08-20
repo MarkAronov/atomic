@@ -1,4 +1,4 @@
-import { StringEnum as PiStringEnum } from "@earendil-works/pi-ai/compat";
+import { StringEnum as PiStringEnum } from "@bastani/pi-ai/compat";
 import type { TUnsafe } from "typebox";
 
 export interface StringEnumOptions<TValue extends string> {

@@ -1,5 +1,5 @@
+import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionSummaryEntry } from "../../src/core/session-manager.ts";
 import { createHarness, type Harness } from "./harness.ts";

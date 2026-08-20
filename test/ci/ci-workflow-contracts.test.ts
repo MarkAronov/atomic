@@ -353,7 +353,7 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
 	assert.match(workflow, /Failed to load extension/);
 	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
-	assert.match(workflow, /test .* = 10/u);
+	assert.match(workflow, /test .* = 11/u);
 	assert.match(workflow, /Build Linux x64 musl archive[\s\S]*--platform linux-x64-musl/u);
 	assert.match(workflow, /apk add --no-cache libgcc libstdc\+\+/u);
 	assert.doesNotMatch(

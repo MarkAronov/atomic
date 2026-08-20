@@ -91,7 +91,7 @@ class Atomic(BaseInstalledAgent):
         # alongside the _PROVIDER_DOMAINS entry if HF inference is needed.
         # "huggingface": ("HF_TOKEN",),
         # Kimi/Moonshot and ZAI env keys mirror pi-ai's provider registry
-        # (getApiKeyEnvVars in @earendil-works/pi-ai env-api-keys).
+        # (getApiKeyEnvVars in @bastani/pi-ai env-api-keys).
         "kimi-coding": ("KIMI_API_KEY",),
         "mistral": ("MISTRAL_API_KEY",),
         "moonshotai": ("MOONSHOT_API_KEY",),

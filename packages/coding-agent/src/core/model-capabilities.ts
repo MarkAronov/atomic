@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 
 /** Atomic compatibility alias accepted alongside pi-ai's canonical grammar capability. */
 export interface GrammarToolCapabilityAlias {

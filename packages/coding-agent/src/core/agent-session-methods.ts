@@ -1,3 +1,5 @@
+import type { ProviderHeaders } from "@bastani/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@bastani/pi-ai/compat";
 import type {
 	Agent,
 	AgentEvent,
@@ -6,8 +8,6 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type {
 	AgentSessionEvent,

@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import { APP_TITLE } from "../config.ts";
@@ -424,7 +424,7 @@ export class SessionManager {
 		summary: string,
 		details?: unknown,
 		fromHook?: boolean,
-		usage?: import("@earendil-works/pi-ai/compat").Usage,
+		usage?: import("@bastani/pi-ai/compat").Usage,
 	): string {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);

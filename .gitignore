@@ -1,4 +1,5 @@
 node_modules/
+.artifacts/
 .atomic-test-fixtures/
 dist/
 target/

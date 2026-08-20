@@ -12,8 +12,8 @@
  * borrowing never touches the main chat's `_fallbackAttemptedKeys`.
  */
 
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { type FallbackModelLookup, fallbackKey, resolveFallbackModel } from "../fallback-models.ts";
 import type { BorrowedPlanner, PlannerAuth } from "./compaction-types.js";
 import { resolvePlannerRequest } from "./range-planner.js";

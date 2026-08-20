@@ -1,4 +1,4 @@
-import type { Transport } from "@earendil-works/pi-ai/compat";
+import type { Transport } from "@bastani/pi-ai/compat";
 import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode } from "../../../core/settings-manager.ts";

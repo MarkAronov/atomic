@@ -126,7 +126,7 @@ cp permission-gate.ts ~/.atomic/agent/extensions/
 | Extension | Description |
 |-----------|-------------|
 | `custom-provider-anthropic/` | Custom Anthropic provider with OAuth support and custom streaming implementation |
-| `custom-provider-gitlab-duo/` | GitLab Duo provider using `@earendil-works/pi-ai`'s built-in Anthropic/OpenAI streaming via proxy |
+| `custom-provider-gitlab-duo/` | GitLab Duo provider using `@bastani/pi-ai`'s built-in Anthropic/OpenAI streaming via proxy |
 
 ### External Dependencies
 

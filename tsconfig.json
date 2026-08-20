@@ -45,6 +45,7 @@
     "exclude": [
         "node_modules",
         "packages/coding-agent",
+        "packages/ai",
         "packages/subagents",
         "packages/mcp",
         "packages/web-access",

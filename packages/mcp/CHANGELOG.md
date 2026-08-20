@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+
 ## [0.9.14] - 2026-08-19
 
 Cumulative release of the `0.9.14-alpha.3` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

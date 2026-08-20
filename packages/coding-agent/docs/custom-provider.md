@@ -251,7 +251,7 @@ pi.registerProvider("custom-api", {
 Add OAuth/SSO authentication that integrates with `/login`:
 
 ```typescript
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/pi-ai";
 
 pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
@@ -377,7 +377,7 @@ For providers with non-standard APIs, implement `streamSimple`. Study the existi
 
 **Reference implementations:**
 
-Atomic uses provider implementations from its installed `@earendil-works/pi-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@earendil-works/pi-ai/dist/api/`, including:
+Atomic uses provider implementations from its installed `@bastani/pi-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@bastani/pi-ai/dist/api/`, including:
 - `anthropic-messages.d.ts` / `anthropic-messages.js` - Anthropic Messages API
 - `mistral-conversations.d.ts` / `mistral-conversations.js` - Mistral Conversations/Chat streaming
 - `openai-completions.d.ts` / `openai-completions.js` - OpenAI Chat Completions
@@ -399,7 +399,7 @@ import {
   type SimpleStreamOptions,
   calculateCost,
   createAssistantMessageEventStream,
-} from "@earendil-works/pi-ai";
+} from "@bastani/pi-ai";
 
 function streamMyProvider(
   model: Model<any>,
@@ -581,7 +581,7 @@ pi.registerProvider("my-provider", {
 
 ## Testing Your Implementation
 
-Test your provider against focused tests that mirror Atomic's provider contract. If you are working from the source checkout, note that provider internals come from `@earendil-works/pi-ai`; this monorepo does not contain a `packages/ai/test` directory to copy from directly:
+Test your provider against focused tests that mirror Atomic's provider contract. If you are working from the source checkout, note that provider internals come from `@bastani/pi-ai`; this monorepo does not contain a `packages/ai/test` directory to copy from directly:
 
 | Test | Purpose |
 |------|---------|

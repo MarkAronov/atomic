@@ -3,8 +3,8 @@
  */
 
 import type { SessionStats } from "@bastani/atomic";
+import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai/compat";
 import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-nested.js";
 
 export interface MaxOutputConfig {

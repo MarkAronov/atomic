@@ -7,8 +7,8 @@
  * `_trySwitchToFallbackModel`, which is main-chat turn machinery.
  */
 
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
 const THINKING_SUFFIXES = [
 	"off",

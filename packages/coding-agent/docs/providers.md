@@ -157,7 +157,7 @@ Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Matc
 
 Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`); the generated catalogs expose reasoning without a thinking-level map, so built-in chains use the supported `:high` suffix rather than inventing distinct `:xhigh` or `:max` tiers. OpenRouter currently exposes `z-ai/glm-5.2` but not `z-ai/glm-5.3`, so Atomic does not ship an unavailable OpenRouter GLM-5.3 fallback. Baseten also has no GLM-5.3 catalog entry, so its documented default remains `zai-org/GLM-5.2` and its catalog supplies the provider-specific thinking levels. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider.
 
-Reference for environment variables and `auth.json` keys: `findEnvKeys()` / `getEnvApiKey()` in the installed `@earendil-works/pi-ai` dependency (`node_modules/@earendil-works/pi-ai/dist/env-api-keys.d.ts`). The private provider map those functions use is in `node_modules/@earendil-works/pi-ai/dist/env-api-keys.js`; Atomic does not include a separate `packages/ai` source directory in this monorepo.
+Reference for environment variables and `auth.json` keys: `findEnvKeys()` / `getEnvApiKey()` in the installed `@bastani/pi-ai` dependency (`node_modules/@bastani/pi-ai/dist/env-api-keys.d.ts`). The private provider map those functions use is in `node_modules/@bastani/pi-ai/dist/env-api-keys.js`; Atomic does not include a separate `packages/ai` source directory in this monorepo.
 
 #### Auth File
 
@@ -349,7 +349,7 @@ import {
   DefaultResourceLoader,
   type AiGatewayBinding,
 } from "@bastani/atomic";
-import { streamSimple as anthropicStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { streamSimple as anthropicStreamSimple } from "@bastani/pi-ai/api/anthropic-messages";
 
 // `AI` is the Workers AI binding; `AiGatewayBinding` is the structural type for it,
 // so the snippet needs no `@cloudflare/workers-types` dependency.
@@ -410,7 +410,7 @@ export default {
 };
 ```
 
-Every request under the gateway prefix becomes one `env.AI.gateway(id).run({ provider, endpoint, headers, query })` call in the provider's native wire format, so streaming behaves identically to the HTTPS route. The transport serves only its gateway-bound client: URLs outside the prefix, and in-prefix requests the universal endpoint cannot express (non-POST, non-JSON body), reject with a descriptive error rather than being forwarded. Repeat the same pattern with `@earendil-works/pi-ai/api/openai-completions` (or `openai-responses`) to cover the `/openai` and `/compat` passthrough models of the same provider.
+Every request under the gateway prefix becomes one `env.AI.gateway(id).run({ provider, endpoint, headers, query })` call in the provider's native wire format, so streaming behaves identically to the HTTPS route. The transport serves only its gateway-bound client: URLs outside the prefix, and in-prefix requests the universal endpoint cannot express (non-POST, non-JSON body), reject with a descriptive error rather than being forwarded. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`) to cover the `/openai` and `/compat` passthrough models of the same provider.
 
 ### Cloudflare Workers AI
 

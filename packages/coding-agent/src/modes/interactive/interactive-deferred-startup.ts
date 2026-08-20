@@ -1,4 +1,4 @@
-import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { modelsAreEqual } from "@bastani/pi-ai/compat";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Container,

@@ -1,4 +1,4 @@
-import type { Api, AuthResult, Model } from "@earendil-works/pi-ai";
+import type { Api, AuthResult, Model } from "@bastani/pi-ai";
 import type { ModelConfig } from "./model-config.ts";
 import { mergeHeaders } from "./model-runtime-streaming.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";

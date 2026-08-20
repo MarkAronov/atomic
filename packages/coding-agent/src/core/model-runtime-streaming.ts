@@ -21,7 +21,7 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@bastani/pi-ai";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
 export function mergeHeaders(

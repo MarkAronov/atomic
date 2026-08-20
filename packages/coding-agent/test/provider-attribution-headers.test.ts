@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
+import type { Api, Model, ProviderHeaders } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mergeProviderAttributionHeaders } from "../src/core/provider-attribution.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

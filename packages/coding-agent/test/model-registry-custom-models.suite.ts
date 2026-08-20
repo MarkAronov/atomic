@@ -1,8 +1,4 @@
-import type {
-	AnthropicMessagesCompat,
-	OpenAICompletionsCompat,
-	OpenAIResponsesCompat,
-} from "@earendil-works/pi-ai/compat";
+import type { AnthropicMessagesCompat, OpenAICompletionsCompat, OpenAIResponsesCompat } from "@bastani/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";

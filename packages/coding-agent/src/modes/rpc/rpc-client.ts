@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { ImageContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { BashOutputChannel } from "../../core/tools/bash.ts";

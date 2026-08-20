@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export type { AgentMessage } from "@earendil-works/pi-agent-core";
 export {
 	type Api,
 	type AssistantMessage,
@@ -11,7 +10,8 @@ export {
 	type Message,
 	type Model,
 	type OAuthSelectPrompt,
-} from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai/compat";
+export type { AgentMessage } from "@earendil-works/pi-agent-core";
 export { default as chalk } from "chalk";
 export { fs, os, path };
 export type OAuthProviderId = string;

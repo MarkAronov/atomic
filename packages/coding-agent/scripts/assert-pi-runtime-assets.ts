@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-/** The single Pi version this tree is contracted to; `test/unit/pi-0.82.1-artifacts.test.ts` reads it too. */
+/** Remaining registry Pi packages (`pi-agent-core`, `pi-tui`, …) stay on this version. */
 export const expectedPiVersion = "0.84.2";
+export const expectedPiAiPackage = "@bastani/pi-ai";
 const requiredPiAiFiles = [
 	"package.json",
 	"dist/models.generated.js",
@@ -36,12 +37,15 @@ function requireFile(path: string): void {
 }
 
 export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
-	const piAiRoot = packagePath(resolve(options.nodeModulesRoot), "@earendil-works/pi-ai");
+	const piAiRoot = packagePath(resolve(options.nodeModulesRoot), "@bastani/pi-ai");
 	for (const relativePath of requiredPiAiFiles) requireFile(join(piAiRoot, relativePath));
 
-	const packageJson = JSON.parse(readFileSync(join(piAiRoot, "package.json"), "utf-8")) as { version?: string };
-	if (packageJson.version !== expectedPiVersion) {
-		throw new Error(`Expected @earendil-works/pi-ai ${expectedPiVersion}, found ${packageJson.version ?? "unknown"}`);
+	const packageJson = JSON.parse(readFileSync(join(piAiRoot, "package.json"), "utf-8")) as {
+		name?: string;
+		version?: string;
+	};
+	if (packageJson.name !== expectedPiAiPackage) {
+		throw new Error(`Expected package ${expectedPiAiPackage}, found ${packageJson.name ?? "unknown"}`);
 	}
 
 	if (options.appBundlePath) {

@@ -14,4 +14,4 @@ export {
 	CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
-} from "@earendil-works/pi-ai/api/cloudflare-gateway-binding";
+} from "@bastani/pi-ai/api/cloudflare-gateway-binding";
