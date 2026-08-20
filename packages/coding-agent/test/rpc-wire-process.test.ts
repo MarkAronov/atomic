@@ -19,7 +19,7 @@ function writeDeterministicProvider(root: string): string {
 	writeFileSync(
 		extensionPath,
 		`import type { ExtensionAPI } from "@bastani/atomic";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 
 const chunks = ${JSON.stringify(EXPECTED_DELTAS)};
 export default function wireProvider(pi: ExtensionAPI): void {

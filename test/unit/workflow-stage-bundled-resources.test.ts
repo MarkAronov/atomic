@@ -10,8 +10,8 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type ProviderHeaders,
-} from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai";
+import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";

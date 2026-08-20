@@ -8,7 +8,7 @@ import {
 	type OpenAICodexResponsesOptions,
 	type OpenAIResponsesOptions,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CODEX_FAST_MODE_SERVICE_TIER,

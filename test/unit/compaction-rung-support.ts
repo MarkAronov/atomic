@@ -4,8 +4,8 @@
  * Kept out of `*.test.ts` so `bun test test/unit` does not treat it as a suite.
  */
 
+import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { DEFAULT_COMPACTION_SETTINGS } from "../../packages/coding-agent/src/core/compaction/compaction.js";
 import type { CompactionRunRequest } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import type {

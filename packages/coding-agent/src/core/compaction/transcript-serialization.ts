@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent } from "@bastani/pi-ai/compat";
 import type { NumberedRegion } from "./compaction-types.js";
 
 export const FILTERED_MARKER_RE = /^\(filtered (\d+) lines\)$/;

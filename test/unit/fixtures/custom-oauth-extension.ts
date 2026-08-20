@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
-import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
+import type { OAuthLoginCallbacks } from "@bastani/pi-ai/compat";
 
 interface ExtendedCallbacks extends OAuthLoginCallbacks {
 	onInfo?(message: string, links: readonly { label: string; url: string }[]): void;

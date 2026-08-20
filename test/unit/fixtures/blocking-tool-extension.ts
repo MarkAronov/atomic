@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { getKeybindings, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";

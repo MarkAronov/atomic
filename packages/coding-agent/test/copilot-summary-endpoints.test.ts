@@ -4,7 +4,7 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type ProviderHeaders,
-} from "@earendil-works/pi-ai";
+} from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, type Harness } from "./suite/harness.ts";
 

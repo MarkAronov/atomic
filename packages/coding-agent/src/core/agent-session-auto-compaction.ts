@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { isContextOverflow, isRecoverableLength } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import { isContextOverflow, isRecoverableLength } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession, AutoCompactionRunOutcome } from "./agent-session-methods.ts";
 import {
 	type CompactionUrgency,

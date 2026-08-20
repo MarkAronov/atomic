@@ -4,10 +4,10 @@
  * Kept out of `*.test.ts` so `bun test test/integration` does not treat it as a suite.
  */
 
+import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/pi-ai/compat";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
-import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";

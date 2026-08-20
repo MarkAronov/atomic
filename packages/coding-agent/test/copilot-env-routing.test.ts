@@ -1,4 +1,4 @@
-import type { Api, Model, Provider } from "@earendil-works/pi-ai";
+import type { Api, Model, Provider } from "@bastani/pi-ai";
 import { describe, expect, test } from "vitest";
 import {
 	type CopilotRoutingEnv,

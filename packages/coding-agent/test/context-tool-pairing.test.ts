@@ -1,5 +1,5 @@
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { assertToolPairingInvariant, findDuplicateToolCallIds } from "../src/core/context-tool-pairing.ts";
 

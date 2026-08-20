@@ -13,8 +13,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import type { AssistantMessage, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai/compat";
 import { Key } from "@earendil-works/pi-tui";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 

@@ -1,6 +1,6 @@
+import type { ProviderHeaders } from "@bastani/pi-ai";
+import type { Api, AssistantMessageEvent, ImageContent, Model, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessageEvent, ImageContent, Model, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { ExtensionMode } from "./context-types.ts";
 import type { ExtensionUIContext } from "./ui-types.ts";

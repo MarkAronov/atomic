@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";

@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../src/core/settings-manager.ts";

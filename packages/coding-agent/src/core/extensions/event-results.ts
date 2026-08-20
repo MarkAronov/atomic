@@ -1,5 +1,5 @@
+import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import type { BashResult } from "../bash-executor.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { BashOperations } from "../tools/bash.ts";

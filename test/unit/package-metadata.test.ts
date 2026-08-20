@@ -82,7 +82,7 @@ const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {
 	...atomicPackageJson.optionalDependencies,
 };
 
-const PUBLISHABLE_WORKSPACE_PACKAGES = new Set(["@bastani/atomic", "@bastani/atomic-natives"]);
+const PUBLISHABLE_WORKSPACE_PACKAGES = new Set(["@bastani/atomic", "@bastani/atomic-natives", "@bastani/pi-ai"]);
 
 function markdownFiles(dir: string): string[] {
 	return readdirSync(dir)
@@ -161,7 +161,9 @@ describe("package metadata", () => {
 				`${sectionName}.${dependencyName} must not use the workspace protocol in the published manifest`,
 			);
 			assert.ok(
-				!dependencyName.startsWith("@bastani/") || dependencyName === "@bastani/atomic-natives",
+				!dependencyName.startsWith("@bastani/") ||
+					dependencyName === "@bastani/atomic-natives" ||
+					dependencyName === "@bastani/pi-ai",
 				`${sectionName}.${dependencyName} must not point at a private bundled workspace package`,
 			);
 		}

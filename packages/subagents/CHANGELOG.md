@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+
 ## [0.9.14] - 2026-08-19
 
 Cumulative release of the `0.9.14-alpha.2` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

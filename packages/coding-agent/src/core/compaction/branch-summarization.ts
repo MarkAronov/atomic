@@ -5,16 +5,16 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	type ProviderHeaders,
 	type RetryCallbacks,
 	type RetryPolicy,
 	retryAssistantCall,
 	uuidv7,
-} from "@earendil-works/pi-ai";
-import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai";
+import type { Api, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
+import { completeSimple } from "@bastani/pi-ai/compat";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";

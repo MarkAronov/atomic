@@ -23,7 +23,7 @@ import {
 	type TerminationCause as NativeTerminationCause,
 	SubagentControl,
 } from "@bastani/atomic-natives";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import {
 	buildSkillInjection,

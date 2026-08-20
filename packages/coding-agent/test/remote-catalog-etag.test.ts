@@ -1,4 +1,4 @@
-import { createProvider, InMemoryModelsStore, type Model } from "@earendil-works/pi-ai";
+import { createProvider, InMemoryModelsStore, type Model } from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
 import { makeRefreshContext } from "./helpers/refresh-context.ts";

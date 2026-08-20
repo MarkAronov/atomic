@@ -1,7 +1,7 @@
+import { type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
+import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@bastani/pi-ai/compat";
+import { isContextOverflow } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
-import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import type {
 	BorrowedPlanner,
 	NumberedRegion,

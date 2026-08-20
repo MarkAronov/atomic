@@ -1,4 +1,4 @@
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import {
 	APP_NAME,
 	type Api,

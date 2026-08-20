@@ -1,6 +1,6 @@
+import type { RetryCallbacks, RetryPolicy } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import type {
 	BorrowedPlanner,

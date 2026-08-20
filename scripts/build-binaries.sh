@@ -91,6 +91,11 @@ else
     echo "==> Reusing caller-installed dependencies (--skip-install)"
 fi
 
+echo "==> Aliasing @earendil-works/pi-ai onto packages/ai..."
+node scripts/alias-pi-ai.mjs
+echo "==> Building @bastani/pi-ai..."
+npm run build --workspace=@bastani/pi-ai
+
 if [[ "$SKIP_DEPS" == "false" ]]; then
     echo "==> Installing cross-platform Atomic native bindings..."
     # Mirrors pi's build-binaries.sh. Every platform binding goes in one command

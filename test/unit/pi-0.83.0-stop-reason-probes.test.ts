@@ -16,10 +16,10 @@
  */
 
 import assert from "node:assert/strict";
-import { stream as streamAnthropicMessages } from "@earendil-works/pi-ai/api/anthropic-messages";
-import { stream as streamGoogleGenerativeAi } from "@earendil-works/pi-ai/api/google-generative-ai";
-import { stream as streamOpenAiCompletions } from "@earendil-works/pi-ai/api/openai-completions";
-import type { Api, AssistantMessage, Context, Model, StopReason } from "@earendil-works/pi-ai/compat";
+import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
+import { stream as streamGoogleGenerativeAi } from "@bastani/pi-ai/api/google-generative-ai";
+import { stream as streamOpenAiCompletions } from "@bastani/pi-ai/api/openai-completions";
+import type { Api, AssistantMessage, Context, Model, StopReason } from "@bastani/pi-ai/compat";
 import { afterEach, test, vi } from "vitest";
 
 afterEach(() => {

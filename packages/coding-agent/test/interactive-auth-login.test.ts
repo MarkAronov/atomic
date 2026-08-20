@@ -1,5 +1,5 @@
-import { type Api, getModel, type Model } from "@earendil-works/pi-ai/compat";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { type Api, getModel, type Model } from "@bastani/pi-ai/compat";
+import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";

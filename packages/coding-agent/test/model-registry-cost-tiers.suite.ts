@@ -1,4 +1,4 @@
-import { calculateCost, type Usage } from "@earendil-works/pi-ai";
+import { calculateCost, type Usage } from "@bastani/pi-ai";
 import { describe, expect, test } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";

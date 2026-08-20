@@ -1,6 +1,6 @@
+import type { AssistantMessage, Message, TextContent } from "@bastani/pi-ai/compat";
+import { cleanupSessionResources } from "@bastani/pi-ai/compat";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai/compat";
-import { cleanupSessionResources } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	isProtectedStreamingCustomMessage,

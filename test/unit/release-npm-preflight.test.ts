@@ -48,6 +48,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 			"@bastani/atomic-natives-win32-arm64-msvc",
 			"@bastani/atomic-natives-win32-x64-msvc",
 			"@bastani/atomic-natives",
+			"@bastani/pi-ai",
 			"@bastani/atomic",
 		]);
 	});
@@ -182,7 +183,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 				allowNew: false,
 			}),
 			(error: Error) => {
-				assert.match(error.message, /2 of 10 publish-payload packages are not registered on npm/u);
+				assert.match(error.message, /2 of 11 publish-payload packages are not registered on npm/u);
 				assert.match(error.message, /^ {2}- @bastani\/atomic-natives-win32-arm64-msvc$/mu);
 				assert.match(error.message, /^ {2}- @bastani\/atomic$/mu);
 				assert.match(error.message, /Re-run with --allow-new/u);

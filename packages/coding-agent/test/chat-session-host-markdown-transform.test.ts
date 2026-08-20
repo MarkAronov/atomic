@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { EditorTheme } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { MarkdownTransformer } from "../src/core/extensions/types.ts";

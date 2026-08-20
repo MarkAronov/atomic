@@ -1,5 +1,5 @@
+import type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
 import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@earendil-works/pi-agent-core";
-import type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
@@ -124,7 +124,7 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 }
 
 /** Public constrained-sampling shape inherited from pi-ai. */
-export type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
+export type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
 
 /** Tool info with name, description, parameter schema, constraint, and source metadata */
 export type ToolInfo = Pick<

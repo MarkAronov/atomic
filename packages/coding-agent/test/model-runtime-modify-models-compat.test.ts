@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InMemoryModelsStore, type Model, type ModelsPublication, type Provider } from "@earendil-works/pi-ai";
+import { InMemoryModelsStore, type Model, type ModelsPublication, type Provider } from "@bastani/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelConfig } from "../src/core/model-config.ts";

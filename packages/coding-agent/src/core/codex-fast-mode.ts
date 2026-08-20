@@ -1,4 +1,4 @@
-import { closeOpenAICodexWebSocketSessions } from "@earendil-works/pi-ai/api/openai-codex-responses";
+import { closeOpenAICodexWebSocketSessions } from "@bastani/pi-ai/api/openai-codex-responses";
 import {
 	type Api,
 	type AssistantMessageEventStream,
@@ -14,7 +14,7 @@ import {
 	streamOpenAIResponses,
 	streamSimple,
 	type ThinkingLevel,
-} from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai/compat";
 import {
 	CODEX_FAST_MODE_ORIGINATOR,
 	CODEX_FAST_MODE_ROUTING_HEADER,

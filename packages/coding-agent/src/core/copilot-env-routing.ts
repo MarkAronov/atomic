@@ -1,4 +1,4 @@
-import type { Api, Model, Provider } from "@earendil-works/pi-ai";
+import type { Api, Model, Provider } from "@bastani/pi-ai";
 
 /**
  * GitHub Copilot host routing for `COPILOT_GITHUB_TOKEN` (PAT) auth.

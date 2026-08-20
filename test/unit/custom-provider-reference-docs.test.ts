@@ -30,7 +30,7 @@ function assertDistModuleExists(directory: "api" | "providers", name: string): v
 		const path = join(piAiDist, directory, `${name}${extension}`);
 		assert.ok(
 			existsSync(path),
-			`docs/custom-provider.md names ${directory}/${name}${extension}, which must exist in the installed @earendil-works/pi-ai tree`,
+			`docs/custom-provider.md names ${directory}/${name}${extension}, which must exist in the installed @bastani/pi-ai tree`,
 		);
 	}
 }

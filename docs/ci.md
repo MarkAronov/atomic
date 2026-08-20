@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-Atomic publishes `@bastani/atomic` from `packages/coding-agent` and `@bastani/atomic-natives` from `packages/natives`. The other workspace packages remain private and are bundled into the coding-agent package.
+Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, and `@bastani/pi-ai` from `packages/ai`. The other workspace packages remain private and are bundled into the coding-agent package. The first npm version of `@bastani/pi-ai` must be published by hand so npm trusted publishing can be attached; later tagged releases publish it from `publish.yml`.
 
 ## Workflow overview
 
@@ -436,7 +436,7 @@ After npm succeeds, `publish-github-release` changes the draft to public and set
 
 ## npm publication
 
-The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all ten package names:
+The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eleven package names:
 
 1. `@bastani/atomic-natives-darwin-arm64`
 2. `@bastani/atomic-natives-darwin-x64`
@@ -447,9 +447,10 @@ The npm job uses environment `npm-publish` with only `contents: read` and `id-to
 7. `@bastani/atomic-natives-win32-arm64-msvc`
 8. `@bastani/atomic-natives-win32-x64-msvc`
 9. `@bastani/atomic-natives`
-10. `@bastani/atomic`
+10. `@bastani/pi-ai`
+11. `@bastani/atomic`
 
-That order publishes native leaves first, then the native root, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
+That order publishes native leaves first, then the native root, then `@bastani/pi-ai`, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured. The first `@bastani/pi-ai` version cannot use trusted publishing until that package exists on npm.
 
 ## Permissions and time limits
 

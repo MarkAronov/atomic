@@ -15,7 +15,7 @@ import type {
 	ProviderHeaders,
 	RefreshModelsContext,
 	SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@bastani/pi-ai";
 import type { ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
 import {
 	clearConfigValueCache,

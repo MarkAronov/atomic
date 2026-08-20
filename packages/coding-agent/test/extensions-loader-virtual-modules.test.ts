@@ -26,11 +26,11 @@ describe("extension loader pi-ai compat aliases", () => {
 		async () => {
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 
-			expect(modules["@earendil-works/pi-ai"]).toBe(modules["@earendil-works/pi-ai/compat"]);
+			expect(modules["@bastani/pi-ai"]).toBe(modules["@bastani/pi-ai/compat"]);
 			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@mariozechner/pi-ai/compat"]);
-			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@earendil-works/pi-ai/compat"]);
+			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@bastani/pi-ai/compat"]);
 
-			const compat = modules["@earendil-works/pi-ai/compat"] as PiAiExports;
+			const compat = modules["@bastani/pi-ai/compat"] as PiAiExports;
 			expect(typeof compat.complete).toBe("function");
 			expect(typeof compat.getModel).toBe("function");
 			expect(typeof compat.StringEnum).toBe("function");
@@ -41,18 +41,18 @@ describe("extension loader pi-ai compat aliases", () => {
 	it("maps root and compat specifiers to the same jiti alias path", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
 
-		expect(aliases["@earendil-works/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
+		expect(aliases["@bastani/pi-ai"]).toBe(aliases["@bastani/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
-		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
+		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@bastani/pi-ai/compat"]);
 	});
 
 	it("maps the Codex Responses API before the broad pi-ai compat alias", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
-		const target = aliases["@earendil-works/pi-ai/api/openai-codex-responses"];
+		const target = aliases["@bastani/pi-ai/api/openai-codex-responses"];
 
 		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]openai-codex-responses\.js$/);
 		expect(fs.existsSync(target!)).toBe(true);
-		expect(target).not.toBe(aliases["@earendil-works/pi-ai"]);
+		expect(target).not.toBe(aliases["@bastani/pi-ai"]);
 	});
 	it(
 		"maps pi-tui layout helpers through both loader resolution paths",
@@ -80,7 +80,7 @@ describe("extension loader pi-ai compat aliases", () => {
 			// the host entry reach this specifier; without its own alias key it falls
 			// through to the compat/root prefix alias and fails to load.
 			const specifiers = [
-				"@earendil-works/pi-ai/api/cloudflare-gateway-binding",
+				"@bastani/pi-ai/api/cloudflare-gateway-binding",
 				"@mariozechner/pi-ai/api/cloudflare-gateway-binding",
 			] as const;
 			const aliases = extensionLoaderTestHooks.getAliases();
@@ -97,8 +97,8 @@ describe("extension loader pi-ai compat aliases", () => {
 	);
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
-		const root = (await import("@earendil-works/pi-ai")) as PiAiExports;
-		const compat = (await import("@earendil-works/pi-ai/compat")) as PiAiExports;
+		const root = (await import("@bastani/pi-ai")) as PiAiExports;
+		const compat = (await import("@bastani/pi-ai/compat")) as PiAiExports;
 
 		expect(root.complete).toBeUndefined();
 		expect(root.getModel).toBeUndefined();
@@ -139,7 +139,7 @@ describe("extension loader package-root resolution", () => {
 	});
 
 	it("resolves the real pi-ai package root from the loader's node_modules chain", () => {
-		const root = extensionLoaderTestHooks.findPackageRoot("@earendil-works/pi-ai");
+		const root = extensionLoaderTestHooks.findPackageRoot("@bastani/pi-ai");
 
 		expect(fs.existsSync(path.join(root, "package.json"))).toBe(true);
 		expect(fs.existsSync(path.join(root, "dist", "compat.js"))).toBe(true);

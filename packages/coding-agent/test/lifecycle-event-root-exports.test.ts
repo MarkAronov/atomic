@@ -1,4 +1,4 @@
-import type { AssistantMessageEvent } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessageEvent } from "@bastani/pi-ai/compat";
 import { expectTypeOf, test } from "vitest";
 import type {
 	MessageEndEvent,

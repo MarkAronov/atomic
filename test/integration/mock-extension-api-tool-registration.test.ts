@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import { beforeEach, describe, test } from "vitest";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { testRunId } from "../helpers/run-id.js";

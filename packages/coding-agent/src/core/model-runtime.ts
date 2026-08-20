@@ -26,8 +26,8 @@ import {
 	type ModelsStore,
 	type MutableModels,
 	type Provider,
-} from "@earendil-works/pi-ai";
-import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
+} from "@bastani/pi-ai";
+import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";

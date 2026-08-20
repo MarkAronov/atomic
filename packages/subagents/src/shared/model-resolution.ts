@@ -15,7 +15,7 @@
  * string means.
  */
 
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import { splitKnownThinkingSuffix, THINKING_LEVELS, type ThinkingLevel } from "./model-info.js";
 
 /** Registry surface needed to resolve a candidate; satisfied by `ctx.modelRegistry`. */

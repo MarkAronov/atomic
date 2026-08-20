@@ -11,7 +11,7 @@ const codingAgentDir = join(repoRoot, "packages/coding-agent");
 const codingAgentLockPrefix = "packages/coding-agent/";
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
-const internalPackageNames = new Set(["@bastani/atomic-natives"]);
+const internalPackageNames = new Set(["@bastani/atomic-natives", "@bastani/pi-ai"]);
 const defaultNpmRegistry = "https://registry.npmjs.org";
 const embeddedPostgresSymlinkReason =
 	"postinstall rehydrates Postgres native/lib symlinks that npm tarballs cannot contain; Atomic also hydrates them at runtime for script-less installs";
@@ -185,22 +185,26 @@ function buildInternalPackageEntries(workspaces) {
 	const entries = new Map();
 	for (const [name, workspace] of workspaces) {
 		const packageJson = workspace.packageJson;
-		if (name !== "@bastani/atomic-natives") {
+		if (name === "@bastani/atomic-natives") {
+			const optionalPackages = generatedAtomicNativesOptionalPackages(packageJson);
+			const mainEntry = copyPackageJsonEntry(packageJson, { includeName: false });
+			mainEntry.resolved = registryTarballUrl(name, packageJson.version);
+			mainEntry.optionalDependencies = sortedObject(
+				Object.fromEntries(
+					[...optionalPackages].map(([packageName, descriptor]) => [packageName, descriptor.version]),
+				),
+			);
+			entries.set(name, sortedPackageEntry(mainEntry));
+
+			for (const [packageName, descriptor] of optionalPackages) {
+				entries.set(packageName, sortedPackageEntry({ ...descriptor.entry }));
+			}
 			continue;
 		}
-
-		const optionalPackages = generatedAtomicNativesOptionalPackages(packageJson);
-		const mainEntry = copyPackageJsonEntry(packageJson, { includeName: false });
-		mainEntry.resolved = registryTarballUrl(name, packageJson.version);
-		mainEntry.optionalDependencies = sortedObject(
-			Object.fromEntries(
-				[...optionalPackages].map(([packageName, descriptor]) => [packageName, descriptor.version]),
-			),
-		);
-		entries.set(name, sortedPackageEntry(mainEntry));
-
-		for (const [packageName, descriptor] of optionalPackages) {
-			entries.set(packageName, sortedPackageEntry({ ...descriptor.entry }));
+		if (name === "@bastani/pi-ai") {
+			const mainEntry = copyPackageJsonEntry(packageJson, { includeName: false });
+			mainEntry.resolved = registryTarballUrl(name, packageJson.version);
+			entries.set(name, sortedPackageEntry(mainEntry));
 		}
 	}
 	return entries;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { builtinImagesModels } from "@earendil-works/pi-ai/providers/all";
+import { builtinImagesModels } from "@bastani/pi-ai/providers/all";
 import { describe, test } from "vitest";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 

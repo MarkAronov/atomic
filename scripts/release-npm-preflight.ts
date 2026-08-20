@@ -43,7 +43,7 @@ export const PUBLISH_WORKFLOW_PATH = ".github/workflows/publish.yml";
 export const PUBLISHER_NPM_REGISTRY = "https://registry.npmjs.org";
 
 /** Number of npm packages one release tag publishes; asserted against `publish.yml` by unit test. */
-export const RELEASE_PAYLOAD_PACKAGE_COUNT = 10;
+export const RELEASE_PAYLOAD_PACKAGE_COUNT = 11;
 
 const PACKAGES_ARRAY_RE = /^[ \t]*packages=\(([^)]*)\)[ \t]*$/gmu;
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;

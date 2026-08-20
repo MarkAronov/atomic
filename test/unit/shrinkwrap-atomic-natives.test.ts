@@ -83,7 +83,7 @@ async function createStampedShrinkwrapFixture(version: string): Promise<string> 
 	mkdirSync(join(fixtureRoot, "scripts"), { recursive: true });
 	mkdirSync(join(fixtureRoot, "packages/coding-agent"), { recursive: true });
 	mkdirSync(join(fixtureRoot, "packages/natives"), { recursive: true });
-
+	mkdirSync(join(fixtureRoot, "packages/ai"), { recursive: true });
 	copyFileSync(
 		"scripts/generate-coding-agent-shrinkwrap.mjs",
 		join(fixtureRoot, "scripts/generate-coding-agent-shrinkwrap.mjs"),
@@ -95,12 +95,18 @@ async function createStampedShrinkwrapFixture(version: string): Promise<string> 
 	if (codingAgentPackage.dependencies?.["@bastani/atomic-natives"]) {
 		codingAgentPackage.dependencies["@bastani/atomic-natives"] = version;
 	}
+	if (codingAgentPackage.dependencies?.["@bastani/pi-ai"]) {
+		codingAgentPackage.dependencies["@bastani/pi-ai"] = version;
+	}
 	await writePackageJson(join(fixtureRoot, "packages/coding-agent/package.json"), codingAgentPackage);
 
 	const nativesPackage = await readPackageJson("packages/natives/package.json");
 	nativesPackage.version = version;
 	await writePackageJson(join(fixtureRoot, "packages/natives/package.json"), nativesPackage);
 
+	const piAiPackage = await readPackageJson("packages/ai/package.json");
+	piAiPackage.version = version;
+	await writePackageJson(join(fixtureRoot, "packages/ai/package.json"), piAiPackage);
 	return fixtureRoot;
 }
 

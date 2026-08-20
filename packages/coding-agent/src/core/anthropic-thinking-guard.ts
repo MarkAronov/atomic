@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, AssistantMessage, Message, Model } from "@bastani/pi-ai/compat";
 
 type JsonObject = Record<string, unknown>;
 
@@ -76,7 +76,7 @@ function legacyProviderWouldEmitAssistantBlock(block: unknown): boolean {
 function legacyProviderWouldEmitAssistant(message: AssistantMessage, model: Model<Api>): boolean {
 	if (message.stopReason === "error" || message.stopReason === "aborted") return false;
 
-	// This mirrors the relevant same-model branch in @earendil-works/pi-ai's
+	// This mirrors the relevant same-model branch in @bastani/pi-ai's
 	// transformMessages() + Anthropic convertMessages() pipeline closely enough
 	// to keep assistant ordinal mapping aligned with the provider payload.
 	if (isSameModelAssistant(message, model)) {

@@ -1,5 +1,5 @@
+import type { Api, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { VerbatimCompactionResult } from "../compaction/index.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";

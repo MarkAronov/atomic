@@ -1,5 +1,5 @@
+import type { ImageContent, TextContent, Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import type { SessionManager } from "./session-manager-core.ts";
 
 export const CURRENT_SESSION_VERSION = 3;

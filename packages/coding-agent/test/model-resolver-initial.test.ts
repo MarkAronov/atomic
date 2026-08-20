@@ -1,5 +1,5 @@
-import type { Model } from "@earendil-works/pi-ai/compat";
-import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { Model } from "@bastani/pi-ai/compat";
+import { getBuiltinModels, getBuiltinProviders } from "@bastani/pi-ai/providers/all";
 import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";

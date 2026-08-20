@@ -1,5 +1,5 @@
-import { stream as streamAnthropicMessages } from "@earendil-works/pi-ai/api/anthropic-messages";
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai/compat";
+import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
+import type { Api, AssistantMessage, Message, Model } from "@bastani/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import { restoreAnthropicReplayThinkingBlocks } from "../src/core/anthropic-thinking-guard.ts";
 import { convertToLlm } from "../src/core/messages.ts";

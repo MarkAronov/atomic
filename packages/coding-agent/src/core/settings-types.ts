@@ -1,4 +1,4 @@
-import type { Transport } from "@earendil-works/pi-ai/compat";
+import type { Transport } from "@bastani/pi-ai/compat";
 import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 
 export interface CompactionSettings {

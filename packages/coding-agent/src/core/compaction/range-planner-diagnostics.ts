@@ -9,8 +9,8 @@
  * writes a private recovery diagnostic sidecar for operational observability.
  */
 
-import { uuidv7 } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
+import { uuidv7 } from "@bastani/pi-ai";
+import type { Api, AssistantMessage, Model, Usage } from "@bastani/pi-ai/compat";
 import { chmodSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 

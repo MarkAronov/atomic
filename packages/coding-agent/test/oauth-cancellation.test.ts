@@ -1,4 +1,4 @@
-import { ModelsError } from "@earendil-works/pi-ai";
+import { ModelsError } from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loginRuntimeOAuthProvider } from "../src/core/agent-session-runtime-auth.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";

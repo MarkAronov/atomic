@@ -185,7 +185,7 @@ When a package manifest exists, declared resource arrays normally define what lo
 
 Third-party runtime dependencies belong in `dependencies` in `package.json`. Dependencies that do not register extensions, skills, prompt templates, themes, or workflows also belong in `dependencies`. When Atomic installs a package from npm or git, it runs the configured npm-compatible install command, so those dependencies are installed automatically.
 
-Atomic bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, `@bastani/atomic`, `@earendil-works/pi-tui`, `typebox`.
+Atomic bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@bastani/pi-ai`, `@earendil-works/pi-agent-core`, `@bastani/atomic`, `@earendil-works/pi-tui`, `typebox`.
 
 Workflow packages should author workflow files with `import { workflow } from "@bastani/workflows"`, `import { Type } from "typebox"`, and export definitions produced by `workflow({ ... })`. Do not use the removed `runWorkflow` object-form API, and do not hand-roll objects with `__piWorkflow: true`; discovery accepts only definitions minted by `workflow({ ... })`. `@bastani/workflows` is not a separate npm package: its types resolve through `@bastani/atomic`, so list `@bastani/atomic` and `typebox` in `peerDependencies`. A pure workflow-only package also adds the one-line ambient opt-in noted above; a package that imports `@bastani/atomic` elsewhere picks the types up automatically.
 

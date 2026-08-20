@@ -1,4 +1,4 @@
-import { type Api, type Model, modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import {
 	Container,
 	type Focusable,

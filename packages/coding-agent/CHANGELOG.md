@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.
+
 ## [0.9.14] - 2026-08-19
 
 Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

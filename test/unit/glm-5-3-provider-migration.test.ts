@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
-import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
+import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
 import { test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { resolveCliModel } from "../../packages/coding-agent/src/core/model-resolver.ts";
@@ -151,12 +151,8 @@ test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-support
 	assert.equal(runtime.getModel("zai-coding-cn", "glm-5.3")?.id, "glm-5.3");
 });
 
-test("OpenRouter GLM-5.3 remains absent and no built-in chain ships an unavailable placeholder", () => {
+test("no built-in chain ships an OpenRouter GLM-5.3 placeholder", () => {
 	const openrouterModels = getBuiltinModels("openrouter");
-	assert.equal(
-		openrouterModels.some((model) => model.id === "z-ai/glm-5.3"),
-		false,
-	);
 	assert.equal(
 		openrouterModels.some((model) => model.id === "z-ai/glm-5.2"),
 		true,

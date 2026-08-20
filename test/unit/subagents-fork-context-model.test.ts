@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import { afterAll, describe, test, vi } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import type { AttemptOutcome, ChildSpec, ModelCandidate } from "../../packages/subagents/src/runs/inprocess/runner.ts";

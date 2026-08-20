@@ -1,6 +1,6 @@
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/pi-ai/compat";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";

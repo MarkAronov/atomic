@@ -1,4 +1,4 @@
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
+import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { inspectRun } from "../runs/background/status.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
