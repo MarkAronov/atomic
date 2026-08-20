@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-08-19
+
+Cumulative release of the `0.9.14-alpha.2` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Added
+
+- Added pure progress-trend evidence and injected control score-series support that can raise wall-clock attention priority without creating failure states, suppressing signals, or scheduling model calls ([#2489](https://github.com/bastani-inc/atomic/issues/2489)).
+- Agent frontmatter accepts YAML array-form `tools` — flow sequences (`tools: [read, bash]`) and block sequences (`tools:` followed by `- read` lines) — as well as the comma-separated string form, and both spellings produce the same tool set.
+- Extra frontmatter fields round-trip losslessly through the YAML emitter when agent files are rewritten. Sequences now serialize as block collections with hostile keys quoted, so a rewritten file can no longer fail YAML parsing and silently disappear from later scans.
+- In-process children resolve `skills` through the live loader catalog, so source-qualified selectors such as `tdd@builtin` inject the shadowed candidate instead of the precedence winner. Missing or ambiguous selectors are reported on the child result. The parent-only `subagent` orchestration skill remains unavailable, including qualified aliases such as `subagent@builtin` ([#2328](https://github.com/bastani-inc/atomic/issues/2328)).
+
+### Changed
+
+- Raised every built-in subagent Grok 4.6 fallback from `xai/grok-4.6:high` to `xai/grok-4.6:xhigh` and added the matching `github-copilot/grok-4.6:xhigh` twin immediately after each xAI id.
+
+### Fixed
+
+- A subagent that pins no model of its own now inherits the dispatching session's thinking level alongside its model, matching the parent's tool configuration inheritance. The agent's declared `thinking` and any candidate `:level` suffix still take precedence.
+- In-process JSONL event artifacts now honor `includeJsonl: false` and enforce the existing 50 MiB cap when enabled, preventing unbounded artifact growth ([#2445](https://github.com/bastani-inc/atomic/issues/2445)).
+- Migrated all built-in subagent GLM fallbacks to direct Z.AI `glm-5.3:high` entries, omitting unavailable OpenRouter GLM-5.3 fallbacks ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
+
 ## [0.9.14-alpha.5] - 2026-08-19
 
 ### Added

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-08-19
+
+Cumulative release of the `0.9.14-alpha.3` – `0.9.14-alpha.4` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Changed
+
+- The interactive search curator is now opt-in. `web_search` returns raw results unless you set `"workflow": "summary-review"` in web-search config or run `/curator on`.
+
+### Fixed
+
+- `fetch_content` PDF extraction no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.
+
+### Removed
+
+- The `workflow` parameter on `web_search`. The curator is no longer selectable per tool call; enable it with web-search config or `/curator`.
+
 ## [0.9.14-alpha.4] - 2026-08-18
 
 ### Changed
