@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-08-19
+
+Cumulative release of the `0.9.14-alpha.3` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Changed
+
+- MCP OAuth now opens the authorization URL from WSL when the Linux working directory is not reachable from Windows.
+
 ## [0.9.14-alpha.3] - 2026-08-17
 
 ### Changed
