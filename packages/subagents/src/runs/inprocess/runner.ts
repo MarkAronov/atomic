@@ -43,11 +43,10 @@ import {
 	type ArtifactPaths,
 	DEFAULT_MAX_OUTPUT,
 	type MaxOutputConfig,
-	normalizeMaxSubagentDepth,
 	truncateOutput,
 } from "../../shared/types.js";
+import { type InProcessAttemptResumeOutcome, registerInProcessAttempt } from "./attempt-handles.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 
 export type ChildStatus = NativeAgentStatus;
@@ -99,12 +98,6 @@ export interface ChildSpec {
 	/** Typed identity/capability resolved by the parent before admission. */
 	readonly intercom?: SubagentIntercomIdentity;
 	readonly sessionFile?: string;
-	/**
-	 * Effective delegation limit for this child, already narrowed by the parent's
-	 * limit and the child agent's own `maxSubagentDepth`. Retained on the spec so
-	 * a cold reload reissues the same limit.
-	 */
-	readonly maxSubagentDepth?: number;
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -314,16 +307,6 @@ function workflowMetadataFromContext(
 		stageId: context.workflowStageId,
 		stageName: context.workflowStageName,
 	};
-}
-
-/**
- * Effective delegation limit for an admitted child. A caller that already
- * narrowed the parent's limit against the agent definition puts the result on
- * the spec; a caller admitting a child directly still gets the agent's own
- * declared limit rather than an unbounded policy.
- */
-export function effectiveChildMaxSubagentDepth(spec: ChildSpec): number | undefined {
-	return spec.maxSubagentDepth ?? normalizeMaxSubagentDepth(spec.agent.maxSubagentDepth);
 }
 
 /**
@@ -618,8 +601,9 @@ function writeEvent(pathValue: string | undefined, event: AgentSessionEvent): vo
 
 /**
  * A child identity whose constructor is private. Depth and path validation happen
- * at the Rust admission door, so callers cannot manufacture an admitted depth-6
- * child or bypass canonical identity allocation.
+ * at the Rust admission door, so callers cannot manufacture an admitted child
+ * below the single permitted delegation level or bypass canonical identity
+ * allocation.
  */
 interface AdmittedChildInput {
 	readonly identity: ChildIdentity;
@@ -655,7 +639,7 @@ export class AdmittedChild {
 	}
 
 	static create(input: AdmittedChildInput): AdmittedChild {
-		if (input.identity.depth > 5) throw new Error("child depth exceeds maximum 5");
+		if (input.identity.depth > 1) throw new Error("child depth exceeds maximum 1");
 		validatePath(input.identity.path);
 		return new AdmittedChild(input);
 	}
@@ -747,9 +731,6 @@ export class SubagentControlRuntime {
 					intercomGroup: parent.intercomGroup,
 					intercom: spec.intercom,
 					depth: identity.depth,
-					...(effectiveChildMaxSubagentDepth(spec) === undefined
-						? {}
-						: { maxSubagentDepth: effectiveChildMaxSubagentDepth(spec) }),
 				},
 				sessionDir,
 				sessionFile: spec.sessionFile,
@@ -1228,16 +1209,17 @@ export class SubagentControlRuntime {
 		};
 	}
 
-	registerNestedAttempt(runId: string, running: RunningAttempt, candidate: ModelCandidate): void {
-		registerInProcessNestedAttempt({
+	/** Expose a direct child's live attempt so `interrupt`/`resume` can reach it by run id or path. */
+	registerAttempt(runId: string, running: RunningAttempt, candidate: ModelCandidate): void {
+		registerInProcessAttempt({
 			runId,
 			path: running.child.identity.path,
 			status: () => running.status,
 			interrupt: () => this.terminateChildAttempt(running, "interrupt"),
-			resume: async (message): Promise<InProcessNestedResumeOutcome> => {
+			resume: async (message): Promise<InProcessAttemptResumeOutcome> => {
 				const admission = this.reloadColdChild(running.child.identity.path, message);
 				if (!admission.admitted) {
-					throw new Error(admission.refusal?.reason ?? "nested child cold reload was refused");
+					throw new Error(admission.refusal?.reason ?? "child cold reload was refused");
 				}
 				const neverAbort = new AbortController().signal;
 				const resumed = this.startAttempt(admission.admitted, candidate, {
@@ -1344,9 +1326,6 @@ export class SubagentControlRuntime {
 			thinkingLevel: spec.thinkingLevel ?? (spec.agent.thinking as ChildPolicy["thinkingLevel"]),
 			intercomGroup: spec.parent?.intercomGroup,
 			depth,
-			...(effectiveChildMaxSubagentDepth(spec) === undefined
-				? {}
-				: { maxSubagentDepth: effectiveChildMaxSubagentDepth(spec) }),
 		};
 	}
 

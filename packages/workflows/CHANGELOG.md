@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. Stage delegation itself is unchanged: a stage is a top-level session and still launches subagents once. What changed is that the children it launches can no longer delegate further, and nothing configures that.
+
+### Fixed
+
+- Fixed `/workflow` cards being swallowed while the agent is streaming. The dispatch, list, and status cards were sent as ordinary turn-triggering messages, so a card emitted during a live model turn — for example right after a workflow lifecycle notice started one — was queued as steering and did not reach the transcript until that turn ended. Cards are already-rendered transcript surfaces and are now sent as non-turn messages, so they appear immediately whether or not a turn is in flight. Workflow lifecycle notices are unchanged and still nudge the model.
+
 ## [0.9.14] - 2026-08-19
 
 Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.6` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

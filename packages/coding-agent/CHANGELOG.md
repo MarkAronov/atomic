@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Two exported SDK types each lose a field, because subagent delegation is now a fixed one-level rule rather than a configurable depth. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth number and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. Code that constructs a stage orchestration context must drop the removed required field.
+
 ### Changed
 
 - Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.

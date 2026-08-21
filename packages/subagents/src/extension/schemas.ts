@@ -3,7 +3,7 @@
  */
 
 import { Type } from "typebox";
-import { MAX_PARALLEL_TASKS, MAX_SUBAGENT_NESTING_DEPTH, SUBAGENT_ACTIONS } from "../shared/types.js";
+import { MAX_PARALLEL_TASKS, SUBAGENT_ACTIONS } from "../shared/types.js";
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [{ type: "array", items: { type: "string" } }, { type: "boolean" }, { type: "string" }],
@@ -146,7 +146,7 @@ export const SubagentParams = Type.Object(
 		config: Type.Optional(
 			Type.Unsafe({
 				anyOf: [{ type: "object", additionalProperties: true }, { type: "string" }],
-				description: `Agent config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth (integer >= 0, clamped to ${MAX_SUBAGENT_NESTING_DEPTH}). String values must be valid JSON.`,
+				description: `Agent config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress. String values must be valid JSON.`,
 			}),
 		),
 		tasks: Type.Optional(

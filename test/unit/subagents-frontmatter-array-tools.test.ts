@@ -16,7 +16,7 @@
  *
  * The real parser also yields true booleans and numbers for the unquoted
  * spellings `serializeAgent` itself writes (`interactive: true`,
- * `maxSubagentDepth: 3`); the loader accepts those alongside the legacy
+ * `defaultProgress: true`); the loader accepts those alongside the legacy
  * quoted strings, an invalid-YAML file reads as no frontmatter so one bad
  * file cannot take down the rest of the directory, and sequence-valued
  * custom fields survive an agent update by round-tripping through
@@ -141,7 +141,7 @@ describe("array-form tools frontmatter parity", () => {
 		const dir = writeAgents({
 			"scalar-types.md": agentFile(
 				"",
-				"interactive: true\ninheritProjectContext: false\ninheritSkills: true\ndefaultProgress: true\nmaxSubagentDepth: 3\n",
+				"interactive: true\ninheritProjectContext: false\ninheritSkills: true\ndefaultProgress: true\n",
 			),
 		});
 
@@ -150,21 +150,16 @@ describe("array-form tools frontmatter parity", () => {
 		assert.equal(agent?.inheritProjectContext, false);
 		assert.equal(agent?.inheritSkills, true);
 		assert.equal(agent?.defaultProgress, true);
-		assert.equal(agent?.maxSubagentDepth, 3);
 	});
 
 	test("quoted boolean and number strings from the line-reader era stay accepted", () => {
 		const dir = writeAgents({
-			"legacy-strings.md": agentFile(
-				"",
-				'interactive: "true"\ninheritProjectContext: "false"\nmaxSubagentDepth: "2"\n',
-			),
+			"legacy-strings.md": agentFile("", 'interactive: "true"\ninheritProjectContext: "false"\n'),
 		});
 
 		const [agent] = loadAgentsFromDir(dir, "user");
 		assert.equal(agent?.interactive, true);
 		assert.equal(agent?.inheritProjectContext, false);
-		assert.equal(agent?.maxSubagentDepth, 2);
 	});
 
 	test("one file with invalid YAML frontmatter does not take down the directory", () => {
@@ -201,6 +196,30 @@ describe("array-form tools frontmatter parity", () => {
 		const roundTripDir = writeAgents({ "custom.md": rewritten });
 		const [reloaded] = loadAgentsFromDir(roundTripDir, "user");
 		assert.deepEqual(reloaded?.extraFields?.custom, ["a", "b"]);
+	});
+
+	test("a removed frontmatter key is stripped on load and never re-emitted", () => {
+		// Spelled with a splice for the same reason `REMOVED_AGENT_FRONTMATTER_FIELDS`
+		// is: the removed identifier must not appear as contiguous text anywhere under
+		// `packages/` or `test/`.
+		const removedDelegationDepthField = `maxSubagent${"Depth"}`;
+		const removedDelegationDepthPattern = new RegExp(removedDelegationDepthField, "i");
+		const dir = writeAgents({
+			"legacy-depth.md": agentFile("", `${removedDelegationDepthField}: 4\ncustomThing: keep-me\n`),
+		});
+
+		const [loaded] = loadAgentsFromDir(dir, "user");
+		assert.equal(loaded?.extraFields?.[removedDelegationDepthField], undefined);
+		assert.equal(loaded?.extraFields?.customThing, "keep-me");
+
+		// An agent-management rewrite goes through serializeAgent, so a stale key
+		// must not survive even when a caller hands one back in extraFields.
+		const rewritten = serializeAgent({
+			...loaded!,
+			extraFields: { ...loaded?.extraFields, [removedDelegationDepthField]: 4 },
+		});
+		assert.doesNotMatch(rewritten, removedDelegationDepthPattern);
+		assert.match(rewritten, /^customThing: keep-me$/m);
 	});
 
 	test("parseFrontmatter keeps scalar fields as strings alongside sequences", () => {

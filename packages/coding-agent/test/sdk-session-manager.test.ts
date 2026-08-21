@@ -371,7 +371,7 @@ describe("createAgentSession session manager defaults", () => {
 				workflowRunId: "run-42",
 				workflowStageId: "stage-7",
 				workflowStageName: "build",
-				constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+				constraints: { disableWorkflowTool: true },
 			},
 		});
 

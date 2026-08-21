@@ -125,7 +125,6 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.output) lines.push(`Output: ${agent.output}`);
 	if (agent.defaultReads?.length) lines.push(`Reads: ${agent.defaultReads.join(", ")}`);
 	if (agent.defaultProgress) lines.push("Progress: true");
-	if (agent.maxSubagentDepth !== undefined) lines.push(`Max subagent depth: ${agent.maxSubagentDepth}`);
 	if (agent.systemPrompt.trim()) lines.push("", "System Prompt:", agent.systemPrompt);
 	return lines.join("\n");
 }

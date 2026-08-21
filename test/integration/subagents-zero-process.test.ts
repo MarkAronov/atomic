@@ -106,7 +106,7 @@ function makeExecutor(root: string, gate: Promise<void>) {
 	const executor = createSubagentExecutor({
 		pi,
 		state: state(),
-		config: { maxSubagentDepth: 5, parallel: { concurrency: 4, maxTasks: 50 } },
+		config: { parallel: { concurrency: 4, maxTasks: 50 } },
 		tempArtifactsDir: join(root, "temp-artifacts"),
 		getSubagentSessionRoot: () => join(root, "sessions"),
 		expandTilde: (value) => value,

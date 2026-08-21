@@ -327,7 +327,7 @@ function makeWorkflowStageOrchestrationContext(
 		workflowRunId: meta.runId,
 		workflowStageId: meta.stageId,
 		workflowStageName: meta.stageName,
-		constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+		constraints: { disableWorkflowTool: true },
 		...(intercomGroup ? { intercomGroup } : {}),
 		lateMessageRouter: {
 			routeMessage(message, options) {

@@ -5,7 +5,6 @@
 import type { AgentSessionEvent, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { CandidateModelResolver } from "./model-resolution.js";
-import type { NestedRouteInfo } from "./types-nested.js";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -88,12 +87,10 @@ export interface RunSyncOptions {
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
-	maxSubagentDepth?: number;
 	/** Current session depth passed to the in-process admission door. */
 	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	workflowSessionMetadata?: SessionWorkflowMetadata;
-	nestedRoute?: NestedRouteInfo;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
 	/** Registry models available for heuristic bare-model resolution */
@@ -160,7 +157,6 @@ interface TopLevelParallelConfig {
 
 export interface ExtensionConfig {
 	defaultSessionDir?: string;
-	maxSubagentDepth?: number;
 	control?: ControlConfig;
 	parallel?: TopLevelParallelConfig;
 	worktreeSetupHook?: string;

@@ -1,43 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
-	attachNestedChildrenToResultChildren,
-	compactNestedResultChildren,
+	buildSubagentResultIntercomPayload,
 	resolveSubagentResultStatus,
 } from "../../packages/subagents/src/intercom/result-intercom.js";
-import {
-	MAX_SUBAGENT_NESTING_DEPTH,
-	type NestedRunSummary,
-	type PublicNestedRunSummary,
-	type SubagentResultIntercomChild,
-} from "../../packages/subagents/src/shared/types.js";
-
-function nested(
-	id: string,
-	parentRunId = "root",
-	parentStepIndex?: number,
-	children: NestedRunSummary[] = [],
-): NestedRunSummary {
-	return {
-		id,
-		parentRunId,
-		...(parentStepIndex !== undefined ? { parentStepIndex } : {}),
-		depth: 0,
-		path: [{ runId: parentRunId }],
-		state: "complete",
-		agent: id,
-		children,
-	};
-}
-
-function nestedRuns(level: number, maxLevel: number): NestedRunSummary {
-	return nested(
-		`level${level}`,
-		level === 0 ? "root" : `level${level - 1}`,
-		undefined,
-		level < maxLevel ? [nestedRuns(level + 1, maxLevel)] : [],
-	);
-}
+import type { SubagentResultIntercomChild } from "../../packages/subagents/src/shared/types.js";
 
 describe("subagent result intercom helpers", () => {
 	test("resolves result status from typed statuses and legacy state projections", () => {
@@ -49,33 +16,30 @@ describe("subagent result intercom helpers", () => {
 		assert.equal(resolveSubagentResultStatus({ status: "skipped" }), "failed");
 	});
 
-	test("attaches nested children by parent step index and compacts depth", () => {
+	test("a result payload reports the parent's direct children and nothing below them", () => {
 		const children: SubagentResultIntercomChild[] = [
-			{ agent: "worker-a", status: "completed", index: 0, summary: "done" },
-			{ agent: "worker-b", status: "completed", index: 1, summary: "done" },
+			{ agent: "worker-a", status: "completed", index: 0, summary: "done a" },
+			{ agent: "worker-b", status: "failed", index: 1, summary: "  " },
 		];
-		const nestedChildren = [nested("nested-a", "root", 0), nested("nested-b", "root", 1)];
 
-		const attached = attachNestedChildrenToResultChildren("root", children, nestedChildren);
+		const payload = buildSubagentResultIntercomPayload({
+			to: "orchestrator",
+			runId: "root",
+			mode: "parallel",
+			children,
+		});
 
 		assert.deepEqual(
-			attached.map((child) => child.children?.map((run) => run.id)),
-			[["nested-a"], ["nested-b"]],
+			payload.children.map((child) => child.agent),
+			["worker-a", "worker-b"],
 		);
-	});
-
-	test("compacts nested result trees to bounded breadth and five-level depth", () => {
-		const deep = nestedRuns(0, MAX_SUBAGENT_NESTING_DEPTH + 1);
-		const compact = compactNestedResultChildren(
-			Array.from({ length: 20 }, (_, index) => ({ ...deep, id: `run${index}` })),
-		);
-
-		assert.equal(compact?.length, 16);
-		let cursor: PublicNestedRunSummary | undefined = compact?.[0];
-		for (let level = 1; level <= MAX_SUBAGENT_NESTING_DEPTH; level++) {
-			cursor = cursor?.children?.[0];
-			assert.equal(cursor?.id, `level${level}`);
+		// Delegation is one level deep, so no child can carry descendants of its own.
+		for (const child of payload.children) {
+			assert.equal("children" in child, false);
 		}
-		assert.equal(cursor?.children, undefined);
+		assert.equal(payload.status, "failed");
+		assert.equal(payload.children[1]?.summary, "(no output)", "an empty summary falls back rather than vanishing");
+		assert.match(payload.message, /Children: 1 completed, 1 failed/);
+		assert.doesNotMatch(payload.message, /Nested subagents:/);
 	});
 });

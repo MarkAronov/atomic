@@ -38,7 +38,6 @@ interface ForegroundParallelRunInput {
 	artifactsDir: string;
 	maxOutput?: MaxOutputConfig;
 	paramsCwd: string;
-	maxSubagentDepths: number[];
 	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
@@ -126,7 +125,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				maxOutput: input.maxOutput,
 				outputPath,
 				outputMode: behavior?.outputMode,
-				maxSubagentDepth: input.maxSubagentDepths[index],
 				parentDepth: input.parentDepth,
 				workflowStageSubagentGuard: input.workflowStageSubagentGuard,
 				workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
@@ -142,7 +140,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 				intercomDetachSignal: intercomDetachController.signal,
 				onIntercomDetachCommit: () => intercomDetachController.abort(),
-				nestedRoute: input.foregroundControl?.nestedRoute,
 				modelOverride: input.modelOverrides[index],
 				availableModels: input.availableModels,
 				knownModelProviders: input.knownModelProviders,

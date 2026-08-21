@@ -77,7 +77,7 @@ vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () =>
 				promise: Promise.resolve(outcome as AttemptOutcome),
 			};
 		},
-		registerNestedAttempt: (_runId: string, _running: unknown, candidate: unknown) => {
+		registerAttempt: (_runId: string, _running: unknown, candidate: unknown) => {
 			harness.nested.push(candidate);
 		},
 		continueDetached: () => undefined,

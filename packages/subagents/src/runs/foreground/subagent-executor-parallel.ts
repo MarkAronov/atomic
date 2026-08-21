@@ -12,8 +12,7 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	resolveChildMaxSubagentDepth,
-	resolveSubagentDepthPolicy,
+	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
 	type SingleResult,
@@ -21,7 +20,6 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate } from "../shared/model-fallback.js";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.js";
@@ -97,12 +95,7 @@ export async function runParallelPath(
 		agentConfigs.push(config);
 	}
 
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	const maxSubagentDepths = agentConfigs.map((config) =>
-		resolveChildMaxSubagentDepth(currentMaxSubagentDepth, config.maxSubagentDepth),
-	);
+	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 
 	if (params.worktree) {
 		const worktreeTaskCwdError = buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
@@ -227,7 +220,6 @@ export async function runParallelPath(
 			sharedAutoIntercomGroup: sharedAutoGroupForSet(params.group, tasks),
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
-			maxSubagentDepths,
 			parentDepth: data.parentDepth,
 			liveResults,
 			liveProgress,
@@ -258,7 +250,6 @@ export async function runParallelPath(
 			mode: "parallel",
 			cwd: effectiveCwd,
 			results: details.results,
-			maxSubagentDepths,
 		});
 		if (interrupted) {
 			return {
@@ -288,14 +279,12 @@ export async function runParallelPath(
 			};
 		}
 
-		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "parallel",
 			details,
-			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
 		});
 		if (intercomReceipt) {
 			return {

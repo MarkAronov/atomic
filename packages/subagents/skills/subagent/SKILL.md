@@ -448,7 +448,6 @@ That is only a starting point. Omit `package` for the traditional unqualified ru
 - `defaultReads`
 - `defaultContext`
 - `output`
-- `maxSubagentDepth`
 
 For many customizations, builtin overrides in settings are lower-friction than copying a full builtin file.
 
@@ -462,7 +461,7 @@ If a prompt-template extension is installed, additional user prompt templates ca
 
 - **Forking requires a persisted parent session.** If the current session does not have a persisted session file, forked runs fail.
 - **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts. Use fresh context for adversarial review unless the user explicitly asks for forked context.
-- **Default subagent nesting depth is 5.** Deeper recursive delegation is blocked, and configured values above 5 are clamped to the hard ceiling.
+- **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch, `resume`, and `interrupt` from inside a child is refused. Only `list`, `get`, `status`, and `doctor` stay available to a child.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `paused` means the child turn was intentionally interrupted or is awaiting direction; it is not the same as `failed`.
 - **Builtin coordination varies by agent.** `debugger` and `worker` declare `intercom` and `contact_supervisor`; the other builtin specialists do not. For agents without bridge tools, decide the task up front or use a custom agent when mid-run coordination is required.
 - **Intercom asks are blocking.** A session can only maintain one pending outbound ask wait state at a time.
@@ -551,7 +550,7 @@ For complex or risky changes, increase review and validation fanout when user in
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review, a fix pass, and parent approval before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, and review only.
 
-Keep orchestration authority in the parent session. Child subagents should not launch more subagents or run their own orchestration loops unless the parent intentionally selected an explicit fanout agent whose resolved builtin `tools` includes `subagent` for that assigned fanout. This skill is parent-only: it is stripped from every child prompt, including fanout-authorized children. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`, and refuses delegation, `resume`, and `interrupt`. Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, the child must not propose or run subagents unless explicitly authorized for fanout, and writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
+Keep orchestration authority in the parent session. Child subagents cannot launch more subagents or run their own orchestration loops: delegation is one level deep and nothing configures it. This skill is parent-only and is stripped from every child prompt. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a child use only `list`, `get`, `status`, and `doctor`, and refuses delegation, `resume`, and `interrupt`. Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, that the `subagent` tool refuses every launch, `resume`, and `interrupt` from inside a subagent, and that writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
 1. Clarify only when needed. Use existing context first; gather missing code or research context selectively, then ask only unresolved questions that materially affect scope, completion criteria, constraints, or non-goals.
 2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
@@ -631,10 +630,11 @@ subagent({ action: "doctor" })
 // Check runtime paths, execution support, discovery counts, current session, and intercom bridge state.
 ```
 
-**"Max subagent depth exceeded"**
+**"Subagent delegation is not available inside a subagent"**
 
 ```typescript
-// Flatten the workflow or raise maxSubagentDepth in config.
+// Do the work in this session. Only a top-level session — main chat or a
+// workflow stage — can delegate, and the one-level rule is not configurable.
 ```
 
 **"Session manager did not return a session file"**

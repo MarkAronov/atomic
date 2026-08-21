@@ -79,7 +79,6 @@ export interface AgentConfig {
 	defaultReads?: string[];
 	defaultProgress?: boolean;
 	interactive?: boolean;
-	maxSubagentDepth?: number;
 	disabled?: boolean;
 	extraFields?: Record<string, FrontmatterValue>;
 	override?: BuiltinAgentOverrideInfo;

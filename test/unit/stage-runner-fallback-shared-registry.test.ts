@@ -130,7 +130,7 @@ describe("stage model fallback reuses one ModelRuntime across candidates (#1431)
 								workflowRunId: "run-1",
 								workflowStageId: "stage-1",
 								workflowStageName: "Reviewer A",
-								constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+								constraints: { disableWorkflowTool: true },
 							};
 							return makeFakeStageSession({
 								modelRuntime: runtimeA,

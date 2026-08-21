@@ -24,8 +24,6 @@ import {
 	DEFAULT_ARTIFACT_CONFIG,
 	getCurrentSubagentDepth,
 	isWorkflowStageOrchestrationContext,
-	resolveChildMaxSubagentDepth,
-	resolveWorkflowStageMaxSubagentDepth,
 	type SingleResult,
 	SUBAGENT_ACTIONS,
 	type SubagentToolResult,
@@ -39,7 +37,7 @@ import {
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { resolveControlConfig } from "../shared/subagent-control.js";
-import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.js";
+import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
 import { resolveRequestedCwd } from "./subagent-executor-resume.js";
@@ -132,12 +130,6 @@ async function resumeRetainedForegroundChild(
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 			artifactConfig,
 			maxOutput: params.maxOutput,
-			maxSubagentDepth:
-				child.maxSubagentDepth ??
-				resolveChildMaxSubagentDepth(
-					resolveWorkflowStageMaxSubagentDepth(ctx, deps.config.maxSubagentDepth),
-					agentConfig.maxSubagentDepth,
-				),
 			parentDepth: getCurrentSubagentDepth(ctx),
 			workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
@@ -233,6 +225,12 @@ async function handleManagementRequest(input: {
 			isError: true,
 			details: { mode: "management" as const, results: [] },
 		};
+	}
+	// Delegation is one level deep: a session admitted as a subagent child may
+	// never start or continue another agent, whatever else it is authorized for.
+	if (!READ_ONLY_MANAGEMENT_ACTIONS.has(action)) {
+		const childRefusal = refuseSubagentChildDelegation(ctx, "management");
+		if (childRefusal) return childRefusal;
 	}
 	if (action === "doctor") {
 		let currentSessionFile: string | null = null;
@@ -388,32 +386,23 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			};
 		}
 
-		const depthError = checkDepthForExecution(ctx, deps);
-		if (depthError) return depthError;
+		const childRefusal = refuseSubagentChildDelegation(ctx, inferExecutionMode(params));
+		if (childRefusal) return childRefusal;
 
 		const built = prepareExecutionContext({ params: paramsWithResolvedCwd, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;
 		const prepared = built.prepared!;
-		let nestedForegroundStarted = false;
 		try {
-			if (prepared.foregroundControl) {
-				prepared.writeNestedForegroundEvent("subagent.nested.started");
-				nestedForegroundStarted = true;
-			}
 			if (prepared.hasTasks && prepared.effectiveParams.tasks) {
 				const result = await runParallelPath(prepared.execData, deps);
-				prepared.writeNestedForegroundEvent("subagent.nested.completed", result);
 				return withForkContext(result, prepared.effectiveParams.context);
 			}
 			if (prepared.hasSingle) {
 				const result = await runSinglePath(prepared.execData, deps);
-				prepared.writeNestedForegroundEvent("subagent.nested.completed", result);
 				return withForkContext(result, prepared.effectiveParams.context);
 			}
 		} catch (error) {
-			const errorResult = toExecutionErrorResult(prepared.effectiveParams, error);
-			if (nestedForegroundStarted) prepared.writeNestedForegroundEvent("subagent.nested.completed", errorResult);
-			return errorResult;
+			return toExecutionErrorResult(prepared.effectiveParams, error);
 		} finally {
 			if (prepared.foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, prepared.runId);

@@ -1,20 +1,14 @@
+export type {
+	InProcessAttemptControlResult,
+	InProcessAttemptHandle,
+	InProcessAttemptResumeOutcome,
+} from "./attempt-handles.js";
 export {
-	appendInProcessControlRequest,
-	appendInProcessControlResult,
-	appendInProcessNestedEvent,
-	clearInProcessNestedRouting,
-	hasInProcessNestedRoute,
-	interruptInProcessNestedAttempt,
-	readInProcessControlRequests,
-	readInProcessControlResults,
-	readInProcessNestedEvents,
-	registerInProcessNestedAttempt,
-	registerInProcessNestedRoute,
-	removeInProcessControlRequest,
-	resumeInProcessNestedAttempt,
-	subscribeInProcessControlRequests,
-	unregisterInProcessNestedRoute,
-} from "./nested-routing.js";
+	clearInProcessAttemptHandles,
+	interruptInProcessAttempt,
+	registerInProcessAttempt,
+	resumeInProcessAttempt,
+} from "./attempt-handles.js";
 export type {
 	AdmissionRefusal,
 	AdmittedResult,
@@ -25,11 +19,6 @@ export type {
 	ChildSpec,
 	ChildStatus,
 	ContinuationReason,
-	InProcessControlRequest,
-	InProcessControlResult,
-	InProcessNestedAttemptHandle,
-	InProcessNestedResumeOutcome,
-	InProcessNestedRouteKey,
 	ModelCandidate,
 	ParentContext,
 	ResultEnvelope,

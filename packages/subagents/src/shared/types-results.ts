@@ -5,7 +5,6 @@
 import type { SessionStats } from "@bastani/atomic";
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-nested.js";
 
 export interface MaxOutputConfig {
 	bytes?: number;
@@ -80,8 +79,6 @@ export interface ControlEvent {
 	agent: string;
 	index?: number;
 	runId: string;
-	nestedRunId?: string;
-	nestingPath?: NestedRunAddress["path"];
 	message: string;
 	reason?: "idle" | "active_long_running" | "tool_failures" | "time_threshold" | "turn_threshold" | "token_threshold";
 	turns?: number;
@@ -97,60 +94,6 @@ export interface ControlEvent {
 export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
 export type SubagentRunMode = "single" | "parallel";
 
-export type PublicNestedStepSummary = Pick<
-	NestedStepSummary,
-	| "agent"
-	| "status"
-	| "sessionFile"
-	| "activityState"
-	| "lastActivityAt"
-	| "currentTool"
-	| "currentToolStartedAt"
-	| "currentPath"
-	| "turnCount"
-	| "toolCount"
-	| "startedAt"
-	| "endedAt"
-	| "error"
-> & {
-	children?: PublicNestedRunSummary[];
-};
-
-export type PublicNestedRunSummary = Pick<
-	NestedRunSummary,
-	| "id"
-	| "parentRunId"
-	| "parentStepIndex"
-	| "parentAgent"
-	| "depth"
-	| "path"
-	| "sessionId"
-	| "sessionFile"
-	| "intercomTarget"
-	| "ownerIntercomTarget"
-	| "leafIntercomTarget"
-	| "ownerState"
-	| "mode"
-	| "state"
-	| "agent"
-	| "agents"
-	| "activityState"
-	| "lastActivityAt"
-	| "currentTool"
-	| "currentToolStartedAt"
-	| "currentPath"
-	| "turnCount"
-	| "toolCount"
-	| "totalTokens"
-	| "startedAt"
-	| "endedAt"
-	| "lastUpdate"
-	| "error"
-> & {
-	steps?: PublicNestedStepSummary[];
-	children?: PublicNestedRunSummary[];
-};
-
 export interface SubagentResultIntercomChild {
 	agent: string;
 	status: SubagentResultStatus;
@@ -159,7 +102,6 @@ export interface SubagentResultIntercomChild {
 	artifactPath?: string;
 	sessionPath?: string;
 	intercomTarget?: string;
-	children?: PublicNestedRunSummary[];
 }
 
 export interface SubagentResultIntercomPayload {

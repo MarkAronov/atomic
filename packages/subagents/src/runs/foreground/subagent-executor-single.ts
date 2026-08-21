@@ -12,15 +12,13 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	resolveChildMaxSubagentDepth,
-	resolveSubagentDepthPolicy,
+	isWorkflowStageOrchestrationContext,
 	type SingleResult,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
 import { recordRun } from "../shared/run-history.js";
@@ -135,10 +133,7 @@ export async function runSinglePath(
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
+	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
@@ -204,7 +199,6 @@ export async function runSinglePath(
 			maxOutput: params.maxOutput,
 			outputPath,
 			outputMode: effectiveOutputMode,
-			maxSubagentDepth,
 			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard,
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
@@ -214,7 +208,6 @@ export async function runSinglePath(
 			intercomSessionName: childIntercomTarget,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
-			nestedRoute: foregroundControl?.nestedRoute,
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				if (result) {
@@ -279,18 +272,15 @@ export async function runSinglePath(
 		mode: "single",
 		cwd: effectiveCwd,
 		results: details.results,
-		maxSubagentDepths: [maxSubagentDepth],
 	});
 
 	if (!r.detached && !r.interrupted) {
-		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "single",
 			details,
-			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
 		});
 		if (intercomReceipt) {
 			return {

@@ -269,8 +269,10 @@ impl NapiSubagentControl {
 	}
 }
 
-/// Maximum nesting depth for an admitted child.
-pub const MAX_DEPTH: u8 = 5;
+/// Hard ceiling on admitted child depth. Delegation is exactly one level:
+/// a top-level session admits a depth-1 child, and that child admits nothing.
+/// Not configurable.
+pub const MAX_DEPTH: u8 = 1;
 /// Maximum number of active child turns for one root control plane.
 pub const EXECUTION_CAPACITY: usize = 4;
 /// Codex's literal cooperative-interruption grace period.

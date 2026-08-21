@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { normalizeMaxSubagentDepth } from "../shared/types.js";
 import { splitToolList } from "./agent-overrides.js";
 import { shouldPreserveAgentExtraField } from "./agent-serializer.js";
 import {
@@ -181,8 +180,6 @@ export function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSourc
 			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
 		}
 
-		const parsedMaxSubagentDepth = normalizeMaxSubagentDepth(frontmatter.maxSubagentDepth);
-
 		agents.push({
 			name: runtimeName,
 			localName,
@@ -207,7 +204,6 @@ export function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSourc
 			defaultReads,
 			defaultProgress: frontmatterBoolean(frontmatter.defaultProgress) === true,
 			interactive: frontmatterBoolean(frontmatter.interactive) === true,
-			maxSubagentDepth: parsedMaxSubagentDepth,
 			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 		});
 	}

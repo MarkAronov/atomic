@@ -94,7 +94,6 @@ const workflowContext: OrchestrationContext = {
 	workflowStageName: "Stage 1",
 	constraints: {
 		disableWorkflowTool: true,
-		maxSubagentDepth: 0,
 	},
 };
 
