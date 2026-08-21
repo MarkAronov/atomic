@@ -314,7 +314,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 									stream.push({ type: "start", partial: output });
 								}
 							},
-							httpTimeoutMs,
+							streamDeadline.deadlineMs,
 							websocketConnectTimeoutMs,
 							cacheSessionId,
 							accountId,
