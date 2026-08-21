@@ -416,7 +416,15 @@ function removeMuslSmokeProbe(probe: MuslSmokeProbe): void {
 
 function matrixUsesOnlyBlacksmithLinuxRunners(runsOn: string, block: string): boolean {
 	if (runsOn !== "$" + "{{ matrix.runner }}") return false;
-	const runners = [...block.matchAll(/runner:\s*([^\s,}]+)/gu)].map(([, runner]) => runner as string);
+	const inlineRunners = [...block.matchAll(/\brunner:\s*([^\s,}\n]+)/gu)]
+		.map(([, runner]) => runner as string)
+		.filter((runner) => runner !== "-");
+	const listBody = /\brunner:\s*\n(?<entries>(?:[ \t]*-[ \t]*[^\n#]+(?:\n|$))+)/u.exec(block)?.groups?.entries;
+	const listRunners =
+		listBody === undefined
+			? []
+			: [...listBody.matchAll(/^[ \t]*-[ \t]*([^\s#]+)/gmu)].map(([, runner]) => runner as string);
+	const runners = [...inlineRunners, ...listRunners];
 	return runners.length > 0 && runners.every((runner) => /^blacksmith-\dvcpu-ubuntu(?:-|$)/u.test(runner));
 }
 
@@ -616,6 +624,22 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
 	assert.equal(
 		matrixUsesOnlyBlacksmithLinuxRunners(
 			"$" + "{{ matrix.runner }}",
+			"strategy:\n  matrix:\n    include:\n      - { runner: blacksmith-4vcpu-ubuntu-2404 }\n      - { runner: blacksmith-4vcpu-ubuntu-2404-arm }",
+		),
+		true,
+		"an all-Blacksmith inline matrix must satisfy the sticky-disk Linux runner contract",
+	);
+	assert.equal(
+		matrixUsesOnlyBlacksmithLinuxRunners(
+			"$" + "{{ matrix.runner }}",
+			"strategy:\n  matrix:\n    runner:\n      - blacksmith-4vcpu-ubuntu-2404\n      - blacksmith-4vcpu-ubuntu-2404-arm",
+		),
+		true,
+		"an all-Blacksmith list matrix must satisfy the sticky-disk Linux runner contract",
+	);
+	assert.equal(
+		matrixUsesOnlyBlacksmithLinuxRunners(
+			"$" + "{{ matrix.runner }}",
 			"strategy:\n  matrix:\n    include:\n      - { runner: blacksmith-4vcpu-ubuntu-2404 }\n      - { runner: windows-latest }",
 		),
 		false,
@@ -780,8 +804,12 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
 	// Enumerate the directory rather than a fixed list: a workflow added later
 	// must not be able to introduce an unapproved GitHub-hosted runner unnoticed.
 	const workflowDir = join(root, ".github/workflows");
+	// The Windows acceptance harness injects exactly this workflow on a temporary
+	// e2e/pr-2187-* branch. It must use windows-latest per the objective and is
+	// deleted with that temporary PR; every ordinary workflow remains covered.
+	const temporaryE2eWorkflow = /^e2e-pr-2187\.ya?ml$/u;
 	const workflowFiles = (await readdir(workflowDir))
-		.filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
+		.filter((name) => (name.endsWith(".yml") || name.endsWith(".yaml")) && !temporaryE2eWorkflow.test(name))
 		.sort();
 	assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
 	const hosted: string[] = [];
