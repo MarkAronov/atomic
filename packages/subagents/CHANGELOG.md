@@ -2,9 +2,22 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Subagent delegation is now exactly one level deep and is no longer configurable. A top-level session — main chat or a workflow stage — may call the `subagent` tool; a session that was itself admitted as a subagent child may not. Every launch, `resume`, and `interrupt` attempted from inside a child is refused with a single fixed message; the observing actions `list`, `get`, `status`, and `doctor` remain available to a child. Workflow stages are unchanged and still delegate once. The Rust `SubagentControl` admission door now refuses any child deeper than the single permitted level, and the executor refuses a child before any run starts, so the rule holds at both doors.
+
+### Removed
+
+- Removed the extension config option that set the delegation ceiling. Existing `config.json` files that still declare it are ignored rather than rejected.
+- Removed the per-agent nesting-depth frontmatter field. An agent `.md` file that still declares the key parses and loads normally; the key is simply no longer read, serialized, or printed in `subagent({ action: "get" })` output, and `create`/`update` no longer validate or clamp it.
+- Removed the nesting-depth clause from the `subagent` tool's `config` parameter description.
+- Removed the per-child delegation limit from the typed admission policy, the in-process child spec, retained foreground resume records, and the run options. Admitted depth alone now decides whether a session may delegate.
+- Removed the recursive multi-level compaction from subagent result-intercom payloads. A run summary keeps its own identity plus its direct children; nothing below that level can exist.
+
 ### Changed
 
 - Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+- The fanout-child boundary prompt no longer tells an authorized child that it may delegate, because no child can.
 
 ## [0.9.14] - 2026-08-19
 

@@ -98,7 +98,7 @@ describe("createStageContext — inherited session directories", () => {
 				workflowRunId: "run-xyz",
 				workflowStageId: "stage-abc",
 				workflowStageName: "My Stage",
-				constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+				constraints: { disableWorkflowTool: true },
 			});
 		} finally {
 			await rm(dir, { recursive: true, force: true });

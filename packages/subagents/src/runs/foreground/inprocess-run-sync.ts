@@ -56,7 +56,6 @@ function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["o
 		workflowStageName: workflow.stageName,
 		constraints: {
 			disableWorkflowTool: true,
-			maxSubagentDepth: options.maxSubagentDepth ?? 5,
 		},
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
@@ -263,7 +262,6 @@ export async function runSingleInProcess(
 		cwd,
 		testSession: testSession,
 		sessionFile: options.sessionFile,
-		...(options.maxSubagentDepth === undefined ? {} : { maxSubagentDepth: options.maxSubagentDepth }),
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,

@@ -82,8 +82,6 @@ export interface ForegroundResumeChild {
 	sessionFile?: string;
 	status: SubagentResultStatus;
 	result?: SingleResult;
-	/** Effective delegation limit retained for a resumed child. */
-	maxSubagentDepth?: number;
 }
 
 export interface ForegroundResumeRun {

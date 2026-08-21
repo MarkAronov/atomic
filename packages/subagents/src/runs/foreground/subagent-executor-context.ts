@@ -15,11 +15,12 @@ import { resolveCurrentSessionId } from "../../shared/session-identity.js";
 import { buildReadInstruction } from "../../shared/settings.js";
 import {
 	type ArtifactConfig,
-	checkSubagentDepth,
 	DEFAULT_ARTIFACT_CONFIG,
-	resolveSubagentDepthPolicy,
+	getCurrentSubagentDepth,
+	isSubagentChildSession,
+	SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE,
+	type SubagentRunMode,
 	type SubagentToolResult,
-	subagentDepthBlockedMessage,
 } from "../../shared/types.js";
 
 import {
@@ -43,23 +44,19 @@ import type {
 	SubagentParamsLike,
 } from "./subagent-executor-types.js";
 
-export function checkDepthForExecution(
-	ctx: ExtensionContext,
-	deps: ResolvedExecutorDeps,
+/**
+ * Delegation is one level deep and not configurable: a session that was itself
+ * admitted as a subagent child may never call the subagent tool.
+ */
+export function refuseSubagentChildDelegation(
+	ctx: Pick<ExtensionContext, "subagentPolicy">,
+	mode: SubagentRunMode | "management",
 ): SubagentToolResult | undefined {
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const { blocked, depth, maxDepth } = checkSubagentDepth(ctx, depthPolicy.maxSubagentDepth);
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	if (!blocked) return undefined;
+	if (!isSubagentChildSession(ctx)) return undefined;
 	return {
-		content: [
-			{
-				type: "text",
-				text: subagentDepthBlockedMessage(depth, maxDepth, { workflowStageGuard: workflowStageSubagentGuard }),
-			},
-		],
+		content: [{ type: "text", text: SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE }],
 		isError: true,
-		details: { mode: "single" as const, results: [] },
+		details: { mode, results: [] },
 	};
 }
 
@@ -71,8 +68,7 @@ export function prepareExecutionContext(input: {
 	deps: ResolvedExecutorDeps;
 }): ExecutionContextBuildResult {
 	const { params, ctx, signal, onUpdate, deps } = input;
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const { depth } = checkSubagentDepth(ctx, depthPolicy.maxSubagentDepth);
+	const depth = getCurrentSubagentDepth(ctx);
 	const normalized = normalizeRepeatedParallelCounts(params);
 	if (normalized.error) return { error: normalized.error };
 	const normalizedParams = normalized.params!;

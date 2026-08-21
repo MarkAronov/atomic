@@ -3,7 +3,6 @@ import { isStaleExtensionContextError } from "@bastani/atomic";
 import {
 	type Details,
 	type IntercomEventBus,
-	MAX_SUBAGENT_NESTING_DEPTH,
 	type NestedRunSummary,
 	type PublicNestedRunSummary,
 	type SingleResult,
@@ -63,6 +62,10 @@ function resolveGroupedStatus(children: SubagentResultIntercomChild[]): Subagent
 	return "failed";
 }
 
+/**
+ * Delegation is one level deep, so a compacted run keeps its own identity plus
+ * its direct children and nothing below that.
+ */
 function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth = 0): PublicNestedRunSummary {
 	return {
 		id: run.id,
@@ -70,7 +73,7 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 		...(run.parentStepIndex !== undefined ? { parentStepIndex: run.parentStepIndex } : {}),
 		...(run.parentAgent ? { parentAgent: run.parentAgent } : {}),
 		depth: run.depth,
-		path: run.path.slice(0, MAX_SUBAGENT_NESTING_DEPTH + 1).map((part) => ({
+		path: run.path.slice(0, 2).map((part) => ({
 			runId: part.runId,
 			...(part.stepIndex !== undefined ? { stepIndex: part.stepIndex } : {}),
 			...(part.agent ? { agent: part.agent } : {}),
@@ -115,13 +118,13 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 						...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
 						...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
 						...(step.error ? { error: step.error } : {}),
-						...(depth < MAX_SUBAGENT_NESTING_DEPTH && step.children?.length
+						...(depth < 1 && step.children?.length
 							? { children: step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) }
 							: {}),
 					})),
 				}
 			: {}),
-		...(depth < MAX_SUBAGENT_NESTING_DEPTH && run.children?.length
+		...(depth < 1 && run.children?.length
 			? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) }
 			: {}),
 	};

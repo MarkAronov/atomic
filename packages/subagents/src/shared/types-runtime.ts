@@ -81,8 +81,6 @@ export const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
 export const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 export const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
-export const MAX_SUBAGENT_NESTING_DEPTH = 5;
-export const DEFAULT_SUBAGENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
 export const SUBAGENT_ACTIONS = [
 	"list",
 	"get",

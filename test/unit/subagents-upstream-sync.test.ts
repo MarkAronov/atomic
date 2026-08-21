@@ -119,7 +119,7 @@ function makeExecutor(input: {
 			getSessionName: () => "parent-session-name",
 		} as unknown as ExecutorDeps["pi"],
 		state: makeState(),
-		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } } as ExecutorDeps["config"],
+		config: { parallel: { concurrency: 4, maxTasks: 50 } } as ExecutorDeps["config"],
 		tempArtifactsDir: join(input.cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(input.cwd, "sessions"),
 		expandTilde: (p) => p,

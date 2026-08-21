@@ -88,7 +88,6 @@ export interface RunSyncOptions {
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
-	maxSubagentDepth?: number;
 	/** Current session depth passed to the in-process admission door. */
 	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
@@ -160,7 +159,6 @@ interface TopLevelParallelConfig {
 
 export interface ExtensionConfig {
 	defaultSessionDir?: string;
-	maxSubagentDepth?: number;
 	control?: ControlConfig;
 	parallel?: TopLevelParallelConfig;
 	worktreeSetupHook?: string;

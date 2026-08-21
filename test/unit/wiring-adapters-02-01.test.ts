@@ -271,7 +271,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		assert.equal(orchestration?.workflowRunId, "run-1");
 		assert.equal(orchestration?.workflowStageId, "stage-1");
 		assert.equal(orchestration?.workflowStageName, "Implement");
-		assert.deepEqual(orchestration?.constraints, { disableWorkflowTool: true, maxSubagentDepth: 5 });
+		assert.deepEqual(orchestration?.constraints, { disableWorkflowTool: true });
 		assert.equal(typeof orchestration?.lateMessageRouter?.routeMessage, "function");
 		await orchestration?.lateMessageRouter?.routeMessage({
 			customType: "late-result",

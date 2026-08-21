@@ -60,7 +60,6 @@ test("one parallel child's supervisor detach releases every active foreground si
 		},
 		artifactsDir: process.cwd(),
 		paramsCwd: process.cwd(),
-		maxSubagentDepths: [0, 0, 0],
 		availableModels: [],
 		knownModelProviders: [],
 		resolveCandidateModel: () => undefined,

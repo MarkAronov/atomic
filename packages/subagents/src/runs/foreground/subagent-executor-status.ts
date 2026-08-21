@@ -132,8 +132,6 @@ export function rememberForegroundRun(
 		mode: "single" | "parallel";
 		cwd: string;
 		results: SingleResult[];
-		/** Effective delegation limit per child, aligned with `results` by index. */
-		maxSubagentDepths?: readonly (number | undefined)[];
 	},
 ): void {
 	state.foregroundRuns ??= new Map();
@@ -144,7 +142,6 @@ export function rememberForegroundRun(
 		updatedAt: Date.now(),
 		children: input.results.map((originalResult, index) => {
 			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
-			const maxSubagentDepth = input.maxSubagentDepths?.[index];
 			return {
 				agent: result.agent,
 				index,
@@ -154,7 +151,6 @@ export function rememberForegroundRun(
 					detached: result.detached,
 				}),
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
-				...(maxSubagentDepth === undefined ? {} : { maxSubagentDepth }),
 				result,
 			};
 		}),

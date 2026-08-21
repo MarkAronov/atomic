@@ -112,7 +112,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 		const executor = createSubagentExecutor({
 			pi: pi as ExecutorDeps["pi"],
 			state: makeState(),
-			config: { maxSubagentDepth: 2, parallel: { concurrency: 2, maxTasks: 10 } },
+			config: { parallel: { concurrency: 2, maxTasks: 10 } },
 			tempArtifactsDir: join(root, "artifacts"),
 			getSubagentSessionRoot: () => join(root, "sessions"),
 			expandTilde: (path) => path,

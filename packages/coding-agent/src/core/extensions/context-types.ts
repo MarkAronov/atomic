@@ -62,7 +62,6 @@ export interface WorkflowStageOrchestrationContext {
 	readonly workflowStageName: string;
 	readonly constraints: {
 		readonly disableWorkflowTool: true;
-		readonly maxSubagentDepth: number;
 	};
 	/** Internal lifecycle seam for surfacing detached results after this stage closes. */
 	readonly lateMessageRouter?: WorkflowStageLateMessageRouter;
@@ -96,11 +95,6 @@ export interface SubagentChildPolicy {
 	readonly inheritSkills: boolean;
 	/** Current admitted in-process nesting depth; absent for top-level sessions. */
 	readonly depth?: number;
-	/**
-	 * Effective delegation limit inherited from the parent and the child's own
-	 * agent definition; absent when only the local limit applies.
-	 */
-	readonly maxSubagentDepth?: number;
 	/** Undefined preserves MCP configuration defaults; [] explicitly disables direct tools. */
 	readonly mcpDirectTools?: readonly string[];
 	/** Admission-issued identity/capability; never inherited through process environment. */

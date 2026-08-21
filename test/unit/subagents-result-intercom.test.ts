@@ -5,11 +5,10 @@ import {
 	compactNestedResultChildren,
 	resolveSubagentResultStatus,
 } from "../../packages/subagents/src/intercom/result-intercom.js";
-import {
-	MAX_SUBAGENT_NESTING_DEPTH,
-	type NestedRunSummary,
-	type PublicNestedRunSummary,
-	type SubagentResultIntercomChild,
+import type {
+	NestedRunSummary,
+	PublicNestedRunSummary,
+	SubagentResultIntercomChild,
 } from "../../packages/subagents/src/shared/types.js";
 
 function nested(
@@ -64,18 +63,16 @@ describe("subagent result intercom helpers", () => {
 		);
 	});
 
-	test("compacts nested result trees to bounded breadth and five-level depth", () => {
-		const deep = nestedRuns(0, MAX_SUBAGENT_NESTING_DEPTH + 1);
+	test("compacts nested result trees to bounded breadth and one level of children", () => {
+		const deep = nestedRuns(0, 3);
 		const compact = compactNestedResultChildren(
 			Array.from({ length: 20 }, (_, index) => ({ ...deep, id: `run${index}` })),
 		);
 
 		assert.equal(compact?.length, 16);
-		let cursor: PublicNestedRunSummary | undefined = compact?.[0];
-		for (let level = 1; level <= MAX_SUBAGENT_NESTING_DEPTH; level++) {
-			cursor = cursor?.children?.[0];
-			assert.equal(cursor?.id, `level${level}`);
-		}
-		assert.equal(cursor?.children, undefined);
+		const root: PublicNestedRunSummary | undefined = compact?.[0];
+		const directChild = root?.children?.[0];
+		assert.equal(directChild?.id, "level1", "a run keeps its direct children");
+		assert.equal(directChild?.children, undefined, "nothing below the direct children survives compaction");
 	});
 });

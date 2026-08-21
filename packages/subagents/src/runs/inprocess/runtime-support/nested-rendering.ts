@@ -1,6 +1,7 @@
 import { formatDuration, formatTokens, shortenPath } from "../../../shared/formatters.js";
 import { formatActivityLabel } from "../../../shared/status-format.js";
-import { type ActivityState, MAX_SUBAGENT_NESTING_DEPTH, type NestedRunSummary } from "../../../shared/types.js";
+import type { ActivityState, NestedRunSummary } from "../../../shared/types.js";
+import { MAX_NESTED_DEPTH } from "./nested-core.js";
 
 export interface NestedRunCounts {
 	total: number;
@@ -129,7 +130,7 @@ export function formatNestedRunStatusLines(
 ): string[] {
 	return formatNestedRunLines(children, {
 		indent: options.indent ?? "  ",
-		maxDepth: options.maxDepth ?? MAX_SUBAGENT_NESTING_DEPTH,
+		maxDepth: options.maxDepth ?? MAX_NESTED_DEPTH,
 		maxLines: options.maxLines ?? 40,
 		commandHints: options.commandHints ?? false,
 	});

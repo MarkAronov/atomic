@@ -10,7 +10,7 @@ const stageContext = {
 		workflowRunId: "run-1",
 		workflowStageId: "stage-1",
 		workflowStageName: "schema-review",
-		constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 5 },
+		constraints: { disableWorkflowTool: true as const },
 	},
 };
 

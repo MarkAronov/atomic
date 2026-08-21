@@ -12,8 +12,7 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	resolveChildMaxSubagentDepth,
-	resolveSubagentDepthPolicy,
+	isWorkflowStageOrchestrationContext,
 	type SingleResult,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
@@ -135,10 +134,7 @@ export async function runSinglePath(
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
+	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
@@ -204,7 +200,6 @@ export async function runSinglePath(
 			maxOutput: params.maxOutput,
 			outputPath,
 			outputMode: effectiveOutputMode,
-			maxSubagentDepth,
 			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard,
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
@@ -279,7 +274,6 @@ export async function runSinglePath(
 		mode: "single",
 		cwd: effectiveCwd,
 		results: details.results,
-		maxSubagentDepths: [maxSubagentDepth],
 	});
 
 	if (!r.detached && !r.interrupted) {

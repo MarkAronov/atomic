@@ -45,7 +45,7 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 				workflowRunId: "run-metadata",
 				workflowStageId: options.stage,
 				workflowStageName: options.stage,
-				constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 2 },
+				constraints: { disableWorkflowTool: true as const },
 			}
 		: undefined;
 	const result = await createAgentSession({

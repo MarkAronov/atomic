@@ -17,7 +17,7 @@ import { beforeEach, describe, test, vi } from "vitest";
 import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.js";
+import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
 import type {
 	PiCodingAgentSdk,
 	PiSdkResourceLoader,
@@ -55,7 +55,7 @@ const runSyncMock = vi.fn(
 		_agents: MinimalAgentConfig[],
 		agentName: string,
 		task: string,
-		options: { maxSubagentDepth?: number; parentDepth?: number },
+		options: { parentDepth?: number },
 	) => {
 		runSyncCalls.push(agentName);
 		runSyncParentDepths.push(options.parentDepth);
@@ -277,44 +277,43 @@ describe("subagent child policy gates fanout, not management", () => {
 		assert.deepEqual(runSyncCalls, ["alpha"]);
 	});
 
-	test("the live child-policy depth blocks delegation at the documented limit", async () => {
-		assert.equal(MAX_SUBAGENT_NESTING_DEPTH, 5);
-		const executor = makeExecutor(
-			policyFor({ fanoutAuthorized: true, managementActions: "full", depth: MAX_SUBAGENT_NESTING_DEPTH }),
-		);
+	test("an admitted child is refused every subagent execution action", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 1 }));
+
+		const executionActions: Parameters<ExecutorForTest["execute"]>[1][] = [
+			{ agent: "alpha", task: "do work" },
+			{ tasks: [{ agent: "alpha", task: "do work" }] },
+			{ action: "resume", id: "run-1", message: "keep going" },
+			{ action: "interrupt", id: "run-1" },
+		];
+
+		for (const params of executionActions) {
+			const result = await runAction(executor, params);
+			assert.equal(result.isError, true, `expected refusal for ${JSON.stringify(params)}`);
+			assert.equal(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
+		}
+		assert.deepEqual(runSyncCalls, []);
+	});
+
+	test("an admitted child keeps the observing management actions", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 1 }));
+
+		for (const action of ["list", "get", "status", "doctor"] as const) {
+			const result = await runAction(executor, { action });
+			assert.notEqual(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
+			assert.equal(result.details.mode, "management");
+		}
+		assert.deepEqual(runSyncCalls, []);
+	});
+
+	test("a child admitted deeper than the single permitted level is refused too", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 3 }));
 
 		const result = await runAction(executor, { agent: "alpha", task: "do work" });
 
 		assert.equal(result.isError, true);
-		assert.ok(
-			resultText(result).startsWith(
-				`Nested subagent call blocked (depth=${MAX_SUBAGENT_NESTING_DEPTH}, max=${MAX_SUBAGENT_NESTING_DEPTH})`,
-			),
-			`unexpected depth message: ${resultText(result)}`,
-		);
+		assert.equal(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
 		assert.deepEqual(runSyncCalls, []);
-	});
-
-	test("one admitted level below the limit is still allowed", async () => {
-		const executor = makeExecutor(
-			policyFor({ fanoutAuthorized: true, managementActions: "full", depth: MAX_SUBAGENT_NESTING_DEPTH - 1 }),
-		);
-
-		const result = await runAction(executor, { agent: "alpha", task: "do work" });
-
-		assert.equal(result.isError, undefined);
-		assert.deepEqual(runSyncCalls, ["alpha"]);
-	});
-
-	test("the admitted depth travels into the run options that admission reads", async () => {
-		const executor = makeExecutor(
-			policyFor({ fanoutAuthorized: true, managementActions: "full", depth: MAX_SUBAGENT_NESTING_DEPTH - 2 }),
-		);
-
-		const result = await runAction(executor, { agent: "alpha", task: "do work" });
-
-		assert.equal(result.isError, undefined);
-		assert.deepEqual(runSyncParentDepths, [MAX_SUBAGENT_NESTING_DEPTH - 2]);
 	});
 
 	test("a top-level session delegates from depth zero", async () => {

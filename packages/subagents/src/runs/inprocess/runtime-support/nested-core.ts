@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../../shared/types.js";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../../shared/types-runtime.js";
 import { registerInProcessNestedRoute } from "../nested-routing.js";
 import { isSafeNestedPathId, type NestedPathEntry } from "./nested-paths.js";
 
@@ -12,7 +11,8 @@ export const REGISTRY_FILE = "registry.json";
 export const MAX_NESTED_EVENT_BYTES = 64 * 1024;
 export const MAX_NESTED_STEPS = 12;
 export const MAX_NESTED_CHILDREN = 16;
-export const MAX_NESTED_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
+/** Delegation is one level deep, so a run tree never goes below its direct children. */
+export const MAX_NESTED_DEPTH = 1;
 export const MAX_PROCESSED_NESTED_EVENTS = 20_000;
 type NestedStatusEventType = "subagent.nested.started" | "subagent.nested.updated" | "subagent.nested.completed";
 type NestedControlResultEventType = "subagent.nested.control-result";

@@ -762,8 +762,8 @@ mod tests {
 	}
 
 	#[test]
-	fn depth_six_is_unconstructible_and_each_refusal_is_typed() {
-		assert_eq!(Depth::new(6), Err(AdmissionRefusal::DepthExceeded(5)));
+	fn depth_two_is_unconstructible_and_each_refusal_is_typed() {
+		assert_eq!(Depth::new(2), Err(AdmissionRefusal::DepthExceeded(1)));
 		let control = SubagentControl::new("parent").expect("control");
 		let _dispatch = control.enter_dispatch().expect("dispatch");
 		assert!(matches!(control.enter_dispatch(), Err(AdmissionRefusal::DispatchGuardBusy)));
@@ -776,8 +776,8 @@ mod tests {
 		);
 		let registry = control.registry();
 		assert!(matches!(
-			registry.reserve_spawn("parent", "analysis", 6),
-			Err(AdmissionRefusal::DepthExceeded(5))
+			registry.reserve_spawn("parent", "analysis", 2),
+			Err(AdmissionRefusal::DepthExceeded(1))
 		));
 		assert!(matches!(
 			registry.reserve_spawn_typed(
@@ -793,14 +793,14 @@ mod tests {
 	#[test]
 	fn admitted_depth_is_derived_and_persisted() {
 		let control = SubagentControl::new("parent").expect("control");
-		let parent = ParentContext::new("parent", 4).expect("parent depth");
+		let parent = ParentContext::new("parent", 0).expect("parent depth");
 		let child =
-			control.admit_child_session(ChildSpec::new("analysis"), parent).expect("admit depth five");
-		assert_eq!(child.depth().value(), 5);
-		let too_deep = ParentContext::new("parent", 5).expect("parent depth");
+			control.admit_child_session(ChildSpec::new("analysis"), parent).expect("admit depth one");
+		assert_eq!(child.depth().value(), 1);
+		let too_deep = ParentContext::new("parent", 1).expect("parent depth");
 		assert!(matches!(
 			control.admit_child_session(ChildSpec::new("analysis"), too_deep),
-			Err(AdmissionRefusal::DepthExceeded(5))
+			Err(AdmissionRefusal::DepthExceeded(1))
 		));
 	}
 }

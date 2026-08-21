@@ -12,8 +12,7 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	resolveChildMaxSubagentDepth,
-	resolveSubagentDepthPolicy,
+	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
 	type SingleResult,
@@ -97,12 +96,7 @@ export async function runParallelPath(
 		agentConfigs.push(config);
 	}
 
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	const maxSubagentDepths = agentConfigs.map((config) =>
-		resolveChildMaxSubagentDepth(currentMaxSubagentDepth, config.maxSubagentDepth),
-	);
+	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 
 	if (params.worktree) {
 		const worktreeTaskCwdError = buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
@@ -227,7 +221,6 @@ export async function runParallelPath(
 			sharedAutoIntercomGroup: sharedAutoGroupForSet(params.group, tasks),
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
-			maxSubagentDepths,
 			parentDepth: data.parentDepth,
 			liveResults,
 			liveProgress,
@@ -258,7 +251,6 @@ export async function runParallelPath(
 			mode: "parallel",
 			cwd: effectiveCwd,
 			results: details.results,
-			maxSubagentDepths,
 		});
 		if (interrupted) {
 			return {

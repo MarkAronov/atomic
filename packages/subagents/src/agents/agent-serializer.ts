@@ -23,7 +23,6 @@ export const KNOWN_FIELDS = new Set([
 	"defaultReads",
 	"defaultProgress",
 	"interactive",
-	"maxSubagentDepth",
 ]);
 
 const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([`completion${"Guard"}`]);
@@ -93,10 +92,6 @@ export function serializeAgent(config: AgentConfig): string {
 
 	if (config.defaultProgress) lines.push("defaultProgress: true");
 	if (config.interactive) lines.push("interactive: true");
-	const maxSubagentDepth = config.maxSubagentDepth;
-	if (typeof maxSubagentDepth === "number" && Number.isInteger(maxSubagentDepth) && maxSubagentDepth >= 0) {
-		lines.push(`maxSubagentDepth: ${maxSubagentDepth}`);
-	}
 
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {

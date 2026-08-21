@@ -32,7 +32,7 @@ function stageContext(boundary: WorkflowStageAdmissionBoundary): ExtensionContex
 			workflowRunId: "run-1",
 			workflowStageId: "stage-1",
 			workflowStageName: "review",
-			constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+			constraints: { disableWorkflowTool: true },
 			messageAdmission: {
 				boundary,
 				extensionState: new Map(),

@@ -84,7 +84,6 @@ describe("tool run-control actions", () => {
 					workflowStageName: "Stage",
 					constraints: {
 						disableWorkflowTool: true,
-						maxSubagentDepth: 2,
 					},
 				},
 			},

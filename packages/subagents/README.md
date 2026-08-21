@@ -193,7 +193,7 @@ Use the optional prompt shortcuts below when you want the pattern to be repeatab
 
 Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
-Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. Non-fanout children receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents; authorized fanout children get a narrower boundary that limits nested delegation to the assigned fanout. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate: launches, `resume`, and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
 ## Optional shortcuts
 
@@ -400,7 +400,6 @@ output: context.md
 defaultReads: context.md
 defaultProgress: true
 interactive: true
-maxSubagentDepth: 1
 ---
 
 Your system prompt goes here.
@@ -427,7 +426,6 @@ Important fields:
 | `defaultReads` | Files to read before running in single or parallel behavior. |
 | `defaultProgress` | Maintain `progress.md`. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
-| `maxSubagentDepth` | Tightens nested delegation for this agent’s children. |
 
 ### Tool and extension selection
 
@@ -648,7 +646,7 @@ After a worktree parallel step completes, per-agent diff stats are appended to t
 
 Atomic subagents read optional JSON config from `~/.atomic/agent/extensions/subagent/config.json` and still check the legacy `~/.pi/agent/extensions/subagent/config.json` path for compatibility.
 
-Subagent configuration controls discovery, parallel limits, session storage, depth, control notices, and intercom delivery. There are no execution-mode toggles; every execution request is foreground.
+Subagent configuration controls discovery, parallel limits, session storage, control notices, and intercom delivery. There are no execution-mode toggles; every execution request is foreground.
 
 ### `parallel`
 
@@ -670,14 +668,6 @@ Subagent configuration controls discovery, parallel limits, session storage, dep
 ```
 
 Session directory precedence is: `params.sessionDir`, then `config.defaultSessionDir`, then a directory derived from the parent session. Sessions are always enabled.
-
-### `maxSubagentDepth`
-
-```json
-{ "maxSubagentDepth": 1 }
-```
-
-Controls nested delegation through typed admission policy. Accepted values are `0` through `5`; higher values are refused at the hard ceiling. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
 
 ### `intercomBridge`
 
@@ -780,18 +770,11 @@ Pass `share: true` to export a full session to HTML, upload it to a secret GitHu
 
 This is disabled by default. Session data may contain source code, paths, environment variables, credentials, or other sensitive output. You need `gh` installed and authenticated.
 
-## Recursion guard
+## Delegation boundary
 
-Subagents can call `subagent`, which can get expensive and hard to observe. A depth guard prevents unbounded nesting.
+Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch, `resume`, and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `doctor` stay available to a child.
 
-By default, nesting is capped at five delegated subagent levels below the main session. Deeper calls are blocked with guidance to complete the current task directly.
-
-Configure a lower or equal limit with:
-
-1. `config.maxSubagentDepth`
-2. `maxSubagentDepth` in agent frontmatter, which can only tighten the admitted limit
-
-The depth policy is typed admission state and is not inherited through an environment variable.
+There is no configuration option, agent frontmatter field, or tool parameter for the delegation level. The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state and is not inherited through an environment variable.
 
 Completion and intercom events:
 

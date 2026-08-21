@@ -22,7 +22,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import type { SubagentChildPolicy } from "../../packages/coding-agent/src/index.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { inProcessChildResourceLoaderOptions } from "../../packages/subagents/src/runs/inprocess/runner.js";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.js";
+import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
 
 const tempDirs: string[] = [];
 
@@ -63,7 +63,7 @@ const stageContext = {
 	workflowRunId: "run-test",
 	workflowStageId: "stage-test",
 	workflowStageName: "Stage Test",
-	constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+	constraints: { disableWorkflowTool: true },
 } as const;
 
 /** Create a child session the way the in-process runner does. */
@@ -286,14 +286,13 @@ describe("in-process child session resources", () => {
 	);
 
 	test(
-		"a child whose agent tightened the maximum is refused delegation by its own subagent tool",
+		"an admitted child is refused delegation by its own subagent tool",
 		async () => {
-			assert.equal(MAX_SUBAGENT_NESTING_DEPTH, 5);
-			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-inherited-max-cwd-");
+			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-admitted-depth-cwd-");
 			const { session } = await createChildSession({
 				cwd,
 				agentDir,
-				policy: { depth: 1, maxSubagentDepth: 1 },
+				policy: { depth: 1 },
 			});
 			try {
 				const tool = session.getToolDefinition("subagent");
@@ -307,7 +306,7 @@ describe("in-process child session resources", () => {
 				);
 				const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
-				assert.ok(text.startsWith("Nested subagent call blocked (depth=1, max=1)"), `unexpected message: ${text}`);
+				assert.equal(text, SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
 			} finally {
 				session.dispose();
 			}

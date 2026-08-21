@@ -161,18 +161,17 @@ Single-agent calls accept `progress: boolean` in foreground and resumed mode. `p
 subagent({ agent: "worker", task: "Implement the approved fix.", progress: true })
 ```
 
-## Nested and fanout boundaries
+## Delegation and child boundaries
 
 Child-safety boundaries are enforced by typed admission policy and the bundled subagent extension:
 
 - In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout. The bundled subagents skill remains parent-only and is stripped from child prompts, including fanout-authorized children.
 - Child context is filtered to remove parent orchestration artifacts, old control/status messages, and prior parent `subagent` tool calls/results.
-- Non-fanout children are instructed that they are not the parent orchestrator and must not propose or run subagents.
-- Nested fanout is available only for explicitly authorized agents whose resolved tools include `subagent`. Authorized fanout children receive narrower instructions that limit delegation to the assigned fanout.
-- Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`.
-- The recursion guard has a hard maximum of five delegated subagent levels. The admitted depth policy may choose a lower value from `0` to `5`; deeper admission is refused rather than inherited from process environment state.
+- Children are instructed that they are not the parent orchestrator and must complete their assigned task directly rather than delegating.
+- Delegation is exactly one level deep and is not configurable. A session admitted as a subagent child is refused every launch, `resume`, and `interrupt`; only `list`, `get`, `status`, and `doctor` stay available. A management-restricted child is also refused `create`, `update`, and `delete`.
+- The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state, never inherited from process environment state.
 
-This keeps the parent session responsible for orchestration unless you deliberately choose a fanout-capable custom agent.
+This keeps the parent session responsible for orchestration.
 
 ## Custom agents
 
