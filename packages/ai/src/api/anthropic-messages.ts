@@ -286,18 +286,8 @@ function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): Provid
 	return merged;
 }
 
-function mergeClientHeaders(
-	model: Model<"anthropic-messages">,
-	...headerSources: (ProviderHeaders | undefined)[]
-): ProviderHeaders {
-	const merged = mergeHeaders(...headerSources);
-	if (model.provider === "kimi-coding") {
-		for (const name of Object.keys(merged)) {
-			if (name.toLowerCase() === "user-agent") delete merged[name];
-		}
-		merged["User-Agent"] = getPiUserAgent();
-	}
-	return merged;
+function mergeClientHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
+	return mergeHeaders({ "User-Agent": getPiUserAgent() }, ...headerSources);
 }
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
@@ -864,7 +854,10 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 ): AssistantMessageEventStream => {
 	assertRequestAuth(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		toolChoice: options?.toolChoice,
+	} satisfies AnthropicOptions;
 	if (!options?.reasoning) {
 		return stream(model, context, {
 			...base,
@@ -939,7 +932,6 @@ function createClient(
 			dangerouslyAllowBrowser: true,
 			fetch,
 			defaultHeaders: mergeClientHeaders(
-				model,
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
@@ -963,7 +955,6 @@ function createClient(
 			dangerouslyAllowBrowser: true,
 			fetch,
 			defaultHeaders: mergeClientHeaders(
-				model,
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
@@ -983,7 +974,6 @@ function createClient(
 	const sessionAffinityHeaders: ProviderHeaders =
 		sessionId && getAnthropicCompat(model).sendSessionAffinityHeaders ? { "x-session-affinity": sessionId } : {};
 	const defaultHeaders = mergeClientHeaders(
-		model,
 		{
 			accept: "application/json",
 			"anthropic-dangerous-direct-browser-access": "true",

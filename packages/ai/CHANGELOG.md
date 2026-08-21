@@ -6,7 +6,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history live
 
 ### Breaking Changes
 
+- Built-in xAI models now use the OpenAI Responses API only. Completions is no longer registered on the xAI provider.
+
 - Renamed the exported `GoogleThinkingLevel` type to `GoogleApiThinkingLevel` and added `ResolvedGoogleThinkingLevel` for normalized adapter levels.
+
+### Added
+
+- Added provider-neutral `toolChoice` on simple stream requests.
+- Generalized OpenAI Completions thinking-token budget fields (`thinkingTokenBudgetField`, with `supportsThinkingTokenBudget` as the vLLM alias).
+- Send pi's runtime `User-Agent` on Anthropic, Azure Responses, Google, Vertex, Mistral, OpenAI Completions, and OpenAI Responses requests.
 
 ### Changed
 
@@ -37,3 +45,5 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history live
 	- Bedrock round-trips non-Anthropic redacted reasoning ([#8314](https://github.com/earendil-works/pi/pull/8314)).
 	- Z.AI reasoning effort metadata is derived from models.dev options, preserving GLM-5.2 `none` and exposing GLM-5.3 low/high/max ([#8336](https://github.com/earendil-works/pi/issues/8336)).
 	- OpenAI-compatible Chat Completions preserves and resends assistant-level `reasoning_details` via `thinkingSignature` ([#8246](https://github.com/earendil-works/pi/pull/8246), [#7994](https://github.com/earendil-works/pi/issues/7994)).
+- Removed the unused `@opentelemetry/api` dependency from `@bastani/pi-ai`.
+- Cerebras default model is now `gpt-oss-120b`.

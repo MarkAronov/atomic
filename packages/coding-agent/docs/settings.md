@@ -35,7 +35,7 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 | `defaultModel` | string | - | Default model ID |
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; the active model must support the selected level |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
-| `thinkingBudgets` | object | - | Custom token budgets per thinking level |
+| `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and their attributed wasted tokens |
 | `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns and, since compaction fallback rungs, borrowed for compaction planner requests |
 
