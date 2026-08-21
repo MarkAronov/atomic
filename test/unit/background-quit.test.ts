@@ -458,6 +458,121 @@ describe("graceful workflow quit acknowledgement", () => {
 		finishSecondPrompt.resolve();
 		assert.equal((await execution).status, "completed");
 	});
+
+	test("production quit and session disposal preserve the confirmed paused run", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const firstPromptStarted = Promise.withResolvers<void>();
+		const secondPromptStarted = Promise.withResolvers<void>();
+		const finishSecondPrompt = Promise.withResolvers<void>();
+		let rejectCurrentPrompt: ((reason: Error) => void) | undefined;
+		let promptCalls = 0;
+		let streaming = false;
+		const session = productionSession({
+			async prompt() {
+				promptCalls += 1;
+				streaming = true;
+				if (promptCalls === 1) firstPromptStarted.resolve();
+				else secondPromptStarted.resolve();
+				await new Promise<void>((resolve, reject) => {
+					rejectCurrentPrompt = reject;
+					if (promptCalls > 1) void finishSecondPrompt.promise.then(resolve);
+				});
+				streaming = false;
+			},
+			get isStreaming() {
+				return streaming;
+			},
+			async abort() {
+				streaming = false;
+				rejectCurrentPrompt?.(new Error("AbortError"));
+			},
+		});
+		const definition = workflow({
+			name: "production-quit-disposal",
+			description: "",
+			inputs: {},
+			outputs: { done: Type.Boolean() },
+			run: async (ctx) => {
+				await ctx.stage("live-stage").prompt("work");
+				return { done: true };
+			},
+		});
+		const runId = "production-quit-disposal";
+		const runEnds: Array<{ status: string; error?: string }> = [];
+		const execution = run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				stageControlRegistry: registry,
+				durableBackend: backend,
+				adapters: { agentSession: { create: async () => session } },
+				onRunEnd: (_runId, status, _result, error) => {
+					runEnds.push({ status, ...(error === undefined ? {} : { error }) });
+				},
+			},
+		);
+		let liveHandle: StageControlHandle | undefined;
+		try {
+			await firstPromptStarted.promise;
+			liveHandle = registry.run(runId).stages()[0];
+			assert.ok(liveHandle);
+
+			const quit = await quitRun(runId, { store, stageControlRegistry: registry });
+			assert.equal(quit.ok, true);
+			const paused = store.runs().find((candidate) => candidate.id === runId);
+			assert.equal(paused?.status, "paused");
+			assert.equal(paused?.resumable, true);
+			assert.equal(paused?.stages[0]?.status, "paused");
+			assert.equal(backend.getWorkflow(runId)?.status, "paused");
+			assert.equal(backend.getWorkflow(runId)?.resumable, true);
+
+			// session_shutdown(quit) reaches this same clear() path after quit has
+			// acknowledged the pause. Disposal must not reject the parked stage.
+			registry.clear();
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const afterDisposal = store.runs().find((candidate) => candidate.id === runId);
+			assert.equal(afterDisposal?.status, "paused");
+			assert.equal(afterDisposal?.resumable, true);
+			assert.equal(afterDisposal?.stages[0]?.status, "paused");
+			assert.equal(afterDisposal?.error, undefined);
+			assert.equal(afterDisposal?.stages[0]?.error, undefined);
+			assert.equal(
+				runEnds.some(({ status }) => status === "failed"),
+				false,
+				"disposing a confirmed pause must not emit a failed workflow.run.end",
+			);
+			assert.equal(
+				runEnds.some(({ error }) => error?.includes("session has been disposed") === true),
+				false,
+				"the disposed-session error must not reach the run record",
+			);
+
+			await liveHandle.resume("continue");
+			await secondPromptStarted.promise;
+			finishSecondPrompt.resolve();
+			assert.equal((await execution).status, "completed");
+		} finally {
+			finishSecondPrompt.resolve();
+			if (liveHandle?.status === "paused") {
+				try {
+					await liveHandle.resume("cleanup");
+				} catch {
+					// The baseline implementation disposes the handle before this assertion.
+				}
+			}
+			await execution;
+			try {
+				await liveHandle?.dispose?.();
+			} catch {
+				// Cleanup is best-effort after a deliberately failing baseline run.
+			}
+		}
+	});
 	test("durable transition failure propagates instead of claiming a resumable pause", async () => {
 		class TransitionFailingBackend extends InMemoryDurableBackend {
 			override async transitionWorkflowStatus(): Promise<boolean> {
