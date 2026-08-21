@@ -425,13 +425,20 @@ jobs:
         working-directory: packages/coding-agent/docs
         # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
         # Unpin once upstream publishes a resolvable release.
-        # Run through npx against this job's pinned Node 22 (LTS): mintlify
-        # refuses to start on Node 25+, and Bun 1.4.0 self-reports Node-compat
-        # 26.x, so `bunx --bun` now trips that same version gate.
+        # bunx, deliberately without `--bun`, and not npx — both verified on a
+        # Linux + Node 22 + Bun 1.4.0 container:
+        # - `bunx --bun` re-hosts the CLI wrapper's spawned `node` child on Bun,
+        #   and Bun 1.4.0 self-reports Node-compat 26.x, which trips mintlify's
+        #   "not supported on node versions 25+" refusal.
+        # - npx chdirs to the nearest package root (packages/coding-agent), so
+        #   mintlify resolves docs.json one directory up and fails with "must be
+        #   run in a directory where a docs.json file exists".
+        # Plain bunx preserves this working-directory and the wrapper's `node`
+        # child resolves to the Node 22 LTS this job pins above.
         timeout-minutes: 5
         run: |
-          npx mintlify@4.2.731 validate
-          npx mintlify@4.2.731 broken-links
+          bunx mintlify@4.2.731 validate
+          bunx mintlify@4.2.731 broken-links
       # pi parity: repository scripts that Node can run are tested with Node's
       # own runner rather than through the workspace suites.
       - name: Script tests
