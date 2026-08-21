@@ -221,17 +221,7 @@ export function emitChatSurface(
 	// the stored `content`. Default to a complete printable rendering so
 	// headless `/workflow list|status|status <id>` is useful without a TUI.
 	const content = options.content ?? renderChatSurfacePlainText(payload);
-	(
-		send as unknown as (
-			msg: {
-				customType: string;
-				content: string;
-				display: boolean;
-				details: ChatSurfacePayload;
-			},
-			sendOptions: { triggerTurn: false },
-		) => void
-	).call(
+	void send.call(
 		pi,
 		{
 			customType: CHAT_SURFACE_CUSTOM_TYPE,
