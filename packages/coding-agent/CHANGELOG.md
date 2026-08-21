@@ -6,6 +6,12 @@
 
 - Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.
 
+- Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+
+### Fixed
+
+- Fixed the `400 checking third-party user token: bad request: Personal Access Tokens are not supported for this endpoint` failure for fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`; exchanged OAuth tokens containing a `tid=` segment remain unchanged, and per-request or `models.json` provider/model header overrides win. Catalog default headers are no longer promoted into the per-request override layer, while remaining visible to `before_provider_headers` extension hooks ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+
 ## [0.9.14] - 2026-08-19
 
 Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

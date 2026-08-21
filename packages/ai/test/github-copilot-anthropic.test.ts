@@ -78,7 +78,9 @@ describe("Copilot Claude via Anthropic Messages", () => {
 		const model = getModel("github-copilot", "claude-sonnet-4.6");
 		expect(model.api).toBe("anthropic-messages");
 
-		const s = streamAnthropic(model, context, { apiKey: "tid_copilot_session_test_token" });
+		const s = streamAnthropic(model, context, {
+			apiKey: "tid=copilot_session_test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+		});
 		for await (const event of s) {
 			if (event.type === "error") break;
 		}
@@ -88,7 +90,9 @@ describe("Copilot Claude via Anthropic Messages", () => {
 
 		// Auth: apiKey null, authToken for Bearer
 		expect(opts.apiKey).toBeNull();
-		expect(opts.authToken).toBe("tid_copilot_session_test_token");
+		expect(opts.authToken).toBe(
+			"tid=copilot_session_test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+		);
 		const headers = opts.defaultHeaders as Record<string, string>;
 
 		// Copilot static headers from model.headers
@@ -114,7 +118,7 @@ describe("Copilot Claude via Anthropic Messages", () => {
 	it("omits interleaved-thinking beta for adaptive-thinking models", async () => {
 		const model = getModel("github-copilot", "claude-sonnet-4.6");
 		const s = streamAnthropic(model, context, {
-			apiKey: "tid_copilot_session_test_token",
+			apiKey: "tid=copilot_session_test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
 			interleavedThinking: true,
 		});
 		for await (const event of s) {

@@ -51,7 +51,11 @@ import {
 	resolveGrammarConstrainedSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
-import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+import {
+	buildCopilotDynamicHeaders,
+	hasCopilotVisionInput,
+	preserveCopilotIntegrationHeader,
+} from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
@@ -233,7 +237,16 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			);
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
-			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat);
+			const client = createClient(
+				model,
+				context,
+				apiKey,
+				options?.headers,
+				options?.fetch,
+				cacheSessionId,
+				compat,
+				options?.apiKey,
+			);
 			let params = buildParams(model, context, options, compat, cacheRetention, grammarToolInputProperties);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -642,14 +655,19 @@ function createClient(
 	fetch?: typeof globalThis.fetch,
 	sessionId?: string,
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
+	copilotApiKey?: string,
 ) {
 	const headers: ProviderHeaders = { ...model.headers };
 	if (model.provider === "github-copilot") {
 		const hasImages = hasCopilotVisionInput(context.messages);
-		const copilotHeaders = buildCopilotDynamicHeaders({
-			messages: context.messages,
-			hasImages,
-		});
+		const copilotHeaders = preserveCopilotIntegrationHeader(
+			model.headers,
+			buildCopilotDynamicHeaders({
+				messages: context.messages,
+				hasImages,
+				apiKey: copilotApiKey,
+			}),
+		);
 		Object.assign(headers, copilotHeaders);
 	}
 

@@ -83,6 +83,8 @@ OAuth logins get their Copilot host from the token GitHub issues during login. E
 
 A `models.json` provider `baseUrl` for `github-copilot` overrides all of the above. Without `COPILOT_GITHUB_TOKEN` the provider is left exactly as upstream `pi-ai` defines it.
 
+Chat requests authenticated with a raw `COPILOT_GITHUB_TOKEN` (including `github_pat_`, `ghp_`, `gho_`, and `ghu_` tokens) send `Copilot-Integration-Id: copilot-developer-cli`. A `Copilot-Integration-Id` supplied through `models.json` provider headers, `modelOverrides`, or per request always takes precedence, including an explicit `vscode-chat` value. Exchanged OAuth tokens containing a `tid=` segment keep the existing OAuth headers unchanged. The env-token routing implementation and its exported helpers now live in `@bastani/pi-ai`.
+
 Business and enterprise tokens sent to the individual host return `421 Misdirected Request`; if you see that, set `COPILOT_API_TARGET` to the host your organization issues.
 
 ### xAI (Grok/X subscription)

@@ -16,9 +16,9 @@ export async function _getRequiredRequestAuth(
 	baseUrl?: string;
 	env?: Record<string, string>;
 }> {
-	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getAuth"]>>;
+	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getRequestAuth"]>>;
 	try {
-		result = await this._modelRuntime.getAuth(model);
+		result = await this._modelRuntime.getRequestAuth(model);
 	} catch (error) {
 		const cause = error instanceof Error ? error.cause : undefined;
 		if (cause instanceof Error && cause.message === "authHeader requires a resolved API key") {
