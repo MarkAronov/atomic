@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed `/workflow` cards being swallowed while the agent is streaming. The dispatch, list, and status cards were sent as ordinary turn-triggering messages, so a card emitted during a live model turn — for example right after a workflow lifecycle notice started one — was queued as steering and did not reach the transcript until that turn ended. Cards are already-rendered transcript surfaces and are now sent as non-turn messages, so they appear immediately whether or not a turn is in flight. Workflow lifecycle notices are unchanged and still nudge the model.
+- Persistent workflow progress widgets now reattach after a host UI reset or remote-engine release while keeping the existing mount-once, update-in-place behavior ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
 
 ## [0.9.14] - 2026-08-19
 

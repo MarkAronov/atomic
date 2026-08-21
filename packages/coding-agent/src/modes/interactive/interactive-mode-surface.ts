@@ -190,6 +190,8 @@ declare module "./interactive-mode-base.ts" {
 		shouldDeferInlineCustomUiFocus(): boolean;
 		focusHostInlineCustomUi(): boolean;
 		onHostCustomUiStateChange(listener: HostCustomUiStateListener): () => void;
+		onExtensionWidgetRelease(key: string, listener: () => void): () => void;
+		notifyExtensionWidgetRelease(key: string): void;
 		createProjectTrustContext(cwd: string): ProjectTrustContext;
 		createExtensionUIContext(): ExtensionUIContext;
 		showExtensionSelector(
