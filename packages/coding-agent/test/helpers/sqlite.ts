@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 
 /**
- * A `bun:sqlite`-shaped fixture handle backed by whichever builtin exists.
+ * A `bun:sqlite`-shaped fixture handle backed by `node:sqlite`.
  *
  * These suites were written against `bun:sqlite`, whose `Database` exposes
  * `run(sql, ...params)` directly. `node:sqlite` splits that into `exec()` for
@@ -10,9 +10,9 @@ import { createRequire } from "node:module";
  * keeps every existing call site and assertion unchanged, so these suites still
  * prove what they proved when they ran only under Bun.
  *
- * Mirrors the preference order in `src/core/tools/resource-selectors.ts`:
- * `node:sqlite` first, `bun:sqlite` as the fallback for Bun releases that
- * predate oven-sh/bun#32498.
+ * Mirrors `src/core/tools/resource-selectors.ts`: `node:sqlite` only, which
+ * Node ≥ 22.13 and Bun ≥ 1.4.0 (this repository's floor) both ship. The
+ * `bun:sqlite` fallback was removed with that floor.
  */
 
 interface FixtureRow {
@@ -38,45 +38,28 @@ interface NodeSqliteDatabase {
 	prepare(sql: string): FixtureStatement;
 	close(): void;
 }
-interface BunSqliteDatabase {
-	run(sql: string, ...params: unknown[]): void;
-	query(sql: string): FixtureStatement;
-	close(): void;
-}
 
 export class TestSqliteDatabase implements FixtureDatabase {
-	private readonly node?: NodeSqliteDatabase;
-	private readonly bun?: BunSqliteDatabase;
+	private readonly node: NodeSqliteDatabase;
 
 	constructor(path: string) {
 		const requireModule = createRequire(import.meta.url);
-		try {
-			const { DatabaseSync } = requireModule("node:sqlite") as {
-				DatabaseSync: new (path: string) => NodeSqliteDatabase;
-			};
-			this.node = new DatabaseSync(path);
-		} catch {
-			const { Database } = requireModule("bun:sqlite") as { Database: new (path: string) => BunSqliteDatabase };
-			this.bun = new Database(path);
-		}
+		const { DatabaseSync } = requireModule("node:sqlite") as {
+			DatabaseSync: new (path: string) => NodeSqliteDatabase;
+		};
+		this.node = new DatabaseSync(path);
 	}
 
 	run(sql: string, ...params: unknown[]): void {
-		if (this.bun) {
-			this.bun.run(sql, ...params);
-			return;
-		}
-		const node = this.node as NodeSqliteDatabase;
 		if (params.length === 0) {
-			node.exec(sql);
+			this.node.exec(sql);
 			return;
 		}
-		node.prepare(sql).run(...bindValues(params));
+		this.node.prepare(sql).run(...bindValues(params));
 	}
 
 	query(sql: string): FixtureStatement {
-		if (this.bun) return this.bun.query(sql);
-		const statement = (this.node as NodeSqliteDatabase).prepare(sql);
+		const statement = this.node.prepare(sql);
 		return {
 			all: (...params: unknown[]) => statement.all(...bindValues(params)),
 			get: (...params: unknown[]) => statement.get(...bindValues(params)),
@@ -85,7 +68,7 @@ export class TestSqliteDatabase implements FixtureDatabase {
 	}
 
 	close(): void {
-		(this.node ?? this.bun)?.close();
+		this.node.close();
 	}
 }
 

@@ -43,22 +43,20 @@ interface SqliteDatabase {
 }
 type SqliteDatabaseConstructor = new (path: string, options?: { readonly?: boolean }) => SqliteDatabase;
 /**
- * SQLite from whichever builtin the current runtime provides.
+ * SQLite via `node:sqlite`.
  *
- * `node:sqlite` is preferred: it is unflagged from Node v22.13.0, it is the
- * module upstream pi uses, and it lets these selectors and their tests run on
- * Node. It is absent from Bun 1.3.14, so `bun:sqlite` remains the fallback that
- * keeps the shipped Bun-compiled binary working. Bun implements `node:sqlite`
- * on main (oven-sh/bun#32498) but has not released it; once it ships, both
- * runtimes take the first branch and the fallback can be deleted.
+ * It is unflagged from Node v22.13.0, it is the module upstream pi uses, and
+ * Bun ships it from 1.4.0 (oven-sh/bun#32498) — this repository's Bun floor —
+ * so both runtimes provide it. The `bun:sqlite` fallback that covered older
+ * Bun binaries was removed with that floor.
  *
  * `better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on
  * construction, which is worse than a catchable missing-module error.
  *
- * The adapter normalizes the two deltas that would otherwise be visible to
- * callers: `node:sqlite` spells the option `readOnly` and rejects it when
- * passed explicitly as `undefined`, and it refuses to bind booleans that
- * `bun:sqlite` stores as integer 1/0.
+ * The adapter keeps the `bun:sqlite`-shaped API these selectors were written
+ * against and normalizes the deltas: `node:sqlite` spells the option
+ * `readOnly` and rejects it when passed explicitly as `undefined`, and it
+ * refuses to bind booleans, which are stored as integer 1/0.
  */
 interface NodeSqliteStatement {
 	all(...params: unknown[]): Record<string, SqliteValue>[];
@@ -72,7 +70,7 @@ interface NodeSqliteDatabase {
 }
 type NodeSqliteConstructor = new (path: string, options?: { readOnly?: boolean }) => NodeSqliteDatabase;
 
-/** `bun:sqlite` accepts booleans and stores integer 1/0; `node:sqlite` throws on them. */
+/** Callers may pass booleans; `node:sqlite` refuses to bind them, so store integer 1/0. */
 export function toSqliteBindValues(params: readonly SqliteValue[]): unknown[] {
 	return params.map((param) => (typeof param === "boolean" ? (param ? 1 : 0) : param));
 }
@@ -108,13 +106,9 @@ function sqliteDatabase(): SqliteDatabaseConstructor {
 		const { DatabaseSync } = requireModule("node:sqlite") as { DatabaseSync: NodeSqliteConstructor };
 		return nodeSqliteAdapter(DatabaseSync);
 	} catch {
-		try {
-			return (requireModule("bun:sqlite") as { Database: SqliteDatabaseConstructor }).Database;
-		} catch {
-			throw new Error(
-				"SQLite selectors need node:sqlite (Node >= 22.13) or bun:sqlite; this runtime provides neither.",
-			);
-		}
+		throw new Error(
+			"SQLite selectors need node:sqlite (Node >= 22.13 or Bun >= 1.4.0); this runtime does not provide it.",
+		);
 	}
 }
 function existingSqliteFile(path: string): boolean | undefined {

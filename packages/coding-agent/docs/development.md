@@ -67,8 +67,6 @@ npm run test:all                  # Run all tests
 npm run test:scripts              # Run the repository script tests under node --test
 # Run the package Vitest suite (Node-hosted)
 npm run test --workspace=@bastani/atomic -- test/specific.test.ts
-# Run its Bun-hosted half. Required: the SQLite selector tests load bun:sqlite,
-# which the shipped binary has and Node does not.
 ```
 
 ## Deterministic installs

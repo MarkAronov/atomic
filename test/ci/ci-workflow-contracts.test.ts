@@ -130,22 +130,22 @@ test("workspace selectors precede the run verb so Bun cannot rewrite them", asyn
  * exists only under Bun. When the suite moved to Node, one SQLite test silently
  * became `it.skip` and eleven more kept their names, kept passing, and executed
  * no assertions behind `if (!sqlite) return`. Neither shows up in a pass/fail
- * count or a test-name diff, so the guard is structural: the loader must try
- * `node:sqlite` first and fall back to `bun:sqlite`, and no test may reintroduce
- * a soft guard that turns an unavailable module into a green no-op.
+ * count or a test-name diff, so the guard is structural: the loader must use
+ * `node:sqlite`, which Node >= 22.13 and Bun >= 1.4.0 (this repository's
+ * floor) both ship — the `bun:sqlite` fallback is deleted and must not come
+ * back — and no test may reintroduce a soft guard that turns an unavailable
+ * module into a green no-op.
  */
 test("SQLite selectors resolve on either runtime and their tests cannot silently empty", async () => {
 	const selectors = await readText(join(root, "packages/coding-agent/src/core/tools/resource-selectors.ts"));
-	// node:sqlite first: it is the portable module and the one upstream pi uses.
-	// bun:sqlite second: Bun 1.3.14 has no node:sqlite (oven-sh/bun#32498 is
-	// merged but unreleased), and the shipped binary is Bun-compiled.
-	const nodeFirst = selectors.indexOf('requireModule("node:sqlite")');
-	const bunSecond = selectors.indexOf('requireModule("bun:sqlite")');
-	assert.ok(nodeFirst > 0, "resource-selectors must load node:sqlite");
-	assert.ok(bunSecond > nodeFirst, "bun:sqlite must remain the fallback, after node:sqlite");
+	assert.ok(selectors.includes('requireModule("node:sqlite")'), "resource-selectors must load node:sqlite");
+	assert.ok(
+		!selectors.includes('requireModule("bun:sqlite")'),
+		"the bun:sqlite fallback was deleted with the Bun 1.4.0 floor and must not come back",
+	);
 
 	// A single project: the runtime split existed only because the loader was
-	// Bun-only, so reintroducing it would mean the fallback was lost.
+	// Bun-only; it must not come back.
 	const config = (await import("../../packages/coding-agent/vitest.config.js")) as {
 		default: { test?: { projects?: { test?: { name?: string; include?: string[]; exclude?: string[] } }[] } };
 	};
@@ -513,7 +513,7 @@ test("the shipped build toolchain and Bun do not float", async () => {
 			([, value]) => value as string,
 		),
 	);
-	assert.deepEqual([...bunVersions], ["1.3.14"], "test.yml and publish.yml must exercise one pinned Bun");
+	assert.deepEqual([...bunVersions], ["1.4.0"], "test.yml and publish.yml must exercise one pinned Bun");
 });
 
 test("each native leg declares its own measured job and compile budget", async () => {
