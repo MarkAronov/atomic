@@ -385,7 +385,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 					authorization: `Bearer ${apiKey}`,
 					accept: "text/event-stream",
 					"content-type": "application/json",
-					...providerHeadersToRecord(options?.headers),
+					...providerHeadersToRecord({ ...model.headers, ...options?.headers }),
 				},
 				body: JSON.stringify(payload),
 				signal: options?.signal,

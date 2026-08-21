@@ -227,7 +227,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
-			const customHeaders = providerHeadersToRecord(options.headers);
+			const customHeaders = providerHeadersToRecord({ ...model.headers, ...options.headers });
 			if (customHeaders) {
 				addCustomHeadersMiddleware(client, customHeaders);
 			}

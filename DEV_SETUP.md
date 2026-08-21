@@ -22,13 +22,17 @@ This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm**
 git clone --recurse-submodules git@github.com:bastani-inc/atomic.git
 cd atomic
 npm ci --ignore-scripts
-npm run build --workspace=@bastani/atomic-natives
+npm run build
 ```
 
-The natives build is a required one-time step (and again after pulling changes to
-`crates/` or `packages/natives/`). `npm ci --ignore-scripts` deliberately skips
-lifecycle scripts, and the workspace natives package has no install hook anyway —
-only published releases ship prebuilt binaries.
+`npm run build` is a required one-time step (and again after pulling changes to
+`packages/ai`, `crates/`, or `packages/natives/`). It builds the vendored
+`@bastani/pi-ai` package, aliases `node_modules/@earendil-works/pi-ai` onto that
+workspace copy, and builds the native N-API module. `npm ci --ignore-scripts`
+deliberately skips lifecycle scripts (including the `prepare` hook that would
+run the alias), and the workspace packages have no install hooks anyway — only
+published releases ship prebuilt artifacts. Without the pi-ai build, running the
+CLI from source fails with `Cannot find module '@bastani/pi-ai'`.
 
 **`vitest` now builds it for you when it is missing.** The `globalSetup` in
 `test/global-setup-natives.ts` checks for `packages/natives/native/*.node`
@@ -56,7 +60,7 @@ module explicitly for the same reason (see `.github/workflows/test.yml`).
 Note that the generated napi-rs loader's own miss message suggests removing
 `package-lock.json` and `node_modules` and re-running `npm i`. That advice does
 not apply here: with `--ignore-scripts`, reinstalling never produces the
-binding. `npm run build --workspace=@bastani/atomic-natives` is the fix.
+binding. `npm run build` (or `npm run build --workspace=@bastani/atomic-natives`) is the fix.
 
 The committed `.npmrc` applies a three-day minimum release age to anything you add with
 `npm install`, and pins exact versions. `package-lock.json` is the only lockfile.
@@ -246,7 +250,8 @@ Run these from the workspace root:
 | Command                    | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
 | `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
-| `npm run build --workspace=@bastani/atomic-natives` | Build the native N-API module (requires cargo)  |
+| `npm run build`             | Build `@bastani/pi-ai`, alias `@earendil-works/pi-ai` onto it, build the native N-API module (requires cargo) |
+| `npm run build --workspace=@bastani/atomic-natives` | Build only the native N-API module              |
 | `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
 | `npm run typecheck`         | Type-check the workspace                                         |
 | `npm run test:unit`         | Run unit tests                                                   |

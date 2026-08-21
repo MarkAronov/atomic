@@ -1,10 +1,11 @@
-import type { Api, Model, Provider } from "@bastani/pi-ai";
 import { describe, expect, test } from "vitest";
+import type { Provider } from "../src/models.ts";
 import {
 	type CopilotRoutingEnv,
 	resolveCopilotEnvBaseUrl,
 	withCopilotEnvBaseUrl,
 } from "../src/providers/github-copilot-env.ts";
+import type { Api, Model } from "../src/types.ts";
 
 const INDIVIDUAL = "https://api.individual.githubcopilot.com";
 const PUBLIC_HUB = "https://api.githubcopilot.com";

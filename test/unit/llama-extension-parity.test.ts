@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelsPublication, ModelsStoreEntry, RefreshModelsContext } from "@bastani/pi-ai";
 import { InMemoryModelsStore } from "@bastani/pi-ai";
-import { afterEach, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { FileModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
@@ -21,6 +21,17 @@ import { createLlamaProvider } from "../../packages/coding-agent/src/extensions/
 const originalFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
+});
+
+// An ambient COPILOT_GITHUB_TOKEN makes ModelRuntime.refresh({ allowNetwork: true })
+// fetch the GitHub Copilot catalog, tripping this file's fetch spies. Scrub it so
+// the suite behaves the same on machines that keep a real credential exported.
+const originalCopilotToken = process.env.COPILOT_GITHUB_TOKEN;
+beforeAll(() => {
+	delete process.env.COPILOT_GITHUB_TOKEN;
+});
+afterAll(() => {
+	if (originalCopilotToken !== undefined) process.env.COPILOT_GITHUB_TOKEN = originalCopilotToken;
 });
 
 function jsonResponse(value: object, status = 200): Response {

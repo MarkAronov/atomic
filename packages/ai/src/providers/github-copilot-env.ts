@@ -1,4 +1,5 @@
-import type { Api, Model, Provider } from "@bastani/pi-ai";
+import type { Provider } from "../models.ts";
+import type { Api, Model } from "../types.ts";
 
 /**
  * GitHub Copilot host routing for `COPILOT_GITHUB_TOKEN` (PAT) auth.
