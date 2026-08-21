@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.15-alpha.1] - 2026-08-21
+
 ### Breaking Changes
 
 - Subagent delegation is now exactly one level deep and is no longer configurable. A top-level session — main chat or a workflow stage — may call the `subagent` tool; a session that was itself admitted as a subagent child may not. Every launch, `resume`, and `interrupt` attempted from inside a child is refused with a single fixed message; the observing actions `list`, `get`, `status`, and `doctor` remain available to a child. Workflow stages are unchanged and still delegate once. The Rust `SubagentControl` admission door now refuses any child deeper than the single permitted level, and the executor refuses a child before any run starts, so the rule holds at both doors.
