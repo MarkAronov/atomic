@@ -8,6 +8,8 @@
 
 - Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
 
+- SQLite resource selectors now load `node:sqlite` exclusively; the `bun:sqlite` fallback for Bun releases before 1.4.0 was removed. `node:sqlite` ships unflagged in Node ≥ 22.13 and Bun ≥ 1.4.0, which is now the repository's Bun floor (engines, CI pins, and release binaries all moved to Bun 1.4.0).
+
 ### Fixed
 
 - Fixed the `400 checking third-party user token: bad request: Personal Access Tokens are not supported for this endpoint` failure for fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`; exchanged OAuth tokens containing a `tid=` segment remain unchanged, and per-request or `models.json` provider/model header overrides win. Catalog default headers are no longer promoted into the per-request override layer, while remaining visible to `before_provider_headers` extension hooks ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
