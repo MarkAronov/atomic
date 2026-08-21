@@ -804,12 +804,8 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
 	// Enumerate the directory rather than a fixed list: a workflow added later
 	// must not be able to introduce an unapproved GitHub-hosted runner unnoticed.
 	const workflowDir = join(root, ".github/workflows");
-	// The Windows acceptance harness injects exactly this workflow on a temporary
-	// e2e/pr-2187-* branch. It must use windows-latest per the objective and is
-	// deleted with that temporary PR; every ordinary workflow remains covered.
-	const temporaryE2eWorkflow = /^e2e-pr-2187\.ya?ml$/u;
 	const workflowFiles = (await readdir(workflowDir))
-		.filter((name) => (name.endsWith(".yml") || name.endsWith(".yaml")) && !temporaryE2eWorkflow.test(name))
+		.filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
 		.sort();
 	assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
 	const hosted: string[] = [];
