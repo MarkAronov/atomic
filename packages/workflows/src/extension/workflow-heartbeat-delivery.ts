@@ -164,7 +164,16 @@ export function createWorkflowHeartbeatDelivery(options: WorkflowHeartbeatDelive
 			handle.unref?.();
 			retryTimers.add(handle);
 		};
-		const result = options.emit(details);
+		let result: boolean | Promise<boolean>;
+		try {
+			result = options.emit(details);
+		} catch {
+			// A host can throw synchronously before returning its admission result.
+			// Treat that exactly like an asynchronous rejection so the failed head
+			// enters capped backoff instead of leaving `running` set forever.
+			settle(false);
+			return;
+		}
 		if (typeof result === "boolean") {
 			settle(result);
 			return;

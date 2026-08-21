@@ -282,6 +282,40 @@ describe("workflow heartbeat delivery discard", () => {
 		delivery.dispose();
 	});
 
+	test("a synchronously throwing emitter retries and then hands over to the next identity", () => {
+		const firstId = testRunId("direct-throw-first");
+		const nextId = testRunId("direct-throw-next");
+		const timers = fakeTimers();
+		const attempted: string[] = [];
+		const settled: { runId: string; delivered: boolean }[] = [];
+		let firstAttempts = 0;
+		const delivery = createWorkflowHeartbeatDelivery({
+			timers,
+			emit: (payload) => {
+				attempted.push(payload.runId);
+				if (payload.runId !== firstId) return true;
+				firstAttempts += 1;
+				if (firstAttempts === 1) throw new Error("host threw before returning");
+				return true;
+			},
+			onSettled: (payload, delivered) => settled.push({ runId: payload.runId, delivered }),
+		});
+
+		assert.doesNotThrow(() => delivery.deliver(details(firstId, 60_000)));
+		delivery.deliver(details(nextId, 60_000));
+		assert.deepEqual(attempted, [firstId], "the synchronous failure leaves the head waiting for its retry");
+		assert.deepEqual(timers.liveDelays(), [20], "the synchronous failure enters normal backoff");
+
+		timers.fireAll();
+		assert.deepEqual(attempted, [firstId, firstId, nextId], "the retried head settles before handing over");
+		assert.deepEqual(settled, [
+			{ runId: firstId, delivered: true },
+			{ runId: nextId, delivered: true },
+		]);
+		assert.equal(timers.live().length, 0);
+		delivery.dispose();
+	});
+
 	test("an async send arms a bounded watchdog at the declared deadline and unrefs it", () => {
 		const timers = fakeTimers();
 		const delivery = createWorkflowHeartbeatDelivery({
