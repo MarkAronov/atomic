@@ -36,9 +36,11 @@ export function isRawCopilotToken(apiKey: string | undefined): boolean {
  * Keep a custom provider/model integration id ahead of the dynamic default.
  * Built-in Copilot models carry `vscode-chat` as their OAuth static header;
  * raw-token requests replace that built-in value with the developer CLI id.
- * An explicit user value equal to `vscode-chat` is indistinguishable from the
- * catalog default at this layer, so it is replaced for raw-token requests;
- * a per-request header is merged later and always wins.
+ * In the pi-ai layer alone, an explicitly supplied `vscode-chat` value is
+ * indistinguishable from the catalog default and is replaced for raw-token
+ * requests; the Atomic coding agent resolves header provenance separately so
+ * an explicitly configured `vscode-chat` survives there. A per-request header
+ * is merged later and always wins.
  */
 export function preserveCopilotIntegrationHeader(
 	modelHeaders: ProviderHeaders | undefined,
