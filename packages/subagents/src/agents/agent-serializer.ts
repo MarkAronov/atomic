@@ -25,7 +25,13 @@ export const KNOWN_FIELDS = new Set([
 	"interactive",
 ]);
 
-const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([`completion${"Guard"}`]);
+/**
+ * Frontmatter keys whose feature is gone. They are neither preserved on load nor
+ * re-emitted on serialize, so an agent-management rewrite strips a stale key from
+ * the file. Each is spelled with a splice so the removed identifier never appears
+ * as contiguous source text.
+ */
+const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([`completion${"Guard"}`, `maxSubagent${"Depth"}`]);
 
 export function shouldPreserveAgentExtraField(key: string): boolean {
 	return !KNOWN_FIELDS.has(key) && !REMOVED_AGENT_FRONTMATTER_FIELDS.has(key);

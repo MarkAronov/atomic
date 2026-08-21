@@ -9,7 +9,7 @@
 ### Removed
 
 - Removed the extension config option that set the delegation ceiling. Existing `config.json` files that still declare it are ignored rather than rejected.
-- Removed the per-agent nesting-depth frontmatter field. An agent `.md` file that still declares the key parses and loads normally; the key is simply no longer read, serialized, or printed in `subagent({ action: "get" })` output, and `create`/`update` no longer validate or clamp it.
+- Removed the per-agent nesting-depth frontmatter field. An agent `.md` file that still declares the key parses and loads normally rather than being rejected; the key is no longer read, no longer re-emitted, and no longer printed in `subagent({ action: "get" })` output, and `create`/`update` no longer validate or clamp it. An agent-management rewrite of such a file strips the stale key, matching how earlier removed frontmatter keys are handled.
 - Removed the nesting-depth clause from the `subagent` tool's `config` parameter description.
 - Removed the per-child delegation limit from the typed admission policy, the in-process child spec, retained foreground resume records, and the run options. Admitted depth alone now decides whether a session may delegate.
 - Removed the recursive multi-level compaction from subagent result-intercom payloads. A run summary keeps its own identity plus its direct children; nothing below that level can exist.

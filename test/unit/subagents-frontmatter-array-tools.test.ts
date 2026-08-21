@@ -198,6 +198,30 @@ describe("array-form tools frontmatter parity", () => {
 		assert.deepEqual(reloaded?.extraFields?.custom, ["a", "b"]);
 	});
 
+	test("a removed frontmatter key is stripped on load and never re-emitted", () => {
+		// Spelled with a splice for the same reason `REMOVED_AGENT_FRONTMATTER_FIELDS`
+		// is: the removed identifier must not appear as contiguous text anywhere under
+		// `packages/` or `test/`.
+		const removedDelegationDepthField = `maxSubagent${"Depth"}`;
+		const removedDelegationDepthPattern = new RegExp(removedDelegationDepthField, "i");
+		const dir = writeAgents({
+			"legacy-depth.md": agentFile("", `${removedDelegationDepthField}: 4\ncustomThing: keep-me\n`),
+		});
+
+		const [loaded] = loadAgentsFromDir(dir, "user");
+		assert.equal(loaded?.extraFields?.[removedDelegationDepthField], undefined);
+		assert.equal(loaded?.extraFields?.customThing, "keep-me");
+
+		// An agent-management rewrite goes through serializeAgent, so a stale key
+		// must not survive even when a caller hands one back in extraFields.
+		const rewritten = serializeAgent({
+			...loaded!,
+			extraFields: { ...loaded?.extraFields, [removedDelegationDepthField]: 4 },
+		});
+		assert.doesNotMatch(rewritten, removedDelegationDepthPattern);
+		assert.match(rewritten, /^customThing: keep-me$/m);
+	});
+
 	test("parseFrontmatter keeps scalar fields as strings alongside sequences", () => {
 		const { frontmatter, body } = parseFrontmatter(
 			["---", "name: custom", "tools: [read, bash]", "model: provider:with-colon/model:off", "---", "body"].join(

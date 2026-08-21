@@ -321,6 +321,37 @@ describe("renderChatSurfacePlainText", () => {
 		assert.equal(sent[1]?.display, true);
 		assert.equal(sent[1]?.details, payload);
 	});
+
+	test("emitChatSurface sends the card as a non-turn message so streaming cannot queue it", () => {
+		// A workflow card is an already-rendered transcript surface. Sent with the
+		// default `triggerTurn`, `commitAdmittedCustomMessage` takes its
+		// `self.isStreaming && options?.triggerTurn !== false` branch and queues the
+		// card as steering behind the live turn, so `/workflow` dispatch/list/status
+		// cards disappeared until that turn ended.
+		const sendOptions: Array<{ triggerTurn?: boolean } | undefined> = [];
+		const pi = {
+			sendMessage: (_message: unknown, options?: { triggerTurn?: boolean }) => {
+				sendOptions.push(options);
+			},
+		} as never;
+
+		for (const payload of [
+			{
+				kind: "dispatch",
+				workflowName: "dispatch-workflow",
+				runId: "dispatch-run-1234567890",
+				inputs: { prompt: "go" },
+			},
+			{ kind: "list", entries: [] },
+		] as ChatSurfacePayload[]) {
+			emitChatSurface(pi, payload);
+		}
+
+		assert.equal(sendOptions.length, 2);
+		for (const options of sendOptions) {
+			assert.equal(options?.triggerTurn, false);
+		}
+	});
 });
 describe("registerChatSurfaceRenderer", () => {
 	test("registers once per live ExtensionAPI host", () => {
