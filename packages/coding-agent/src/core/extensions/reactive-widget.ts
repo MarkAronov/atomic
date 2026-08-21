@@ -134,6 +134,7 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 	let currentSnap = options.getSnapshot();
 	let currentNow = now();
 	let lastLines: readonly string[] = [];
+	let unsubscribe: (() => void) | undefined;
 	let unsubscribeWidgetRelease: (() => void) | undefined;
 	let mountFailureReported = false;
 
@@ -297,9 +298,18 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 		},
 	};
 
-	const unsubscribe = options.subscribe?.(() => controller.refresh("state"));
-	unsubscribeWidgetRelease = options.ui.onWidgetRelease?.(options.key, handleWidgetRelease);
-	controller.refresh("initial");
+	try {
+		unsubscribe = options.subscribe?.(() => controller.refresh("state"));
+		unsubscribeWidgetRelease = options.ui.onWidgetRelease?.(options.key, handleWidgetRelease);
+		controller.refresh("initial");
+	} catch (error) {
+		try {
+			controller.dispose();
+		} catch {
+			// Preserve the original installation failure after rolling back subscriptions.
+		}
+		throw error;
+	}
 
 	return controller;
 }

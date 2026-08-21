@@ -287,6 +287,50 @@ describe("installReactiveWidget", () => {
 		controller.dispose();
 	});
 
+	test("rolls back subscriptions when the initial mount fails", () => {
+		const originalError = new Error("renderer init failed during installation");
+		const releaseListeners = new Set<() => void>();
+		const subscriptions = new Set<() => void>();
+		let mountAttempts = 0;
+		const ui: ReactiveWidgetUi<object> = {
+			setWidget(_key, factory): void {
+				if (factory === undefined) return;
+				mountAttempts++;
+				throw originalError;
+			},
+			onWidgetRelease(_key, listener): () => void {
+				releaseListeners.add(listener);
+				return () => releaseListeners.delete(listener);
+			},
+		};
+
+		const install = (): void => {
+			assert.throws(
+				() =>
+					installReactiveWidget({
+						ui,
+						key: "test.widget",
+						subscribe: () => {
+							const subscription = (): void => {};
+							subscriptions.add(subscription);
+							return () => subscriptions.delete(subscription);
+						},
+						getSnapshot: () => ({ visible: true }),
+						getPreviewLines: () => ["run"],
+						render: () => ["run"],
+					}),
+				(error) => error === originalError,
+			);
+			assert.equal(releaseListeners.size, 0, "failed installation must remove the host release listener");
+			assert.equal(subscriptions.size, 0, "failed installation must remove the store subscription");
+		};
+
+		install();
+		install();
+		assert.equal(mountAttempts, 2);
+		assert.equal(releaseListeners.size, 0, "repeated failed installations must not accumulate listeners");
+	});
+
 	test("propagates stale-looking mount reporter failures", () => {
 		const reporterError = new Error("Reporting failed because extension ctx is stale");
 		const ui = {
