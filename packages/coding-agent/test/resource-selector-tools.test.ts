@@ -984,7 +984,12 @@ describe("resource selector tools", () => {
 				if (!pagedSpace.includes("space2.sqlite:users:ghi jkl:")) throw new Error("missing paged whitespace primary key search");
 				const numericRow = text(await search.execute("numeric-row", { pattern: "needle-target", paths: "data.sqlite:items:1001" }));
 				if (!numericRow.includes("needle-target")) throw new Error("missing numeric row search");
-			} finally { rmSync(dir, { recursive: true, force: true }); }
+			} finally {
+				// Windows: Bun 1.4.0's node:sqlite releases file locks lazily after
+				// close(), so give the delete a bounded retry and never fail the
+				// smoke test over cleanup — the assertions above are the test.
+				try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
+			}
 		`;
 		const result = spawnSync("bun", ["-e", script], { cwd: process.cwd(), encoding: "utf8" });
 		expect(result.status, result.stderr || result.stdout).toBe(0);
