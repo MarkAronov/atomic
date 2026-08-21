@@ -8,6 +8,8 @@
 
 ### Changed
 
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build, matching upstream pi-ai, instead of shipping the frozen v0.84.2 snapshot.
+
 - Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.
 
 - Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
@@ -19,6 +21,7 @@
 - Fixed the `400 checking third-party user token: bad request: Personal Access Tokens are not supported for this endpoint` failure for fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`; exchanged OAuth tokens containing a `tid=` segment remain unchanged, and per-request or `models.json` provider/model header overrides win. Catalog default headers are no longer promoted into the per-request override layer, while remaining visible to `before_provider_headers` extension hooks ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
 - Fixed workflow stages staying `running` forever when GitHub Copilot on the default `transport: "auto"` hit a repeated `Library error: zlib error: incorrect header check`. The stalled provider stream never settled, so retry and model fallback never advanced and the stage transcript kept only its user prompt. Such a failure now settles as a transient transport error and fails over, and a new `streamDeadlineMs` setting (default `300000`; accepts durations such as `30s` and `5m`; `0`/`"disabled"` disables it) bounds the idle gap between provider stream events below the HTTP layer ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
 - Extension widgets now recover after the interactive host clears or disposes a live widget: reactive controllers receive a release signal, remount exactly once on the next refresh, and preserve in-place updates without flicker. Isolated-engine widgets also discard stale remote mounts before reopening ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Ported unreleased `packages/ai` commits from `earendil-works/pi` main after the vendored v0.84.2 snapshot into `@bastani/pi-ai`: Copilot login rate-limit handling, Kimi cached-token accounting, Google thinking-level maps, Bedrock response headers and redacted reasoning, Anthropic fallback pricing, Azure Responses `toolChoice`, OpenAI Completions reasoning-details replay, catalog fixes for Xiaomi, China ZAI Coding Plan, Qwen Token Plan Individual, Baseten GLM-5.2, and DeepSeek V4 Flash `low` thinking, plus xAI Responses routing, simple `toolChoice`, generalized thinking-token budgets, adapter User-Agent headers, and dropping the unused OpenTelemetry dependency. Cerebras now defaults to `gpt-oss-120b`.
 
 ## [0.9.14] - 2026-08-19
 

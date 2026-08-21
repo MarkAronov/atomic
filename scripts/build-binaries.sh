@@ -4,12 +4,13 @@
 # Mirrors .github/workflows/publish.yml binary build.
 #
 # Usage:
-#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--platform <platform>]
+#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--offline-model-data] [--platform <platform>]
 #
 # Options:
 #   --skip-deps          Skip installing cross-platform native bindings
 #   --skip-install       Reuse dependencies installed by the caller
 #   --skip-package-build Reuse packages/coding-agent/dist built by the caller
+#   --offline-model-data Build @bastani/pi-ai with bundled model data instead of refreshing it
 #   --platform <name>    Build only for specified platform
 #                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
 #                         linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64)
@@ -37,6 +38,7 @@ cd -- "$(dirname -- "$0")/.."
 SKIP_DEPS=false
 SKIP_INSTALL=false
 SKIP_PACKAGE_BUILD=false
+OFFLINE_MODEL_DATA=false
 PLATFORM=""
 
 CLIPBOARD_STAGE_DIR=""
@@ -59,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-package-build)
             SKIP_PACKAGE_BUILD=true
+            shift
+            ;;
+        --offline-model-data)
+            OFFLINE_MODEL_DATA=true
             shift
             ;;
         --platform)
@@ -93,8 +99,13 @@ fi
 
 echo "==> Aliasing @earendil-works/pi-ai onto packages/ai..."
 node scripts/alias-pi-ai.mjs
-echo "==> Building @bastani/pi-ai..."
-npm run build --workspace=@bastani/pi-ai
+if [[ "$OFFLINE_MODEL_DATA" == "true" ]]; then
+    echo "==> Building @bastani/pi-ai with bundled model data..."
+    npm run build:offline --workspace=@bastani/pi-ai
+else
+    echo "==> Building @bastani/pi-ai..."
+    npm run build --workspace=@bastani/pi-ai
+fi
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
     echo "==> Installing cross-platform Atomic native bindings..."
