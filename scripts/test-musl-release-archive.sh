@@ -44,25 +44,29 @@ for path in \
     }
 done
 
+cat > "$workspace/smoke.sh" <<'SMOKE'
+#!/bin/sh
+set -eu
+atomic=/smoke/atomic/atomic
+test -f /smoke/atomic/app.js
+test -d /smoke/atomic/builtin
+test -d /smoke/atomic/node_modules
+test -f /smoke/atomic/lib/libgcc_s.so.1
+test -f /smoke/atomic/lib/libstdc++.so.6
+"$atomic" --version
+set +e
+output=$(printf '' | "$atomic" --no-session 2>&1)
+status=$?
+set -e
+echo "$output"
+if echo "$output" | grep -q 'Failed to load extension'; then exit 1; fi
+if [ "$status" -ne 0 ] && ! echo "$output" | grep -Eq 'No models available|No model selected|No API key found'; then
+    exit "$status"
+fi
+SMOKE
+chmod +x "$workspace/smoke.sh"
+
 docker run --rm --platform "$docker_platform" \
     -v "$workspace:/smoke:ro" \
     alpine:3.22 \
-    /bin/sh -c '
-        set -eu
-        atomic=/smoke/atomic/atomic
-        test -f /smoke/atomic/app.js
-        test -d /smoke/atomic/builtin
-        test -d /smoke/atomic/node_modules
-        test -f /smoke/atomic/lib/libgcc_s.so.1
-        test -f /smoke/atomic/lib/libstdc++.so.6
-        "$atomic" --version
-        set +e
-        output=$(printf '' | "$atomic" --no-session 2>&1)
-        status=$?
-        set -e
-        echo "$output"
-        if echo "$output" | grep -q 'Failed to load extension'; then exit 1; fi
-        if [ "$status" -ne 0 ] && ! echo "$output" | grep -Eq 'No models available|No model selected|No API key found'; then
-            exit "$status"
-        fi
-    '
+    /bin/sh /smoke/smoke.sh
