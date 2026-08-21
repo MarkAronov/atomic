@@ -18,6 +18,7 @@ import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
@@ -127,6 +128,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 
 	(async () => {
 		const output = createOutput(model);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
 		try {
 			const apiKey = options?.apiKey;
@@ -142,9 +144,14 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			if (nextPayload !== undefined) {
 				payload = nextPayload as MistralChatPayload;
 			}
-			const mistralStream = await requestMistralStream(model, payload, apiKey, options);
+			const mistralStream = await requestMistralStream(model, payload, apiKey, options, streamDeadline.signal);
 			stream.push({ type: "start", partial: output });
-			await consumeChatStream(model, output, stream, mistralStream);
+			await consumeChatStream(
+				model,
+				output,
+				stream,
+				withStreamDeadline(mistralStream, streamDeadline.deadlineMs, streamDeadline.abort),
+			);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -168,6 +175,8 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			output.errorMessage = formatMistralError(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 
@@ -285,13 +294,14 @@ async function requestMistralStream(
 	payload: MistralChatPayload,
 	apiKey: string,
 	options?: MistralOptions,
+	requestSignal?: AbortSignal,
 ): Promise<AsyncIterable<MistralCompletionEvent>> {
 	const baseUrl = new URL(model.baseUrl);
 	baseUrl.pathname = `${baseUrl.pathname.replace(/\/+$/u, "")}/`;
 	const url = new URL("v1/chat/completions", baseUrl);
 	const headers = buildMistralHeaders(model, apiKey, options);
 	const timeoutSignal = AbortSignal.timeout(options?.timeoutMs ?? 60_000);
-	const signal = options?.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+	const signal = requestSignal ? AbortSignal.any([requestSignal, timeoutSignal]) : timeoutSignal;
 	const response = await (options?.fetch ?? globalThis.fetch)(url, {
 		method: "POST",
 		headers,
