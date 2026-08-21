@@ -112,7 +112,10 @@ export function installStoreWidget(
 ): () => void {
 	const ui = pi.ui;
 	if (!ui?.setWidget) {
-		reportWidgetFailure(ui, "Workflow progress widget is unavailable in this host.");
+		// An absent ui slice is normal during extension load: factories run
+		// before the host binds ctx.ui, and session_start re-installs against
+		// the real UI. Only a present-but-widget-less ui names a degraded host.
+		if (ui) reportWidgetFailure(ui, "Workflow progress widget is unavailable in this host.");
 		return () => {};
 	}
 	const setWidget = ui.setWidget;

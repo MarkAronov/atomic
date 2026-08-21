@@ -428,7 +428,7 @@ describe("installStoreWidget", () => {
 		assert.equal(last.factory, undefined);
 	});
 
-	test("logs an unavailable host without throwing when pi.ui is absent", () => {
+	test("stays silent when pi.ui is absent (pre-session factory install)", () => {
 		const piNoUI: { ui?: undefined; events?: undefined } = {};
 		const storeNoUI = createStore();
 		let dispose: (() => void) | undefined;
@@ -438,7 +438,7 @@ describe("installStoreWidget", () => {
 			});
 		});
 		assert.equal(typeof dispose, "function");
-		assert.deepEqual(messages, ["Workflow progress widget is unavailable in this host."]);
+		assert.deepEqual(messages, []);
 	});
 
 	test("logs an unavailable host without throwing when notify is absent", () => {
