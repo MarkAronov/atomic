@@ -16,13 +16,13 @@ import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
+	interruptInProcessAttempt,
+	resumeInProcessAttempt,
+} from "../../packages/subagents/src/runs/inprocess/attempt-handles.ts";
+import {
 	clearSubagentControls,
 	findSubagentControl,
 } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
-import {
-	interruptInProcessNestedAttempt,
-	resumeInProcessNestedAttempt,
-} from "../../packages/subagents/src/runs/inprocess/nested-routing.ts";
 import {
 	type ChildSpec,
 	inProcessChildBuiltinPackagePaths,
@@ -563,7 +563,7 @@ test("typed status is the sole result outcome discriminator", async () => {
 	}
 });
 
-test("nested interrupt flushes JSONL and resume reloads the same in-process child", async () => {
+test("interrupt flushes JSONL and resume reloads the same in-process child", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-nested-control-"));
 	const gate = Promise.withResolvers<void>();
 	try {
@@ -576,10 +576,10 @@ test("nested interrupt flushes JSONL and resume reloads the same in-process chil
 		assert.ok(admitted);
 		const neverAbort = new AbortController().signal;
 		const running = control.startAttempt(admitted, {}, { abort: neverAbort, interrupt: neverAbort });
-		control.registerNestedAttempt("nested-run", running, {});
+		control.registerAttempt("child-run", running, {});
 		await sleep(50);
 
-		const interrupt = await interruptInProcessNestedAttempt("nested-run");
+		const interrupt = await interruptInProcessAttempt("child-run");
 		assert.equal(interrupt?.ok, true);
 		const interrupted = await running.promise;
 		assert.equal(interrupted.status, "interrupted");
@@ -589,7 +589,7 @@ test("nested interrupt flushes JSONL and resume reloads the same in-process chil
 		for (const line of interruptedLines) assert.doesNotThrow(() => JSON.parse(line));
 
 		gate.resolve();
-		const resumed = await resumeInProcessNestedAttempt("nested-run", "continue with the saved context");
+		const resumed = await resumeInProcessAttempt("child-run", "continue with the saved context");
 		assert.equal(resumed?.ok, true);
 		assert.equal(resumed?.outcome?.status, "ok");
 		assert.equal(resumed?.outcome?.path, interrupted.path);

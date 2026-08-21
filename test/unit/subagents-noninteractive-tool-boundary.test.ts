@@ -6,7 +6,6 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/at
 import { Value } from "typebox/value";
 import { describe, test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -240,24 +239,33 @@ describe("programmatic subagent tool boundary", () => {
 			},
 			events: { on: () => () => {}, emit: () => {} },
 			getSessionName: () => "typed-fanout-child",
+			registerCommand: () => {},
+			registerMessageRenderer: () => {},
+			sendMessage: () => {},
+			on: () => {},
 		} as unknown as ExtensionAPI;
-		registerFanoutChildSubagentExtension(pi, {
-			managementActions: "restricted",
+		// The production door: the full extension resolves a child-scoped executor
+		// from `ctx.subagentPolicy`, so the policy must be carried on the context.
+		registerSubagentExtension(pi);
+		const restrictedChildPolicy = {
+			managementActions: "restricted" as const,
 			fanoutAuthorized: true,
 			inheritProjectContext: false,
 			inheritSkills: false,
-		});
+		};
 
 		assert.ok(registered);
 		for (const action of ["create", "update", "delete"] as const) {
+			const ctx = makeContext(process.cwd(), () => {
+				throw new Error("unexpected UI prompt");
+			}) as ExtensionContext & { subagentPolicy?: typeof restrictedChildPolicy };
+			ctx.subagentPolicy = restrictedChildPolicy;
 			const result = (await registered.execute(
 				`typed-restricted-${action}`,
 				{ action },
 				new AbortController().signal,
 				undefined,
-				makeContext(process.cwd(), () => {
-					throw new Error("unexpected UI prompt");
-				}),
+				ctx,
 			)) as SubagentToolResult;
 			assert.equal(result.isError, true);
 			assert.match(

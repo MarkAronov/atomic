@@ -45,8 +45,8 @@ import {
 	type MaxOutputConfig,
 	truncateOutput,
 } from "../../shared/types.js";
+import { type InProcessAttemptResumeOutcome, registerInProcessAttempt } from "./attempt-handles.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 
 export type ChildStatus = NativeAgentStatus;
@@ -1209,16 +1209,17 @@ export class SubagentControlRuntime {
 		};
 	}
 
-	registerNestedAttempt(runId: string, running: RunningAttempt, candidate: ModelCandidate): void {
-		registerInProcessNestedAttempt({
+	/** Expose a direct child's live attempt so `interrupt`/`resume` can reach it by run id or path. */
+	registerAttempt(runId: string, running: RunningAttempt, candidate: ModelCandidate): void {
+		registerInProcessAttempt({
 			runId,
 			path: running.child.identity.path,
 			status: () => running.status,
 			interrupt: () => this.terminateChildAttempt(running, "interrupt"),
-			resume: async (message): Promise<InProcessNestedResumeOutcome> => {
+			resume: async (message): Promise<InProcessAttemptResumeOutcome> => {
 				const admission = this.reloadColdChild(running.child.identity.path, message);
 				if (!admission.admitted) {
-					throw new Error(admission.refusal?.reason ?? "nested child cold reload was refused");
+					throw new Error(admission.refusal?.reason ?? "child cold reload was refused");
 				}
 				const neverAbort = new AbortController().signal;
 				const resumed = this.startAttempt(admission.admitted, candidate, {

@@ -1,7 +1,6 @@
 import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import {
-	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
 	deliverSubagentResultIntercomEvent,
 	formatSubagentResultReceipt,
@@ -11,7 +10,6 @@ import {
 import {
 	type ControlEvent,
 	type Details,
-	type NestedRunSummary,
 	type SingleResult,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -20,8 +18,6 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
-import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.js";
 import {
 	formatControlIntercomMessage,
 	formatControlNoticeMessage,
@@ -68,12 +64,6 @@ function formatForegroundActivity(control: ForegroundControl): string | undefine
 }
 
 export function foregroundStatusResult(control: ForegroundControl): SubagentToolResult {
-	let nestedWarning: string | undefined;
-	try {
-		updateForegroundNestedProjection(control);
-	} catch (error) {
-		nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;
-	}
 	const activity = formatForegroundActivity(control);
 	const lines = [
 		`Run: ${control.runId}`,
@@ -84,8 +74,6 @@ export function foregroundStatusResult(control: ForegroundControl): SubagentTool
 			: undefined,
 		activity ? `Activity: ${activity}` : undefined,
 	].filter((line): line is string => Boolean(line));
-	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
-	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
 }
 
@@ -319,7 +307,6 @@ async function emitForegroundResultIntercom(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	results: SingleResult[];
-	nestedChildren?: NestedRunSummary[];
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
 	const children = input.results.flatMap((result, index) =>
@@ -346,7 +333,7 @@ async function emitForegroundResultIntercom(input: {
 		to: input.intercomBridge.orchestratorTarget,
 		runId: input.runId,
 		mode: input.mode,
-		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
+		children,
 	});
 	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
 	if (!delivered) return null;
@@ -359,7 +346,6 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	details: Details;
-	nestedChildren?: NestedRunSummary[];
 }): Promise<{ text: string; details: Details } | null> {
 	const payload = await emitForegroundResultIntercom({
 		pi: input.pi,
@@ -367,7 +353,6 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 		runId: input.runId,
 		mode: input.mode,
 		results: input.details.results,
-		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
 	});
 	if (!payload) return null;
 	return {

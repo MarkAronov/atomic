@@ -14,7 +14,6 @@ import * as path from "node:path";
 import { join } from "node:path";
 import type { ExtensionAPI, SubagentChildPolicy, ToolDefinition } from "@bastani/atomic";
 import { beforeEach, describe, test, vi } from "vitest";
-import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
@@ -371,41 +370,6 @@ describe("workflow stage subagent policy", () => {
 		const delegated = await runAction(executor, { agent: "alpha", task: "do work" });
 		assert.equal(delegated.isError, undefined);
 		assert.deepEqual(runSyncCalls, ["alpha"]);
-	});
-
-	test("the registered subagent tool answers 'list' for a stage-policy session", async () => {
-		// End-to-end through the real registration door a stage session uses, so the
-		// policy -> registered-tool wiring is covered rather than only the executor.
-		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
-		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
-		const policy = options?.subagentPolicy;
-		assert.ok(policy, "stage options must carry a subagent policy");
-
-		let registered: ToolDefinition | undefined;
-		const pi = {
-			registerTool: (tool: ToolDefinition) => {
-				registered = tool;
-			},
-			events: { on: () => () => {}, emit: () => {} },
-			getSessionName: () => "workflow-stage-session",
-		} as unknown as ExtensionAPI;
-		registerFanoutChildSubagentExtension(pi, policy);
-		assert.ok(registered, "the subagent tool must be registered");
-
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-stage-tool-"));
-		const result = (await registered.execute(
-			"stage-list",
-			{ action: "list" },
-			new AbortController().signal,
-			undefined,
-			makeContext(cwd),
-		)) as ExecutorResultForTest;
-
-		assert.notEqual(result.isError, true);
-		assert.ok(
-			!resultText(result).includes(FANOUT_MESSAGE),
-			`stage 'subagent list' must not be refused as fanout, got: ${resultText(result)}`,
-		);
 	});
 
 	test("the parent-registered subagent tool answers 'list' for a stage-policy context", async () => {

@@ -19,7 +19,6 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
 import { recordRun } from "../shared/run-history.js";
@@ -209,7 +208,6 @@ export async function runSinglePath(
 			intercomSessionName: childIntercomTarget,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
-			nestedRoute: foregroundControl?.nestedRoute,
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				if (result) {
@@ -277,14 +275,12 @@ export async function runSinglePath(
 	});
 
 	if (!r.detached && !r.interrupted) {
-		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "single",
 			details,
-			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
 		});
 		if (intercomReceipt) {
 			return {

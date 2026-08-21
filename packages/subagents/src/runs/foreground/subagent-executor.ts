@@ -392,26 +392,17 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const built = prepareExecutionContext({ params: paramsWithResolvedCwd, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;
 		const prepared = built.prepared!;
-		let nestedForegroundStarted = false;
 		try {
-			if (prepared.foregroundControl) {
-				prepared.writeNestedForegroundEvent("subagent.nested.started");
-				nestedForegroundStarted = true;
-			}
 			if (prepared.hasTasks && prepared.effectiveParams.tasks) {
 				const result = await runParallelPath(prepared.execData, deps);
-				prepared.writeNestedForegroundEvent("subagent.nested.completed", result);
 				return withForkContext(result, prepared.effectiveParams.context);
 			}
 			if (prepared.hasSingle) {
 				const result = await runSinglePath(prepared.execData, deps);
-				prepared.writeNestedForegroundEvent("subagent.nested.completed", result);
 				return withForkContext(result, prepared.effectiveParams.context);
 			}
 		} catch (error) {
-			const errorResult = toExecutionErrorResult(prepared.effectiveParams, error);
-			if (nestedForegroundStarted) prepared.writeNestedForegroundEvent("subagent.nested.completed", errorResult);
-			return errorResult;
+			return toExecutionErrorResult(prepared.effectiveParams, error);
 		} finally {
 			if (prepared.foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, prepared.runId);

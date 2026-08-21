@@ -7,7 +7,6 @@ import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
-	resolveSubagentIntercomTarget,
 } from "../../intercom/intercom-bridge.js";
 import { getArtifactsDir } from "../../shared/artifacts.js";
 import { createForkContextResolver } from "../../shared/fork-context.js";
@@ -22,13 +21,6 @@ import {
 	type SubagentRunMode,
 	type SubagentToolResult,
 } from "../../shared/types.js";
-
-import {
-	createNestedRoute,
-	resolveInheritedNestedRouteFromEnv,
-	resolveNestedParentAddressFromEnv,
-	writeNestedEvent,
-} from "../inprocess/runtime-support/nested-api.js";
 import { resolveControlConfig } from "../shared/subagent-control.js";
 import {
 	applyAgentDefaultContext,
@@ -92,9 +84,6 @@ export function prepareExecutionContext(input: {
 		? discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge))
 		: discoveredAgents;
 	const runId = randomUUID().slice(0, 8);
-	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
-	const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
-	const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
 	const shareEnabled = effectiveParams.share === true;
 	const hasTasks = (effectiveParams.tasks?.length ?? 0) > 0;
 	const hasSingle = !hasTasks && Boolean(effectiveParams.agent);
@@ -165,7 +154,6 @@ export function prepareExecutionContext(input: {
 		parentDepth: depth,
 		controlConfig,
 		intercomBridge,
-		nestedRoute,
 	};
 
 	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
@@ -174,84 +162,10 @@ export function prepareExecutionContext(input: {
 		mode: foregroundMode,
 		startedAt: Date.now(),
 		updatedAt: Date.now(),
-		nestedRoute,
 		interrupt: undefined,
 	};
 	deps.state.foregroundControls.set(runId, foregroundControl);
 	deps.state.lastForegroundControlId = runId;
-
-	const writeNestedForegroundEvent = (
-		type: "subagent.nested.started" | "subagent.nested.completed",
-		result?: SubagentToolResult,
-	): void => {
-		if (!inheritedNestedRoute || !nestedParentAddress) return;
-		const now = Date.now();
-		const details = result?.details;
-		const state =
-			type === "subagent.nested.started"
-				? "running"
-				: result?.isError || details?.results.some((child) => child.status === "error")
-					? "failed"
-					: details?.results.some((child) => child.interrupted || child.status === "interrupted")
-						? "paused"
-						: "complete";
-		const errorText = result?.isError ? result.content.find((item) => item.type === "text")?.text : undefined;
-		const agentsForSummary =
-			hasTasks && effectiveParams.tasks
-				? effectiveParams.tasks.map((task) => task.agent)
-				: effectiveParams.agent
-					? [effectiveParams.agent]
-					: [];
-		const leafIntercomTarget =
-			intercomBridge.active && agentsForSummary[0]
-				? resolveSubagentIntercomTarget(runId, agentsForSummary[0], 0)
-				: undefined;
-		try {
-			writeNestedEvent(inheritedNestedRoute, {
-				type,
-				ts: now,
-				parentRunId: nestedParentAddress.parentRunId,
-				parentStepIndex: nestedParentAddress.parentStepIndex,
-				child: {
-					id: runId,
-					parentRunId: nestedParentAddress.parentRunId,
-					parentStepIndex: nestedParentAddress.parentStepIndex,
-					depth: nestedParentAddress.depth,
-					path: nestedParentAddress.path,
-					ownerIntercomTarget:
-						ctx.subagentPolicy?.intercom?.sessionName ?? ctx.subagentPolicy?.intercom?.orchestratorTarget,
-					leafIntercomTarget,
-					intercomTarget: leafIntercomTarget,
-					ownerState: state === "running" ? "live" : "gone",
-					mode: foregroundMode,
-					state,
-					agent: agentsForSummary[0],
-					agents: agentsForSummary,
-					startedAt: foregroundControl?.startedAt ?? now,
-					...(state !== "running" ? { endedAt: now } : {}),
-					lastUpdate: now,
-					...(errorText ? { error: errorText } : {}),
-					...(details?.results.length
-						? {
-								steps: details.results.map((child) => ({
-									agent: child.agent,
-									status:
-										child.interrupted || child.status === "interrupted"
-											? "paused"
-											: child.status === "ok"
-												? "complete"
-												: "failed",
-									...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
-									...(child.error ? { error: child.error } : {}),
-								})),
-							}
-						: {}),
-				},
-			});
-		} catch (error) {
-			console.error("Failed to emit nested foreground status event:", error);
-		}
-	};
 
 	return {
 		prepared: {
@@ -263,7 +177,6 @@ export function prepareExecutionContext(input: {
 			foregroundMode,
 			execData,
 			foregroundControl,
-			writeNestedForegroundEvent,
 		},
 	};
 }

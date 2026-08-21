@@ -20,7 +20,6 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate } from "../shared/model-fallback.js";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.js";
@@ -280,14 +279,12 @@ export async function runParallelPath(
 			};
 		}
 
-		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "parallel",
 			details,
-			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
 		});
 		if (intercomReceipt) {
 			return {

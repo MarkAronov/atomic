@@ -349,7 +349,7 @@ export async function runSingleInProcess(
 			lastActivityAt: Date.now(),
 		});
 	}
-	control.registerNestedAttempt(options.runId, running, {
+	control.registerAttempt(options.runId, running, {
 		model: resolvedCandidate?.model,
 		modelId: candidate,
 		thinkingLevel: spec.thinkingLevel,

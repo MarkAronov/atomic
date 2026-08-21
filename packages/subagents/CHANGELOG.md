@@ -12,7 +12,8 @@
 - Removed the per-agent nesting-depth frontmatter field. An agent `.md` file that still declares the key parses and loads normally rather than being rejected; the key is no longer read, no longer re-emitted, and no longer printed in `subagent({ action: "get" })` output, and `create`/`update` no longer validate or clamp it. An agent-management rewrite of such a file strips the stale key, matching how earlier removed frontmatter keys are handled.
 - Removed the nesting-depth clause from the `subagent` tool's `config` parameter description.
 - Removed the per-child delegation limit from the typed admission policy, the in-process child spec, retained foreground resume records, and the run options. Admitted depth alone now decides whether a session may delegate.
-- Removed the recursive multi-level compaction from subagent result-intercom payloads. A run summary keeps its own identity plus its direct children; nothing below that level can exist.
+- Removed the multi-level nested-run pipeline: the temp-directory route, its event sink and control inbox, the run registry and its recursive projection, and the recursive status renderer. Its inherited-route resolvers had already been permanently disabled, so no event could reach any of it and `subagent({ action: "status" })` never printed a nested line; live and retained status output for a parent's own direct children is unchanged. Delegating no longer creates a per-run temp route directory. Startup still reaps route directories left by earlier versions.
+- Removed the nested run summary, run address, step summary, and route types, along with their public projections, from the subagent result payload. `SubagentResultIntercomChild` no longer carries a `children` array and `ControlEvent` no longer carries a nested run id or nesting path; result receipts no longer contain a "Nested subagents:" section. A parent still receives one entry per direct child.
 
 ### Changed
 

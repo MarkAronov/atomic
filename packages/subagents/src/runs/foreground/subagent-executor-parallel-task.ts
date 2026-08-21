@@ -140,7 +140,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 				intercomDetachSignal: intercomDetachController.signal,
 				onIntercomDetachCommit: () => intercomDetachController.abort(),
-				nestedRoute: input.foregroundControl?.nestedRoute,
 				modelOverride: input.modelOverrides[index],
 				availableModels: input.availableModels,
 				knownModelProviders: input.knownModelProviders,
