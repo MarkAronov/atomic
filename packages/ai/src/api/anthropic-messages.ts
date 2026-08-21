@@ -37,6 +37,7 @@ import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { resolveStreamDeadlineMs, withStreamDeadline } from "../utils/stream-deadline.ts";
 
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import {
@@ -593,7 +594,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
-			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
+			for await (const event of withStreamDeadline(
+				iterateAnthropicEvents(response, options?.signal),
+				resolveStreamDeadlineMs(options?.streamDeadlineMs),
+			)) {
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
 					// Capture initial token usage from message_start event

@@ -21,6 +21,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { resolveStreamDeadlineMs, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import {
 	buildCopilotDynamicHeaders,
@@ -170,11 +171,17 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			await processResponsesStream(openaiStream, output, stream, model, {
-				serviceTier: options?.serviceTier,
-				grammarToolInputProperties,
-				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-			});
+			await processResponsesStream(
+				withStreamDeadline(openaiStream, resolveStreamDeadlineMs(options?.streamDeadlineMs)),
+				output,
+				stream,
+				model,
+				{
+					serviceTier: options?.serviceTier,
+					grammarToolInputProperties,
+					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+				},
+			);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");

@@ -207,9 +207,22 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	/**
 	 * WebSocket connect timeout in milliseconds for providers that support
 	 * WebSocket transports. This covers the connection/open handshake only;
-	 * stream idleness after connection uses timeoutMs.
+	 * HTTP/SDK idleness uses `timeoutMs`, while gaps between decoded provider
+	 * stream events use `streamDeadlineMs`.
 	 */
 	websocketConnectTimeoutMs?: number;
+	/**
+	 * Maximum idle gap in milliseconds between two provider stream events.
+	 *
+	 * Enforced below the HTTP layer, so a response body that stalls without ever
+	 * rejecting the adapter's async iterator (for example a decompression failure
+	 * that destroys the stream silently, #2553) still settles the attempt as a
+	 * retryable transport error instead of hanging forever. The timer restarts on
+	 * every event, so it never caps total stream duration.
+	 *
+	 * Defaults to 300000 ms. `0` (or any non-positive value) disables it.
+	 */
+	streamDeadlineMs?: number;
 	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.

@@ -42,6 +42,7 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { resolveStreamDeadlineMs, withStreamDeadline } from "../utils/stream-deadline.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	createGrammarToolInputProperties,
@@ -451,7 +452,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				return block;
 			};
 
-			for await (const chunk of openaiStream) {
+			for await (const chunk of withStreamDeadline(
+				openaiStream,
+				resolveStreamDeadlineMs(options?.streamDeadlineMs),
+			)) {
 				if (!chunk || typeof chunk !== "object") continue;
 
 				// OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
