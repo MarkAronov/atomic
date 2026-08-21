@@ -274,6 +274,11 @@ export function createWorkflowStageFactory(input: {
 		};
 		const dropStageControlForCompletion = async (): Promise<void> => {
 			runtime.dropStageControlHandle();
+			// A registry/session clear can release a confirmed-paused handle before
+			// its owner resumes. The handle is then ownerless, so normal completion
+			// must make the second disposal call that drains the controller's deferred
+			// cleanup instead of retaining the session and its listeners forever.
+			if (state.liveHandleReleased) await disposeInnerContext();
 		};
 		const throwIfStageMutationBlocked = (): void => {
 			if (state.stageClosedByWorkflowExit) {

@@ -470,7 +470,18 @@ describe("graceful workflow quit acknowledgement", () => {
 		let rejectCurrentPrompt: ((reason: Error) => void) | undefined;
 		let promptCalls = 0;
 		let streaming = false;
+		let sessionDisposeCalls = 0;
+		let activeSessionSubscriptions = 0;
 		const session = productionSession({
+			subscribe() {
+				activeSessionSubscriptions += 1;
+				return () => {
+					activeSessionSubscriptions -= 1;
+				};
+			},
+			dispose() {
+				sessionDisposeCalls += 1;
+			},
 			async prompt() {
 				promptCalls += 1;
 				streaming = true;
@@ -556,6 +567,9 @@ describe("graceful workflow quit acknowledgement", () => {
 			await secondPromptStarted.promise;
 			finishSecondPrompt.resolve();
 			assert.equal((await execution).status, "completed");
+			await liveHandle.dispose?.();
+			assert.equal(sessionDisposeCalls, 1, "resumed ownerless execution must dispose its session once");
+			assert.equal(activeSessionSubscriptions, 0, "resumed ownerless execution must release session listeners");
 		} finally {
 			finishSecondPrompt.resolve();
 			if (liveHandle?.status === "paused") {

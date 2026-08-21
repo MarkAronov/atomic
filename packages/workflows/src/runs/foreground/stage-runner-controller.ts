@@ -600,10 +600,9 @@ export class StageSessionController {
 		beforeRelease?: () => void,
 	): Promise<StageSessionPauseResumeResult> {
 		return this.pauseControl.resume(message, beforeResolve, beforeRelease).then((result) => {
-			// Ownership has returned to live execution, so a disposal deferred by the
-			// confirmed pause is now a stale handle release: cancel it and let the
-			// stage's own terminal teardown dispose the session.
-			if (this.disposalPromise === undefined) this.pendingDisposal = false;
+			// Ownership has returned to live execution, but a handle released while
+			// paused may already be gone from the registry. Keep the deferred-disposal
+			// marker so terminal teardown can drain it for this ownerless execution.
 			return result;
 		});
 	}

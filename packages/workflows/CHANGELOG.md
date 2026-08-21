@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 >>>>>>> 9cc5aef2a8 (fix(workflows): bound the heartbeat delivery head with a per-attempt watchdog)
 - Fixed a confirmed workflow pause silently reversing to a terminal failed run. Disposing a stage session while its stage was parked on an acknowledged pause rejected the parked pause waiter with `stage "<name>" session has been disposed`, which surfaced as a stage failure and emitted a terminal `workflow.run.end` with status `failed` — after `workflow pause` had already reported success and status had reported the run paused and resumable. Disposal that arrives during a confirmed pause is now deferred instead of rejecting the waiter, so the run stays paused and resumable and explicit resume continues through the normal path with intact metadata. Abort and kill still reject a parked waiter and fail visibly, a deferred disposal is still completed once that abort arrives, and disposal outside a confirmed pause is unchanged and still reported ([#2558](https://github.com/bastani-inc/atomic/issues/2558)).
 >>>>>>> 92925f2745 (fix(workflows): keep a confirmed pause paused when the stage session is disposed (#2558))
+- Fixed a workflow stage session leak when a confirmed-paused stage was cleared from the live control registry, resumed through its stale handle, and then completed. Deferred controller cleanup now drains once at terminal completion, releasing the session and its listeners without double-disposal.
 
 ## [0.9.14] - 2026-08-19
 
