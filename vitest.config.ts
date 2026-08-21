@@ -12,17 +12,24 @@ export { TEST_TIMEOUT_MS };
 const setupFiles = ["./test/setup-workflow-durability.ts"];
 
 /**
- * Runs once for the unit and integration projects, before any file is collected. It builds
- * `@bastani/atomic-natives` only when no compiled binding exists, because a
- * missing binding no longer degrades gracefully: `packages/subagents` imports
- * the Rust control plane statically, so the bundled extension throws during
- * module loading and takes roughly twenty unrelated files down with it under
- * errors that name the importer rather than the binding.
+ * Global setups run once per project in the orchestrator process, before any
+ * file is collected.
  *
- * On the happy path this is a single `existsSync`, so CI — which builds the
- * binding in an explicit step first — and any warm worktree pay nothing.
+ * `global-setup-workflow-artifacts` creates the per-run workflow-artifact
+ * directory that `setup-workflow-durability` points workers at, and removes it
+ * in teardown. It runs for all three projects.
+ *
+ * `global-setup-natives` builds `@bastani/atomic-natives` only when no
+ * compiled binding exists, because a missing binding no longer degrades
+ * gracefully: `packages/subagents` imports the Rust control plane statically,
+ * so the bundled extension throws during module loading and takes roughly
+ * twenty unrelated files down with it under errors that name the importer
+ * rather than the binding. On the happy path this is a single `existsSync`, so
+ * CI — which builds the binding in an explicit step first — and any warm
+ * worktree pay nothing. The CI contract project omits it.
  */
-const globalSetup = ["./test/global-setup-natives.ts"];
+const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
+const nativeSetup = "./test/global-setup-natives.ts";
 
 const project = (name: string, directory: string, usesNativeSetup = true) => ({
 	resolve: { alias: sharedAliases },
@@ -34,7 +41,7 @@ const project = (name: string, directory: string, usesNativeSetup = true) => ({
 		include: [`${directory}/**/*.test.ts`],
 		exclude: ["**/node_modules/**"],
 		setupFiles,
-		...(usesNativeSetup ? { globalSetup } : {}),
+		globalSetup: usesNativeSetup ? [artifactSetup, nativeSetup] : [artifactSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},
