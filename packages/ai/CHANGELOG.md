@@ -18,6 +18,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history live
 
 ### Changed
 
+- `@bastani/pi-ai` `build` now runs `generate-models` then `build:offline`, matching upstream. Catalog JSON under `src/providers/data/` is generated from models.dev at build time and is no longer committed.
+
 - Vendored into the Atomic monorepo as `packages/ai` and rebranded the published package to `@bastani/pi-ai`. The first npm version must be published by hand so trusted publishing can be attached; later tagged Atomic releases publish it from `publish.yml`.
 
 - Moved `COPILOT_GITHUB_TOKEN` env-token host routing into the exported `@bastani/pi-ai/providers/github-copilot-env` module ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).

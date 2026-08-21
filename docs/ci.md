@@ -409,7 +409,7 @@ After native and smoke jobs pass, `build`:
 
 1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
-3. Runs `scripts/build-binaries.sh --skip-install` for all eight archives.
+3. Hydrates `@bastani/pi-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly ten npm tarballs.
 6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.

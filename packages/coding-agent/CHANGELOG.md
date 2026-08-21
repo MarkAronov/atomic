@@ -8,6 +8,8 @@
 
 ### Changed
 
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build, matching upstream pi-ai, instead of shipping the frozen v0.84.2 snapshot.
+
 - Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.
 
 - Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
