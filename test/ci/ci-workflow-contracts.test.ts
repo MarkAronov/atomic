@@ -357,6 +357,9 @@ test("Alpine smoke covers both musl archives on stock Alpine without runtime pac
 	assert.match(smoke, /alpine:3\.22/u);
 	assert.match(smoke, /docker run --rm --platform/u);
 	assert.match(smoke, /atomic --version|"\$atomic" --version/u);
+	assert.match(smoke, /output=\$\(printf '' \| "\$atomic" --no-session 2>&1\)/u);
+	assert.match(smoke, /grep -q 'Failed to load extension'/u);
+	assert.match(smoke, /No models available\|No model selected\|No API key found/u);
 	assert.match(smoke, /app\.js[\s\S]*builtin[\s\S]*node_modules/u);
 	assert.doesNotMatch(smoke, /apk add/u);
 	const nativeLoad = namedStep(jobSteps(alpine), "Load the musl native binding under musl libc");
@@ -492,12 +495,14 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
 	for (const path of [publishPath, testPath, warmPath]) {
 		const workflow = await readText(path);
 		for (const [name, block] of jobBlocks(workflow)) {
-			const runsOn = /^\s+runs-on: (\S+)$/mu.exec(block)?.[1] ?? "";
+			const runsOn = /^\s+runs-on: (.+)$/mu.exec(block)?.[1].trim() ?? "";
 			for (const step of jobSteps(block)) {
 				if (!step.includes("useblacksmith/")) continue;
 				const guarded = /if: runner\.os == 'Linux'/u.test(step);
+				const matrixLinuxRunner =
+					runsOn === "$" + "{{ matrix.runner }}" && /runner: blacksmith-\dvcpu-ubuntu/u.test(block);
 				assert.ok(
-					guarded || /^blacksmith-\dvcpu-ubuntu/u.test(runsOn),
+					guarded || /^blacksmith-\dvcpu-ubuntu/u.test(runsOn) || matrixLinuxRunner,
 					`${path}: job ${name} requests a sticky disk on ${runsOn || "a matrix runner"}`,
 				);
 			}

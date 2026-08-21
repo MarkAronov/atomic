@@ -369,7 +369,6 @@ jobs:
           - { runner: blacksmith-4vcpu-ubuntu-2404-arm, arch: arm64, slug: linux-arm64-musl, platform: linux-arm64-musl, docker_platform: linux/arm64 }
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
-        if: runner.os == 'Linux'
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false

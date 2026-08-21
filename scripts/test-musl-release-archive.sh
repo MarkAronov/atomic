@@ -56,4 +56,13 @@ docker run --rm --platform "$docker_platform" \
         test -f /smoke/atomic/lib/libgcc_s.so.1
         test -f /smoke/atomic/lib/libstdc++.so.6
         "$atomic" --version
+        set +e
+        output=$(printf '' | "$atomic" --no-session 2>&1)
+        status=$?
+        set -e
+        echo "$output"
+        if echo "$output" | grep -q 'Failed to load extension'; then exit 1; fi
+        if [ "$status" -ne 0 ] && ! echo "$output" | grep -Eq 'No models available|No model selected|No API key found'; then
+            exit "$status"
+        fi
     '

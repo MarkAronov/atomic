@@ -22,6 +22,17 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 		Object.entries(paths).map(async ([name, path]) => [name, await readText(path)] as const),
 	);
 	const docs = Object.fromEntries(entries) as Record<keyof typeof paths, string>;
+	const prerequisitesStart = docs.quickstart.indexOf("## Prerequisites");
+	const prerequisitesEnd = docs.quickstart.indexOf("\n## Install", prerequisitesStart);
+	const prerequisiteBullets = docs.quickstart
+		.slice(prerequisitesStart, prerequisitesEnd)
+		.split("\n")
+		.filter((line) => line.startsWith("- "));
+	assert.equal(
+		new Set(prerequisiteBullets).size,
+		prerequisiteBullets.length,
+		"quickstart Prerequisites must not repeat identical bullets",
+	);
 
 	for (const name of ["readme", "quickstart", "index", "containerization"] as const) {
 		assert.ok(docs[name].includes(shellOneLiner), `${name} is missing the literal shell one-liner`);
