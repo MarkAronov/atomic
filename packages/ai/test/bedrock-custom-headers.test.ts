@@ -199,4 +199,29 @@ describe("bedrock custom headers middleware", () => {
 
 		expect(fakeArgs.request.headers["x-custom"]).toBe("v");
 	});
+
+	it("VC5: merges static model.headers beneath caller options.headers", async () => {
+		const model = { ...getModelFixture(), headers: { "x-static": "s", "x-both": "model" } };
+		await streamBedrock(model, context, { cacheRetention: "none", headers: { "x-both": "options" } })
+			.result()
+			.catch(() => undefined);
+
+		const [reg] = findCustomHeadersRegistration();
+		expect(reg).toBeDefined();
+
+		const fakeArgs = { request: { headers: {} as Record<string, string> } };
+		await reg.handler(vi.fn(async (a: unknown) => a))(fakeArgs);
+
+		expect(fakeArgs.request.headers["x-static"]).toBe("s");
+		expect(fakeArgs.request.headers["x-both"]).toBe("options");
+	});
+
+	it("VC5: a null caller header suppresses the model's static header", async () => {
+		const model = { ...getModelFixture(), headers: { "x-static": "s" } };
+		await streamBedrock(model, context, { cacheRetention: "none", headers: { "x-static": null } })
+			.result()
+			.catch(() => undefined);
+
+		expect(findCustomHeadersRegistration()).toHaveLength(0);
+	});
 });

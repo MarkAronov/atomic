@@ -157,6 +157,17 @@ describe("pi-messages", () => {
 		});
 	});
 
+	it("merges static model.headers beneath caller options.headers", async () => {
+		const { baseUrl, requests } = await startServer({ events: [{ type: "done", reason: "stop", usage }] });
+		const model = { ...createModel(baseUrl), headers: { "x-static": "s", "x-both": "model" } };
+
+		await stream(model, context, { apiKey: "test-key", headers: { "x-both": "options" } }).result();
+
+		expect(requests).toHaveLength(1);
+		expect(requests[0].headers["x-static"]).toBe("s");
+		expect(requests[0].headers["x-both"]).toBe("options");
+	});
+
 	it("appends debug=1 and reports response headers via onResponse", async () => {
 		const { baseUrl, requests } = await startServer({
 			headers: { "x-pi-gateway-upstream-provider": "anthropic" },
