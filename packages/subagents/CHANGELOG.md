@@ -21,6 +21,7 @@
 
 - Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
 - The fanout-child boundary prompt no longer tells an authorized child that it may delegate, because no child can.
+- Replaced built-in `gpt-5.6-luna:max` primary and fallback pins with `gpt-5.6-sol` at the same thinking level as each agent's `gpt-5.5` fallback: `:medium` for `worker`, `code-simplifier`, `codebase-analyzer`, `codebase-online-researcher`, and `codebase-research-analyzer`; `:low` for `codebase-locator`, `codebase-pattern-finder`, and `codebase-research-locator`.
 
 ## [0.9.14] - 2026-08-19
 
