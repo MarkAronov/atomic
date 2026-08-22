@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Parent-targeted blocking asks now interrupt foreground children into retained pause state and surface the question, ordered attachments, and resume hint to the launching parent. Initial children receive exact supervisor authorization, and every resume rebuilds fresh authorization, control forwarding, and parallel detach coordination. Parallel pauses withhold queued tasks and preserve each paused child's session, cwd, Intercom group, execution settings, canonical index, worktree, and dirty changes; a sibling completed at the ask boundary remains terminal without blocking paused siblings. Diff capture and cleanup wait for terminal resume, and completed children are never rerun ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

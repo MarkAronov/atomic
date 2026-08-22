@@ -10,6 +10,10 @@ import {
 import {
 	type ControlEvent,
 	type Details,
+	type ForegroundChildExecution,
+	type ForegroundParentAskPause,
+	type ForegroundRunCleanup,
+	type RunSyncOptions,
 	type SingleResult,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -113,13 +117,46 @@ function takeEarlyDetachedResult(state: SubagentState, runId: string, index: num
 	return result;
 }
 
+export function retainForegroundChildExecution(
+	runtimeCwd: string,
+	options: RunSyncOptions,
+	agentScope?: string,
+): ForegroundChildExecution {
+	const {
+		signal,
+		interruptSignal,
+		intercomEvents,
+		onDetachedExit,
+		intercomDetachSignal,
+		onIntercomDetachCommit,
+		onParentAskClaim,
+		onUpdate,
+		onControlEvent,
+		supervisorAuthorization,
+		...retainedOptions
+	} = options;
+	void signal;
+	void interruptSignal;
+	void intercomEvents;
+	void onDetachedExit;
+	void intercomDetachSignal;
+	void onIntercomDetachCommit;
+	void onParentAskClaim;
+	void onUpdate;
+	void onControlEvent;
+	void supervisorAuthorization;
+	return { runtimeCwd, ...(agentScope !== undefined ? { agentScope } : {}), options: retainedOptions };
+}
+
 export function rememberForegroundRun(
 	state: SubagentState,
 	input: {
 		runId: string;
 		mode: "single" | "parallel";
 		cwd: string;
-		results: SingleResult[];
+		children: Array<{ index: number; result: SingleResult; execution: ForegroundChildExecution }>;
+		parentAsk?: ForegroundParentAskPause;
+		cleanup?: ForegroundRunCleanup;
 	},
 ): void {
 	state.foregroundRuns ??= new Map();
@@ -128,7 +165,9 @@ export function rememberForegroundRun(
 		mode: input.mode,
 		cwd: input.cwd,
 		updatedAt: Date.now(),
-		children: input.results.map((originalResult, index) => {
+		...(input.parentAsk ? { parentAsk: input.parentAsk } : {}),
+		...(input.cleanup ? { cleanup: input.cleanup } : {}),
+		children: input.children.map(({ index, result: originalResult, execution }) => {
 			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
 			return {
 				agent: result.agent,
@@ -140,6 +179,7 @@ export function rememberForegroundRun(
 				}),
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
 				result,
+				execution,
 			};
 		}),
 	});
@@ -198,7 +238,7 @@ export function replaceForegroundRunChild(
 export function emitControlNotification(input: {
 	pi: ExtensionAPI;
 	controlConfig: ExecutionContextData["controlConfig"];
-	intercomBridge: IntercomBridgeState;
+	intercomBridge: Pick<IntercomBridgeState, "active" | "orchestratorTarget">;
 	event: ControlEvent;
 }): void {
 	if (!shouldNotifyControlEvent(input.controlConfig, input.event)) return;
@@ -247,6 +287,25 @@ export function createForegroundControlNotifier(
 			pi: deps.pi,
 			controlConfig: data.controlConfig,
 			intercomBridge: data.intercomBridge,
+			event,
+		});
+}
+
+export function createRetainedForegroundControlNotifier(
+	options: Pick<RunSyncOptions, "controlConfig" | "orchestratorIntercomTarget">,
+	deps: Pick<ExecutorDeps, "pi">,
+): ((event: ControlEvent) => void) | undefined {
+	const controlConfig = options.controlConfig;
+	if (!controlConfig) return undefined;
+	const orchestratorTarget = options.orchestratorIntercomTarget;
+	return (event) =>
+		emitControlNotification({
+			pi: deps.pi,
+			controlConfig,
+			intercomBridge: {
+				active: orchestratorTarget !== undefined,
+				...(orchestratorTarget !== undefined ? { orchestratorTarget } : {}),
+			},
 			event,
 		});
 }

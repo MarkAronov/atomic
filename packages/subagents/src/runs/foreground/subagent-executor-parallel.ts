@@ -12,6 +12,8 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
+	type ForegroundChildExecution,
+	type ForegroundParentAskPause,
 	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
@@ -27,6 +29,7 @@ import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
+import { formatParentAskPauseOutput } from "./parent-ask-output.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
@@ -34,6 +37,7 @@ import {
 	notifyDetachedForegroundChildExit,
 	rememberForegroundRun,
 	replaceForegroundRunChild,
+	retainForegroundChildExecution,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.js";
 import {
@@ -128,6 +132,7 @@ export async function runParallelPath(
 	const liveResults: (SingleResult | undefined)[] = new Array(tasks.length).fill(undefined);
 	const liveProgress: (AgentProgress | undefined)[] = new Array(tasks.length).fill(undefined);
 	const foregroundControl = deps.state.foregroundControls.get(runId);
+	const executions: Array<ForegroundChildExecution | undefined> = new Array(tasks.length).fill(undefined);
 	const { setup: worktreeSetup, errorResult } = createParallelWorktreeSetup(
 		params.worktree,
 		effectiveCwd,
@@ -142,7 +147,28 @@ export async function runParallelPath(
 		buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
 		cleanupWorktrees(worktreeSetup);
 	});
+	let retainedWorktreeFinalized = false;
+	const finalizeRetainedWorktrees = (): string => {
+		if (!worktreeSetup || retainedWorktreeFinalized) return "";
+		retainedWorktreeFinalized = true;
+		try {
+			return buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
+		} finally {
+			cleanupWorktrees(worktreeSetup);
+		}
+	};
+	const retainedDetachedCleanup = createDetachedCleanupBarrier(() => {
+		finalizeRetainedWorktrees();
+	});
+	const retainedWorktreeCleanup = worktreeSetup
+		? {
+				finalize: finalizeRetainedWorktrees,
+				defer: retainedDetachedCleanup.defer,
+				recover: retainedDetachedCleanup.recover,
+			}
+		: undefined;
 	if (errorResult) return errorResult;
+	let parentAsk: ForegroundParentAskPause | undefined;
 
 	try {
 		const duplicateOutputError = findDuplicateParallelOutputPath({
@@ -188,6 +214,12 @@ export async function runParallelPath(
 				} finally {
 					detachedCleanup.recover(index);
 				}
+			},
+			onParentAskPause: (pause) => {
+				if (!parentAsk) parentAsk = pause;
+			},
+			onExecution: (index, runtimeCwd, options) => {
+				executions[index] = retainForegroundChildExecution(runtimeCwd, options, params.agentScope);
 			},
 			tasks,
 			taskTexts,
@@ -242,15 +274,29 @@ export async function runParallelPath(
 			mode: "parallel",
 			runId,
 			results,
+			parentAskPaused: parentAsk !== undefined,
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
+		const retainedChildren = details.results.flatMap((result, index) => {
+			const execution = executions[index];
+			return execution ? [{ index, result, execution }] : [];
+		});
+		if (parentAsk) worktreeCleanupDeferred = true;
 		rememberForegroundRun(deps.state, {
 			runId,
 			mode: "parallel",
 			cwd: effectiveCwd,
-			results: details.results,
+			children: retainedChildren,
+			...(parentAsk ? { parentAsk } : {}),
+			...(parentAsk && retainedWorktreeCleanup ? { cleanup: retainedWorktreeCleanup } : {}),
 		});
+		if (parentAsk) {
+			return {
+				content: [{ type: "text", text: formatParentAskPauseOutput(parentAsk) }],
+				details,
+			};
+		}
 		if (interrupted) {
 			return {
 				content: [
