@@ -82,10 +82,12 @@ setImmediate(() => process.exit(0));
 test("ordinary local commands retain the bounded stdout and stderr tail", async () => {
 	const stdout = `prefix-stdout:${"o".repeat(24_000)}`;
 	const stderr = `prefix-stderr:${"e".repeat(24_000)}`;
-	const result = await runLocalCommand(process.execPath, [
-		"-e",
-		`process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)});`,
-	]);
+	const legacyEmbeddedSource = `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)});`;
+	const childGeneratedSource =
+		'process.stdout.write("prefix-stdout:" + "o".repeat(24_000)); process.stderr.write("prefix-stderr:" + "e".repeat(24_000));';
+	assert.ok(legacyEmbeddedSource.length > 32_767, "the pre-fix fixture exceeded the Windows command-line limit");
+	assert.ok(childGeneratedSource.length < 1_000, "the child-generated fixture keeps its command line short");
+	const result = await runLocalCommand(process.execPath, ["-e", childGeneratedSource]);
 
 	assert.equal(result.exitCode, 0);
 	assert.equal(result.stdout, stdout.slice(-16_384));
