@@ -10,8 +10,98 @@ import {
 import type { EmbeddedPostgresRunContext } from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
 
 afterEach(() => {
+	embeddedPostgresTestHooks.setEnsureOperation(undefined);
 	embeddedPostgresTestHooks.setProcessIdentityReader(undefined);
 	embeddedPostgresTestHooks.setActiveCluster(undefined);
+});
+
+test("a verified local start rolls back when later readiness fails", async () => {
+	const dataDir = mkdtempSync(join(tmpdir(), "atomic-postmaster-readiness-"));
+	let stopCalls = 0;
+	const context: EmbeddedPostgresRunContext = {
+		baseDir: dataDir,
+		runAsOwner: async () => {
+			stopCalls += 1;
+			rmSync(join(dataDir, "postmaster.pid"), { force: true });
+			return { exitCode: 0, stdout: "server stopped", stderr: "" };
+		},
+	};
+	try {
+		writeFileSync(join(dataDir, "postmaster.pid"), `${process.pid}\n5439\n`);
+		embeddedPostgresTestHooks.setProcessIdentityReader(async () => "owned-instance");
+		const cluster = await embeddedPostgresTestHooks.captureStartedCluster("pg_ctl", dataDir, context);
+		assert.ok(cluster, "successful startup must capture ownership before readiness polling");
+
+		await assert.rejects(
+			embeddedPostgresTestHooks.waitForClusterReadiness(
+				join(dataDir, "postgres.log"),
+				cluster,
+				async () => false,
+				1,
+				async () => {},
+			),
+			/never accepted connections/,
+		);
+
+		assert.equal(stopCalls, 1, "readiness failure must stop the verified process instance");
+		await shutdownEmbeddedDbosPostgres();
+		assert.equal(stopCalls, 1, "rollback must consume ownership exactly once");
+	} finally {
+		rmSync(dataDir, { recursive: true, force: true });
+	}
+});
+
+test("startup rollback fails closed when ownership cannot be acquired or changes", async () => {
+	const dataDir = mkdtempSync(join(tmpdir(), "atomic-postmaster-acquisition-"));
+	let stopCalls = 0;
+	const context: EmbeddedPostgresRunContext = {
+		baseDir: dataDir,
+		runAsOwner: async () => {
+			stopCalls += 1;
+			return { exitCode: 0, stdout: "server stopped", stderr: "" };
+		},
+	};
+	try {
+		embeddedPostgresTestHooks.setProcessIdentityReader(async () => "owned-instance");
+		assert.equal(await embeddedPostgresTestHooks.captureStartedCluster("pg_ctl", dataDir, context), undefined);
+
+		writeFileSync(join(dataDir, "postmaster.pid"), `${process.pid}\n5439\n`);
+		embeddedPostgresTestHooks.setProcessIdentityReader(async () => undefined);
+		assert.equal(await embeddedPostgresTestHooks.captureStartedCluster("pg_ctl", dataDir, context), undefined);
+
+		let identity = "owned-instance";
+		embeddedPostgresTestHooks.setProcessIdentityReader(async () => identity);
+		const cluster = await embeddedPostgresTestHooks.captureStartedCluster("pg_ctl", dataDir, context);
+		assert.ok(cluster);
+		identity = "replacement-instance";
+		await assert.rejects(
+			embeddedPostgresTestHooks.waitForClusterReadiness(
+				join(dataDir, "postgres.log"),
+				cluster,
+				async () => false,
+				1,
+				async () => {},
+			),
+			/never accepted connections/,
+		);
+
+		assert.equal(stopCalls, 0, "missing or replacement ownership must never receive pg_ctl stop");
+	} finally {
+		rmSync(dataDir, { recursive: true, force: true });
+	}
+});
+
+test("a rejected ensure attempt clears its memo so a later caller retries", async () => {
+	let attempts = 0;
+	embeddedPostgresTestHooks.setEnsureOperation(async () => {
+		attempts += 1;
+		if (attempts === 1) throw new Error("setup failed");
+	});
+
+	await assert.rejects(embeddedPostgresTestHooks.ensure(), /setup failed/);
+	await embeddedPostgresTestHooks.ensure();
+
+	assert.equal(attempts, 2);
 });
 
 test("pg_ctl start opts into direct-exit command completion", async () => {

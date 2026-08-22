@@ -66,15 +66,19 @@ interface ActiveEmbeddedPostgres {
 }
 
 type ProcessIdentityReader = (pid: number) => Promise<string | undefined>;
+type EnsureOperation = () => Promise<void>;
+type ReachabilityProbe = (host: string, port: number) => Promise<boolean>;
+type DelayOperation = (milliseconds: number) => Promise<void>;
 
 let activeCluster: ActiveEmbeddedPostgres | undefined;
 let processIdentityReader: ProcessIdentityReader = readProcessIdentity;
+let ensureOperation: EnsureOperation = ensure;
 
 let ensured: Promise<void> | undefined;
 
 /** Start or attach to the shared embedded DBOS Postgres exactly once per process. */
 export function ensureEmbeddedDbosPostgres(): Promise<void> {
-	ensured ??= ensure().catch((error: unknown) => {
+	ensured ??= ensureOperation().catch((error: unknown) => {
 		ensured = undefined;
 		throw error;
 	});
@@ -92,35 +96,76 @@ async function ensure(): Promise<void> {
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	if (context.owner !== undefined) chownSync(root, context.owner.uid, context.owner.gid);
 	const binaries = await prepareBinariesForOwner(loaded, context);
-	let startedHere = false;
-
-	await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async () => {
-		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
-		if (!existsSync(join(dataDir, "PG_VERSION"))) await initializeCluster(binaries.initdb, dataDir, context);
-		startedHere = await startCluster(binaries.pg_ctl, dataDir, logFile, context);
-	});
-
-	for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
-		if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) {
-			if (startedHere) {
-				const postgresPid = readPostgresPid(dataDir);
-				if (postgresPid === undefined)
-					throw new Error(`Embedded Postgres became reachable without a postmaster.pid at ${dataDir}.`);
-				const postgresIdentity = await processIdentityReader(postgresPid);
-				// A numeric PID is not durable ownership: the OS can reuse it after
-				// the postmaster exits. If its process instance cannot be identified,
-				// leave the shared cluster running rather than risk stopping a stranger.
-				if (postgresIdentity !== undefined) {
-					activeCluster = { pgCtl: binaries.pg_ctl, dataDir, context, postgresPid, postgresIdentity };
-				}
+	let startedCluster: ActiveEmbeddedPostgres | undefined;
+	try {
+		await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async () => {
+			if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
+			if (!existsSync(join(dataDir, "PG_VERSION"))) await initializeCluster(binaries.initdb, dataDir, context);
+			if (await startCluster(binaries.pg_ctl, dataDir, logFile, context)) {
+				// pg_ctl -w has reported a successful local start. Capture the process
+				// instance before any later readiness check can fail, so a verified
+				// owner always has an identity-gated rollback path.
+				startedCluster = await captureStartedCluster(binaries.pg_ctl, dataDir, context);
 			}
-			return;
-		}
-		await delay(READY_DELAY_MS);
+		});
+
+		await waitForClusterReadiness(logFile, startedCluster);
+	} catch (startupError) {
+		await rollbackStartedCluster(startedCluster, startupError);
 	}
-	throw new Error(
-		`Embedded Postgres started but never accepted connections on ${EMBEDDED_HOST}:${EMBEDDED_PORT}; see ${logFile}.`,
-	);
+}
+
+async function captureStartedCluster(
+	pgCtl: string,
+	dataDir: string,
+	context: EmbeddedPostgresRunContext,
+): Promise<ActiveEmbeddedPostgres | undefined> {
+	const postgresPid = readPostgresPid(dataDir);
+	if (postgresPid === undefined) return undefined;
+	const postgresIdentity = await processIdentityReader(postgresPid).catch(() => undefined);
+	// A numeric PID is not durable ownership: the OS can reuse it after the
+	// postmaster exits. Missing identity therefore attaches fail-closed instead
+	// of risking a stop against a replacement process.
+	if (postgresIdentity === undefined) return undefined;
+	const cluster = { pgCtl, dataDir, context, postgresPid, postgresIdentity };
+	activeCluster = cluster;
+	return cluster;
+}
+
+async function rollbackStartedCluster(
+	cluster: ActiveEmbeddedPostgres | undefined,
+	startupError: unknown,
+): Promise<never> {
+	if (cluster !== undefined && activeCluster === cluster) {
+		try {
+			await shutdownEmbeddedDbosPostgres();
+		} catch (cleanupError) {
+			throw new AggregateError(
+				[startupError, cleanupError],
+				"Embedded Postgres startup failed and its verified process instance could not be stopped.",
+			);
+		}
+	}
+	throw startupError;
+}
+async function waitForClusterReadiness(
+	logFile: string,
+	rollbackCluster: ActiveEmbeddedPostgres | undefined,
+	isReachable: ReachabilityProbe = tcpReachable,
+	attempts = READY_ATTEMPTS,
+	wait: DelayOperation = delay,
+): Promise<void> {
+	try {
+		for (let attempt = 0; attempt < attempts; attempt += 1) {
+			if (await isReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
+			await wait(READY_DELAY_MS);
+		}
+		throw new Error(
+			`Embedded Postgres started but never accepted connections on ${EMBEDDED_HOST}:${EMBEDDED_PORT}; see ${logFile}.`,
+		);
+	} catch (startupError) {
+		await rollbackStartedCluster(rollbackCluster, startupError);
+	}
 }
 
 /** Stop the cluster started by this process while its process identity remains owned. */
@@ -389,17 +434,27 @@ function setProcessIdentityReaderForTests(reader: ProcessIdentityReader | undefi
 	processIdentityReader = reader ?? readProcessIdentity;
 }
 
+function setEnsureOperationForTests(operation: EnsureOperation | undefined): void {
+	ensured = undefined;
+	ensureOperation = operation ?? ensure;
+}
+
 /** Narrow seams for command-boundary and process-ownership tests. */
 export const embeddedPostgresTestHooks = {
+	captureStartedCluster,
 	clusterStillRunning,
+	ensure: ensureEmbeddedDbosPostgres,
 	readProcessIdentity,
 	setActiveCluster: setActiveClusterForTests,
+	setEnsureOperation: setEnsureOperationForTests,
 	setProcessIdentityReader: setProcessIdentityReaderForTests,
 	startCluster,
+	waitForClusterReadiness,
 };
 
 export function resetEmbeddedDbosPostgresForTests(): void {
 	ensured = undefined;
 	activeCluster = undefined;
+	ensureOperation = ensure;
 	processIdentityReader = readProcessIdentity;
 }
