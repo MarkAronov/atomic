@@ -4,6 +4,34 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history live
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Built-in xAI models now use the OpenAI Responses API only; Completions is no longer registered on the xAI provider.
+- Renamed the exported `GoogleThinkingLevel` type to `GoogleApiThinkingLevel` and added `ResolvedGoogleThinkingLevel` for normalized adapter levels.
+
+### Added
+
+- Added provider-neutral `toolChoice` on simple stream requests.
+- Generalized OpenAI Completions thinking-token budget fields through `thinkingTokenBudgetField`, with `supportsThinkingTokenBudget` retained as the vLLM alias.
+- Added pi's runtime `User-Agent` to Anthropic, Azure Responses, Google, Vertex, Mistral, OpenAI Completions, and OpenAI Responses requests.
+
+### Changed
+
+- `@bastani/pi-ai` now generates its models.dev catalog during package builds and uses the generated catalog for offline compilation.
+- Vendored and rebranded the package as `@bastani/pi-ai` in the Atomic monorepo, with later tagged Atomic releases publishing it through trusted publishing.
+- Moved `COPILOT_GITHUB_TOKEN` env-token host routing into the exported `@bastani/pi-ai/providers/github-copilot-env` module ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+
+### Fixed
+
+- Fixed raw `COPILOT_GITHUB_TOKEN` chat authentication by sending `Copilot-Integration-Id: copilot-developer-cli`, while preserving exchanged OAuth-token behavior ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- Fixed Amazon Bedrock Converse Stream and `pi-messages` dropping static custom-model headers; caller headers still override model headers and `null` still suppresses a static header.
+- Fixed stalled OpenAI Completions, OpenAI Responses, Anthropic Messages, `pi-messages`, Mistral, and Codex provider streams by applying idle deadlines that abort the request and surface retryable transport errors. Native Codex WebSocket streams now use `streamDeadlineMs` rather than the HTTP timeout ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
+- Ported upstream fixes for Copilot throttling, Kimi cache reads, DeepSeek thinking levels, Google thinking maps, Bedrock headers and reasoning, model catalogs, Anthropic fallback pricing, Azure tool choice, Z.AI effort metadata, and OpenAI reasoning replay. Cerebras now defaults to `gpt-oss-120b`, and the unused OpenTelemetry dependency was removed.
+
 ## [0.9.15-alpha.1] - 2026-08-21
 
 ### Breaking Changes

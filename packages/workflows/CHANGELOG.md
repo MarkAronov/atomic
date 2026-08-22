@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Changed
+
+- Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. A stage remains a top-level session and may still delegate once, while its subagent children cannot delegate further.
+
+### Fixed
+
+- Fixed `/workflow` dispatch, list, and status cards being held as steering messages while an agent streamed. Rendered cards now enter the transcript at once without starting a turn; lifecycle notices still nudge the model.
+- Persistent workflow progress widgets now reattach after host UI resets or remote-engine release while keeping mount-once, in-place updates ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Fixed one stalled heartbeat send blocking all later workflow heartbeats in the session. In-flight sends now have a two-minute watchdog, release the run's pending slot on expiry, advance the shared FIFO queue, and guard against late double settlement while preserving retry behavior ([#2557](https://github.com/bastani-inc/atomic/issues/2557)).
+- Fixed disposal of a confirmed-paused stage turning an acknowledged pause into a terminal failure. Disposal now waits while the run remains paused and resumable; abort and kill still fail visibly ([#2558](https://github.com/bastani-inc/atomic/issues/2558)).
+- Fixed a workflow stage session leak when a confirmed-paused stage was cleared from the live registry, resumed through its stale handle, and completed. Deferred cleanup now drains once on terminal completion.
+
 ## [0.9.15-alpha.1] - 2026-08-21
 
 ### Changed
