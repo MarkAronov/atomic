@@ -222,7 +222,8 @@ function activeToolNodes(run: RunSnapshot): NonNullable<RunSnapshot["toolNodes"]
 function activeToolLabel(run: RunSnapshot): string | undefined {
 	const nodes = activeToolNodes(run);
 	if (nodes.length === 0) return undefined;
-	return nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
+	const details = nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
+	return nodes.length === 1 ? details : `${nodes.length} tools · ${details}`;
 }
 
 function metaLine(run: RunSnapshot, now: number): string {

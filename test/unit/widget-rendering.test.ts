@@ -160,6 +160,40 @@ describe("renderWidgetLines — standard form", () => {
 		assert.deepEqual(narrow, [" ▾  1 background · 1 ● · 1 tool"]);
 	});
 
+	test("width-80 tool-only card keeps the live-tool total visible when node details clip", () => {
+		const run: RunSnapshot = {
+			...makeRun("tool-only-run", "global-publish-watch", "running"),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now() - 1_000,
+					attachable: false,
+				},
+				{
+					kind: "tool",
+					id: "tool:release-verification",
+					name: "release-verification",
+					argsHash: "verification-hash",
+					ordinal: 1,
+					parentIds: [],
+					status: "pending",
+					startedAt: Date.now() - 500,
+					attachable: false,
+				},
+			],
+		};
+
+		const lines = renderWidgetLines(makeSnap([run]), 80).map(stripAnsi);
+		assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+		assert.match(lines.join("\n"), /2 tools/);
+	});
+
 	test("quit run renders resumable quit badge and note", () => {
 		const run: RunSnapshot = {
 			...makeRun("quit1234", "resume-me", "paused"),
