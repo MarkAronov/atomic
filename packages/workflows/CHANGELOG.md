@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed active zero-stage workflows whose only work is durable `ctx.tool` calls being under-represented in the below-editor `BACKGROUND` panel. Normal-width cards now show each pending or running tool node by name and status, while the narrow collapsed form shows the live-tool count; no synthetic stage is created. The panel mounts for tool-only runs loaded after installation, keeps updating through workflow-resource reload, and remounts from the adopted run store after full `/reload`. Same-process extension reload preserves the live durable tool control and callback lifecycle so the active node can settle normally instead of disappearing into a crashed/resumable snapshot; a real process exit continues to require explicit durable resume for unfinished callbacks.
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

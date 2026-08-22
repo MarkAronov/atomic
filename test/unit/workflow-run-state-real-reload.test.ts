@@ -15,7 +15,7 @@ import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.t
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
-import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.ts";
+import type { Extension, ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import type { ToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.ts";
 import type { JobTracker } from "../../packages/workflows/src/runs/background/job-tracker.ts";
@@ -58,6 +58,43 @@ interface WorkflowGeneration {
 	readonly stageUiBroker: StageUiBroker;
 	readonly factory: ExtensionFactory;
 	readonly adoptWorkflowSessionRunState?: (scope: object | undefined) => void;
+}
+
+type SessionHandler = (event: unknown, context?: unknown) => Promise<unknown> | unknown;
+
+async function emitSessionEvent(
+	extension: Extension,
+	event: string,
+	payload: unknown,
+	context?: unknown,
+): Promise<void> {
+	for (const handler of extension.handlers.get(event) ?? []) {
+		await (handler as SessionHandler)(payload, context);
+	}
+}
+
+interface WidgetCall {
+	readonly key: string;
+	readonly factory?: (tui: unknown, theme: unknown) => { render(width: number): string[] };
+	readonly placement?: string;
+}
+
+function createWidgetUi(): { readonly ui: object; readonly calls: WidgetCall[]; readonly renders: { count: number } } {
+	const calls: WidgetCall[] = [];
+	const renders = { count: 0 };
+	return {
+		calls,
+		renders,
+		ui: {
+			setWidget(key: string, factory: WidgetCall["factory"], options?: { readonly placement?: string }): void {
+				calls.push({ key, factory, placement: options?.placement });
+			},
+			requestRender(): void {
+				renders.count += 1;
+			},
+			notify(): void {},
+		},
+	};
 }
 
 let graphGeneration = 0;
@@ -124,6 +161,7 @@ function recordGenerationState(
 		readonly controller: AbortController;
 		readonly toolController: AbortController;
 	},
+	settled: Promise<void> = Promise.resolve(),
 ): void {
 	generation.store.recordRunStart({
 		id: ids.runId,
@@ -133,6 +171,17 @@ function recordGenerationState(
 		stages: [],
 		startedAt: 1,
 	});
+	generation.store.recordToolNodeStart(ids.runId, {
+		kind: "tool",
+		id: ids.nodeId,
+		name: "reload-tool",
+		argsHash: "reload-tool-hash",
+		ordinal: 0,
+		parentIds: [],
+		status: "pending",
+		attachable: false,
+	});
+	generation.store.recordToolNodeRunning(ids.runId, ids.nodeId, 2);
 	generation.stageControlRegistry.register(stageHandle(ids.runId, ids.stageId));
 	generation.cancellationRegistry.register(ids.runId, ids.controller);
 	generation.toolControlRegistry.register({
@@ -140,12 +189,12 @@ function recordGenerationState(
 		nodeId: ids.nodeId,
 		name: "reload-tool",
 		controller: ids.toolController,
-		settled: Promise.resolve(),
+		settled,
 	});
 	generation.jobTracker.register({
 		runId: ids.runId,
 		controller: ids.controller,
-		promise: Promise.resolve(),
+		promise: settled,
 	});
 	const adapter = buildStagePromptAdapter(
 		"prompt-reload",
@@ -176,6 +225,11 @@ function assertGenerationSeesRun(
 	assert.equal(generation.stageControlRegistry.get(ids.runId, ids.stageId)?.stageId, ids.stageId, `${label}: stage`);
 	assert.equal(generation.cancellationRegistry.isAborted(ids.runId), false, `${label}: cancellation`);
 	assert.equal(generation.toolControlRegistry.get(ids.runId, ids.nodeId)?.name, "reload-tool", `${label}: tool`);
+	assert.equal(
+		generation.store.runs()[0]?.toolNodes?.find((node) => node.id === ids.nodeId)?.status,
+		"running",
+		`${label}: live tool node`,
+	);
 	assert.equal(generation.jobTracker.has(ids.runId), true, `${label}: job`);
 	assert.equal(generation.stageUiBroker.peekStagePrompt(ids.runId, ids.stageId)?.id, "prompt-reload", `${label}: ui`);
 	assert.equal("abort" in generation.cancellationRegistry, true, `${label}: has`);
@@ -185,8 +239,17 @@ test(
 	"a second evaluation of the workflows module graph over one host scope sees and controls the first generation's run state",
 	async () => {
 		const bus = createEventBus();
+		const widget = createWidgetUi();
+		let resolveCallback: (() => void) | undefined;
+		let callbackSettlements = 0;
+		const callbackSettled = new Promise<void>((resolve) => {
+			resolveCallback = resolve;
+		}).then(() => {
+			callbackSettlements += 1;
+		});
 		const first = await evaluateWorkflowGraph();
-		await loadExtensionFromFactory(first.factory, repoRoot, bus, createExtensionRuntime());
+		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createExtensionRuntime());
+		await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, { hasUI: true, ui: widget.ui });
 		const ids = {
 			runId: "reload-run",
 			stageId: "reload-stage",
@@ -194,11 +257,22 @@ test(
 			controller: new AbortController(),
 			toolController: new AbortController(),
 		};
-		recordGenerationState(first, ids);
+		recordGenerationState(first, ids, callbackSettled);
+		const firstFactory = widget.calls.findLast((call) => call.factory !== undefined);
+		assert.ok(firstFactory?.factory, "the initial active tool-only run must mount the widget");
+		assert.equal(firstFactory.placement, "belowEditor");
+		assert.match(firstFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
 
+		await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 		const second = await evaluateWorkflowGraph();
 		assert.notEqual(second.store, first.store, "each evaluation holds its own facade");
-		await loadExtensionFromFactory(second.factory, repoRoot, bus, createExtensionRuntime());
+		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createExtensionRuntime());
+		await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, { hasUI: true, ui: widget.ui });
+		const secondFactory = widget.calls.findLast((call) => call.factory !== undefined);
+		assert.ok(secondFactory?.factory, "the replacement generation must remount the active run");
+		assert.notEqual(secondFactory, firstFactory);
+		assert.match(secondFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
+		assert.deepEqual(secondFactory.factory(undefined, undefined).render(60), [" ▾  1 background · 1 ● · 1 tool"]);
 
 		// TEMPORARY WINDOWS DIAGNOSTIC - remove before merge.
 		//
@@ -228,6 +302,20 @@ test(
 		}
 
 		assertGenerationSeesRun(second, ids, "second generation");
+		assert.ok(resolveCallback);
+		resolveCallback();
+		await callbackSettled;
+		assert.equal(callbackSettlements, 1, "the adopted in-flight callback settles exactly once");
+		assert.equal(
+			first.store.recordToolNodeEnd(ids.runId, ids.nodeId, {
+				status: "completed",
+				endedAt: 3,
+				resultSummary: '"published"',
+			}),
+			true,
+		);
+		assert.equal(second.store.runs()[0]?.toolNodes?.[0]?.status, "completed");
+		assert.doesNotMatch(secondFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
 		assert.equal(second.cancellationRegistry.abort(ids.runId), true);
 		assert.equal(ids.controller.signal.aborted, true);
 		assert.equal(second.toolControlRegistry.get(ids.runId, ids.nodeId)?.abort("node").scope, "node");
