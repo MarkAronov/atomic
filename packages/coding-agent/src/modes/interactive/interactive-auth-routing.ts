@@ -1,4 +1,4 @@
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";

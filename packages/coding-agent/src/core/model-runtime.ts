@@ -26,8 +26,8 @@ import {
 	type ModelsStore,
 	type MutableModels,
 	type Provider,
-} from "@earendil-works/pi-ai";
-import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
+} from "@bastani/pi-ai";
+import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
@@ -146,7 +146,9 @@ export class ModelRuntime implements Models {
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
-		this.streaming = new ModelRuntimeStreaming(this.models, (model, overrides) => this.getAuth(model, overrides));
+		this.streaming = new ModelRuntimeStreaming(this.models, (model, overrides) =>
+			this.getRequestAuth(model, overrides),
+		);
 		this.rebuildProviders();
 	}
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
@@ -426,6 +428,25 @@ export class ModelRuntime implements Models {
 			overrides,
 		);
 	}
+
+	/**
+	 * Resolve request-owned auth/config headers without copying the model's static
+	 * catalog headers into the per-request override layer. The API provider reads
+	 * static headers from the model itself; duplicating them in auth would make
+	 * them override API-computed defaults that intentionally replace catalog values.
+	 */
+	async getRequestAuth(model: Model<Api>, overrides: ModelRuntimeAuthOverrides = {}): Promise<AuthResult | undefined> {
+		const resolution = await this.getAuth(model.provider, overrides);
+		if (!resolution) return undefined;
+		return mergeConfiguredAuthHeaders(
+			resolution,
+			model,
+			this.config,
+			this.extensionProviders.get(model.provider),
+			overrides,
+		);
+	}
+
 	/**
 	 * Monotonic count of changes to any input a catalog refresh reads.
 	 *

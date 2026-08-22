@@ -10,8 +10,8 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type ProviderHeaders,
-} from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai";
+import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
@@ -22,7 +22,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import type { SubagentChildPolicy } from "../../packages/coding-agent/src/index.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { inProcessChildResourceLoaderOptions } from "../../packages/subagents/src/runs/inprocess/runner.js";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.js";
+import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
 
 const tempDirs: string[] = [];
 
@@ -63,7 +63,7 @@ const stageContext = {
 	workflowRunId: "run-test",
 	workflowStageId: "stage-test",
 	workflowStageName: "Stage Test",
-	constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+	constraints: { disableWorkflowTool: true },
 } as const;
 
 /** Create a child session the way the in-process runner does. */
@@ -91,7 +91,7 @@ async function createChildSession(options: {
 		options.withoutBundledPackages ? { ...loaderOptions, builtinPackagePaths: [] } : loaderOptions,
 	);
 	await resourceLoader.reload();
-	return createAgentSession({
+	const created = await createAgentSession({
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 		settingsManager,
@@ -109,6 +109,8 @@ async function createChildSession(options: {
 			...options.policy,
 		},
 	});
+	await created.session.extensionRunner.emit({ type: "session_start", reason: "startup" });
+	return created;
 }
 
 function sessionCwd(prefix: string): { cwd: string; agentDir: string } {
@@ -187,6 +189,40 @@ describe("in-process child session resources", () => {
 						toolNames.includes(bundled),
 						`expected the bundled '${bundled}' tool, got: ${toolNames.join(", ")}`,
 					);
+				}
+				assert.equal(toolNames.includes("contact_supervisor"), false);
+				assert.equal(session.getActiveToolNames().includes("contact_supervisor"), false);
+			} finally {
+				session.dispose();
+			}
+		},
+		CHILD_SESSION_RELOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"a typed Intercom child activates contact_supervisor with every supported reason",
+		async () => {
+			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-supervisor-cwd-");
+			const { session } = await createChildSession({
+				cwd,
+				agentDir,
+				policy: {
+					intercom: {
+						orchestratorTarget: "parent-id",
+						runId: "typed-run",
+						agent: "worker",
+						index: 0,
+						sessionName: "subagent-worker-typed-run-1",
+					},
+				},
+			});
+			try {
+				const tool = session.getToolDefinition("contact_supervisor");
+				assert.ok(tool, "typed child must register contact_supervisor through the bundled lifecycle");
+				assert.ok(session.getActiveToolNames().includes("contact_supervisor"));
+				const schema = JSON.stringify(tool.parameters);
+				for (const reason of ["need_decision", "interview_request", "progress_update"]) {
+					assert.ok(schema.includes(`"${reason}"`), `missing ${reason} from contact_supervisor schema`);
 				}
 			} finally {
 				session.dispose();
@@ -286,14 +322,13 @@ describe("in-process child session resources", () => {
 	);
 
 	test(
-		"a child whose agent tightened the maximum is refused delegation by its own subagent tool",
+		"an admitted child is refused delegation by its own subagent tool",
 		async () => {
-			assert.equal(MAX_SUBAGENT_NESTING_DEPTH, 5);
-			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-inherited-max-cwd-");
+			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-admitted-depth-cwd-");
 			const { session } = await createChildSession({
 				cwd,
 				agentDir,
-				policy: { depth: 1, maxSubagentDepth: 1 },
+				policy: { depth: 1 },
 			});
 			try {
 				const tool = session.getToolDefinition("subagent");
@@ -307,7 +342,7 @@ describe("in-process child session resources", () => {
 				);
 				const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
-				assert.ok(text.startsWith("Nested subagent call blocked (depth=1, max=1)"), `unexpected message: ${text}`);
+				assert.equal(text, SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
 			} finally {
 				session.dispose();
 			}

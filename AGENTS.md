@@ -30,7 +30,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
 | Repository scripts | `bun run scripts/*.ts` | Bun executes `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook. Bare `node` cannot; scripts meant for `node --test` are `.mjs` |
-| Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.3.14 |
+| Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.4.0 |
 | npm-package smoke tests | Node (`node-version: 22` in CI, matching pi) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm installs run it |
 | Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI, and npm trusted publishing requires a GitHub-hosted runner |
 
@@ -50,6 +50,7 @@ a *toolchain* goal, not a CI-topology goal.
 ### Commands
 
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
+- `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `crates/`, or `packages/natives/`): builds `@bastani/pi-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), aliases `@earendil-works/pi-ai` onto it, and builds the native N-API module. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these
 - `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
 - `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsgo -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
@@ -68,6 +69,7 @@ name it.
 ## Best Practices
 
 - Avoid ambiguous types like `any` and `unknown`. Use specific types instead.
+- `@types/bun` is held at 1.3.14 while the Bun runtime/CI pin is 1.4.0: bun-types 1.4.0 declares `on`/`off`/`once` for its `memoryPressure` event directly on `NodeJS.Process`, which hides the inherited `EventEmitter` overloads and breaks every `process.off("SIGINT"|"unhandledRejection", ...)` call under `tsc`. Bump the types only once a bun-types release stops shadowing them (verify with `npm run typecheck`).
 - Source files use `.js` import extensions (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to the underlying `.ts` source directly — no loader hook required. atomic's loader follows the same convention as pi.
 - Do not add a build step (`dist/`, `tsconfig.build.json`, etc.) to `packages/workflows`; it distributes raw TypeScript and the host loads it directly. `packages/coding-agent` is copied from upstream pi and keeps its existing build setup.
 - When using skills, if you see a frontmatter of `metadata: internal` set to `true` (if missing assume `false`), that means the skill is for internal developers of this package. If this flag is omitted, the skill is meant for consumers/everyday users.
@@ -121,22 +123,21 @@ alternative, re-execing the file under Bun, would collapse five names into one w
 assertion; that is a worse trade, but the gap is real and is stated here rather than only in
 the helper.
 
-### SQLite selectors run on either runtime
+### SQLite selectors use node:sqlite on either runtime
 
-`src/core/tools/resource-selectors.ts` loads `node:sqlite` first and falls back to
-`bun:sqlite`. `node:sqlite` is unflagged from Node v22.13.0 and is what upstream pi uses;
-Bun 1.3.14 does not ship it (oven-sh/bun#32498 is merged but unreleased), and the shipped
-binary is Bun-compiled, so the fallback is what keeps that binary working. When Bun releases
-`node:sqlite`, both runtimes take the first branch and the fallback can be deleted.
+`src/core/tools/resource-selectors.ts` loads `node:sqlite`, which Node ≥ 22.13 and
+Bun ≥ 1.4.0 (this repository's Bun floor, oven-sh/bun#32498) both ship. The
+`bun:sqlite` fallback that covered older Bun binaries was removed with that floor;
+do not reintroduce it.
 
 `better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on construction, which is
 worse than a catchable missing-module error.
 
-Test fixtures go through `packages/coding-agent/test/helpers/sqlite.ts`, which mirrors that
-preference order behind the `bun:sqlite`-shaped API the suites were written against. Never
+Test fixtures go through `packages/coding-agent/test/helpers/sqlite.ts`, which wraps
+`node:sqlite` behind the `bun:sqlite`-shaped API the suites were written against. Never
 reintroduce a soft guard (`if (!sqlite) return`, or a `? it : it.skip`) — that is how one test
 skipped and eleven kept passing with every assertion dead. `test/ci/ci-workflow-contracts.test.ts`
-enforces the loader order and rejects those guards.
+enforces the node:sqlite-only loader and rejects those guards.
 
 
 ### Per-test timeout policy
@@ -222,11 +223,11 @@ If a user asks to publish a release or prerelease, route the request through the
 2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
 3. For non-main bases, require the branch to be protected with the repository's required CI checks before using it as the selected release base.
 4. Launch one `publish-release` workflow run with `target_version`, `release_kind`, and `base_ref`. Do not duplicate its Git, PR, tag, or publishing actions inline.
-5. The workflow creates `[release|prerelease]/<version>` from the selected base, updates relevant changelogs without bumping package versions, validates and commits the changes, pushes the branch, and opens the PR.
-6. It watches required CI until every required check reaches a terminal state, treating an admin merge of the PR as approval to proceed; check failures or an expired watch window stop the run with evidence.
-7. After checks pass, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
+5. A durable preflight first requires a clean worktree, then either proves that no release branch or PR exists and allows changelog preparation, or reuses one exact changelog-only commit and matching open PR. Commit inspection exhausts every GitHub file page and checks both sides of renamed paths. Conflicting worktree, base, files, commit, branch, local/remote SHA, or PR identity stops the run; the workflow never resets or force-pushes reuse state.
+6. The workflow discovers exact required contexts and app identities from branch protection and active rulesets. Only the classic unprotected-branch status-check lookup may be absent; ruleset lookup errors fail closed. Configured checks that have not materialized remain pending. An empty configured set, identity drift, failed check, GitHub/auth error, abort, or the 45-minute bound stops the run; only all exact checks passing or the exact PR being admin-merged proceeds.
+7. After the gate passes, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
 8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. That tag push automatically starts `publish.yml`; the workflow does not manually dispatch normal publication.
-9. It watches the matching `Publish <version>` action until it completes. Failure or an expired watch window stops the run with evidence; success returns a concise release summary.
+9. A durable gate polls for the exact `bastani-inc/atomic` push run at `.github/workflows/publish.yml`, matching tag and release SHA. A delayed run stays pending; identity drift, command/auth failure, a non-success conclusion, abort, or the 60-minute bound stops the run.
 
 ## Docs
 

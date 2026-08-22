@@ -1,6 +1,13 @@
 import { join } from "node:path";
+import {
+	type Api,
+	clampThinkingLevel,
+	type Message,
+	type Model,
+	type ProviderHeaders,
+	streamSimple,
+} from "@bastani/pi-ai/compat";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { type Api, clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -19,6 +26,7 @@ import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
+import { mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
@@ -43,6 +51,25 @@ function getDefaultAgentDir(): string {
 	return getAgentDir();
 }
 
+/** Keep static model headers visible to hooks without promoting unchanged defaults to request overrides. */
+function removeUnownedModelHeaders(
+	headers: ProviderHeaders | undefined,
+	modelHeaders: ProviderHeaders | undefined,
+	requestHeaders: ProviderHeaders | undefined,
+): ProviderHeaders | undefined {
+	if (!headers || !modelHeaders) return headers;
+	const requestOwned = new Set(Object.keys(requestHeaders ?? {}).map((name) => name.toLowerCase()));
+	const filtered = { ...headers };
+	for (const [modelName, modelValue] of Object.entries(modelHeaders)) {
+		const lowerName = modelName.toLowerCase();
+		if (requestOwned.has(lowerName)) continue;
+		for (const [name, value] of Object.entries(filtered)) {
+			if (name.toLowerCase() === lowerName && value === modelValue) delete filtered[name];
+		}
+	}
+	return Object.keys(filtered).length > 0 ? filtered : undefined;
+}
+
 /**
  * Create an AgentSession with the specified options.
  *
@@ -52,7 +79,7 @@ function getDefaultAgentDir(): string {
  * const { session } = await createAgentSession();
  *
  * // With explicit model
- * import { getModel } from '@earendil-works/pi-ai/compat';
+ * import { getModel } from '@bastani/pi-ai/compat';
  * const { session } = await createAgentSession({
  *   model: getModel('anthropic', 'claude-opus-4-5'),
  *   thinkingLevel: 'high',
@@ -257,7 +284,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, streamOptions) => {
-			const authResult = await modelRuntime.getAuth(model);
+			const authResult = await modelRuntime.getRequestAuth(model);
 			const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
 			if (!authResult && compatibility?.authHeader) {
 				throw new Error(`No API key found for "${model.provider}"`);
@@ -278,21 +305,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
 			const websocketConnectTimeoutMs =
 				streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-			const mergedHeaders = mergeProviderAttributionHeaders(
+			const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
+			const requestHeaders = mergeProviderAttributionHeaders(
 				model,
 				settingsManager,
 				streamOptions?.sessionId,
 				auth.headers,
 				streamOptions?.headers,
 			);
+			const mergedHeaders = mergeHeaders(model.headers, requestHeaders);
 			const headerRunner = extensionRunnerRef.current;
-			const attributionHeaders = headerRunner?.hasHandlers("before_provider_headers")
+			const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
 				? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
 				: mergedHeaders;
 			const fastModeEnabled = isCodexFastModeEnabled(model);
 			const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
 			const usesExtensionStream =
 				extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
+			const transportHeaders = usesExtensionStream
+				? assembledHeaders
+				: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
 			if (fastModeEnabled && !usesExtensionStream && !authResult) {
 				throw new Error(`No API key found for "${model.provider}"`);
 			}
@@ -304,9 +336,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					env: auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined,
 					timeoutMs,
 					websocketConnectTimeoutMs,
+					streamDeadlineMs,
 					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
 					maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-					headers: attributionHeaders,
+					headers: transportHeaders,
 				},
 				fastModeEnabled,
 			);

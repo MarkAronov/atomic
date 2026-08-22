@@ -124,9 +124,11 @@ test(
 
 test("publish pipeline prepares exact native package set and publishes in dependency order", async () => {
 	const workflow = await readText(`${root}/.github/workflows/publish.yml`);
-	const expectedOrder = [...nativePackageNames, "@bastani/atomic-natives", "@bastani/atomic"].join(" ");
+	const expectedOrder = [...nativePackageNames, "@bastani/atomic-natives", "@bastani/pi-ai", "@bastani/atomic"].join(
+		" ",
+	);
 	assert.match(workflow, /prepublish:native -- --skip-optional-publish/u);
-	assert.match(workflow, /Expected exactly ten npm packages/u);
+	assert.match(workflow, /Expected exactly eleven npm packages/u);
 	assert.match(workflow, /atomic-linux-x64-musl\.tar\.gz.*atomic-linux-arm64-musl\.tar\.gz/u);
 	assert.ok(
 		workflow.includes(`packages=(${expectedOrder})`),

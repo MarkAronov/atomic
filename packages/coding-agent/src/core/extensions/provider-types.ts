@@ -1,4 +1,4 @@
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { RefreshModelsContext } from "@bastani/pi-ai";
 import type {
 	Api,
 	AssistantMessageEventStream,
@@ -7,7 +7,7 @@ import type {
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
-} from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai/compat";
 import type { AtomicProviderCompat } from "../model-capabilities.ts";
 import type { ExtensionAPI } from "./api-types.ts";
 

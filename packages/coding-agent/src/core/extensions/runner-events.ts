@@ -1,5 +1,5 @@
+import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import { runCallback } from "../callback-activity.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {

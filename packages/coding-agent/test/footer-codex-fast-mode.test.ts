@@ -15,7 +15,7 @@ const workflowContext: OrchestrationContext = {
 	workflowRunId: "run-1",
 	workflowStageId: "stage-1",
 	workflowStageName: "Stage 1",
-	constraints: { disableWorkflowTool: true, maxSubagentDepth: 0 },
+	constraints: { disableWorkflowTool: true },
 };
 
 function sessionWithFastMode(

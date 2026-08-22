@@ -1,5 +1,5 @@
+import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import { StageSessionPause } from "../../workflows/src/runs/foreground/stage-runner-pause.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";

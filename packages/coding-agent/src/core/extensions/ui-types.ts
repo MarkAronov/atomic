@@ -252,6 +252,9 @@ export interface ExtensionUIContext {
 		options?: ExtensionWidgetOptions,
 	): void;
 
+	/** Observe host-driven widget release events for a key. Returns an unsubscribe function. */
+	onWidgetRelease?(key: string, listener: () => void): () => void;
+
 	/** Set a custom footer component, or undefined to restore the built-in footer.
 	 *
 	 * The factory receives a FooterDataProvider for data not otherwise accessible:

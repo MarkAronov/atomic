@@ -1,7 +1,6 @@
 import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import {
-	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
 	deliverSubagentResultIntercomEvent,
 	formatSubagentResultReceipt,
@@ -11,7 +10,10 @@ import {
 import {
 	type ControlEvent,
 	type Details,
-	type NestedRunSummary,
+	type ForegroundChildExecution,
+	type ForegroundParentAskPause,
+	type ForegroundRunCleanup,
+	type RunSyncOptions,
 	type SingleResult,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -20,8 +22,6 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
-import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.js";
 import {
 	formatControlIntercomMessage,
 	formatControlNoticeMessage,
@@ -68,12 +68,6 @@ function formatForegroundActivity(control: ForegroundControl): string | undefine
 }
 
 export function foregroundStatusResult(control: ForegroundControl): SubagentToolResult {
-	let nestedWarning: string | undefined;
-	try {
-		updateForegroundNestedProjection(control);
-	} catch (error) {
-		nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;
-	}
 	const activity = formatForegroundActivity(control);
 	const lines = [
 		`Run: ${control.runId}`,
@@ -84,8 +78,6 @@ export function foregroundStatusResult(control: ForegroundControl): SubagentTool
 			: undefined,
 		activity ? `Activity: ${activity}` : undefined,
 	].filter((line): line is string => Boolean(line));
-	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
-	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
 }
 
@@ -125,15 +117,46 @@ function takeEarlyDetachedResult(state: SubagentState, runId: string, index: num
 	return result;
 }
 
+export function retainForegroundChildExecution(
+	runtimeCwd: string,
+	options: RunSyncOptions,
+	agentScope?: string,
+): ForegroundChildExecution {
+	const {
+		signal,
+		interruptSignal,
+		intercomEvents,
+		onDetachedExit,
+		intercomDetachSignal,
+		onIntercomDetachCommit,
+		onParentAskClaim,
+		onUpdate,
+		onControlEvent,
+		supervisorAuthorization,
+		...retainedOptions
+	} = options;
+	void signal;
+	void interruptSignal;
+	void intercomEvents;
+	void onDetachedExit;
+	void intercomDetachSignal;
+	void onIntercomDetachCommit;
+	void onParentAskClaim;
+	void onUpdate;
+	void onControlEvent;
+	void supervisorAuthorization;
+	return { runtimeCwd, ...(agentScope !== undefined ? { agentScope } : {}), options: retainedOptions };
+}
+
 export function rememberForegroundRun(
 	state: SubagentState,
 	input: {
 		runId: string;
 		mode: "single" | "parallel";
 		cwd: string;
-		results: SingleResult[];
-		/** Effective delegation limit per child, aligned with `results` by index. */
-		maxSubagentDepths?: readonly (number | undefined)[];
+		children: Array<{ index: number; result: SingleResult; execution: ForegroundChildExecution }>;
+		parentAsk?: ForegroundParentAskPause;
+		cleanup?: ForegroundRunCleanup;
 	},
 ): void {
 	state.foregroundRuns ??= new Map();
@@ -142,9 +165,10 @@ export function rememberForegroundRun(
 		mode: input.mode,
 		cwd: input.cwd,
 		updatedAt: Date.now(),
-		children: input.results.map((originalResult, index) => {
+		...(input.parentAsk ? { parentAsk: input.parentAsk } : {}),
+		...(input.cleanup ? { cleanup: input.cleanup } : {}),
+		children: input.children.map(({ index, result: originalResult, execution }) => {
 			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
-			const maxSubagentDepth = input.maxSubagentDepths?.[index];
 			return {
 				agent: result.agent,
 				index,
@@ -154,8 +178,8 @@ export function rememberForegroundRun(
 					detached: result.detached,
 				}),
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
-				...(maxSubagentDepth === undefined ? {} : { maxSubagentDepth }),
 				result,
+				execution,
 			};
 		}),
 	});
@@ -214,7 +238,7 @@ export function replaceForegroundRunChild(
 export function emitControlNotification(input: {
 	pi: ExtensionAPI;
 	controlConfig: ExecutionContextData["controlConfig"];
-	intercomBridge: IntercomBridgeState;
+	intercomBridge: Pick<IntercomBridgeState, "active" | "orchestratorTarget">;
 	event: ControlEvent;
 }): void {
 	if (!shouldNotifyControlEvent(input.controlConfig, input.event)) return;
@@ -263,6 +287,25 @@ export function createForegroundControlNotifier(
 			pi: deps.pi,
 			controlConfig: data.controlConfig,
 			intercomBridge: data.intercomBridge,
+			event,
+		});
+}
+
+export function createRetainedForegroundControlNotifier(
+	options: Pick<RunSyncOptions, "controlConfig" | "orchestratorIntercomTarget">,
+	deps: Pick<ExecutorDeps, "pi">,
+): ((event: ControlEvent) => void) | undefined {
+	const controlConfig = options.controlConfig;
+	if (!controlConfig) return undefined;
+	const orchestratorTarget = options.orchestratorIntercomTarget;
+	return (event) =>
+		emitControlNotification({
+			pi: deps.pi,
+			controlConfig,
+			intercomBridge: {
+				active: orchestratorTarget !== undefined,
+				...(orchestratorTarget !== undefined ? { orchestratorTarget } : {}),
+			},
 			event,
 		});
 }
@@ -323,7 +366,6 @@ async function emitForegroundResultIntercom(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	results: SingleResult[];
-	nestedChildren?: NestedRunSummary[];
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
 	const children = input.results.flatMap((result, index) =>
@@ -350,7 +392,7 @@ async function emitForegroundResultIntercom(input: {
 		to: input.intercomBridge.orchestratorTarget,
 		runId: input.runId,
 		mode: input.mode,
-		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
+		children,
 	});
 	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
 	if (!delivered) return null;
@@ -363,7 +405,6 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	details: Details;
-	nestedChildren?: NestedRunSummary[];
 }): Promise<{ text: string; details: Details } | null> {
 	const payload = await emitForegroundResultIntercom({
 		pi: input.pi,
@@ -371,7 +412,6 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 		runId: input.runId,
 		mode: input.mode,
 		results: input.details.results,
-		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
 	});
 	if (!payload) return null;
 	return {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai";
+import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
@@ -50,6 +50,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 		modelIds: [
 			"deepseek-v4-flash-0731",
 			"deepseek-v4-pro",
+			"deepseek-v4-pro-0813",
 			"glm-5.2",
 			"qwen3.6-flash",
 			"qwen3.7-max",

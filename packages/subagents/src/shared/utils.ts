@@ -4,7 +4,7 @@
 
 import * as path from "node:path";
 import { getAgentDir as getAtomicAgentDir } from "@bastani/atomic";
-import type { Message } from "@earendil-works/pi-ai/compat";
+import type { Message } from "@bastani/pi-ai/compat";
 import { formatToolCall } from "./formatters.js";
 import type { AgentProgress, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.js";
 

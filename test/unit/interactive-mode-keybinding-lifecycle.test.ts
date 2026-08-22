@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { registerFauxProvider } from "@bastani/pi-ai/compat";
 import { getKeybindings, setKeybindings, type Terminal } from "@earendil-works/pi-tui";
 import { afterEach, test } from "vitest";
 import {

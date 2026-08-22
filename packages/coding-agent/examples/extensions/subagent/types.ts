@@ -1,5 +1,5 @@
+import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentScope } from "./agents.ts";
 
 export interface UsageStats {

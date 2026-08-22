@@ -1,5 +1,5 @@
+import type { Api, AssistantMessage, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
 import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ContextUsage,

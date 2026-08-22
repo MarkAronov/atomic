@@ -252,7 +252,7 @@ The model-family badges are representative open families, not a closed allowlist
 ### Prerequisites
 
 - **Node.js 22.19 or newer** — check with `node --version`.
-- **A package manager** — use npm, pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
+- **A package manager** — use npm, pnpm, Yarn, or Bun. Use Bun 1.4.0+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — use a supported subscription login or API key.
 
 ### Install

@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { RpcEventBuffer } from "../src/modes/rpc/rpc-event-buffer.ts";
 import { RpcOutputBuffer } from "../src/modes/rpc/rpc-output-buffer.ts";

@@ -1,4 +1,4 @@
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import type { AuthInteraction } from "@bastani/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";

@@ -5,7 +5,6 @@
 import type { AgentSessionEvent, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { CandidateModelResolver } from "./model-resolution.js";
-import type { NestedRouteInfo } from "./types-nested.js";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -42,6 +41,7 @@ export interface IntercomEventBus {
 }
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
+export const PARENT_ASK_PAUSE_REQUEST_EVENT = "subagent:parent-ask-pause-request";
 export const SUBAGENT_COMPLETE_EVENT = "subagent:complete";
 export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
@@ -49,6 +49,42 @@ export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 export const SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT = "subagent:terminal-ordering-barrier";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
+
+export type ParentAskKind = "decision" | "interview" | "intercom";
+
+export interface ParentAskInterviewQuestion extends Record<string, unknown> {
+	id: string;
+	type: "single" | "multi" | "text" | "image" | "info";
+	question: string;
+	options?: unknown[];
+}
+
+export interface ParentAskInterviewRequest extends Record<string, unknown> {
+	title?: string;
+	description?: string;
+	questions: ParentAskInterviewQuestion[];
+}
+
+export interface ParentAskAttachment {
+	type: "file" | "snippet" | "context";
+	name: string;
+	content: string;
+	language?: string;
+}
+
+export interface ParentAskPauseRequest {
+	runId: string;
+	index: number;
+	agent: string;
+	childIntercomTarget: string;
+	orchestratorTarget: string;
+	kind: ParentAskKind;
+	question: string;
+	attachments?: ParentAskAttachment[];
+	interview?: ParentAskInterviewRequest;
+	resolvedTargetId?: string;
+	claimed: boolean;
+}
 
 // ============================================================================
 // Execution Options
@@ -65,6 +101,8 @@ export interface RunSyncOptions {
 	intercomDetachSignal?: AbortSignal;
 	/** Releases every active foreground sibling only after this exact child accepts a detach commit. */
 	onIntercomDetachCommit?: () => void;
+	/** Claims a blocking ask from this exact child and starts retained interruption. */
+	onParentAskClaim?: (request: ParentAskPauseRequest) => void;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;
@@ -88,12 +126,10 @@ export interface RunSyncOptions {
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
-	maxSubagentDepth?: number;
 	/** Current session depth passed to the in-process admission door. */
 	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	workflowSessionMetadata?: SessionWorkflowMetadata;
-	nestedRoute?: NestedRouteInfo;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
 	/** Registry models available for heuristic bare-model resolution */
@@ -160,7 +196,6 @@ interface TopLevelParallelConfig {
 
 export interface ExtensionConfig {
 	defaultSessionDir?: string;
-	maxSubagentDepth?: number;
 	control?: ControlConfig;
 	parallel?: TopLevelParallelConfig;
 	worktreeSetupHook?: string;

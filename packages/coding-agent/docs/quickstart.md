@@ -5,7 +5,7 @@ This page gets you from install to a useful first Atomic session. Atomic is the 
 ## Prerequisites
 
 - **Node.js 24 LTS or newer** — Atomic requires the latest Node LTS runtime. Check with `node --version`.
-- **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Bun installs need Bun 1.3.14+.
+- **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Bun installs need Bun 1.4.0+.
 - **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
 
 ## Install

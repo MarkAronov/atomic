@@ -1,4 +1,4 @@
-import { uuidv7 } from "@earendil-works/pi-ai";
+import { uuidv7 } from "@bastani/pi-ai";
 import { randomUUID } from "crypto";
 
 export function createSessionId(): string {

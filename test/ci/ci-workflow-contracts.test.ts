@@ -67,6 +67,36 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-flaky-test-suite\.ts/u);
 });
 
+test("global setups: artifacts everywhere, natives on unit and integration only", async () => {
+	const config = (await import("../../vitest.config.js")) as {
+		default: {
+			test?: {
+				projects?: { test?: { name?: string; globalSetup?: string[] } }[];
+			};
+		};
+	};
+	const projects = config.default.test?.projects ?? [];
+	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
+	const nativeSetup = "./test/global-setup-natives.ts";
+	for (const name of ["unit", "integration"]) {
+		const project = projects.find((entry) => entry.test?.name === name);
+		assert.ok(project, `missing vitest project: ${name}`);
+		assert.deepEqual(
+			project.test?.globalSetup,
+			[artifactSetup, nativeSetup],
+			`${name} must keep the artifact and native global setups`,
+		);
+	}
+
+	// The artifact setup must cover every project: workers inherit the env var
+	// from the orchestrator, which is what keeps per-worker temp dirs from
+	// leaking. The native build stays off the ci project, which only inspects
+	// workflow and source state.
+	const ci = projects.find((entry) => entry.test?.name === "ci");
+	assert.ok(ci, "missing vitest project: ci");
+	assert.deepEqual(ci.test?.globalSetup, [artifactSetup], "ci runs the artifact setup but not the native build");
+});
+
 /**
  * No package script may write a workspace selector after `npm run <script>`.
  *
@@ -109,22 +139,22 @@ test("workspace selectors precede the run verb so Bun cannot rewrite them", asyn
  * exists only under Bun. When the suite moved to Node, one SQLite test silently
  * became `it.skip` and eleven more kept their names, kept passing, and executed
  * no assertions behind `if (!sqlite) return`. Neither shows up in a pass/fail
- * count or a test-name diff, so the guard is structural: the loader must try
- * `node:sqlite` first and fall back to `bun:sqlite`, and no test may reintroduce
- * a soft guard that turns an unavailable module into a green no-op.
+ * count or a test-name diff, so the guard is structural: the loader must use
+ * `node:sqlite`, which Node >= 22.13 and Bun >= 1.4.0 (this repository's
+ * floor) both ship — the `bun:sqlite` fallback is deleted and must not come
+ * back — and no test may reintroduce a soft guard that turns an unavailable
+ * module into a green no-op.
  */
 test("SQLite selectors resolve on either runtime and their tests cannot silently empty", async () => {
 	const selectors = await readText(join(root, "packages/coding-agent/src/core/tools/resource-selectors.ts"));
-	// node:sqlite first: it is the portable module and the one upstream pi uses.
-	// bun:sqlite second: Bun 1.3.14 has no node:sqlite (oven-sh/bun#32498 is
-	// merged but unreleased), and the shipped binary is Bun-compiled.
-	const nodeFirst = selectors.indexOf('requireModule("node:sqlite")');
-	const bunSecond = selectors.indexOf('requireModule("bun:sqlite")');
-	assert.ok(nodeFirst > 0, "resource-selectors must load node:sqlite");
-	assert.ok(bunSecond > nodeFirst, "bun:sqlite must remain the fallback, after node:sqlite");
+	assert.ok(selectors.includes('requireModule("node:sqlite")'), "resource-selectors must load node:sqlite");
+	assert.ok(
+		!selectors.includes('requireModule("bun:sqlite")'),
+		"the bun:sqlite fallback was deleted with the Bun 1.4.0 floor and must not come back",
+	);
 
 	// A single project: the runtime split existed only because the loader was
-	// Bun-only, so reintroducing it would mean the fallback was lost.
+	// Bun-only; it must not come back.
 	const config = (await import("../../packages/coding-agent/vitest.config.js")) as {
 		default: { test?: { projects?: { test?: { name?: string; include?: string[]; exclude?: string[] } }[] } };
 	};
@@ -332,7 +362,7 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
 	assert.match(workflow, /Failed to load extension/);
 	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
-	assert.match(workflow, /test .* = 10/u);
+	assert.match(workflow, /test .* = 11/u);
 	assert.match(workflow, /Build Linux x64 musl archive[\s\S]*--platform linux-x64-musl/u);
 	assert.match(workflow, /apk add --no-cache libgcc libstdc\+\+/u);
 	assert.doesNotMatch(
@@ -492,7 +522,7 @@ test("the shipped build toolchain and Bun do not float", async () => {
 			([, value]) => value as string,
 		),
 	);
-	assert.deepEqual([...bunVersions], ["1.3.14"], "test.yml and publish.yml must exercise one pinned Bun");
+	assert.deepEqual([...bunVersions], ["1.4.0"], "test.yml and publish.yml must exercise one pinned Bun");
 });
 
 test("each native leg declares its own measured job and compile budget", async () => {

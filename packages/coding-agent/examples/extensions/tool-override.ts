@@ -21,7 +21,7 @@
  */
 
 import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@bastani/atomic";
-import type { TextContent } from "@earendil-works/pi-ai/compat";
+import type { TextContent } from "@bastani/pi-ai/compat";
 import { constants, readFileSync } from "fs";
 import { access, appendFile, readFile } from "fs/promises";
 import { join, resolve } from "path";

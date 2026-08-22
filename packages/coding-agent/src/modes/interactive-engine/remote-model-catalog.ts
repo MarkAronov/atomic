@@ -1,5 +1,5 @@
-import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { ModelsRefreshResult } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession } from "../../core/agent-session.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../core/model-refresh-timeout.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";

@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Parent-targeted blocking asks now interrupt foreground children into retained pause state and surface the question, ordered attachments, and resume hint to the launching parent. Initial children receive exact supervisor authorization, and every resume rebuilds fresh authorization, control forwarding, and parallel detach coordination. Parallel pauses withhold queued tasks and preserve each paused child's session, cwd, Intercom group, execution settings, canonical index, worktree, and dirty changes; a sibling completed at the ask boundary remains terminal without blocking paused siblings. Diff capture and cleanup wait for terminal resume, and completed children are never rerun ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Subagent delegation is now fixed at one level. A top-level chat or workflow stage may launch subagents, but a subagent child may not launch, resume, or interrupt another child. Read-only management actions remain available, and the executor plus Rust admission boundary both enforce the rule.
+
+### Removed
+
+- Removed the extension config and agent frontmatter options for delegation depth. Stale keys remain parseable and are ignored; agent-management rewrites strip the old frontmatter field.
+- Removed inherited per-child delegation limits and the unreachable multi-level nested-run transport, registry, recursive status, and result payload fields. Direct-child status and results remain unchanged, and startup still cleans route directories left by older versions.
+
+### Changed
+
+- Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+- Updated the fanout-child boundary prompt to reflect that child delegation is unavailable.
+- Replaced built-in `gpt-5.6-luna:max` primary and fallback pins with `gpt-5.6-sol`, using `:medium` for worker and analysis agents and `:low` for locator and pattern agents.
+
+## [0.9.15-alpha.1] - 2026-08-21
+
+### Breaking Changes
+
+- Subagent delegation is now exactly one level deep and is no longer configurable. A top-level session — main chat or a workflow stage — may call the `subagent` tool; a session that was itself admitted as a subagent child may not. Every launch, `resume`, and `interrupt` attempted from inside a child is refused with a single fixed message; the observing actions `list`, `get`, `status`, and `doctor` remain available to a child. Workflow stages are unchanged and still delegate once. The Rust `SubagentControl` admission door now refuses any child deeper than the single permitted level, and the executor refuses a child before any run starts, so the rule holds at both doors.
+
+### Removed
+
+- Removed the extension config option that set the delegation ceiling. Existing `config.json` files that still declare it are ignored rather than rejected.
+- Removed the per-agent nesting-depth frontmatter field. An agent `.md` file that still declares the key parses and loads normally rather than being rejected; the key is no longer read, no longer re-emitted, and no longer printed in `subagent({ action: "get" })` output, and `create`/`update` no longer validate or clamp it. An agent-management rewrite of such a file strips the stale key, matching how earlier removed frontmatter keys are handled.
+- Removed the nesting-depth clause from the `subagent` tool's `config` parameter description.
+- Removed the per-child delegation limit from the typed admission policy, the in-process child spec, retained foreground resume records, and the run options. Admitted depth alone now decides whether a session may delegate.
+- Removed the multi-level nested-run pipeline: the temp-directory route, its event sink and control inbox, the run registry and its recursive projection, and the recursive status renderer. Its inherited-route resolvers had already been permanently disabled, so no event could reach any of it and `subagent({ action: "status" })` never printed a nested line; live and retained status output for a parent's own direct children is unchanged. Delegating no longer creates a per-run temp route directory. Startup still reaps route directories left by earlier versions.
+- Removed the nested run summary, run address, step summary, and route types, along with their public projections, from the subagent result payload. `SubagentResultIntercomChild` no longer carries a `children` array and `ControlEvent` no longer carries a nested run id or nesting path; result receipts no longer contain a "Nested subagents:" section. A parent still receives one entry per direct child.
+
+### Changed
+
+- Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+- The fanout-child boundary prompt no longer tells an authorized child that it may delegate, because no child can.
+- Replaced built-in `gpt-5.6-luna:max` primary and fallback pins with `gpt-5.6-sol` at the same thinking level as each agent's `gpt-5.5` fallback: `:medium` for `worker`, `code-simplifier`, `codebase-analyzer`, `codebase-online-researcher`, and `codebase-research-analyzer`; `:low` for `codebase-locator`, `codebase-pattern-finder`, and `codebase-research-locator`.
+
+## [0.9.14] - 2026-08-19
+
+Cumulative release of the `0.9.14-alpha.2` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Added
+
+- Added pure progress-trend evidence and injected control score-series support that can raise wall-clock attention priority without creating failure states, suppressing signals, or scheduling model calls ([#2489](https://github.com/bastani-inc/atomic/issues/2489)).
+- Agent frontmatter accepts YAML array-form `tools` — flow sequences (`tools: [read, bash]`) and block sequences (`tools:` followed by `- read` lines) — as well as the comma-separated string form, and both spellings produce the same tool set.
+- Extra frontmatter fields round-trip losslessly through the YAML emitter when agent files are rewritten. Sequences now serialize as block collections with hostile keys quoted, so a rewritten file can no longer fail YAML parsing and silently disappear from later scans.
+- In-process children resolve `skills` through the live loader catalog, so source-qualified selectors such as `tdd@builtin` inject the shadowed candidate instead of the precedence winner. Missing or ambiguous selectors are reported on the child result. The parent-only `subagent` orchestration skill remains unavailable, including qualified aliases such as `subagent@builtin` ([#2328](https://github.com/bastani-inc/atomic/issues/2328)).
+
+### Changed
+
+- Raised every built-in subagent Grok 4.6 fallback from `xai/grok-4.6:high` to `xai/grok-4.6:xhigh` and added the matching `github-copilot/grok-4.6:xhigh` twin immediately after each xAI id.
+
+### Fixed
+
+- A subagent that pins no model of its own now inherits the dispatching session's thinking level alongside its model, matching the parent's tool configuration inheritance. The agent's declared `thinking` and any candidate `:level` suffix still take precedence.
+- In-process JSONL event artifacts now honor `includeJsonl: false` and enforce the existing 50 MiB cap when enabled, preventing unbounded artifact growth ([#2445](https://github.com/bastani-inc/atomic/issues/2445)).
+- Migrated all built-in subagent GLM fallbacks to direct Z.AI `glm-5.3:high` entries, omitting unavailable OpenRouter GLM-5.3 fallbacks ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
+
 ## [0.9.14-alpha.5] - 2026-08-19
 
 ### Added

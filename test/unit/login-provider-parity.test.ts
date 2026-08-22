@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import type { TUI } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";

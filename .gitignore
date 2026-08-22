@@ -1,4 +1,5 @@
 node_modules/
+.artifacts/
 .atomic-test-fixtures/
 dist/
 target/
@@ -13,6 +14,8 @@ packages/*/dist/
 packages/*/dist-dev/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
+packages/ai/src/providers/data/
+packages/ai/src/providers/.model-generation-*/
 *.cpuprofile
 
 # Environment

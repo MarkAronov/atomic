@@ -1,4 +1,4 @@
-import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { Args } from "./cli/args.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
 import { resolveCliModel, type ScopedModel } from "./core/model-resolver.ts";

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
@@ -12,15 +13,16 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	resolveChildMaxSubagentDepth,
-	resolveSubagentDepthPolicy,
+	type ForegroundChildExecution,
+	isWorkflowStageOrchestrationContext,
+	type ParentAskPauseRequest,
+	type RunSyncOptions,
 	type SingleResult,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
-import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
 import { recordRun } from "../shared/run-history.js";
@@ -31,12 +33,14 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { formatParentAskPauseOutput } from "./parent-ask-output.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
 	rememberForegroundRun,
 	replaceForegroundRunChild,
+	retainForegroundChildExecution,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
 
@@ -135,10 +139,7 @@ export async function runSinglePath(
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
+	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
@@ -170,6 +171,7 @@ export async function runSinglePath(
 		effectiveSkills = skillOverride;
 	}
 	const interruptController = new AbortController();
+	let parentAsk: ParentAskPauseRequest | undefined;
 	const foregroundControl = deps.state.foregroundControls.get(runId);
 	if (foregroundControl) {
 		foregroundControl.currentAgent = params.agent;
@@ -188,8 +190,10 @@ export async function runSinglePath(
 	const forwardSingleUpdate = createForwardSingleUpdate(onUpdate, foregroundControl, params.agent!, 0);
 
 	let r: SingleResult;
+	let execution: ForegroundChildExecution;
 	try {
-		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
+		const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, childIntercomTarget);
+		const runOptions: RunSyncOptions = {
 			cwd: effectiveCwd,
 			signal,
 			interruptSignal: interruptController.signal,
@@ -204,7 +208,6 @@ export async function runSinglePath(
 			maxOutput: params.maxOutput,
 			outputPath,
 			outputMode: effectiveOutputMode,
-			maxSubagentDepth,
 			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard,
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
@@ -212,9 +215,14 @@ export async function runSinglePath(
 			controlConfig,
 			onControlEvent,
 			intercomSessionName: childIntercomTarget,
+			supervisorAuthorization,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
-			nestedRoute: foregroundControl?.nestedRoute,
+			onParentAskClaim: (request) => {
+				if (parentAsk) return;
+				parentAsk = request;
+				interruptController.abort();
+			},
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				if (result) {
@@ -231,7 +239,9 @@ export async function runSinglePath(
 			currentModel: currentModelFullId(ctx.model),
 			currentThinkingLevel: ctx.thinkingLevel,
 			skills: effectiveSkills,
-		});
+		};
+		execution = retainForegroundChildExecution(ctx.cwd, runOptions, params.agentScope);
+		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
@@ -270,6 +280,7 @@ export async function runSinglePath(
 		mode: "single",
 		runId,
 		results: [r],
+		parentAskPaused: parentAsk !== undefined && r.interrupted,
 		progress: params.includeProgress ? allProgress : undefined,
 		artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		truncation: r.truncation,
@@ -278,19 +289,26 @@ export async function runSinglePath(
 		runId,
 		mode: "single",
 		cwd: effectiveCwd,
-		results: details.results,
-		maxSubagentDepths: [maxSubagentDepth],
+		children: [{ index: 0, result: details.results[0]!, execution }],
+		...(parentAsk && r.interrupted
+			? {
+					parentAsk: {
+						askingChildIndex: 0,
+						releasedChildIndices: [0],
+						unlaunchedChildIndices: [],
+						request: parentAsk,
+					},
+				}
+			: {}),
 	});
 
 	if (!r.detached && !r.interrupted) {
-		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		const intercomReceipt = await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "single",
 			details,
-			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
 		});
 		if (intercomReceipt) {
 			return {
@@ -307,6 +325,23 @@ export async function runSinglePath(
 				{
 					type: "text",
 					text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+				},
+			],
+			details,
+		};
+	}
+
+	if (parentAsk && r.interrupted) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: formatParentAskPauseOutput({
+						askingChildIndex: 0,
+						releasedChildIndices: [0],
+						unlaunchedChildIndices: [],
+						request: parentAsk,
+					}),
 				},
 			],
 			details,

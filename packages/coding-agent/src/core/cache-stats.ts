@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { SessionEntry } from "./session-manager.ts";
 
 export const CACHE_TTL_MS = 5 * 60 * 1000;

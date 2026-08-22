@@ -6,7 +6,6 @@ import type {
 	ArtifactConfig,
 	ControlConfig,
 	MaxOutputConfig,
-	NestedRouteInfo,
 	ResolvedControlConfig,
 	SUBAGENT_ACTIONS,
 	SubagentState,
@@ -105,7 +104,6 @@ export interface ExecutionContextData {
 	parentDepth?: number;
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
-	nestedRoute?: NestedRouteInfo;
 }
 
 export interface PreparedExecutionContext {
@@ -117,10 +115,6 @@ export interface PreparedExecutionContext {
 	foregroundMode: "single" | "parallel";
 	execData: ExecutionContextData;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
-	writeNestedForegroundEvent: (
-		type: "subagent.nested.started" | "subagent.nested.completed",
-		result?: SubagentToolResult,
-	) => void;
 }
 
 export interface ExecutionContextBuildResult {

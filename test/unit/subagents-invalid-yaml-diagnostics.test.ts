@@ -17,7 +17,7 @@ import type { discoverAgentsAll } from "../../packages/subagents/src/agents/agen
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.ts";
 import { buildDoctorReport } from "../../packages/subagents/src/extension/doctor.ts";
 import type { ExtensionConfig } from "../../packages/subagents/src/shared/types-config.ts";
-import type { SubagentState } from "../../packages/subagents/src/shared/types-nested.ts";
+import type { SubagentState } from "../../packages/subagents/src/shared/types-foreground-state.ts";
 
 const roots: string[] = [];
 

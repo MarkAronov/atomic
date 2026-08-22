@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import type { TuiInputListener } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";

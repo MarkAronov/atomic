@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import { afterAll, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.ts";
@@ -77,7 +77,7 @@ vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () =>
 			harness.attempts.push({ spec: admitted.spec, candidate });
 			return { status: "running", promise: Promise.resolve(outcome as AttemptOutcome) };
 		},
-		registerNestedAttempt: () => undefined,
+		registerAttempt: () => undefined,
 		continueDetached: () => undefined,
 		deliverChildResult: async () => undefined,
 		getDeliveredResult: () => undefined,

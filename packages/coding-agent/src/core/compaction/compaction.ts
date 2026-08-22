@@ -2,8 +2,8 @@
  * Neutral context-usage metrics for deciding when a session needs compaction.
  */
 
+import type { Api, AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import { messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
 import type { SessionEntry } from "../session-manager.ts";
 

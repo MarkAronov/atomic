@@ -221,19 +221,21 @@ export function emitChatSurface(
 	// the stored `content`. Default to a complete printable rendering so
 	// headless `/workflow list|status|status <id>` is useful without a TUI.
 	const content = options.content ?? renderChatSurfacePlainText(payload);
-	(
-		send as unknown as (msg: {
-			customType: string;
-			content: string;
-			display: boolean;
-			details: ChatSurfacePayload;
-		}) => void
-	).call(pi, {
-		customType: CHAT_SURFACE_CUSTOM_TYPE,
-		content,
-		display: true,
-		details: payload,
-	});
+	void send.call(
+		pi,
+		{
+			customType: CHAT_SURFACE_CUSTOM_TYPE,
+			content,
+			display: true,
+			details: payload,
+		},
+		// A workflow card is an already-rendered transcript surface, not a request
+		// for a model turn. Without this, a card emitted while a turn is streaming
+		// is queued as steering behind that turn and does not appear until the turn
+		// ends — so `/workflow` dispatch/list/status cards raced any lifecycle
+		// notice that had just started a turn.
+		{ triggerTurn: false },
+	);
 }
 
 // ---------------------------------------------------------------------------

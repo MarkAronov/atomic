@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai/compat";
+import type { Model } from "@bastani/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";

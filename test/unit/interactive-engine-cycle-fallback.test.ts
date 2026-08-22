@@ -52,6 +52,9 @@ class Driver {
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
 		}
+		// An ambient Copilot credential changes the isolated engine's model
+		// discovery and cycle order; scrub it so the scenario stays deterministic.
+		delete baseEnv.COPILOT_GITHUB_TOKEN;
 		this.process = spawnProcess(
 			[bunExecutable(), join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"), ...args],
 			{

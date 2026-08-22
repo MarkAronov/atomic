@@ -1,7 +1,7 @@
+import type { ProviderHeaders } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/pi-ai/compat";
+import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type ModelCycleResult, THINKING_LEVELS } from "./agent-session-types.ts";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
@@ -16,9 +16,9 @@ export async function _getRequiredRequestAuth(
 	baseUrl?: string;
 	env?: Record<string, string>;
 }> {
-	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getAuth"]>>;
+	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getRequestAuth"]>>;
 	try {
-		result = await this._modelRuntime.getAuth(model);
+		result = await this._modelRuntime.getRequestAuth(model);
 	} catch (error) {
 		const cause = error instanceof Error ? error.cause : undefined;
 		if (cause instanceof Error && cause.message === "authHeader requires a resolved API key") {

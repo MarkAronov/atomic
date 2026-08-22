@@ -83,6 +83,8 @@ OAuth logins get their Copilot host from the token GitHub issues during login. E
 
 A `models.json` provider `baseUrl` for `github-copilot` overrides all of the above. Without `COPILOT_GITHUB_TOKEN` the provider is left exactly as upstream `pi-ai` defines it.
 
+Chat requests authenticated with a raw `COPILOT_GITHUB_TOKEN` (including `github_pat_`, `ghp_`, `gho_`, and `ghu_` tokens) send `Copilot-Integration-Id: copilot-developer-cli`. A `Copilot-Integration-Id` supplied through `models.json` provider headers, `modelOverrides`, or per request always takes precedence, including an explicit `vscode-chat` value. Exchanged OAuth tokens containing a `tid=` segment keep the existing OAuth headers unchanged. The env-token routing implementation and its exported helpers now live in `@bastani/pi-ai`.
+
 Business and enterprise tokens sent to the individual host return `421 Misdirected Request`; if you see that, set `COPILOT_API_TARGET` to the host your organization issues.
 
 ### xAI (Grok/X subscription)
@@ -157,7 +159,7 @@ Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Matc
 
 Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`); the generated catalogs expose reasoning without a thinking-level map, so built-in chains use the supported `:high` suffix rather than inventing distinct `:xhigh` or `:max` tiers. OpenRouter currently exposes `z-ai/glm-5.2` but not `z-ai/glm-5.3`, so Atomic does not ship an unavailable OpenRouter GLM-5.3 fallback. Baseten also has no GLM-5.3 catalog entry, so its documented default remains `zai-org/GLM-5.2` and its catalog supplies the provider-specific thinking levels. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider.
 
-Reference for environment variables and `auth.json` keys: `findEnvKeys()` / `getEnvApiKey()` in the installed `@earendil-works/pi-ai` dependency (`node_modules/@earendil-works/pi-ai/dist/env-api-keys.d.ts`). The private provider map those functions use is in `node_modules/@earendil-works/pi-ai/dist/env-api-keys.js`; Atomic does not include a separate `packages/ai` source directory in this monorepo.
+Reference for environment variables and `auth.json` keys: `findEnvKeys()` / `getEnvApiKey()` in the installed `@bastani/pi-ai` dependency (`node_modules/@bastani/pi-ai/dist/env-api-keys.d.ts`). The private provider map those functions use is in `node_modules/@bastani/pi-ai/dist/env-api-keys.js`; Atomic does not include a separate `packages/ai` source directory in this monorepo.
 
 #### Auth File
 
@@ -349,7 +351,7 @@ import {
   DefaultResourceLoader,
   type AiGatewayBinding,
 } from "@bastani/atomic";
-import { streamSimple as anthropicStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { streamSimple as anthropicStreamSimple } from "@bastani/pi-ai/api/anthropic-messages";
 
 // `AI` is the Workers AI binding; `AiGatewayBinding` is the structural type for it,
 // so the snippet needs no `@cloudflare/workers-types` dependency.
@@ -410,7 +412,7 @@ export default {
 };
 ```
 
-Every request under the gateway prefix becomes one `env.AI.gateway(id).run({ provider, endpoint, headers, query })` call in the provider's native wire format, so streaming behaves identically to the HTTPS route. The transport serves only its gateway-bound client: URLs outside the prefix, and in-prefix requests the universal endpoint cannot express (non-POST, non-JSON body), reject with a descriptive error rather than being forwarded. Repeat the same pattern with `@earendil-works/pi-ai/api/openai-completions` (or `openai-responses`) to cover the `/openai` and `/compat` passthrough models of the same provider.
+Every request under the gateway prefix becomes one `env.AI.gateway(id).run({ provider, endpoint, headers, query })` call in the provider's native wire format, so streaming behaves identically to the HTTPS route. The transport serves only its gateway-bound client: URLs outside the prefix, and in-prefix requests the universal endpoint cannot express (non-POST, non-JSON body), reject with a descriptive error rather than being forwarded. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`) to cover the `/openai` and `/compat` passthrough models of the same provider.
 
 ### Cloudflare Workers AI
 

@@ -35,14 +35,14 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		import("@earendil-works/pi-tui/dist/layout.js"),
 		// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
 		// `/compat` (a strict superset). Extensions still `import ... from
-		// "@earendil-works/pi-ai"`, so we load the compat module here and key it
+		// "@bastani/pi-ai"`, so we load the compat module here and key it
 		// under the root specifier below to keep every extension working unchanged.
-		import("@earendil-works/pi-ai/compat"),
-		import("@earendil-works/pi-ai/oauth"),
+		import("@bastani/pi-ai/compat"),
+		import("@bastani/pi-ai/oauth"),
 		// Re-exported from `@bastani/atomic`; jiti-loaded extensions (the builtin
 		// packages import the host entry) reach this specifier, so it needs a key
 		// of its own instead of falling through to the compat/root prefix alias.
-		import("@earendil-works/pi-ai/api/cloudflare-gateway-binding"),
+		import("@bastani/pi-ai/api/cloudflare-gateway-binding"),
 		// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 		// avoiding a circular dependency while preserving the package-name extension import path.
 		import("../../index.ts"),
@@ -58,6 +58,10 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@earendil-works/pi-agent-core": piAgentCore,
 		"@earendil-works/pi-tui": piTui,
 		"@earendil-works/pi-tui/dist/layout.js": piTuiLayout,
+		"@bastani/pi-ai": piAi,
+		"@bastani/pi-ai/compat": piAi,
+		"@bastani/pi-ai/oauth": piAiOauth,
+		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 		"@earendil-works/pi-ai": piAi,
 		"@earendil-works/pi-ai/compat": piAi,
 		"@earendil-works/pi-ai/oauth": piAiOauth,
@@ -435,16 +439,14 @@ function getAliases(): Record<string, string> {
 	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
 	// upstream layout change moves these files, this join needs updating to
 	// match the package's real dist paths.
-	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
-	const piAiCodexResponsesEntry = resolveWorkspaceOrImport(
-		"ai/dist/api/openai-codex-responses.js",
-		"@earendil-works/pi-ai",
-	);
-	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
-	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
+	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@bastani/pi-ai");
+	const piAiCodexResponsesEntry = resolveWorkspaceOrImport("ai/dist/api/openai-codex-responses.js", "@bastani/pi-ai");
+	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/pi-ai");
+	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
+	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
 	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/cloudflare-gateway-binding.js",
-		"@earendil-works/pi-ai",
+		"@bastani/pi-ai",
 	);
 
 	_aliases = {
@@ -453,6 +455,13 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui/dist/layout.js": piTuiLayoutEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
+		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
+		"@bastani/pi-ai/oauth": piAiOauthEntry,
+		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
+		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
+		"@bastani/pi-ai/compat": piAiEntry,
+		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
+		"@bastani/pi-ai": piAiEntry,
 		"@earendil-works/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,

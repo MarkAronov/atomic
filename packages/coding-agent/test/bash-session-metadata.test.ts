@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -45,7 +45,7 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 				workflowRunId: "run-metadata",
 				workflowStageId: options.stage,
 				workflowStageName: options.stage,
-				constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 2 },
+				constraints: { disableWorkflowTool: true as const },
 			}
 		: undefined;
 	const result = await createAgentSession({

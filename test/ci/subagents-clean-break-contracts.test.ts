@@ -82,6 +82,25 @@ const deletedModulePaths = [
 	"packages/subagents/src/runs/foreground/execution-attempt-control.ts",
 	"packages/subagents/src/runs/foreground/execution-attempt-finalize.ts",
 	"packages/subagents/src/runs/foreground/execution-attempt-types.ts",
+	// The multi-level nested route/event/control pipeline. Its env resolvers had
+	// already become unconditional `return undefined`, so nothing downstream of
+	// them could ever run; delegation is now fixed at one level and the whole
+	// pipeline is gone. Direct-child tracking lives in `attempt-handles.ts` and
+	// the temp-dir reaper in `runtime-support/temp-cleanup.ts`.
+	"packages/subagents/src/runs/inprocess/nested-routing.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-api.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-control.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-core.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-paths.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-projection.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-registry.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-rendering.ts",
+	"packages/subagents/src/runs/inprocess/runtime-support/nested-sanitize.ts",
+	"packages/subagents/src/shared/types-nested.ts",
+	// The fanout-child registration door. It had no production importer: the
+	// package exposes only `./src/extension/index.ts`, which resolves a
+	// child-scoped executor from `ctx.subagentPolicy`.
+	"packages/subagents/src/extension/fanout-child.ts",
 ] as const;
 
 const deletedModulePatterns = [

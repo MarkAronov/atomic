@@ -10,8 +10,8 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
-} from "@earendil-works/pi-ai";
-import { getApiProvider } from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai";
+import { getApiProvider } from "@bastani/pi-ai/compat";
 import type { ModelConfig, ModelsJsonProvider } from "./model-config.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer-internal.ts";
 import {

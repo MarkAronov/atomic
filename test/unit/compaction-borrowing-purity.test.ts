@@ -8,9 +8,9 @@
  */
 
 import assert from "node:assert/strict";
+import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/pi-ai/compat";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
-import { getModel } from "@earendil-works/pi-ai/compat";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";

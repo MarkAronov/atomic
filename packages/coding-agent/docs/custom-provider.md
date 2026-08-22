@@ -251,7 +251,7 @@ pi.registerProvider("custom-api", {
 Add OAuth/SSO authentication that integrates with `/login`:
 
 ```typescript
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/pi-ai";
 
 pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
@@ -377,7 +377,7 @@ For providers with non-standard APIs, implement `streamSimple`. Study the existi
 
 **Reference implementations:**
 
-Atomic uses provider implementations from its installed `@earendil-works/pi-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@earendil-works/pi-ai/dist/api/`, including:
+Atomic uses provider implementations from its installed `@bastani/pi-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@bastani/pi-ai/dist/api/`, including:
 - `anthropic-messages.d.ts` / `anthropic-messages.js` - Anthropic Messages API
 - `mistral-conversations.d.ts` / `mistral-conversations.js` - Mistral Conversations/Chat streaming
 - `openai-completions.d.ts` / `openai-completions.js` - OpenAI Chat Completions
@@ -399,7 +399,7 @@ import {
   type SimpleStreamOptions,
   calculateCost,
   createAssistantMessageEventStream,
-} from "@earendil-works/pi-ai";
+} from "@bastani/pi-ai";
 
 function streamMyProvider(
   model: Model<any>,
@@ -581,7 +581,7 @@ pi.registerProvider("my-provider", {
 
 ## Testing Your Implementation
 
-Test your provider against focused tests that mirror Atomic's provider contract. If you are working from the source checkout, note that provider internals come from `@earendil-works/pi-ai`; this monorepo does not contain a `packages/ai/test` directory to copy from directly:
+Test your provider against focused tests that mirror Atomic's provider contract. If you are working from the source checkout, note that provider internals come from `@bastani/pi-ai`; this monorepo does not contain a `packages/ai/test` directory to copy from directly:
 
 | Test | Purpose |
 |------|---------|
@@ -711,9 +711,11 @@ interface ProviderModelConfig {
     requiresAssistantAfterToolResult?: boolean;
     requiresThinkingAsText?: boolean;
     requiresReasoningContentOnAssistantMessages?: boolean;
-    thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "chat-template" | "qwen-chat-template" | "string-thinking" | "ant-ling";
+    thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "baseten" | "zai" | "qwen" | "chat-template" | "qwen-chat-template" | "string-thinking" | "ant-ling";
     supportsStrictTools?: boolean;
-    chatTemplateKwargs?: Record<string, string | number | boolean | null | { "$var": "thinking.enabled" | "thinking.effort"; omitWhenOff?: boolean }>;
+    chatTemplateKwargs?: Record<string, string | number | boolean | null | { "$var": "thinking.enabled" | "thinking.effort" | "thinking.budget"; omitWhenOff?: boolean }>;
+    chatTemplateArgs?: Record<string, string | number | boolean | null | { "$var": "thinking.enabled" | "thinking.effort" | "thinking.budget"; omitWhenOff?: boolean }>;
+    thinkingTokenBudgetField?: "thinking_token_budget" | "thinking_budget" | "thinking_budget_tokens";
     cacheControlFormat?: "anthropic";
     sendSessionAffinityHeaders?: boolean;
     sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter";
@@ -725,8 +727,9 @@ interface ProviderModelConfig {
 
 The `cost` shape is equivalent to `Model<Api>["cost"]`. Base rates and every tier are complete rate sets. When multiple thresholds match, `calculateCost()` uses the highest threshold and applies that tier to all four cost buckets for the request.
 
-`openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`.
-`cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user/assistant text content.
+`openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`. Use `thinkingFormat: "baseten"` with `chatTemplateArgs` when the provider expects toggle values under `chat_template_args` and optionally supports top-level `reasoning_effort`.
+`thinkingTokenBudgetField` sends a clamped per-level thinking budget as a top-level request field (`thinking_token_budget` on vLLM, `thinking_budget` on Qwen/SGLang, `thinking_budget_tokens` on llama.cpp). `supportsThinkingTokenBudget: true` is an alias for the vLLM field name. Do not combine it with `reasoning_effort` on DashScope Qwen models.
+`cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user, assistant, or tool-result text content.
 
 Capability flags are enforcement claims, not preferences. `supportsStrictMode` controls strict JSON-schema tools for OpenAI-compatible APIs; Anthropic/Bedrock use `supportsStrictTools`; `supportsOpenAIGrammarTools` controls OpenAI Lark/regex custom tools. Atomic also accepts `supportsGrammarTools` as a compatibility alias and synchronizes it to the canonical OpenAI name; when both disagree, the canonical field wins. Leave these fields unset/false unless the endpoint and selected model actually preserve and enforce the corresponding request shape. See [Extensions](/extensions#constrained-sampling) for exact `constrainedSampling` modes.
 

@@ -1,5 +1,5 @@
 import type { SkillCatalog } from "@bastani/atomic";
-import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.js";
+import type { SubagentToolResult } from "../shared/types.js";
 import type { ManagementContext, ManagementScope } from "./agent-management.js";
 import type { AgentConfig, AgentScope } from "./agents.js";
 import { discoverAgentsAll, parsePackageName } from "./agents.js";
@@ -216,17 +216,6 @@ export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknow
 	if (hasKey(cfg, "progress")) {
 		if (typeof cfg.progress !== "boolean") return "config.progress must be a boolean when provided.";
 		target.defaultProgress = cfg.progress;
-	}
-	if (hasKey(cfg, "maxSubagentDepth")) {
-		if (cfg.maxSubagentDepth === false || cfg.maxSubagentDepth === "") target.maxSubagentDepth = undefined;
-		else if (
-			typeof cfg.maxSubagentDepth === "number" &&
-			Number.isInteger(cfg.maxSubagentDepth) &&
-			cfg.maxSubagentDepth >= 0
-		) {
-			target.maxSubagentDepth = Math.min(cfg.maxSubagentDepth, MAX_SUBAGENT_NESTING_DEPTH);
-		} else
-			return `config.maxSubagentDepth must be an integer >= 0 or false when provided; values above ${MAX_SUBAGENT_NESTING_DEPTH} are clamped.`;
 	}
 	return undefined;
 }

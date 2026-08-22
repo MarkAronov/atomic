@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
+import { registerBunOAuthFlows } from "@bastani/pi-ai/bun-oauth";
 
 // Register before the application graph loads so Bun's standalone compiler embeds every login adapter.
 registerBunOAuthFlows();

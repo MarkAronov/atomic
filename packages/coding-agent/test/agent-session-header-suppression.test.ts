@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@bastani/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
@@ -21,7 +21,7 @@ const model = { id: "test-model", provider: "test-provider", api: "openai-comple
 function sessionWithResolvedHeaders(headers: Record<string, string | null>): AgentSessionInternalSurface {
 	return {
 		_modelRuntime: {
-			getAuth: async () => ({ auth: { apiKey: "k", headers } }),
+			getRequestAuth: async () => ({ auth: { apiKey: "k", headers } }),
 			isUsingOAuth: () => false,
 		},
 	} as unknown as AgentSessionInternalSurface;
@@ -53,7 +53,7 @@ describe("_getRequiredRequestAuth header suppression markers", () => {
 	it("returns the api key, endpoint, and env alongside preserved markers", async () => {
 		const session = {
 			_modelRuntime: {
-				getAuth: async () => ({
+				getRequestAuth: async () => ({
 					auth: {
 						apiKey: "secret",
 						baseUrl: "https://api.enterprise.githubcopilot.com",

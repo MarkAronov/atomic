@@ -5,7 +5,6 @@
  * Responses and events are emitted as JSON lines on stdout.
  */
 
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
 	AuthInfoLink,
 	Credential,
@@ -13,8 +12,9 @@ import type {
 	OAuthDeviceCodeInfo,
 	OAuthPrompt,
 	OAuthSelectPrompt,
-} from "@earendil-works/pi-ai";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai";
+import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionReason, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";

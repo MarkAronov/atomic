@@ -1,5 +1,5 @@
-import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/pi-ai";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";

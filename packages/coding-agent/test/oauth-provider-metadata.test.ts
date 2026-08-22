@@ -1,5 +1,5 @@
-import type { Provider } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { Provider } from "@bastani/pi-ai";
+import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import type { ProviderConfigInput } from "../src/core/provider-composer.ts";

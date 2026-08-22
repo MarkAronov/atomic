@@ -8,7 +8,7 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@bastani/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -168,6 +168,28 @@ describe("createAgentSession stream options", () => {
 		);
 
 		expect(options?.websocketConnectTimeoutMs).toBe(0);
+	});
+
+	it("forwards a duration-string stream deadline from settings", async () => {
+		const options = await captureStreamOptions("openai-completions", { streamDeadlineMs: "30s" });
+
+		expect(options?.streamDeadlineMs).toBe(30_000);
+	});
+
+	it("lets request streamDeadlineMs zero disable the configured deadline", async () => {
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{ streamDeadlineMs: "5m" },
+			{ streamDeadlineMs: 0 },
+		);
+
+		expect(options?.streamDeadlineMs).toBe(0);
+	});
+
+	it("rejects an unsupported stream deadline duration", () => {
+		expect(() => SettingsManager.inMemory({ streamDeadlineMs: "30d" }).getStreamDeadlineMs()).toThrow(
+			"Invalid streamDeadlineMs setting",
+		);
 	});
 
 	it("forwards provider retry settings", async () => {

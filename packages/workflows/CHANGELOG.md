@@ -6,6 +6,112 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Changed
+
+- Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. A stage remains a top-level session and may still delegate once, while its subagent children cannot delegate further.
+
+### Fixed
+
+- Fixed `/workflow` dispatch, list, and status cards being held as steering messages while an agent streamed. Rendered cards now enter the transcript at once without starting a turn; lifecycle notices still nudge the model.
+- Persistent workflow progress widgets now reattach after host UI resets or remote-engine release while keeping mount-once, in-place updates ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Fixed one stalled heartbeat send blocking all later workflow heartbeats in the session. In-flight sends now have a two-minute watchdog, release the run's pending slot on expiry, advance the shared FIFO queue, and guard against late double settlement while preserving retry behavior ([#2557](https://github.com/bastani-inc/atomic/issues/2557)).
+- Fixed disposal of a confirmed-paused stage turning an acknowledged pause into a terminal failure. Disposal now waits while the run remains paused and resumable; abort and kill still fail visibly ([#2558](https://github.com/bastani-inc/atomic/issues/2558)).
+- Fixed a workflow stage session leak when a confirmed-paused stage was cleared from the live registry, resumed through its stale handle, and completed. Deferred cleanup now drains once on terminal completion.
+
+## [0.9.15-alpha.1] - 2026-08-21
+
+### Changed
+
+- Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. Stage delegation itself is unchanged: a stage is a top-level session and still launches subagents once. What changed is that the children it launches can no longer delegate further, and nothing configures that.
+
+### Fixed
+
+- Fixed `/workflow` cards being swallowed while the agent is streaming. The dispatch, list, and status cards were sent as ordinary turn-triggering messages, so a card emitted during a live model turn — for example right after a workflow lifecycle notice started one — was queued as steering and did not reach the transcript until that turn ended. Cards are already-rendered transcript surfaces and are now sent as non-turn messages, so they appear immediately whether or not a turn is in flight. Workflow lifecycle notices are unchanged and still nudge the model.
+- Persistent workflow progress widgets now reattach after a host UI reset or remote-engine release while keeping the existing mount-once, update-in-place behavior ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Fixed one stuck heartbeat send silencing every workflow heartbeat for the rest of the session. All runs in a session share a single FIFO heartbeat-delivery queue, and its in-flight head had no deadline: a `sendMessage` promise that never settled held that head forever, so later runs queued behind it and never delivered a card, with no error and no degraded mode. Terminal cleanup could not rescue it either, because it deliberately spares a send already handed to the host. Each in-flight send now carries a bounded two-minute watchdog; on expiry the attempt is abandoned as an undelivered heartbeat, its run's pending slot is released so the run re-arms at its next future boundary, and the queue advances to the next run. Settlement is guarded by a per-attempt token, so a late resolution or rejection from an abandoned attempt cannot settle twice, restart retries, or disturb the current head. An emitter that rejects directly now settles as a failed delivery through the existing retry path instead of wedging the queue. The intended one-heartbeat-per-run rule before the deadline, the existing retry backoff and attempt budget, and the deadline-free hold on a card already admitted into the parent's queue are all unchanged ([#2557](https://github.com/bastani-inc/atomic/issues/2557)).
+- Fixed a confirmed workflow pause silently reversing to a terminal failed run. Disposing a stage session while its stage was parked on an acknowledged pause rejected the parked pause waiter with `stage "<name>" session has been disposed`, which surfaced as a stage failure and emitted a terminal `workflow.run.end` with status `failed` — after `workflow pause` had already reported success and status had reported the run paused and resumable. Disposal that arrives during a confirmed pause is now deferred instead of rejecting the waiter, so the run stays paused and resumable and explicit resume continues through the normal path with intact metadata. Abort and kill still reject a parked waiter and fail visibly, a deferred disposal is still completed once that abort arrives, and disposal outside a confirmed pause is unchanged and still reported ([#2558](https://github.com/bastani-inc/atomic/issues/2558)).
+- Fixed a workflow stage session leak when a confirmed-paused stage was cleared from the live control registry, resumed through its stale handle, and then completed. Deferred controller cleanup now drains once at terminal completion, releasing the session and its listeners without double-disposal.
+
+## [0.9.14] - 2026-08-19
+
+Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.6` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Breaking Changes
+
+- `open-claude-design` removes the `max_refinements` input, the `approved_for_export` and `refinements_completed` outputs, and the `<artifact_dir>/feedback/` feedback artifact. A run now performs one `generate-1`, an optional live review, and export; callers must stop supplying, reading, or expecting those fields and artifacts ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- `adversarial-verification` now accepts optional per-criterion `criteria`, `accept_mean`, and bounded `reask_limit` inputs, and returns deterministic graded mean/veto results through `mean_score` and `score_table_path`; callers must migrate from the removed `result`, `verifier_artifact_paths`, and `artifact_dir` outputs. Invalid verifier reports are recorded as invalid markers and re-asked instead of becoming fail votes ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+- Replaced `bracket_path`/`bracket.json` and the knockout tournament schedule with `comparisons_path`/`comparisons.json` on the soft-scored pivot-pairing schedule. Judge stages now use deterministic `judge-<a>-<b>-<criterion>-r<rep>` identities, and the reducer stage is named `comparisons-reducer` ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
+
+### Added
+
+- Added `heartbeatIntervalMinutes` to the workflow authoring surface: an optional cadence in minutes that resolves to the `15`-minute default when omitted, treats `0` as an explicit disable, and rejects negative and non-finite values at authoring time. Every compiled definition carries the resolved value, and the default interval, heartbeat custom type, and heartbeat event types are exported from `@bastani/workflows` ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+- Added workflow heartbeat scheduling and queued parent delivery for `heartbeatIntervalMinutes`. While a top-level run is active, one heartbeat is raised per `startedAt + n × interval` boundary computed from the run's persisted start time. Delivery reuses the lifecycle-notice parent path under the distinct `workflows:workflow-heartbeat` custom type, at most one unread heartbeat is outstanding per run, paused runs emit nothing, nested child runs never heartbeat the parent chat, and a durable cadence-anchor keeps a resumed run on its launch cadence ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+- Added terminal heartbeat cleanup and restart recovery. Reaching any terminal status drops that run's cadence, queued heartbeats, and durable-anchor memos. A heartbeat whose run has since finished is excluded from the model's context and never steers the parent about a run that is over, while the transcript card remains as a record that the heartbeat was raised ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+- Every bundled builtin workflow now states its heartbeat cadence rather than inheriting it. The long autonomous workflows declare the `15`-minute default explicitly; `open-claude-design` sets `0` and runs quiet ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+- Added optional run-budget declarations on workflow config, authored definitions, and `workflow` tool runs or resumes. `maxDurationMs`, `maxTokens`, `maxCost`, and `warnAtPercent` resolve per field with run overrides taking precedence over definition and config values; `0` disables a dimension. Invalid declarations now fail validation, and `budget_exceeded` is reserved as a resumable returned blocked status ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
+- Added duration enforcement for workflow budgets at stage and durable-tool boundaries. Runs emit one user-visible `budget_warning` lifecycle notice at the default 80% threshold or configured threshold, receive one wrap-up turn only when a frontier stage turn is already live, and stop on a resumable `budget_exceeded` blocked rail with a duration report. Paused time is excluded, elapsed time carries across resume, a raised resume budget continues prior spend, root duration scope is enforced inside child workflows, and child-scoped exhaustion returns to the parent without stopping it ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
+- Added tree-wide token and cost budget metering across nested workflow runs and stage retries. Uncached input and output tokens feed `maxTokens`, cache reads and writes remain reported counters, `usage.cost` feeds `maxCost`, and persisted accounting baselines prevent duplicate charges across boundaries and resume ([#2212](https://github.com/bastani-inc/atomic/issues/2212)).
+- Added optional per-attempt `timeoutMs` deadlines to `ctx.tool`. Expiry aborts the attempt signal, records a timeout-specific diagnostic, participates in retries, and follows the existing throwing or typed `failureMode: "return"` behavior ([#2424](https://github.com/bastani-inc/atomic/issues/2424)).
+- Stage control registries expose `has(runId)` so a pruned registration map is distinguishable from an empty one after `clearDetached()` ([#2462](https://github.com/bastani-inc/atomic/issues/2462)).
+- Refined `ctx.tool` graph inspection into one read-only agent-chat-style tool message block. Enter, click, or switcher selection opens it collapsed by default; the configured `app.tools.expand` action (`ctrl+o` by default) toggles the full bounded args, result/error, callback source, timing, and cached/replayed markers ([#2427](https://github.com/bastani-inc/atomic/issues/2427)).
+- Added a shared `verification-criteria` module (`parse_rubric`, `normalize_criteria`, `select_criteria`, `VERIFICATION_SCALE`, `decide_verification`) so verification builtins can score one criterion at a time on an anchored 1–20 scale and accept only when a quorum mean clears the threshold with no veto finding ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+- Added prefix-cache-aware verification prompts with a byte-identical shared head, UTF-8 bounded candidate inlining with whole-family read fallback, and warm-first verifier fan-out scheduling ([#2493](https://github.com/bastani-inc/atomic/issues/2493)).
+- `adversarial-verification` now fans out one schema-validated 1–20 score for every criterion/verifier pair, applies mean-plus-veto acceptance, bounds invalid-report re-asks, and consolidates confirmed findings into repair guidance ([#2487](https://github.com/bastani-inc/atomic/issues/2487)).
+- Added pure, seeded selection math for probabilistic pivot tournaments: deterministic Hamiltonian ring and deduplicated pivot planning, criterion/repeat slot-swap jobs, normalized Bradley–Terry soft wins, count-normalized pivot selection, and complete candidate rankings ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
+- Added tournament `n_evaluations`, `pivots`, `seed`, `criteria`, and heterogeneous `models` inputs, plus `ranking` and `seed` outputs and the auditable `comparisons.json` score ledger with invalid-report and budget records ([#2488](https://github.com/bastani-inc/atomic/issues/2488)).
+- Added Goal and Ralph review-round re-verification for low-confidence, single-reviewer blocking findings, using fresh 1–20 scoring stages, two-tier demotion bars, and durable per-repeat audit evidence while leaving `stop_review_loop` authoritative.
+- Added pure `fold_usage` accounting over every model attempt (including retries), returning `UsageTotals` with a derived cache-hit rate; tournament comparisons and adversarial verification round summaries now record per-phase and total usage blocks ([#2494](https://github.com/bastani-inc/atomic/issues/2494)).
+- Added observation-grounded progress scoring with batched checkpoint repeats, null-safe invalid-repeat handling, and a pure hysteretic trend classifier that reports evidence without an action ([#2489](https://github.com/bastani-inc/atomic/issues/2489)).
+- Added Goal and Ralph per-round convergence evidence series with V7 trend classification, folded usage totals, and escalation-only `needs_human` evidence that never approves or terminates a review loop ([#2490](https://github.com/bastani-inc/atomic/issues/2490)).
+- Added reviewer calibration rules that prioritize observed output over agent narration, plus audit-only 1–20 `criterion_scores` in Goal and Ralph review decisions without changing the authoritative closure gate ([#2494](https://github.com/bastani-inc/atomic/issues/2494)).
+- Added loop-until-done progress consumers that record per-iteration advisory score curves, final trends, and calibration disclaimers in completion and exhaustion reports without changing stop decisions ([#2489](https://github.com/bastani-inc/atomic/issues/2489)).
+- Added HumanLayer's bundled `show-me` skill for visual explanations, diagrams, code-shape sketches, and focused HTML artifacts. Sourced from https://github.com/humanlayer/skills and distributed under the MIT License.
+- Updated the bundled `create-spec` skill to choose context-driven Path A or clarify-first Path B, inspect local precedent before design decisions, compare materially different alternatives, and use show-me shape-first visuals. Working-method guidance is drawn from Dillon Mulroy's [tech-spec skill](https://github.com/dmmulroy/skills/blob/main/tech-spec/SKILL.md).
+
+### Changed
+
+- Redesigned the `ctx.tool` inspection surface as a shaded host-style operator card: a `$` call header, a tail preview with an exact earlier-lines expand hint, `Took`/`Elapsed` timing, and a graph statusline that advertises the configured expand key. The forensic ARGS/RESULT/SOURCE/TIMING/MARKERS field table is gone from the operator surface.
+- Synchronized the complete bundled `impeccable` skill tree from upstream `skill-v4.0.3` to `skill-v4.1.1`, adding persisted Live roots, framework-aware injection, prompt embedding, CSS acceptance checks, Svelte AST support, mount verification, UI-surface contracts, and the latest detector and design guidance ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- Impeccable concept rolls now include platform, grain, register, and card-kind fields and use a bounded `impeccable.style` fallback when no local catalog exists. The OpenAI image fallback supports reference-image edits and generated images only when `OPENAI_API_KEY` is present ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- Removed upstream Impeccable's outbound telemetry and update check from the bundled skill. The only request the concept roll can still make is the catalog `GET /api/roll` ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- The `open-claude-design` live review session is now the final review boundary: ending it exports the design as it stands with no further round. The run-level gate retains `Start live review` and `Skip remaining review rounds and export as-is` ([#2401](https://github.com/bastani-inc/atomic/issues/2401), [#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- Added model-visible workflow source-layout guidance: keep compact workflows in one entry file, and extract only cohesive prompt, schema/type, model-policy, deterministic-helper, or child-workflow concerns at meaningful boundaries ([#2451](https://github.com/bastani-inc/atomic/issues/2451)).
+- Migrated the built-in Goal, Ralph, and open-claude-design model chains from active GLM-5.2 entries to direct Z.AI `zai/glm-5.3:high` and `zai-coding-cn/glm-5.3:high` fallbacks, and raised Grok 4.6 fallbacks from `:high` to `:xhigh` with a matching `github-copilot/grok-4.6:xhigh` twin ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
+
+### Fixed
+
+- Fixed consumer TypeScript errors in `selection-math` when `noUncheckedIndexedAccess` is enabled ([#2543](https://github.com/bastani-inc/atomic/issues/2543)).
+- Opened `ctx.tool` detail now matches the main-chat tool block: inner padding, a blank row under the `$` header, full-width alignment, host tool colors, a dim expand hint, and second-resolution timing.
+- Tournament criteria now accepts every documented V1 shape, including markdown rubrics, records, string lists, and CriterionInput objects with optional ids and names.
+- Criterion ids are preserved in the ledger while judge artifact filenames are sanitized, collision-free, and contained under the artifact directory.
+- Corrected the planned comparison budget for oversized pivot counts and recorded each comparison row's own soft preference separately from pair aggregates.
+- Readiness-gate **Type something.** now stays in the stage and sends the typed text as the next stage-chat turn. Empty or whitespace-only custom text cannot be submitted. **Chat about this** is a plain option on the gate.
+- Fixed `ask_user_question` failing every workflow stage that called it while the graph viewer was attached. An overlay request now mounts on the stage chat's existing custom-UI slot instead of rejecting overlay mode in the graph viewer.
+- Hardened the synced Impeccable executables against shell-based browser launch, remote browser URLs, project-root and symlink escapes, unsafe persisted roots and injection journals, non-atomic generated writes, untrusted live instructions, read failures reported as clean, and unbounded or malformed live protocol values ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- Operator-card wrapping no longer drops a `/` or punctuation that could not fit on a truncated row.
+- An unbound `app.tools.expand` no longer leaves a keyless `expand`/`collapse` label on the `ctx.tool` operator-card statusline.
+- Workflow run-scoped singletons now survive `/reload`'s module re-evaluation. The replacement extension instance re-binds its store, stage-control registry, cancellation registry, tool-control registry, job tracker, and stage UI broker to the host session-scoped state ([#2462](https://github.com/bastani-inc/atomic/issues/2462) by [@makgunay](https://github.com/makgunay)).
+- Process-preserving session boundaries (`/reload`, `/fork`, `/new`, `/resume`) no longer kill in-flight workflow runs or drop live executor stage handles. `/reload` reuses the host event bus so the replacement session can still list and control the run; `/new`, `/resume`, and `/fork` get fresh registries and do not list it ([#2462](https://github.com/bastani-inc/atomic/issues/2462), [#2247](https://github.com/bastani-inc/atomic/issues/2247) by [@makgunay](https://github.com/makgunay)).
+- DBOS lifecycle state and the registered `atomicWorkflowHandle` / `atomicWorkflowCheckpoint` wrappers now live in a process-global `globalThis` slot, so a re-evaluated workflows bundle reuses the original registrations instead of colliding with the still-live SDK registry ([#2462](https://github.com/bastani-inc/atomic/issues/2462), [#2022](https://github.com/bastani-inc/atomic/issues/2022) by [@makgunay](https://github.com/makgunay)).
+- A duplicate DBOS operation registration is no longer reported as a Postgres provisioning failure. The durability error and the non-durable fallback warning now name the registration conflict and no longer suggest changing `DBOS_SYSTEM_DATABASE_URL` ([#2462](https://github.com/bastani-inc/atomic/issues/2462), [#2022](https://github.com/bastani-inc/atomic/issues/2022) by [@makgunay](https://github.com/makgunay)).
+- Fixed `workflow send` answers for primitive human-in-the-loop prompts. Confirm answers now preserve booleans and accept the documented yes/no labels, select answers resolve case-insensitive labels or 1-based indexes, and unusable answers remain pending ([#2417](https://github.com/bastani-inc/atomic/pull/2417) by [@makgunay](https://github.com/makgunay)).
+- Separated schema-backed workflow result data from runner-owned output artifacts. When a stage configures both `schema` and `output`, the successful `structured_output` arguments remain the typed machine-readable result while ordinary text from that tool-call message becomes the human-readable artifact. Builtin `adversarial-verification`, `generate-and-filter`, `tournament`, and `loop-until-done` now persist their structured decisions themselves so their `*.json` inter-stage artifacts remain machine-readable ([#2198](https://github.com/bastani-inc/atomic/issues/2198)).
+
+### Removed
+
+- Removed find-in-stage-chat. `Ctrl+Shift+F` in an attached workflow stage chat no longer opens a search box over that chat.
+- Removed the live-review feedback module and all `<artifact_dir>/feedback/` artifacts, including the JSON record, `iteration-N.md` copy, and annotated-snapshot copies ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
+## [0.9.14-alpha.6] - 2026-08-19
+
+### Fixed
+
+- Fixed consumer TypeScript errors in `selection-math` when `noUncheckedIndexedAccess` is enabled ([#2543](https://github.com/bastani-inc/atomic/issues/2543)).
+
 ## [0.9.14-alpha.5] - 2026-08-19
 
 ### Added

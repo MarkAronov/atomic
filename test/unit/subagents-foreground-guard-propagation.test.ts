@@ -7,8 +7,8 @@ import { afterAll, beforeEach, describe, test, vi } from "vitest";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 
 interface MinimalRunSyncOptions {
-	maxSubagentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
+	parentDepth?: number;
 }
 
 interface CapturedRunSyncCall {
@@ -25,7 +25,6 @@ interface MinimalAgentConfig {
 	systemPrompt: string;
 	source: "builtin" | "user" | "project";
 	filePath: string;
-	maxSubagentDepth?: number;
 }
 
 type ExecutorForTest = ReturnType<typeof createSubagentExecutor>;
@@ -45,18 +44,20 @@ const runSyncMock = vi.fn(
 		options: MinimalRunSyncOptions,
 	) => {
 		runSyncCalls.push({ agentName, options });
+		const interrupted = task === "initial task";
 		return {
 			agent: agentName,
 			task,
-			status: "ok" as const,
+			status: interrupted ? ("interrupted" as const) : ("ok" as const),
 			messages: [],
 			usage: emptyUsage,
 			finalOutput: `${agentName} output`,
+			...(interrupted ? { interrupted: true } : {}),
 		};
 	},
 );
 
-function makeAgent(name: string, maxSubagentDepth?: number): MinimalAgentConfig {
+function makeAgent(name: string): MinimalAgentConfig {
 	return {
 		name,
 		description: `${name} test agent`,
@@ -66,7 +67,6 @@ function makeAgent(name: string, maxSubagentDepth?: number): MinimalAgentConfig 
 		systemPrompt: "You are a test agent.",
 		source: "project",
 		filePath: `/tmp/${name}.md`,
-		...(maxSubagentDepth !== undefined ? { maxSubagentDepth } : {}),
 	};
 }
 
@@ -109,7 +109,7 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 			workflowRunId: "workflow-run-1",
 			workflowStageId: "stage-1",
 			workflowStageName: "Stage 1",
-			constraints: { disableWorkflowTool: true, maxSubagentDepth: 2 },
+			constraints: { disableWorkflowTool: true },
 		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -131,7 +131,7 @@ function makeExecutor(agents: MinimalAgentConfig[]) {
 			getSessionName: () => "parent-session-name",
 		} as unknown as ExecutorDepsForTest["pi"],
 		state: makeState(),
-		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
+		config: { parallel: { concurrency: 4, maxTasks: 50 } },
 		tempArtifactsDir: path.join(tempRoot, "artifacts"),
 		getSubagentSessionRoot: () => path.join(tempRoot, "sessions"),
 		expandTilde: (p: string) => p,
@@ -162,7 +162,7 @@ function assertGuardedRunSyncCalls(expectedAgentNames: string[]): void {
 		expectedAgentNames,
 	);
 	for (const call of runSyncCalls) {
-		assert.equal(call.options.maxSubagentDepth, 2);
+		assert.equal(call.options.parentDepth, 0);
 		assert.equal(call.options.workflowStageSubagentGuard, true);
 	}
 }
@@ -193,69 +193,33 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		assertNoErrorFlag(result);
 		assertGuardedRunSyncCalls(["alpha", "beta"]);
 	});
-});
 
-function cappedRunSyncDepths(): Record<string, number | undefined> {
-	return Object.fromEntries(runSyncCalls.map((call) => [call.agentName, call.options.maxSubagentDepth]));
-}
-
-describe("per-agent maximum narrows every delegation mode", () => {
-	// The stage constraint is 2; `capped` declares 1 in its own definition. Each
-	// mode must hand the child the stricter of the two, not the stage limit.
-	const cappedAgents = () => [makeAgent("capped", 1), makeAgent("uncapped")];
-
-	test("a foreground single child receives its agent's tightened maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-agent-max-"));
-		const executor = makeExecutor(cappedAgents());
-
+	test("passes workflow-stage guard to a foreground single child", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-guard-"));
+		const executor = makeExecutor([makeAgent("alpha")]);
 		const result = await executor.execute(
 			"subagent",
-			{ agent: "capped", task: "single task" },
+			{ agent: "alpha", task: "first" },
 			new AbortController().signal,
 			undefined,
 			makeWorkflowStageContext(cwd),
 		);
-
 		assertNoErrorFlag(result);
-		assert.deepEqual(cappedRunSyncDepths(), { capped: 1 });
+		assertGuardedRunSyncCalls(["alpha"]);
 	});
 
-	test("foreground parallel children each receive their own agent's maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-agent-max-"));
-		const executor = makeExecutor(cappedAgents());
-
-		const result = await executor.execute(
-			"subagent",
-			{
-				tasks: [
-					{ agent: "capped", task: "first" },
-					{ agent: "uncapped", task: "second" },
-				],
-			},
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-
-		assertNoErrorFlag(result);
-		assert.deepEqual(cappedRunSyncDepths(), { capped: 1, uncapped: 2 });
-	});
-});
-describe("retained foreground resume keeps the child's effective maximum", () => {
-	test("a resumed child keeps the maximum its agent definition narrowed", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-retained-resume-max-"));
-		// Config maximum 2, agent maximum 1: the resume must carry 1, not 2.
-		const executor = makeExecutor([makeAgent("capped", 1)]);
+	test("a retained foreground resume still carries the workflow-stage guard", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-retained-resume-guard-"));
+		const executor = makeExecutor([makeAgent("alpha")]);
 
 		const initial = await executor.execute(
 			"subagent",
-			{ agent: "capped", task: "initial task" },
+			{ agent: "alpha", task: "initial task" },
 			new AbortController().signal,
 			undefined,
 			makeWorkflowStageContext(cwd),
 		);
 		assertNoErrorFlag(initial);
-		assert.equal(runSyncCalls[0]?.options.maxSubagentDepth, 1);
 		const runId = initial.details.runId;
 		assert.ok(runId, "the initial delegation must retain a run id");
 
@@ -270,69 +234,6 @@ describe("retained foreground resume keeps the child's effective maximum", () =>
 		);
 
 		assertNoErrorFlag(resumed);
-		assert.equal(runSyncCalls[1]?.options.maxSubagentDepth, 1);
-	});
-
-	test("a resumed child without its own agent cap keeps the stage maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-retained-resume-uncapped-"));
-		const executor = makeExecutor([makeAgent("uncapped")]);
-
-		const initial = await executor.execute(
-			"subagent",
-			{ agent: "uncapped", task: "initial task" },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		assertNoErrorFlag(initial);
-		const runId = initial.details.runId;
-		assert.ok(runId);
-
-		const resumed = await executor.execute(
-			"subagent",
-			{ action: "resume", id: runId, message: "keep going" },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-
-		assertNoErrorFlag(resumed);
-		assert.equal(runSyncCalls[1]?.options.maxSubagentDepth, 2);
-	});
-
-	test("a widened agent definition cannot raise an already-retained child's maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-retained-resume-widened-"));
-		// The executor reads this array on every call, so editing it after the
-		// initial run models an agent file edited between the run and the resume.
-		const agents = [makeAgent("capped", 1)];
-		const executor = makeExecutor(agents);
-
-		const initial = await executor.execute(
-			"subagent",
-			{ agent: "capped", task: "initial task" },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		assertNoErrorFlag(initial);
-		const runId = initial.details.runId;
-		assert.ok(runId);
-
-		agents[0] = makeAgent("capped");
-
-		const resumed = await executor.execute(
-			"subagent",
-			{ action: "resume", id: runId, message: "keep going" },
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-
-		assertNoErrorFlag(resumed);
-		assert.equal(
-			runSyncCalls[1]?.options.maxSubagentDepth,
-			1,
-			"the resume must use the limit recorded with the run, not the edited definition",
-		);
+		assertGuardedRunSyncCalls(["alpha", "alpha"]);
 	});
 });

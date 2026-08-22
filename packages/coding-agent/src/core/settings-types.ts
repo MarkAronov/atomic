@@ -1,4 +1,4 @@
-import type { Transport } from "@earendil-works/pi-ai/compat";
+import type { Transport } from "@bastani/pi-ai/compat";
 import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 
 export interface CompactionSettings {
@@ -157,6 +157,7 @@ export interface Settings {
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY; global setting only
 	httpIdleTimeoutMs?: number | string; // HTTP idle timeout; 0 or "disabled" disables it
 	websocketConnectTimeoutMs?: number | string; // WebSocket connect timeout; 0 or "disabled" disables it
+	streamDeadlineMs?: number | string; // Max idle gap between provider stream events; 0 or "disabled" disables it
 }
 
 export type SettingsScope = "global" | "project";

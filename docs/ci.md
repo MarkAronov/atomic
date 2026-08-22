@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-Atomic publishes `@bastani/atomic` from `packages/coding-agent` and `@bastani/atomic-natives` from `packages/natives`. The other workspace packages remain private and are bundled into the coding-agent package.
+Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, and `@bastani/pi-ai` from `packages/ai`. The other workspace packages remain private and are bundled into the coding-agent package. The first npm version of `@bastani/pi-ai` must be published by hand so npm trusted publishing can be attached; later tagged releases publish it from `publish.yml`.
 
 ## Workflow overview
 
@@ -111,7 +111,7 @@ Steps stay in one job only when one consumes another's build output. Nothing is 
 - `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
 - `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
 - `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. `suites` and `static-checks` need no Rust at all.
-- `agent-suite` runs the coding-agent package in one step; its SQLite selectors resolve `node:sqlite` under Node and fall back to `bun:sqlite` under Bun.
+- `agent-suite` runs the coding-agent package in one step; its SQLite selectors resolve `node:sqlite` on both runtimes (Bun ships it from 1.4.0, the repository's Bun floor).
 
 No suite uses `--parallel`, `--shard`, `--concurrent`, or `--max-concurrency`. `--parallel` implies `--isolate`, and 20 files in `test/unit` import 108 sibling `*.test.ts` files, so a fresh module registry per file re-executes those tests: 5407 executions against 4426 distinct tests, with the duplicates scored twice by the duration guard, once under contention. `--shard` is deterministic and roughly 1.85x faster locally, but it buys no wall clock while Windows `agent-suite` is the critical path. If a further cut is wanted, shard vitest first, then unit; that is worth roughly 70 s for a 60 % increase in runner count.
 
@@ -388,7 +388,7 @@ maintains both the pins and the comments.
 `taiki-e/install-action` is given exact tool versions (`cargo-zigbuild@0.23.0`,
 `cargo-xwin@0.23.0`). Unversioned, it resolves to `@latest`, which floats the
 build toolchain of a published, provenance-signed native artifact with no diff.
-`test.yml` pins `bun-version: 1.3.14` to match `publish.yml`; `latest` cannot be
+`test.yml` pins `bun-version: 1.4.0` to match `publish.yml`; `latest` cannot be
 cached by `setup-bun` and left the suite testing a different Bun from the one
 that builds the shipped artifact.
 
@@ -409,7 +409,7 @@ After native and smoke jobs pass, `build`:
 
 1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
-3. Runs `scripts/build-binaries.sh --skip-install` for all eight archives.
+3. Hydrates `@bastani/pi-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by re-aliasing `@earendil-works/pi-ai` onto `packages/ai` and rebuilding `@bastani/pi-ai`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly ten npm tarballs.
 6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.
@@ -436,7 +436,7 @@ After npm succeeds, `publish-github-release` changes the draft to public and set
 
 ## npm publication
 
-The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all ten package names:
+The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eleven package names:
 
 1. `@bastani/atomic-natives-darwin-arm64`
 2. `@bastani/atomic-natives-darwin-x64`
@@ -447,9 +447,10 @@ The npm job uses environment `npm-publish` with only `contents: read` and `id-to
 7. `@bastani/atomic-natives-win32-arm64-msvc`
 8. `@bastani/atomic-natives-win32-x64-msvc`
 9. `@bastani/atomic-natives`
-10. `@bastani/atomic`
+10. `@bastani/pi-ai`
+11. `@bastani/atomic`
 
-That order publishes native leaves first, then the native root, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
+That order publishes native leaves first, then the native root, then `@bastani/pi-ai`, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured. The first `@bastani/pi-ai` version cannot use trusted publishing until that package exists on npm.
 
 ## Permissions and time limits
 
@@ -462,6 +463,16 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, clean failed drafts |
 | `.github/workflows/warm-toolchain-cache.yml` | manual dispatch (see gate above) | write the Zig and MSVC CRT cache keys into the default-branch scope |
+
+## Repository-local release workflow gates
+
+The `.atomic/workflows/publish-release.ts` workflow keeps the versionless-base and detached-tag sequence above, but external waiting is deterministic workflow code rather than model judgment.
+
+- A durable preparation preflight requires a clean worktree and reads the exact remote base/branch and matching open PR. It reuses an existing release only when the branch is one changelog-only commit atop the current remote base, every paginated commit-file destination and rename source is changelog-only, an optional local branch points to that same commit, and exactly one open PR matches the repository, base, head branch, and head SHA. Otherwise dirty state or conflicting base, commit, file set, branch, or PR fails closed. Reuse never resets or force-pushes and skips changelog preparation and PR creation entirely.
+- The required-CI tool reads configured contexts from both branch protection and active branch rulesets, preserving configured context/app identity. Only the classic unprotected-branch status-check lookup may return absent; a rules lookup error fails closed rather than accepting a partial set. A configured check missing from the commit remains pending. The gate fails on an actually empty configured set, PR/base/head drift, a terminal required-check failure, GitHub/auth/command errors, abort, or 45-minute timeout. It passes only when every exact configured check succeeds or the exact captured PR is already admin-merged.
+- The publish tool waits up to 60 minutes for the push-event run from `.github/workflows/publish.yml` with repository `bastani-inc/atomic`, exact tag, exact detached release SHA, and exact workflow identity. A run that has not appeared remains pending; drift or a completed non-success conclusion fails closed. The tool never dispatches or reruns publication.
+
+Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSignal` to GitHub commands and sleeps, and have a finite tool deadline beyond their polling window. Tests use injected fake Git/GitHub observations and never exercise a real release side effect.
 
 ## Release checklist
 

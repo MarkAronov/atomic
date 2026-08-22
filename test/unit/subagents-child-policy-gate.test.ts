@@ -14,10 +14,9 @@ import * as path from "node:path";
 import { join } from "node:path";
 import type { ExtensionAPI, SubagentChildPolicy, ToolDefinition } from "@bastani/atomic";
 import { beforeEach, describe, test, vi } from "vitest";
-import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.js";
+import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
 import type {
 	PiCodingAgentSdk,
 	PiSdkResourceLoader,
@@ -55,7 +54,7 @@ const runSyncMock = vi.fn(
 		_agents: MinimalAgentConfig[],
 		agentName: string,
 		task: string,
-		options: { maxSubagentDepth?: number; parentDepth?: number },
+		options: { parentDepth?: number },
 	) => {
 		runSyncCalls.push(agentName);
 		runSyncParentDepths.push(options.parentDepth);
@@ -277,44 +276,43 @@ describe("subagent child policy gates fanout, not management", () => {
 		assert.deepEqual(runSyncCalls, ["alpha"]);
 	});
 
-	test("the live child-policy depth blocks delegation at the documented limit", async () => {
-		assert.equal(MAX_SUBAGENT_NESTING_DEPTH, 5);
-		const executor = makeExecutor(
-			policyFor({ fanoutAuthorized: true, managementActions: "full", depth: MAX_SUBAGENT_NESTING_DEPTH }),
-		);
+	test("an admitted child is refused every subagent execution action", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 1 }));
+
+		const executionActions: Parameters<ExecutorForTest["execute"]>[1][] = [
+			{ agent: "alpha", task: "do work" },
+			{ tasks: [{ agent: "alpha", task: "do work" }] },
+			{ action: "resume", id: "run-1", message: "keep going" },
+			{ action: "interrupt", id: "run-1" },
+		];
+
+		for (const params of executionActions) {
+			const result = await runAction(executor, params);
+			assert.equal(result.isError, true, `expected refusal for ${JSON.stringify(params)}`);
+			assert.equal(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
+		}
+		assert.deepEqual(runSyncCalls, []);
+	});
+
+	test("an admitted child keeps the observing management actions", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 1 }));
+
+		for (const action of ["list", "get", "status", "doctor"] as const) {
+			const result = await runAction(executor, { action });
+			assert.notEqual(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
+			assert.equal(result.details.mode, "management");
+		}
+		assert.deepEqual(runSyncCalls, []);
+	});
+
+	test("a child admitted deeper than the single permitted level is refused too", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 3 }));
 
 		const result = await runAction(executor, { agent: "alpha", task: "do work" });
 
 		assert.equal(result.isError, true);
-		assert.ok(
-			resultText(result).startsWith(
-				`Nested subagent call blocked (depth=${MAX_SUBAGENT_NESTING_DEPTH}, max=${MAX_SUBAGENT_NESTING_DEPTH})`,
-			),
-			`unexpected depth message: ${resultText(result)}`,
-		);
+		assert.equal(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
 		assert.deepEqual(runSyncCalls, []);
-	});
-
-	test("one admitted level below the limit is still allowed", async () => {
-		const executor = makeExecutor(
-			policyFor({ fanoutAuthorized: true, managementActions: "full", depth: MAX_SUBAGENT_NESTING_DEPTH - 1 }),
-		);
-
-		const result = await runAction(executor, { agent: "alpha", task: "do work" });
-
-		assert.equal(result.isError, undefined);
-		assert.deepEqual(runSyncCalls, ["alpha"]);
-	});
-
-	test("the admitted depth travels into the run options that admission reads", async () => {
-		const executor = makeExecutor(
-			policyFor({ fanoutAuthorized: true, managementActions: "full", depth: MAX_SUBAGENT_NESTING_DEPTH - 2 }),
-		);
-
-		const result = await runAction(executor, { agent: "alpha", task: "do work" });
-
-		assert.equal(result.isError, undefined);
-		assert.deepEqual(runSyncParentDepths, [MAX_SUBAGENT_NESTING_DEPTH - 2]);
 	});
 
 	test("a top-level session delegates from depth zero", async () => {
@@ -372,41 +370,6 @@ describe("workflow stage subagent policy", () => {
 		const delegated = await runAction(executor, { agent: "alpha", task: "do work" });
 		assert.equal(delegated.isError, undefined);
 		assert.deepEqual(runSyncCalls, ["alpha"]);
-	});
-
-	test("the registered subagent tool answers 'list' for a stage-policy session", async () => {
-		// End-to-end through the real registration door a stage session uses, so the
-		// policy -> registered-tool wiring is covered rather than only the executor.
-		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
-		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
-		const policy = options?.subagentPolicy;
-		assert.ok(policy, "stage options must carry a subagent policy");
-
-		let registered: ToolDefinition | undefined;
-		const pi = {
-			registerTool: (tool: ToolDefinition) => {
-				registered = tool;
-			},
-			events: { on: () => () => {}, emit: () => {} },
-			getSessionName: () => "workflow-stage-session",
-		} as unknown as ExtensionAPI;
-		registerFanoutChildSubagentExtension(pi, policy);
-		assert.ok(registered, "the subagent tool must be registered");
-
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-stage-tool-"));
-		const result = (await registered.execute(
-			"stage-list",
-			{ action: "list" },
-			new AbortController().signal,
-			undefined,
-			makeContext(cwd),
-		)) as ExecutorResultForTest;
-
-		assert.notEqual(result.isError, true);
-		assert.ok(
-			!resultText(result).includes(FANOUT_MESSAGE),
-			`stage 'subagent list' must not be refused as fanout, got: ${resultText(result)}`,
-		);
 	});
 
 	test("the parent-registered subagent tool answers 'list' for a stage-policy context", async () => {

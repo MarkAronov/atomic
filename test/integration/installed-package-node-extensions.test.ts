@@ -6,7 +6,7 @@
  * Regression guard for #1600/#1609: the extension-loader alias fallback used
  * require.resolve("<pkg>/package.json"), which throws
  * ERR_PACKAGE_PATH_NOT_EXPORTED under Node for packages that do not export
- * "./package.json" (e.g. @earendil-works/pi-ai). Every builtin extension
+ * "./package.json" (e.g. @bastani/pi-ai). Every builtin extension
  * failed to load for npm installs (bin runs under `#!/usr/bin/env node`),
  * while the compiled binary (virtualModules) and Bun-run dev/test paths
  * (lenient exports-map resolution) stayed green — so only a Node-runtime

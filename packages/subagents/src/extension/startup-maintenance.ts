@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { cleanupOldNestedRuntimeDirs } from "../runs/inprocess/runtime-support/nested-api.js";
+import { cleanupOldSubagentRuntimeDirs } from "../runs/inprocess/runtime-support/temp-cleanup.js";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.js";
 import type { SubagentState } from "../shared/types.js";
 
@@ -105,7 +105,7 @@ export function createSubagentStartupMaintenance(
 	return {
 		scheduleStartupCleanup() {
 			schedule(() => {
-				swallowCleanup(() => cleanupOldNestedRuntimeDirs(options.artifactCleanupDays));
+				swallowCleanup(() => cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays));
 				scheduleDelayed(
 					() => swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots)),
 					STARTUP_ARTIFACT_SCAN_DELAY_MS,

@@ -5,8 +5,8 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type ProviderHeaders,
-} from "@earendil-works/pi-ai";
-import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+} from "@bastani/pi-ai";
+import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@bastani/pi-ai/compat";
 import type { CreateMessageRequest } from "@modelcontextprotocol/sdk/types.js";
 import { test } from "vitest";
 import { handleSamplingRequest } from "../../mcp/sampling-handler.js";

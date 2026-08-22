@@ -2,6 +2,122 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Foreground child decisions, structured interviews, and `intercom.ask` calls resolved to their launching parent now pause the retained child and return the question plus ordered attachments through the parent `subagent` call instead of deadlocking behind Intercom reply delivery. Real typed foreground children receive exact broker authorization for `contact_supervisor`, including successful non-blocking progress delivery. Bare run-ID resume preserves each paused child's session, cwd, Intercom group, execution settings, canonical index, worktree, and dirty changes while rebuilding control and detach callbacks; a sibling completed at the ask boundary stays terminal without blocking paused siblings. Queued work remains unlaunched and unauthorized, worktree diff capture and cleanup wait for terminal resume, and completed children remain non-resumable ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Subagent delegation is now fixed at one level. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth field and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. SDK callers that construct stage orchestration contexts must drop the removed field.
+
+### Changed
+
+- Vendored `@earendil-works/pi-ai` into the Atomic monorepo as `@bastani/pi-ai` and switched first-party imports, loader aliases, shrinkwrap, and tagged release publishing to the workspace package. Legacy extensions that import `@earendil-works/pi-ai` still resolve through the loader.
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build instead of shipping the frozen v0.84.2 snapshot.
+- Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- SQLite resource selectors now use `node:sqlite` only. The `bun:sqlite` fallback was removed as Atomic's Bun floor moved to 1.4.0; Node ≥ 22.13 and Bun ≥ 1.4.0 provide `node:sqlite` without a flag.
+
+### Fixed
+
+- Fixed fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN` failing with `Personal Access Tokens are not supported for this endpoint`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`, exchanged OAuth tokens retain their behavior, and explicit provider/model header overrides keep precedence ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- Fixed workflow stages hanging after GitHub Copilot stream decompression failures. Provider stream stalls now settle as transient transport errors and can retry or fail over; the new `streamDeadlineMs` setting bounds idle gaps and supports duration strings or disabling the deadline ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
+- Extension widgets now remount once after the interactive host clears or disposes them, preserve in-place updates, and discard stale isolated-engine mounts before reopening ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Ported unreleased upstream pi-ai fixes for Copilot throttling, provider usage and reasoning metadata, Bedrock headers and reasoning, Anthropic fallback pricing, Azure tool choice, model catalogs, xAI Responses routing, stream request options, User-Agent headers, and OpenAI reasoning replay. Cerebras now defaults to `gpt-oss-120b`, and the unused OpenTelemetry dependency was removed.
+
+## [0.9.15-alpha.1] - 2026-08-21
+
+### Breaking Changes
+
+- Two exported SDK types each lose a field, because subagent delegation is now a fixed one-level rule rather than a configurable depth. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth number and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. Code that constructs a stage orchestration context must drop the removed required field.
+
+### Changed
+
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build, matching upstream pi-ai, instead of shipping the frozen v0.84.2 snapshot.
+
+- Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.
+
+- Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+
+- SQLite resource selectors now load `node:sqlite` exclusively; the `bun:sqlite` fallback for Bun releases before 1.4.0 was removed. `node:sqlite` ships unflagged in Node ≥ 22.13 and Bun ≥ 1.4.0, which is now the repository's Bun floor (engines, CI pins, and release binaries all moved to Bun 1.4.0).
+
+### Fixed
+
+- Fixed the `400 checking third-party user token: bad request: Personal Access Tokens are not supported for this endpoint` failure for fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`; exchanged OAuth tokens containing a `tid=` segment remain unchanged, and per-request or `models.json` provider/model header overrides win. Catalog default headers are no longer promoted into the per-request override layer, while remaining visible to `before_provider_headers` extension hooks ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- Fixed workflow stages staying `running` forever when GitHub Copilot on the default `transport: "auto"` hit a repeated `Library error: zlib error: incorrect header check`. The stalled provider stream never settled, so retry and model fallback never advanced and the stage transcript kept only its user prompt. Such a failure now settles as a transient transport error and fails over, and a new `streamDeadlineMs` setting (default `300000`; accepts durations such as `30s` and `5m`; `0`/`"disabled"` disables it) bounds the idle gap between provider stream events below the HTTP layer ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
+- Extension widgets now recover after the interactive host clears or disposes a live widget: reactive controllers receive a release signal, remount exactly once on the next refresh, and preserve in-place updates without flicker. Isolated-engine widgets also discard stale remote mounts before reopening ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Ported unreleased `packages/ai` commits from `earendil-works/pi` main after the vendored v0.84.2 snapshot into `@bastani/pi-ai`: Copilot login rate-limit handling, Kimi cached-token accounting, Google thinking-level maps, Bedrock response headers and redacted reasoning, Anthropic fallback pricing, Azure Responses `toolChoice`, OpenAI Completions reasoning-details replay, catalog fixes for Xiaomi, China ZAI Coding Plan, Qwen Token Plan Individual, Baseten GLM-5.2, and DeepSeek V4 Flash `low` thinking, plus xAI Responses routing, simple `toolChoice`, generalized thinking-token budgets, adapter User-Agent headers, and dropping the unused OpenTelemetry dependency. Cerebras now defaults to `gpt-oss-120b`.
+
+## [0.9.14] - 2026-08-19
+
+Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.5` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
+
+### Breaking Changes
+
+- **The `workflow` parameter on bundled `web_search` is gone.** Models cannot select the curator per call. Persist `"workflow": "summary-review"` in web-search config or run `/curator on` to opt in.
+
+### Added
+
+- Two new unbound viewport actions, `tui.altScreen.lineUp` and `tui.altScreen.lineDown`, scroll the transcript by a single line ([#2385](https://github.com/bastani-inc/atomic/issues/2385)).
+- Added the `fullscreenExitOutput` setting with a `/settings` row beside **Fullscreen scrollbar**. `"transcript"` (the default) prints the final transcript and session resume hint when an interactive session exits; `"resume-hint"` restores the terminal's previous screen and prints only the resume hint.
+- Added the `defaultTools` setting, which selects the built-in tools a session starts with — an empty array starts with none — while extension and SDK custom tools stay registered and active, so `workflow`, `subagent`, `intercom`, `mcp`, and `web_search` survive a narrow selection. Explicit `--tools`, `--no-tools`, `--no-builtin-tools`, and `--exclude-tools` keep their precedence, a project array replaces the global array, and an unreadable value reads as unset.
+- Added `--use-theme <name[/name]>`, which selects the interactive theme for one run without writing settings. `atomic --use-theme light/dark` follows terminal appearance; choosing another theme later in `/settings` applies immediately and saves normally, and `/export`/`/share` render with the run's theme.
+- Added `expandPromptTemplates` to `sendUserMessage()`. The default stays `false`, so extension-authored messages keep their literal-send meaning; `true` dispatches registered extension commands and expands skill commands and prompt templates, and an unknown command falls through to a literal send.
+- Added opt-in strict JSON-schema constrained sampling for built-in tool definitions behind the existing experimental gate (`ATOMIC_EXPERIMENTAL=1` or legacy `PI_EXPERIMENTAL=1`). `read`, `bash`, `edit`, `write`, `find`, `search`, `ls`, `ask_user_question`, `todo`, and the harness tool wrapper declare `{ type: "json_schema", strict: "prefer" }` only while the gate is on.
+- Added the Cloudflare AI Gateway Workers AI binding transport to the public surface: `createGatewayBindingFetch`, the `CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL` placeholder credential, and the binding types are re-exported from `@bastani/atomic`, and [Providers](docs/providers.md) documents the no-API-token path.
+- Added the `SessionNameState` type and `getSessionNameState()` to the public SDK surface. `getSessionNameState()` reports whether a session was never named, named and then cleared, or currently holds a name — the distinction the session file already records — where `getLatestSessionName` returns only the name.
+- Same-name skills stay independently selectable. `/skill:name` still uses the current project/user-over-package winner, and Atomic now keeps every distinct file as a source-qualified command such as `/skill:tdd@user` and `/skill:tdd@builtin`. Autocomplete, `pi.getCommands()`, RPC `get_commands`, the model-visible skill list, collision diagnostics, and in-process child `skills` selectors share those identities ([#2328](https://github.com/bastani-inc/atomic/issues/2328)).
+- Added `sessionScopedExtensionState()` to the public surface: a host primitive for extension state that must survive `/reload`. Reloading file extensions re-evaluates their module graph, so module-scoped singletons are recreated while the session keeps running; the primitive returns the state already registered for that session's event bus under a caller-chosen key ([#2462](https://github.com/bastani-inc/atomic/issues/2462) by [@makgunay](https://github.com/makgunay)).
+- `ctx.ui.custom()` accepts `reserveTranscriptRows` for bottom-anchored overlay mounts. A blocking dialog sets it to be height-bounded against the terminal and to have its covered transcript-bottom suffix added to the scroll extent. Reserving overlays require a bottom anchor and reject `row` or a nonzero `offsetY`.
+- `OVERLAY_ACTIVE_ROW_MARKER` is exported for components mounted that way. Embed it in the line you most need kept — the selected row of a list — and the bound places what it keeps around that row instead of taking a fixed head. It is a zero-width APC sequence the host strips before painting.
+- Added HumanLayer's bundled `show-me` skill for visual explanations, diagrams, code-shape sketches, and focused HTML artifacts. Sourced from https://github.com/humanlayer/skills and distributed under the MIT License.
+
+### Changed
+
+- Adopted the pi 0.84.2 runtime across all six `@earendil-works/pi-*` dependencies ([#2385](https://github.com/bastani-inc/atomic/issues/2385)). Provider fixes arrive with `pi-ai`: OpenAI Responses namespace handling, DeepSeek `max_tokens` and case-insensitive base URLs, Bedrock empty tool-argument keys, Google length stops alongside tool calls, Codex `end_turn`, upstream buffer retry, Cloudflare strict-tools gating, and DeepSeek V4 Flash low effort. Renderer fixes arrive with `pi-tui`: full-width row painting, repaint after an idle focus loss, LaTeX control-space handling across line endings, focused-overlay wheel/viewport-key deferral, and generic SGR mouse release. Mistral models now stream over a native HTTP transport — the Mistral SDK is no longer installed — and `PI_TUI_ESC_TIMEOUT` (default `100` ms over SSH, `10` ms otherwise) tunes how long the renderer waits after a lone `ESC` before treating it as Escape.
+- Bundled `web_search` no longer opens the curator confirmation UI by default. Persist `"workflow": "summary-review"` in web-search config or run `/curator on` to opt in.
+- The exported `Theme` constructor's color maps now accept the optional `scrollbarThumb` token, with the same fallback encoded in the typebox and JSON theme schemas, so every user-authored theme keeps validating and rendering. Unused leftover `searchMatchBg` / `searchMatchText` keys remain accepted so older theme files still load.
+- Automatic theme detection starts its colour-scheme and background probes concurrently instead of sequentially, halving the worst-case per-startup detection delay from 200 ms to 100 ms.
+- Concurrent interactive model-catalog refreshes share one in-flight pass per runtime and effective network policy — keyed also on credential state and catalog content — so startup's refresh and the `/model` selector's refresh no longer start overlapping passes for the same catalog.
+- Changed the built-in xAI default and the shipped xAI and OpenRouter workflow and subagent fallback chains from Grok 4.5 to Grok 4.6, documented those fallbacks as `xai/grok-4.6:xhigh` and `github-copilot/grok-4.6:xhigh`, and refreshed model-selection guidance from the latest DeepSWE v1.1 and Artificial Analysis v4.1.1 results.
+- Optional DBOS durable execution now makes `/workflow resume` recovery idempotent, re-stamps `executor_id` on a successful step checkpoint, and keeps the SDK's internal admin server off by default.
+- MCP OAuth browser launch now succeeds from WSL when the Linux working directory is not reachable from Windows.
+- `ask_user_question` no longer submits an empty or whitespace-only **Type something.** answer. The readiness-gate tool can treat **Chat about this** as a plain option via `createAskUserQuestionToolDefinition({ chatAsOption: true })`.
+
+### Fixed
+
+- **The whole transcript stays readable while the `ask_user_question` dialog is open** ([#2378](https://github.com/bastani-inc/atomic/issues/2378)). The dialog is now pinned to the bottom as an overlay, so the transcript keeps its full viewport height and full page step. The overlay is bounded so at least six transcript rows always survive on a short terminal, and the rows it covers are added back to the transcript's scroll extent. Transcript page, Home/End, and wheel input remain available while the questionnaire's Notes editor is active.
+- **The active questionnaire row stays visible on a short terminal.** The dialog now keeps a window around every active row, including single- and multi-select choices, Next, Submit, Cancel, inline sentinels, and focused text inputs.
+- The `ask_user_question` dialog no longer draws one preview row at the wrong horizontal offset. The active-row mark now terminates its APC string with ST as ECMA-48 requires instead of BEL, and both interactive renderers strip the mark centrally before painting.
+- Interactive startup now exits quietly when Ctrl+C stops the engine during first-paint binding, without leaking expected in-flight RPC transport failures.
+- Bare `/` and slash-command drafts typed while explicitly loaded extension and workflow packages finish loading now remain in the interactive editor until Enter is pressed.
+- Queue-control RPC frames now remain reachable during long-running prompts. When all overlapping remote `clear_queue` calls fail, Atomic restores the pre-clear host queue only if no later `queue_update` has supplied engine truth, including an empty queue ([#2516](https://github.com/bastani-inc/atomic/issues/2516)).
+- Parallel `edit` calls that share a `[path#TAG]` are now applied as one snapshot-anchored batch, so later siblings no longer fail with `file content changed before write` after the first write mints a new tag.
+- PDF extraction no longer throws `TypeError: Math.sumPrecise is not a function` on Node runtimes without that builtin.
+- Updated the Z.AI and Z.AI Coding Plan defaults to the catalog-valid `glm-5.3` model; direct GLM-5.3 chains use `:high`, while OpenRouter and Baseten remain documented provider-specific exceptions because their catalogs do not expose GLM-5.3 ([#2459](https://github.com/bastani-inc/atomic/issues/2459)).
+- Hardened hashline edits against unsafe integer anchors and oversized numeric ranges (inclusive ranges are capped at 100,000 lines before expansion), preserved hunk-looking `+TEXT` rows as literal payloads with a parser warning, omitted the synthetic terminal-newline row consistently across whole-file, truncated, and selector reads for LF and CRLF text while retaining genuine blank lines, and kept copied read output's original terminal-newline state when writing it back.
+- Codex fast mode now sends the real ChatGPT routing contract only when the final request body uses `service_tier: priority`. Final non-priority requests keep `originator: pi` with no routing hint, and routing changes close cached sockets before reuse.
+- `message_update` events on the JSON and RPC wire now carry the cumulative provider-reported `usage` on every streaming update (upstream #7982) and — only when the provider reports one — `endTurn`. A non-assistant message on this event throws instead of emitting an invented zeroed usage.
+- `triggerTurn: false` no longer steers an active run (upstream #8022). A custom message queued with the turn trigger disabled is appended and reaches the model on a later turn instead of being delivered into the running one.
+- The system prompt ends with a newline after the working-directory line, in both the default and custom-prompt branches (upstream #7887).
+- Extension tool output with no registered renderer collapses to a ten-line preview with Atomic's expand hint instead of printing the whole result (upstream #7979).
+- Fullscreen drag-selection copy reports honest failure (upstream #8110). The copy routes through Atomic's clipboard path, so a host clipboard that never received the text flashes "Copy failed" instead of a false "Copied!".
+- A mouse release reported with the generic SGR button code — the form some terminals send (upstream #7963) — ends a fullscreen drag selection.
+- Fullscreen viewport keys keep their Atomic routing on pi-tui 0.84.2. A focused overlay is still offered viewport keys first and the transcript still receives what it declines — including behind the `ask_user_question` dialog.
+- Managed-tool startup status (`fd`/`rg` readiness) reports through the transcript instead of writing to the console, whose output previously landed in and corrupted the fullscreen alternate screen.
+- The `-e`/`--extension` source trust prompt names the product through its branding constant, so a rebranded distribution asks users to trust its own name rather than a hardcoded one.
+- A session that was named and then cleared now reads as cleared rather than never-named. `getLatestSessionName` and the session-list reducer preserve the distinction the session file already records.
+- Corrected the [custom provider](docs/custom-provider.md) reference list and documented the previously undocumented `ModelRuntime` model-catalog options in the [SDK](docs/sdk.md) guide.
+
+### Removed
+
+- Removed the `workflow` parameter on bundled `web_search`. Models cannot select the curator per call.
+- Removed fullscreen transcript search. `Ctrl+Shift+F` no longer opens a find box over the main transcript or an attached workflow stage chat; the four `tui.altScreen.search*` actions stay unbound and do nothing.
+- Removed the bundled `@bastani/i-have-adhd` package and its default-on ADHD-friendly response mode. The `/i-have-adhd` command, `--no-adhd` flag, `.i-have-adhd-off` marker, the "ADHD Mode" status badge, and the `stop adhd mode` / `normal mode` control phrases no longer exist; responses now use Atomic's default style.
+
 ## [0.9.14-alpha.5] - 2026-08-19
 
 ### Added

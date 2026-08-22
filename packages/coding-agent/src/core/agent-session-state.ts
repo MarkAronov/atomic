@@ -1,5 +1,5 @@
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";

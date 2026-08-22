@@ -203,7 +203,7 @@ To share extensions via npm or git as Atomic packages, see [Atomic packages](/pa
 |---------|---------|
 | `@bastani/atomic` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
 | `typebox` | Schema definitions for tool parameters |
-| `@earendil-works/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
+| `@bastani/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
 | `@earendil-works/pi-tui` | TUI components for custom rendering |
 
 Registry dependencies work too. Add a `package.json` next to your extension (or in a parent directory), then install dependencies with Bun:
@@ -1860,7 +1860,7 @@ If you implement an `ExtensionRuntime` for an embedded host, provide `trackEvent
 
 ### Native providers
 
-In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@earendil-works/pi-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
+In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@bastani/pi-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
 
 ### pi.registerProvider(name, config)
 

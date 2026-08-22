@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 
 type JsonObject = { [key: string]: JsonValue };
 type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;

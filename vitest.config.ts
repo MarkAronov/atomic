@@ -12,19 +12,26 @@ export { TEST_TIMEOUT_MS };
 const setupFiles = ["./test/setup-workflow-durability.ts"];
 
 /**
- * Runs once per project, before any file is collected. It builds
- * `@bastani/atomic-natives` only when no compiled binding exists, because a
- * missing binding no longer degrades gracefully: `packages/subagents` imports
- * the Rust control plane statically, so the bundled extension throws during
- * module loading and takes roughly twenty unrelated files down with it under
- * errors that name the importer rather than the binding.
+ * Global setups run once per project in the orchestrator process, before any
+ * file is collected.
  *
- * On the happy path this is a single `existsSync`, so CI — which builds the
- * binding in an explicit step first — and any warm worktree pay nothing.
+ * `global-setup-workflow-artifacts` creates the per-run workflow-artifact
+ * directory that `setup-workflow-durability` points workers at, and removes it
+ * in teardown. It runs for all three projects.
+ *
+ * `global-setup-natives` builds `@bastani/atomic-natives` only when no
+ * compiled binding exists, because a missing binding no longer degrades
+ * gracefully: `packages/subagents` imports the Rust control plane statically,
+ * so the bundled extension throws during module loading and takes roughly
+ * twenty unrelated files down with it under errors that name the importer
+ * rather than the binding. On the happy path this is a single `existsSync`, so
+ * CI — which builds the binding in an explicit step first — and any warm
+ * worktree pay nothing. The CI contract project omits it.
  */
-const globalSetup = ["./test/global-setup-natives.ts"];
+const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
+const nativeSetup = "./test/global-setup-natives.ts";
 
-const project = (name: string, directory: string) => ({
+const project = (name: string, directory: string, usesNativeSetup = true) => ({
 	resolve: { alias: sharedAliases },
 	test: {
 		name,
@@ -34,7 +41,7 @@ const project = (name: string, directory: string) => ({
 		include: [`${directory}/**/*.test.ts`],
 		exclude: ["**/node_modules/**"],
 		setupFiles,
-		globalSetup,
+		globalSetup: usesNativeSetup ? [artifactSetup, nativeSetup] : [artifactSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},
@@ -45,12 +52,15 @@ const project = (name: string, directory: string) => ({
  * flake retry and the diagnostics artifact names all survive the move off
  * `bun test <dir>` unchanged.
  *
+ * The CI contract suite only inspects workflow and source state, so it omits
+ * the native setup; unit and integration keep it above.
+ *
  * No `pool`, `maxWorkers`, `poolOptions` or `fileParallelism`: pi sets none, and
  * a suite that only passes serialized is concealing a test that assumes an idle
  * machine rather than fixing it.
  */
 export default defineConfig({
 	test: {
-		projects: [project("unit", "test/unit"), project("integration", "test/integration"), project("ci", "test/ci")],
+		projects: [project("unit", "test/unit"), project("integration", "test/integration"), project("ci", "test/ci", false)],
 	},
 });
