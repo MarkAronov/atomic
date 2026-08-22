@@ -131,6 +131,35 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(lines[2]!.includes("my-wf · single"), "line 2 should join the workflow name and meta");
 	});
 
+	test("zero-stage tool-only run renders its live durable ctx.tool node in the BACKGROUND panel", () => {
+		const run: RunSnapshot = {
+			...makeRun("tool-only-run", "publish-release", "running"),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:publish-watcher",
+					name: "publish-watcher",
+					argsHash: "watcher-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					startedAt: Date.now() - 1_000,
+					attachable: false,
+				},
+			],
+		};
+
+		const normalLines = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		const normal = normalLines.join("\n");
+		assert.match(normal, /BACKGROUND/);
+		assert.match(normal, /publish-watcher · running/);
+		assert.doesNotMatch(normal, /0\/0/);
+		assert.ok(normalLines.every((line) => visibleWidth(line) <= 120));
+
+		const narrow = renderWidgetLines(makeSnap([run]), 60).map(stripAnsi);
+		assert.deepEqual(narrow, [" ▾  1 background · 1 ● · 1 tool"]);
+	});
+
 	test("quit run renders resumable quit badge and note", () => {
 		const run: RunSnapshot = {
 			...makeRun("quit1234", "resume-me", "paused"),

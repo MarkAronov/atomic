@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed Windows embedded Postgres startup waiting forever when the daemon inherited `pg_ctl` pipes, and made orderly shutdown stop only the still-matching process-owned cluster while leaving attached or replacement clusters untouched ([#2547](https://github.com/bastani-inc/atomic/issues/2547), [#2544](https://github.com/bastani-inc/atomic/pull/2544) by [@darionco](https://github.com/darionco)).
+- Fixed active zero-stage workflows whose only work is durable `ctx.tool` calls being under-represented in the below-editor `BACKGROUND` panel. Normal-width cards now show each pending or running tool node by name and status, while the narrow collapsed form shows the live-tool count; no synthetic stage is created. The panel mounts for tool-only runs loaded after installation, keeps updating through workflow-resource reload, and remounts from the adopted run store after full `/reload`. Same-process extension reload preserves the live durable tool control and callback lifecycle so the active node can settle normally instead of disappearing into a crashed/resumable snapshot; a real process exit continues to require explicit durable resume for unfinished callbacks.
 
 ## [0.9.15] - 2026-08-21
 
