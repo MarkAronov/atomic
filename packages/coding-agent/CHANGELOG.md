@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Subagent delegation is now fixed at one level. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth field and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. SDK callers that construct stage orchestration contexts must drop the removed field.
+
+### Changed
+
+- Vendored `@earendil-works/pi-ai` into the Atomic monorepo as `@bastani/pi-ai` and switched first-party imports, loader aliases, shrinkwrap, and tagged release publishing to the workspace package. Legacy extensions that import `@earendil-works/pi-ai` still resolve through the loader.
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build instead of shipping the frozen v0.84.2 snapshot.
+- Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- SQLite resource selectors now use `node:sqlite` only. The `bun:sqlite` fallback was removed as Atomic's Bun floor moved to 1.4.0; Node ≥ 22.13 and Bun ≥ 1.4.0 provide `node:sqlite` without a flag.
+
+### Fixed
+
+- Fixed fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN` failing with `Personal Access Tokens are not supported for this endpoint`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`, exchanged OAuth tokens retain their behavior, and explicit provider/model header overrides keep precedence ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- Fixed workflow stages hanging after GitHub Copilot stream decompression failures. Provider stream stalls now settle as transient transport errors and can retry or fail over; the new `streamDeadlineMs` setting bounds idle gaps and supports duration strings or disabling the deadline ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
+- Extension widgets now remount once after the interactive host clears or disposes them, preserve in-place updates, and discard stale isolated-engine mounts before reopening ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Ported unreleased upstream pi-ai fixes for Copilot throttling, provider usage and reasoning metadata, Bedrock headers and reasoning, Anthropic fallback pricing, Azure tool choice, model catalogs, xAI Responses routing, stream request options, User-Agent headers, and OpenAI reasoning replay. Cerebras now defaults to `gpt-oss-120b`, and the unused OpenTelemetry dependency was removed.
+
 ## [0.9.15-alpha.1] - 2026-08-21
 
 ### Breaking Changes

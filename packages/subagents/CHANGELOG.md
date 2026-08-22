@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Subagent delegation is now fixed at one level. A top-level chat or workflow stage may launch subagents, but a subagent child may not launch, resume, or interrupt another child. Read-only management actions remain available, and the executor plus Rust admission boundary both enforce the rule.
+
+### Removed
+
+- Removed the extension config and agent frontmatter options for delegation depth. Stale keys remain parseable and are ignored; agent-management rewrites strip the old frontmatter field.
+- Removed inherited per-child delegation limits and the unreachable multi-level nested-run transport, registry, recursive status, and result payload fields. Direct-child status and results remain unchanged, and startup still cleans route directories left by older versions.
+
+### Changed
+
+- Switched the optional peer from `@earendil-works/pi-ai` to `@bastani/pi-ai`.
+- Updated the fanout-child boundary prompt to reflect that child delegation is unavailable.
+- Replaced built-in `gpt-5.6-luna:max` primary and fallback pins with `gpt-5.6-sol`, using `:medium` for worker and analysis agents and `:low` for locator and pattern agents.
+
 ## [0.9.15-alpha.1] - 2026-08-21
 
 ### Breaking Changes
