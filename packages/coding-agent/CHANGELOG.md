@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.15-alpha.1] - 2026-08-21
+
 ### Breaking Changes
 
 - Two exported SDK types each lose a field, because subagent delegation is now a fixed one-level rule rather than a configurable depth. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth number and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. Code that constructs a stage orchestration context must drop the removed required field.

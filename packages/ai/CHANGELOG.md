@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history live
 
 ## [Unreleased]
 
+## [0.9.15-alpha.1] - 2026-08-21
+
 ### Breaking Changes
 
 - Built-in xAI models now use the OpenAI Responses API only. Completions is no longer registered on the xAI provider.
