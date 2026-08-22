@@ -6,6 +6,8 @@
  */
 
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession } from "@bastani/atomic";
@@ -146,6 +148,132 @@ async function evaluateInstalledWorkflowGraph(): Promise<WorkflowGeneration> {
 		alias: extensionLoaderTestHooks.getAliases(),
 	});
 	return (await jiti.import(cacheBustedHref(graphEntry, cacheKey))) as WorkflowGeneration;
+}
+
+interface GlobalIncidentStateEntry {
+	siblingExecutions: number;
+	watcherExecutions: number;
+	watcherRunning: boolean;
+}
+
+type GlobalIncidentState = Record<string, GlobalIncidentStateEntry>;
+
+interface WorkflowDispatchDetails {
+	readonly action: string;
+	readonly runId: string;
+	readonly status: string;
+	readonly error?: string;
+}
+
+async function waitForCondition(predicate: () => boolean, label: string, timeoutMs = 20_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	assert.equal(predicate(), true, `timed out waiting for ${label}`);
+}
+
+function globalIncidentSource(): string {
+	return `
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
+
+const stateDir = process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
+if (!stateDir) throw new Error("ATOMIC_GLOBAL_RELOAD_STATE_DIR is required");
+mkdirSync(stateDir, { recursive: true });
+const statePath = join(stateDir, "state.json");
+const readState = () => existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
+const update = (label, change) => {
+  const state = readState();
+  const current = state[label] ?? { siblingExecutions: 0, watcherExecutions: 0, watcherRunning: false };
+  change(current);
+  state[label] = current;
+  writeFileSync(statePath, JSON.stringify(state), "utf8");
+  return current;
+};
+
+export default workflow({
+  name: "global-publish-watch",
+  description: "User-global zero-stage publish watcher used by the reload lifecycle regression.",
+  inputs: { label: Type.String() },
+  outputs: { sibling: Type.String(), watcher: Type.String() },
+  run: async (ctx) => {
+    const label = ctx.inputs.label;
+    const sibling = await ctx.tool("cached-sibling", { label }, async () => {
+      const state = update(label, (current) => { current.siblingExecutions += 1; });
+      return "cached-" + state.siblingExecutions;
+    });
+    const watcher = await ctx.tool("publish-watcher", { label }, async (toolContext) => {
+      update(label, (current) => { current.watcherExecutions += 1; current.watcherRunning = true; });
+      const releasePath = join(stateDir, label + ".release");
+      await new Promise((resolve, reject) => {
+        const timer = setInterval(() => {
+          if (!existsSync(releasePath)) return;
+          clearInterval(timer);
+          resolve(undefined);
+        }, 10);
+        const signal = toolContext?.signal;
+        signal?.addEventListener("abort", () => {
+          clearInterval(timer);
+          reject(new Error("publish-watcher aborted"));
+        }, { once: true });
+      });
+      update(label, (current) => { current.watcherRunning = false; });
+      return "published-" + label;
+    });
+    return { sibling, watcher };
+  },
+});
+`;
+}
+
+function readGlobalIncidentState(stateDir: string): GlobalIncidentState {
+	const path = join(stateDir, "state.json");
+	return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as GlobalIncidentState) : {};
+}
+
+function workflowTool(extension: Extension) {
+	const registration = extension.tools.get("workflow");
+	assert.ok(registration, "the public workflow tool must be registered");
+	return registration.definition;
+}
+
+async function executeWorkflowTool(
+	extension: Extension,
+	callId: string,
+	args: Record<string, unknown>,
+	context: Record<string, unknown>,
+): Promise<WorkflowDispatchDetails> {
+	const result = await workflowTool(extension).execute(callId, args, undefined, undefined, context as never);
+	return result.details as WorkflowDispatchDetails;
+}
+
+function createHostRuntime(): ReturnType<typeof createExtensionRuntime> {
+	const runtime = createExtensionRuntime();
+	Object.assign(runtime, {
+		sendMessage: () => undefined,
+		sendMessages: () => undefined,
+		sendUserMessage: () => undefined,
+		appendEntry: () => `entry-${Date.now()}`,
+		setSessionName: () => undefined,
+		getSessionName: () => undefined,
+		setLabel: () => undefined,
+		getActiveTools: () => ["workflow"],
+		getAllTools: () => [],
+		setActiveTools: () => undefined,
+		getCommands: () => [],
+		getThinkingLevel: () => "off",
+		setThinkingLevel: () => undefined,
+	});
+	return runtime;
+}
+
+function emitReloadEvidence(event: string, details: Record<string, unknown>): void {
+	if (process.env.ATOMIC_RELOAD_EVIDENCE !== "1") return;
+	console.log(`RELOAD-EVIDENCE ${event} ${JSON.stringify(details)}`);
 }
 
 function stageHandle(runId: string, stageId: string): StageControlHandle {
@@ -345,116 +473,217 @@ test(
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );
 
-test(
-	"the installed loader path preserves the literal publish watcher across full reload",
+test.sequential(
+	"user-global agent launch keeps its real publish watcher through resource and installed full reload",
 	async () => {
-		const bus = createEventBus();
-		const widget = createWidgetUi();
-		const first = await evaluateInstalledWorkflowGraph();
-		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createExtensionRuntime());
-		await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, { hasUI: true, ui: widget.ui });
+		const root = mkdtempSync(join(tmpdir(), "atomic-global-reload-"));
+		const agentDir = join(root, "agent");
+		const stateDir = join(root, "state");
+		mkdirSync(join(agentDir, "workflows"), { recursive: true });
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(join(agentDir, "workflows", "global-publish-watch.ts"), globalIncidentSource(), "utf8");
+		const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+		const previousStateDir = process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+		process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR = stateDir;
 
-		let resolveWatcher: (() => void) | undefined;
-		let callbackSettlements = 0;
-		const watcherSettled = new Promise<void>((resolve) => {
-			resolveWatcher = resolve;
-		}).then(() => {
-			callbackSettlements += 1;
-		});
-		const runId = "publish-release-incident";
-		const completedId = "tool:cut-or-reuse-exact-release-tag";
-		const watcherId = "tool:watch-exact-publish-action";
-		first.store.recordRunStart({
-			id: runId,
-			name: "resume-publish-release-0-9-15",
-			inputs: {},
-			status: "running",
-			stages: [],
-			toolNodes: [],
-			startedAt: 1,
-		});
-		first.store.recordToolNodeStart(runId, {
-			kind: "tool",
-			id: completedId,
-			name: "cut-or-reuse-exact-release-tag",
-			argsHash: "release-tag-hash",
-			ordinal: 2,
-			parentIds: [],
-			status: "pending",
-			attachable: false,
-		});
-		first.store.recordToolNodeRunning(runId, completedId, 2);
-		first.store.recordToolNodeEnd(runId, completedId, {
-			status: "completed",
-			endedAt: 3,
-			resultSummary: '"6c4024fe88"',
-		});
-		first.store.recordToolNodeStart(runId, {
-			kind: "tool",
-			id: watcherId,
-			name: "watch-exact-publish-action",
-			argsHash: "publish-watcher-hash",
-			ordinal: 3,
-			parentIds: [],
-			status: "pending",
-			attachable: false,
-		});
-		first.store.recordToolNodeRunning(runId, watcherId, 4);
-		const runController = new AbortController();
-		const toolController = new AbortController();
-		first.cancellationRegistry.register(runId, runController);
-		first.toolControlRegistry.register({
-			runId,
-			nodeId: watcherId,
-			name: "watch-exact-publish-action",
-			controller: toolController,
-			settled: watcherSettled,
-		});
-		first.jobTracker.register({ runId, controller: runController, promise: watcherSettled });
-		const initialWidget = widget.calls.findLast((call) => call.factory !== undefined);
-		assert.ok(initialWidget?.factory, "the zero-stage run must mount before reload");
-		assert.match(initialWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
-		const reloadWidgetCallStart = widget.calls.length;
+		try {
+			const bus = createEventBus();
+			const widget = createWidgetUi();
+			const context = { hasUI: true, sessionId: "active-chat-turn", ui: widget.ui };
+			const first = await evaluateInstalledWorkflowGraph();
+			const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createHostRuntime());
+			await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, context);
+			await emitSessionEvent(firstExtension, "turn_start", { type: "turn_start" }, context);
 
-		await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
-		const second = await evaluateInstalledWorkflowGraph();
-		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createExtensionRuntime());
-		await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, { hasUI: true, ui: widget.ui });
+			const beforeLaunchReload = await executeWorkflowTool(
+				firstExtension,
+				"reload-before",
+				{ action: "reload" },
+				context,
+			);
+			assert.equal(beforeLaunchReload.action, "reload");
+			assert.equal(beforeLaunchReload.status, "ok", beforeLaunchReload.error);
 
-		const replacementWidget = widget.calls
-			.slice(reloadWidgetCallStart)
-			.findLast((call) => call.factory !== undefined);
-		assert.ok(replacementWidget?.factory, "the adopted active run must remount below the editor");
-		assert.notEqual(replacementWidget, initialWidget);
-		assert.match(replacementWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
+			const widgetCallStart = widget.calls.length;
+			const launched = await executeWorkflowTool(
+				firstExtension,
+				"agent-run",
+				{ action: "run", workflow: "global-publish-watch", inputs: { label: "agent" } },
+				context,
+			);
+			assert.equal(launched.action, "run");
+			assert.notEqual(launched.runId, "", launched.error);
+			assert.equal(launched.status, "running", JSON.stringify(launched));
+			await waitForCondition(
+				() =>
+					readGlobalIncidentState(stateDir).agent?.watcherRunning === true ||
+					first.store.runs().find((run) => run.id === launched.runId)?.status !== "running",
+				"the agent-origin publish watcher to start or terminate",
+			);
+			assert.equal(
+				readGlobalIncidentState(stateDir).agent?.watcherRunning,
+				true,
+				JSON.stringify(first.store.runs().find((run) => run.id === launched.runId)),
+			);
 
-		const adopted = second.store.runs().find((run) => run.id === runId);
-		assert.ok(adopted, "the replacement installed generation must adopt the active run store");
-		assert.equal(adopted.status, "running");
-		assert.equal(adopted.stages.length, 0);
-		assert.deepEqual(
-			adopted.toolNodes?.map((node) => [node.name, node.status]),
-			[
-				["cut-or-reuse-exact-release-tag", "completed"],
-				["watch-exact-publish-action", "running"],
-			],
-		);
-		assert.equal(second.toolControlRegistry.get(runId, watcherId)?.name, "watch-exact-publish-action");
-		assert.equal(second.jobTracker.get(runId)?.promise, watcherSettled);
+			const initial = first.store.runs().find((run) => run.id === launched.runId);
+			assert.ok(initial, "the public workflow tool must publish the run to the session store");
+			assert.equal(initial.origin, "agent");
+			assert.deepEqual(initial.stages, []);
+			assert.deepEqual(
+				initial.toolNodes?.map((node) => [node.name, node.status]),
+				[
+					["cached-sibling", "completed"],
+					["publish-watcher", "running"],
+				],
+			);
+			assert.deepEqual(first.stageControlRegistry.forRun(launched.runId), []);
+			const initialWidget = widget.calls.slice(widgetCallStart).findLast((call) => call.factory !== undefined);
+			assert.ok(initialWidget?.factory, "run-start invalidation must mount the host widget before any stage exists");
+			assert.equal(initialWidget.placement, "belowEditor");
+			assert.match(initialWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
+			emitReloadEvidence("agent-start", {
+				head: process.env.ATOMIC_RELOAD_EVIDENCE_HEAD,
+				origin: initial.origin,
+				stages: initial.stages.length,
+				tools: initial.toolNodes?.map((node) => [node.name, node.status]),
+				widget120: initialWidget.factory(undefined, undefined).render(120).join(" | "),
+			});
 
-		assert.ok(resolveWatcher);
-		resolveWatcher();
-		await watcherSettled;
-		assert.equal(callbackSettlements, 1);
-		assert.equal(
-			first.store.recordToolNodeEnd(runId, watcherId, {
-				status: "completed",
-				endedAt: 5,
-				resultSummary: '"published"',
-			}),
-			true,
-		);
-		assert.equal(second.store.runs()[0]?.toolNodes?.[1]?.status, "completed");
+			const liveNode = initial.toolNodes?.find((node) => node.name === "publish-watcher");
+			assert.ok(liveNode);
+			const toolOwner = first.toolControlRegistry.get(launched.runId, liveNode.id);
+			const jobOwner = first.jobTracker.get(launched.runId);
+			assert.ok(toolOwner);
+			assert.ok(jobOwner);
+
+			const activeReload = await executeWorkflowTool(firstExtension, "reload-active", { action: "reload" }, context);
+			assert.equal(activeReload.action, "reload");
+			assert.equal(activeReload.status, "ok", activeReload.error);
+			assert.equal(first.toolControlRegistry.get(launched.runId, liveNode.id), toolOwner);
+			assert.equal(first.jobTracker.get(launched.runId), jobOwner);
+			assert.deepEqual(readGlobalIncidentState(stateDir).agent, {
+				siblingExecutions: 1,
+				watcherExecutions: 1,
+				watcherRunning: true,
+			});
+			emitReloadEvidence("resource-reload-active", {
+				status: activeReload.status,
+				toolOwnerPreserved: first.toolControlRegistry.get(launched.runId, liveNode.id) === toolOwner,
+				jobOwnerPreserved: first.jobTracker.get(launched.runId) === jobOwner,
+				state: readGlobalIncidentState(stateDir).agent,
+			});
+
+			// `/reload` is a same-process DBOS boundary: shutdown flushes durable writes
+			// without stopping the process executor, and startup deliberately does not
+			// hydrate/replay live work. The identity assertions below distinguish that
+			// handoff from a fresh executor silently replacing the callback.
+			const reloadWidgetCallStart = widget.calls.length;
+			await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
+			const second = await evaluateInstalledWorkflowGraph();
+			const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createHostRuntime());
+			await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, context);
+
+			const adopted = second.store.runs().find((run) => run.id === launched.runId);
+			assert.ok(adopted, "the installed replacement must adopt the user-global agent run");
+			assert.equal(adopted.status, "running");
+			assert.equal(adopted.resumable, undefined);
+			assert.deepEqual(adopted.stages, []);
+			assert.deepEqual(
+				adopted.toolNodes?.map((node) => [node.name, node.status]),
+				[
+					["cached-sibling", "completed"],
+					["publish-watcher", "running"],
+				],
+			);
+			assert.equal(second.toolControlRegistry.get(launched.runId, liveNode.id), toolOwner);
+			assert.equal(second.jobTracker.get(launched.runId), jobOwner);
+			assert.equal(readGlobalIncidentState(stateDir).agent?.watcherExecutions, 1);
+
+			const replacementWidget = widget.calls
+				.slice(reloadWidgetCallStart)
+				.findLast((call) => call.factory !== undefined);
+			assert.ok(replacementWidget?.factory, "the host must remount the adopted active run below the editor");
+			assert.match(replacementWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
+			assert.deepEqual(replacementWidget.factory(undefined, undefined).render(60), [
+				" ▾  1 background · 1 ● · 1 tool",
+			]);
+			emitReloadEvidence("full-reload-adopted", {
+				status: adopted.status,
+				resumable: adopted.resumable ?? false,
+				tools: adopted.toolNodes?.map((node) => [node.name, node.status]),
+				toolOwnerPreserved: second.toolControlRegistry.get(launched.runId, liveNode.id) === toolOwner,
+				jobOwnerPreserved: second.jobTracker.get(launched.runId) === jobOwner,
+				watcherExecutions: readGlobalIncidentState(stateDir).agent?.watcherExecutions,
+				widget120: replacementWidget.factory(undefined, undefined).render(120).join(" | "),
+				widget60: replacementWidget.factory(undefined, undefined).render(60),
+			});
+
+			writeFileSync(join(stateDir, "agent.release"), "release", "utf8");
+			await waitForCondition(
+				() => second.store.runs().find((run) => run.id === launched.runId)?.status === "completed",
+				"the original callback owner to settle through the adopted store",
+			);
+			assert.equal(readGlobalIncidentState(stateDir).agent?.watcherExecutions, 1);
+			emitReloadEvidence("callback-settled", {
+				status: second.store.runs().find((run) => run.id === launched.runId)?.status,
+				watcherExecutions: readGlobalIncidentState(stateDir).agent?.watcherExecutions,
+			});
+
+			const slashCommand = secondExtension.commands.get("workflow");
+			assert.ok(slashCommand, "the /workflow command must be registered beside the public tool");
+			const rendersBeforeSlash = widget.renders.count;
+			await slashCommand.handler("global-publish-watch label=slash --no-picker", context as never);
+			await waitForCondition(
+				() => readGlobalIncidentState(stateDir).slash?.watcherRunning === true,
+				"the slash-command publish watcher to start",
+			);
+			const slashRun = second.store
+				.runs()
+				.find((run) => run.name === "global-publish-watch" && run.inputs.label === "slash");
+			assert.ok(slashRun);
+			assert.equal(slashRun.origin, "user");
+			assert.deepEqual(slashRun.stages, []);
+			assert.deepEqual(second.stageControlRegistry.forRun(slashRun.id), []);
+			assert.ok(
+				widget.renders.count > rendersBeforeSlash,
+				"slash and agent launches must both invalidate the mounted host widget",
+			);
+			assert.match(
+				replacementWidget.factory(undefined, undefined).render(120).join("\n"),
+				/publish-watcher · running/,
+			);
+			writeFileSync(join(stateDir, "slash.release"), "release", "utf8");
+			await waitForCondition(
+				() => second.store.runs().find((run) => run.id === slashRun.id)?.status === "completed",
+				"the slash-command comparison run to settle",
+			);
+			assert.deepEqual(readGlobalIncidentState(stateDir).slash, {
+				siblingExecutions: 1,
+				watcherExecutions: 1,
+				watcherRunning: false,
+			});
+			emitReloadEvidence("agent-vs-slash", {
+				agentOrigin: initial.origin,
+				slashOrigin: slashRun.origin,
+				agentStages: initial.stages.length,
+				slashStages: slashRun.stages.length,
+				slashState: readGlobalIncidentState(stateDir).slash,
+			});
+		} finally {
+			for (const label of ["agent", "slash"]) {
+				try {
+					writeFileSync(join(stateDir, `${label}.release`), "release", "utf8");
+				} catch {}
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+			if (previousStateDir === undefined) delete process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
+			else process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR = previousStateDir;
+			rmSync(root, { recursive: true, force: true });
+		}
 	},
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );
