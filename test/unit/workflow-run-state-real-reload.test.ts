@@ -130,6 +130,24 @@ async function evaluateWorkflowGraph(): Promise<WorkflowGeneration> {
 	return loaded;
 }
 
+/**
+ * The installed Node package uses the loader's on-disk alias for
+ * `@bastani/atomic`, so jiti evaluates a host-module copy alongside the native
+ * loader that created `pi.events`. This is the release-0.9.15 path; using a
+ * virtual module here would conceal the split that lost canonical bus identity.
+ */
+async function evaluateInstalledWorkflowGraph(): Promise<WorkflowGeneration> {
+	graphGeneration += 1;
+	const cacheKey = `installed:${graphGeneration}:${Date.now()}:${Math.random()}`;
+	const jiti = createJiti(import.meta.url, {
+		moduleCache: false,
+		tryNative: false,
+		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		alias: extensionLoaderTestHooks.getAliases(),
+	});
+	return (await jiti.import(cacheBustedHref(graphEntry, cacheKey))) as WorkflowGeneration;
+}
+
 function stageHandle(runId: string, stageId: string): StageControlHandle {
 	return {
 		runId,
@@ -323,6 +341,120 @@ test(
 		assert.equal(second.stageControlRegistry.get(ids.runId, ids.stageId)?.status, "running");
 		assert.equal(second.jobTracker.get(ids.runId)?.controller, ids.controller);
 		assert.equal(second.stageUiBroker.answerStagePrompt(ids.runId, ids.stageId, { text: "Yes" }), true);
+	},
+	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
+);
+
+test(
+	"the installed loader path preserves the literal publish watcher across full reload",
+	async () => {
+		const bus = createEventBus();
+		const widget = createWidgetUi();
+		const first = await evaluateInstalledWorkflowGraph();
+		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createExtensionRuntime());
+		await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, { hasUI: true, ui: widget.ui });
+
+		let resolveWatcher: (() => void) | undefined;
+		let callbackSettlements = 0;
+		const watcherSettled = new Promise<void>((resolve) => {
+			resolveWatcher = resolve;
+		}).then(() => {
+			callbackSettlements += 1;
+		});
+		const runId = "publish-release-incident";
+		const completedId = "tool:cut-or-reuse-exact-release-tag";
+		const watcherId = "tool:watch-exact-publish-action";
+		first.store.recordRunStart({
+			id: runId,
+			name: "resume-publish-release-0-9-15",
+			inputs: {},
+			status: "running",
+			stages: [],
+			toolNodes: [],
+			startedAt: 1,
+		});
+		first.store.recordToolNodeStart(runId, {
+			kind: "tool",
+			id: completedId,
+			name: "cut-or-reuse-exact-release-tag",
+			argsHash: "release-tag-hash",
+			ordinal: 2,
+			parentIds: [],
+			status: "pending",
+			attachable: false,
+		});
+		first.store.recordToolNodeRunning(runId, completedId, 2);
+		first.store.recordToolNodeEnd(runId, completedId, {
+			status: "completed",
+			endedAt: 3,
+			resultSummary: '"6c4024fe88"',
+		});
+		first.store.recordToolNodeStart(runId, {
+			kind: "tool",
+			id: watcherId,
+			name: "watch-exact-publish-action",
+			argsHash: "publish-watcher-hash",
+			ordinal: 3,
+			parentIds: [],
+			status: "pending",
+			attachable: false,
+		});
+		first.store.recordToolNodeRunning(runId, watcherId, 4);
+		const runController = new AbortController();
+		const toolController = new AbortController();
+		first.cancellationRegistry.register(runId, runController);
+		first.toolControlRegistry.register({
+			runId,
+			nodeId: watcherId,
+			name: "watch-exact-publish-action",
+			controller: toolController,
+			settled: watcherSettled,
+		});
+		first.jobTracker.register({ runId, controller: runController, promise: watcherSettled });
+		const initialWidget = widget.calls.findLast((call) => call.factory !== undefined);
+		assert.ok(initialWidget?.factory, "the zero-stage run must mount before reload");
+		assert.match(initialWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
+		const reloadWidgetCallStart = widget.calls.length;
+
+		await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
+		const second = await evaluateInstalledWorkflowGraph();
+		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createExtensionRuntime());
+		await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, { hasUI: true, ui: widget.ui });
+
+		const replacementWidget = widget.calls
+			.slice(reloadWidgetCallStart)
+			.findLast((call) => call.factory !== undefined);
+		assert.ok(replacementWidget?.factory, "the adopted active run must remount below the editor");
+		assert.notEqual(replacementWidget, initialWidget);
+		assert.match(replacementWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
+
+		const adopted = second.store.runs().find((run) => run.id === runId);
+		assert.ok(adopted, "the replacement installed generation must adopt the active run store");
+		assert.equal(adopted.status, "running");
+		assert.equal(adopted.stages.length, 0);
+		assert.deepEqual(
+			adopted.toolNodes?.map((node) => [node.name, node.status]),
+			[
+				["cut-or-reuse-exact-release-tag", "completed"],
+				["watch-exact-publish-action", "running"],
+			],
+		);
+		assert.equal(second.toolControlRegistry.get(runId, watcherId)?.name, "watch-exact-publish-action");
+		assert.equal(second.jobTracker.get(runId)?.promise, watcherSettled);
+
+		assert.ok(resolveWatcher);
+		resolveWatcher();
+		await watcherSettled;
+		assert.equal(callbackSettlements, 1);
+		assert.equal(
+			first.store.recordToolNodeEnd(runId, watcherId, {
+				status: "completed",
+				endedAt: 5,
+				resultSummary: '"published"',
+			}),
+			true,
+		);
+		assert.equal(second.store.runs()[0]?.toolNodes?.[1]?.status, "completed");
 	},
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );
