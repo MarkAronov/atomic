@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,11 +14,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
 import { beforeEach, test } from "vitest";
-import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
+import { createEventBus, type EventBusController } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
-import type { Extension, ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.ts";
+import type {
+	Extension,
+	ExtensionFactory,
+	ExtensionRuntime,
+} from "../../packages/coding-agent/src/core/extensions/types.ts";
+import { dbosLifecycleState } from "../../packages/workflows/src/durable/dbos-lifecycle.ts";
 import type { ToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.ts";
 import type { JobTracker } from "../../packages/workflows/src/runs/background/job-tracker.ts";
@@ -37,6 +43,7 @@ beforeEach(() => {
 
 /** Full transformed re-evaluation of the workflows graph, twice, through the host loader. */
 const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
+const EARLY_FAILURE_REPORT_ENV = "ATOMIC_REAL_RELOAD_EARLY_FAILURE_REPORT";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
@@ -96,6 +103,35 @@ function createWidgetUi(): { readonly ui: object; readonly calls: WidgetCall[]; 
 			},
 			notify(): void {},
 		},
+	};
+}
+
+function createTrackedEventBus(): {
+	readonly bus: EventBusController;
+	readonly listenerCount: () => number;
+} {
+	const underlying = createEventBus();
+	let listeners = 0;
+	return {
+		bus: {
+			emit: underlying.emit,
+			on(channel, handler) {
+				listeners += 1;
+				const unsubscribe = underlying.on(channel, handler);
+				let active = true;
+				return () => {
+					if (!active) return;
+					active = false;
+					listeners -= 1;
+					unsubscribe();
+				};
+			},
+			clear() {
+				listeners = 0;
+				underlying.clear();
+			},
+		},
+		listenerCount: () => listeners,
 	};
 }
 
@@ -420,33 +456,6 @@ test(
 		assert.match(secondFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
 		assert.deepEqual(secondFactory.factory(undefined, undefined).render(60), [" ▾  1 background · 1 ● · 1 tool"]);
 
-		// TEMPORARY WINDOWS DIAGNOSTIC - remove before merge.
-		//
-		// Three fixes have failed identically on this assertion while linux and
-		// macOS stay green, so this prints the facts this machine cannot produce.
-		// `store` is the control: it shares correctly, so whatever differs between
-		// it and the stage registry is the real fault line.
-		{
-			const reg1 = first.stageControlRegistry as unknown as Record<string, (...a: unknown[]) => unknown>;
-			const reg2 = second.stageControlRegistry as unknown as Record<string, (...a: unknown[]) => unknown>;
-			const probe = {
-				gen1_still_sees_own_stage: first.stageControlRegistry.get(ids.runId, ids.stageId)?.stageId ?? null,
-				gen2_sees_stage: second.stageControlRegistry.get(ids.runId, ids.stageId)?.stageId ?? null,
-				gen1_forRun_count: first.stageControlRegistry.forRun(ids.runId).length,
-				gen2_forRun_count: second.stageControlRegistry.forRun(ids.runId).length,
-				gen1_has_run: typeof reg1.has === "function" ? reg1.has(ids.runId) : "no-has",
-				gen2_has_run: typeof reg2.has === "function" ? reg2.has(ids.runId) : "no-has",
-				gen1_store_runs: first.store.runs().length,
-				gen2_store_runs: second.store.runs().length,
-				facades_distinct_store: first.store !== second.store,
-				facades_distinct_stagereg: first.stageControlRegistry !== second.stageControlRegistry,
-				globalthis_slot_present:
-					Reflect.get(globalThis, Symbol.for("atomic-coding-agent/extension-session-state@1")) !== undefined,
-				platform: process.platform,
-			};
-			console.error(`P0-2462-WINDOWS-PROBE ${JSON.stringify(probe)}`);
-		}
-
 		assertGenerationSeesRun(second, ids, "second generation");
 		assert.ok(resolveCallback);
 		resolveCallback();
@@ -477,6 +486,8 @@ test.sequential(
 	"user-global agent launch keeps its real publish watcher through resource and installed full reload",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-global-reload-"));
+		const earlyFailureReportPath = process.env[EARLY_FAILURE_REPORT_ENV];
+		if (earlyFailureReportPath !== undefined) writeFileSync(earlyFailureReportPath, root, "utf8");
 		const agentDir = join(root, "agent");
 		const stateDir = join(root, "state");
 		mkdirSync(join(agentDir, "workflows"), { recursive: true });
@@ -486,13 +497,26 @@ test.sequential(
 		const previousStateDir = process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
 		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 		process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR = stateDir;
+		const trackedBus = createTrackedEventBus();
+		const runtimes: ExtensionRuntime[] = [];
+		const trackedJobs = new Set<Promise<void>>();
+		const trackedRunIds = new Set<string>();
+		let firstGeneration: WorkflowGeneration | undefined;
+		let secondGeneration: WorkflowGeneration | undefined;
+		let firstExtension: Extension | undefined;
+		let secondExtension: Extension | undefined;
+		let listenersAfterCleanup: number | undefined;
+		let dbosStateAfterCleanup: ReturnType<typeof dbosLifecycleState> | undefined;
 
 		try {
-			const bus = createEventBus();
+			const bus = trackedBus.bus;
 			const widget = createWidgetUi();
 			const context = { hasUI: true, sessionId: "active-chat-turn", ui: widget.ui };
 			const first = await evaluateInstalledWorkflowGraph();
-			const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createHostRuntime());
+			firstGeneration = first;
+			const firstRuntime = createHostRuntime();
+			runtimes.push(firstRuntime);
+			firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, firstRuntime);
 			await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, context);
 			await emitSessionEvent(firstExtension, "turn_start", { type: "turn_start" }, context);
 
@@ -512,6 +536,10 @@ test.sequential(
 				{ action: "run", workflow: "global-publish-watch", inputs: { label: "agent" } },
 				context,
 			);
+			trackedRunIds.add(launched.runId);
+			const jobOwner = first.jobTracker.get(launched.runId);
+			if (jobOwner !== undefined) trackedJobs.add(jobOwner.promise);
+			if (earlyFailureReportPath !== undefined) throw new Error("injected failure after agent launch tracking");
 			assert.equal(launched.action, "run");
 			assert.notEqual(launched.runId, "", launched.error);
 			assert.equal(launched.status, "running", JSON.stringify(launched));
@@ -554,7 +582,6 @@ test.sequential(
 			const liveNode = initial.toolNodes?.find((node) => node.name === "publish-watcher");
 			assert.ok(liveNode);
 			const toolOwner = first.toolControlRegistry.get(launched.runId, liveNode.id);
-			const jobOwner = first.jobTracker.get(launched.runId);
 			assert.ok(toolOwner);
 			assert.ok(jobOwner);
 
@@ -581,8 +608,12 @@ test.sequential(
 			// handoff from a fresh executor silently replacing the callback.
 			const reloadWidgetCallStart = widget.calls.length;
 			await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
+			firstRuntime.invalidate();
 			const second = await evaluateInstalledWorkflowGraph();
-			const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createHostRuntime());
+			secondGeneration = second;
+			const secondRuntime = createHostRuntime();
+			runtimes.push(secondRuntime);
+			secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, secondRuntime);
 			await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, context);
 
 			const adopted = second.store.runs().find((run) => run.id === launched.runId);
@@ -643,6 +674,10 @@ test.sequential(
 				.runs()
 				.find((run) => run.name === "global-publish-watch" && run.inputs.label === "slash");
 			assert.ok(slashRun);
+			const slashJobOwner = second.jobTracker.get(slashRun.id);
+			assert.ok(slashJobOwner);
+			trackedRunIds.add(slashRun.id);
+			trackedJobs.add(slashJobOwner.promise);
 			assert.equal(slashRun.origin, "user");
 			assert.deepEqual(slashRun.stages, []);
 			assert.deepEqual(second.stageControlRegistry.forRun(slashRun.id), []);
@@ -671,18 +706,79 @@ test.sequential(
 				slashStages: slashRun.stages.length,
 				slashState: readGlobalIncidentState(stateDir).slash,
 			});
-		} finally {
-			for (const label of ["agent", "slash"]) {
-				try {
-					writeFileSync(join(stateDir, `${label}.release`), "release", "utf8");
-				} catch {}
+			await emitSessionEvent(secondExtension, "session_shutdown", { reason: "quit" });
+			if (dbosLifecycleState() !== "shut_down") {
+				await emitSessionEvent(secondExtension, "session_shutdown", { reason: "quit" });
 			}
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-			if (previousStateDir === undefined) delete process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
-			else process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR = previousStateDir;
-			rmSync(root, { recursive: true, force: true });
+		} finally {
+			try {
+				try {
+					for (const label of ["agent", "slash"]) {
+						try {
+							writeFileSync(join(stateDir, `${label}.release`), "release", "utf8");
+						} catch {}
+					}
+					const activeGeneration = secondGeneration ?? firstGeneration;
+					if (activeGeneration !== undefined) {
+						for (const runId of trackedRunIds) {
+							if (activeGeneration.store.runs().find((run) => run.id === runId)?.status === "running") {
+								activeGeneration.cancellationRegistry.abort(runId);
+							}
+						}
+					}
+					await Promise.allSettled(trackedJobs);
+					const cleanupExtension = secondExtension ?? firstExtension;
+					if (cleanupExtension !== undefined && dbosLifecycleState() !== "shut_down") {
+						await emitSessionEvent(cleanupExtension, "session_shutdown", { reason: "quit" });
+					}
+				} finally {
+					for (const runtime of runtimes) runtime.invalidate();
+					listenersAfterCleanup = trackedBus.listenerCount();
+					dbosStateAfterCleanup = dbosLifecycleState();
+				}
+			} finally {
+				if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+				else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+				if (previousStateDir === undefined) delete process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
+				else process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR = previousStateDir;
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+		assert.equal(listenersAfterCleanup, 0, "both extension generations must release event-bus listeners");
+		assert.equal(dbosStateAfterCleanup, "shut_down", "final quit must close DBOS client pools and executor handles");
+	},
+	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
+);
+
+test.sequential(
+	"an early post-launch failure still settles the agent job and removes fixture state",
+	() => {
+		const probeRoot = mkdtempSync(join(tmpdir(), "atomic-global-reload-probe-"));
+		const reportPath = join(probeRoot, "fixture-root.txt");
+		try {
+			const childEnv: NodeJS.ProcessEnv = { ...process.env, [EARLY_FAILURE_REPORT_ENV]: reportPath };
+			delete childEnv.VITEST_POOL_ID;
+			delete childEnv.VITEST_WORKER_ID;
+			const child = spawnSync(
+				process.execPath,
+				[
+					join(repoRoot, "node_modules", "vitest", "vitest.mjs"),
+					"--run",
+					"--project",
+					"unit",
+					"test/unit/workflow-run-state-real-reload.test.ts",
+					"-t",
+					"user-global agent launch keeps its real publish watcher through resource and installed full reload",
+				],
+				{ cwd: repoRoot, encoding: "utf8", env: childEnv, timeout: WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS },
+			);
+			const output = `${child.stdout}\n${child.stderr}`;
+			assert.equal(child.status, 1, output);
+			assert.match(output, /injected failure after agent launch tracking/);
+			const fixtureRoot = readFileSync(reportPath, "utf8");
+			assert.equal(existsSync(fixtureRoot), false, "failure cleanup must remove the temporary fixture root");
+		} finally {
+			rmSync(probeRoot, { recursive: true, force: true });
 		}
 	},
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,

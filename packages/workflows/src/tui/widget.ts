@@ -385,7 +385,7 @@ export function buildThemedWidgetLines(
 
 	const themed = piTheme !== undefined;
 	const graphTheme = deriveGraphTheme({});
-	const activeTools = display.reduce((total, run) => total + activeToolNodes(run).length, 0);
+	const activeTools = display.filter(isActive).reduce((total, run) => total + activeToolNodes(run).length, 0);
 
 	// Collapsed single-line form for narrow terminals.
 	if (width < COLLAPSED_BREAKPOINT_COLS) {

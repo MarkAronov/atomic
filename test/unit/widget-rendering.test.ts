@@ -194,6 +194,87 @@ describe("renderWidgetLines — standard form", () => {
 		assert.match(lines.join("\n"), /2 tools/);
 	});
 
+	test("retained killed and quit cards remain visible but contribute no live tools", () => {
+		const now = Date.now();
+		for (const status of ["pending", "running"] as const) {
+			const retainedTool: NonNullable<RunSnapshot["toolNodes"]>[number] = {
+				kind: "tool",
+				id: `tool:retained-${status}`,
+				name: `retained-${status}`,
+				argsHash: `retained-${status}-hash`,
+				ordinal: 0,
+				parentIds: [],
+				status,
+				startedAt: now - 2_000,
+				attachable: false,
+			};
+			const killed: RunSnapshot = {
+				...makeRun(`killed-${status}`, `killed-${status}-publish`, "killed", [], now - 4_000, now - 500),
+				toolNodes: [retainedTool],
+			};
+			const quit: RunSnapshot = {
+				...makeRun(`quit-${status}`, `quit-${status}-publish`, "paused", [], now - 5_000),
+				exitReason: "quit",
+				quitAt: now - 400,
+				resumable: true,
+				toolNodes: [{ ...retainedTool, id: `tool:quit-${status}` }],
+			};
+
+			const killedWide = renderWidgetLines(makeSnap([killed]), 120)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(killedWide, new RegExp(`killed-${status}-publish`));
+			assert.doesNotMatch(killedWide, new RegExp(`retained-${status} · ${status}`));
+			const killedNarrow = renderWidgetLines(makeSnap([killed]), 60).map(stripAnsi);
+			assert.deepEqual(killedNarrow, [" ▾  1 background · 0 ●"]);
+			assert.notEqual(killedNarrow[0], " ▾  1 background · 0 ● · 1 tool");
+
+			const quitWide = renderWidgetLines(makeSnap([quit]), 120)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(quitWide, new RegExp(`quit-${status}-publish`));
+			assert.doesNotMatch(quitWide, new RegExp(`retained-${status} · ${status}`));
+			assert.deepEqual(renderWidgetLines(makeSnap([quit]), 60).map(stripAnsi), [" ▾  1 background · 0 ● · 1 quit"]);
+		}
+	});
+
+	test("active pending and running tool nodes both contribute to the live aggregate", () => {
+		const now = Date.now();
+		const active: RunSnapshot = {
+			...makeRun("active-tools", "active-publish", "running", [], now - 3_000),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:pending-watcher",
+					name: "pending-watcher",
+					argsHash: "pending-hash",
+					ordinal: 0,
+					parentIds: [],
+					status: "pending",
+					startedAt: now - 2_000,
+					attachable: false,
+				},
+				{
+					kind: "tool",
+					id: "tool:running-watcher",
+					name: "running-watcher",
+					argsHash: "running-hash",
+					ordinal: 1,
+					parentIds: [],
+					status: "running",
+					startedAt: now - 1_000,
+					attachable: false,
+				},
+			],
+		};
+
+		const wide = renderWidgetLines(makeSnap([active]), 120)
+			.map(stripAnsi)
+			.join("\n");
+		assert.match(wide, /pending-watcher · pending/);
+		assert.match(wide, /running-watcher · running/);
+		assert.deepEqual(renderWidgetLines(makeSnap([active]), 60).map(stripAnsi), [" ▾  1 background · 1 ● · 2 tools"]);
+	});
 	test("quit run renders resumable quit badge and note", () => {
 		const run: RunSnapshot = {
 			...makeRun("quit1234", "resume-me", "paused"),
