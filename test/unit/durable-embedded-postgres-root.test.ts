@@ -453,7 +453,11 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 			assert.notEqual(statSync(generation).uid, 65534);
 			assert.equal(statSync(generation).mode & 0o022, 0, "published root is not runtime-owner-writable");
 			assert.equal(statSync(result.postgres).mode & 0o222, 0, "published binaries are not writable");
-			assert.equal(statSync(result.postgres).mode & 0o555, 0o555, "published binaries remain executable");
+			if (process.platform === "win32") {
+				assert.equal(statSync(result.postgres).mode & 0o444, 0o444, "published Windows binaries remain readable");
+			} else {
+				assert.equal(statSync(result.postgres).mode & 0o555, 0o555, "published binaries remain executable");
+			}
 		} finally {
 			removeSealedScratch(scratch);
 		}
