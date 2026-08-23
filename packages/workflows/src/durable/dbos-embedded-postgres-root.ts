@@ -456,7 +456,7 @@ async function hashSourceEntry(
 			sealedHash,
 			"directory",
 			relativePath,
-			String(relativePath === "." ? 0o755 : 0o555),
+			String(sealedDirectoryMode(relativePath === ".")),
 			String(publisher.uid),
 			String(publisher.gid),
 		);
@@ -591,7 +591,7 @@ async function sealRuntimeModes(path: string, progress: RuntimeProgress, isRoot 
 	if (stat.isDirectory()) {
 		await chmod(path, 0o700);
 		for (const entry of await readdir(path)) await sealRuntimeModes(join(path, entry), progress);
-		await chmod(path, isRoot ? 0o755 : 0o555);
+		await chmod(path, sealedDirectoryMode(isRoot));
 		return;
 	}
 	if (stat.isFile()) {
@@ -612,7 +612,15 @@ async function makeUnpublishedStageRemovable(path: string): Promise<void> {
 	}
 }
 
+function sealedDirectoryMode(isRoot: boolean): number {
+	// Node maps Windows chmod/stat to one shared read-only attribute; it cannot
+	// preserve POSIX execute bits or distinct owner/group/other permissions.
+	if (process.platform === "win32") return 0o444;
+	return isRoot ? 0o755 : 0o555;
+}
+
 function sealedFileMode(mode: number): number {
+	if (process.platform === "win32") return 0o444;
 	return (mode & 0o111) === 0 ? 0o444 : 0o555;
 }
 

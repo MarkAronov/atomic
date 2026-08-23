@@ -36,13 +36,10 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir, uptime } from "node:os";
 import { dirname, join, relative } from "node:path";
-import {
-	type RetainedPostgres,
-	type RetainedPostgresSpawnOptions,
-	spawnRetainedPostgres as spawnNativeRetainedPostgres,
-} from "@bastani/atomic-natives";
+import type { RetainedPostgres, RetainedPostgresSpawnOptions } from "@bastani/atomic-natives";
 import {
 	cleanupAbandonedRuntimeStages,
 	type EmbeddedPostgresRunContext,
@@ -259,7 +256,11 @@ async function startCluster(
 }
 
 function retainedPostgresSpawner(): RetainedPostgresSpawner {
-	return retainedPostgresSpawnerOverride ?? spawnNativeRetainedPostgres;
+	if (retainedPostgresSpawnerOverride !== undefined) return retainedPostgresSpawnerOverride;
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		readonly spawnRetainedPostgres: RetainedPostgresSpawner;
+	};
+	return binding.spawnRetainedPostgres;
 }
 
 /**
