@@ -1,6 +1,7 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,6 +112,7 @@ async function createWorkflowStageSession(options: {
 		workflowRunId: "run-test",
 		workflowStageId: "stage-test",
 		workflowStageName: "Stage Test",
+		intercomGroup: `workflow-test:${randomUUID()}`,
 		constraints: {
 			disableWorkflowTool: true,
 		},
