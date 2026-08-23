@@ -2997,6 +2997,20 @@ The workflow tool action surface is:
 - messaging on nonterminal root runs and run control: `send`, `pause`, `interrupt`, `quit`, `resume`
 - rediscovery: `reload`
 
+Every registered `workflow` tool call has one hard 30-second wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
+
+```json
+{
+  "action": "status",
+  "status": "failed",
+  "code": "WORKFLOW_TIMEOUT",
+  "timeoutMs": 30000,
+  "error": "Workflow status request timed out after 30000ms."
+}
+```
+
+Expiry aborts the request operation signal so work that supports cancellation can stop, discards any later success or error, and never retries the action. The interactive engine remains available for the next command. For mutating actions (`reload`, `run`, `send`, `pause`, `resume`, `interrupt`, and `quit`), the error additionally says that the outcome is unknown and instructs you to inspect workflow status before retrying; a timeout never claims that a mutation succeeded. Read-only actions (`models`, `list`, `get`, `inputs`, `status`, `stages`, `stage`, and `transcript`) omit that unknown-state guidance.
+
 From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection and control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`) remain available while work runs.
 
 `workflow({ action: "models" })` returns the registry's configured-auth catalog snapshot in registry order. Each entry includes `provider`, `id`, `fullId`, an `isCurrent` marker, and `availableThinkingLevels` derived from the real model's `reasoning` and `thinkingLevelMap` metadata. This is not proof of credentials, entitlements, OAuth freshness, or live provider access, and it exposes no authentication details.

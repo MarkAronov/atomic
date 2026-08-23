@@ -8,6 +8,7 @@ import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
+import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
@@ -66,10 +67,11 @@ export function makeExecuteWorkflowTool(
 	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
 	sendDeps: WorkflowSendDeps = {},
-): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
+): (args: WorkflowToolArgs, ctx: PiExecuteContext, signal?: AbortSignal) => Promise<WorkflowToolResult> {
 	return async function executeWorkflowTool(
 		args: WorkflowToolArgs,
 		ctx: PiExecuteContext,
+		signal?: AbortSignal,
 	): Promise<WorkflowToolResult> {
 		const action = args.action ?? "run";
 		const runId = args.runId ?? "";
@@ -84,10 +86,12 @@ export function makeExecuteWorkflowTool(
 		}
 		const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
 		const getRuntime = (): ExtensionRuntime => (typeof runtime === "function" ? runtime(ctx) : runtime);
+		const awaitRequest = <T>(operation: Promise<T>): Promise<T> => raceWorkflowRequestAbort(operation, signal);
 		const ensureWorkflowResourcesVisible = async (): Promise<void> => {
 			try {
-				await ensureWorkflowResourcesLoaded();
+				await awaitRequest(Promise.resolve(ensureWorkflowResourcesLoaded()));
 			} catch (error) {
+				if (signal?.aborted === true) throw signal.reason ?? error;
 				ctx.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
 			}
 		};
@@ -111,13 +115,13 @@ export function makeExecuteWorkflowTool(
 			case "list":
 			case "inputs": {
 				await ensureWorkflowResourcesVisible();
-				return getRuntime().dispatch(args, { policy });
+				return awaitRequest(getRuntime().dispatch(args, { policy, signal }));
 			}
 			case "run": {
 				await ensureWorkflowResourcesVisible();
 				// A tool launch is the agent's own action: it is attributed as such and
 				// the tool result already reports the run, so it raises no chat notice.
-				return getRuntime().dispatch(args, { policy, origin: "agent" });
+				return awaitRequest(getRuntime().dispatch(args, { policy, origin: "agent", signal }));
 			}
 			case "status": {
 				const target = args.runId;
@@ -127,7 +131,7 @@ export function makeExecuteWorkflowTool(
 						return { action: "statusDetail", runId: target, error: resolved.message };
 					}
 					if (resolved.kind === "not_found") {
-						const durable = await getRuntime().inspectDurableWorkflow(target);
+						const durable = await awaitRequest(getRuntime().inspectDurableWorkflow(target));
 						return durable.kind === "found"
 							? { action: "statusDetail", runId: target, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
@@ -150,7 +154,7 @@ export function makeExecuteWorkflowTool(
 			case "stages":
 			case "stage":
 			case "transcript": {
-				const resolved = await resolveDurableInspectionSource(args, getRuntime());
+				const resolved = await awaitRequest(resolveDurableInspectionSource(args, getRuntime()));
 				if (resolved.kind === "error") return durableInspectionError(action, args.runId ?? "", resolved.message);
 				const source = resolved.kind === "durable" ? resolved.source : undefined;
 				if (action === "stages") return workflowStagesResult(args, source);
@@ -158,17 +162,17 @@ export function makeExecuteWorkflowTool(
 				return workflowTranscriptResult(args, source);
 			}
 			case "send":
-				return workflowSendAction(args, sendDeps);
+				return awaitRequest(workflowSendAction(args, sendDeps));
 			case "pause":
-				return workflowPauseAction(args);
+				return awaitRequest(workflowPauseAction(args));
 			case "reload":
-				return workflowReloadAction(args, { reloadWorkflowResources });
+				return awaitRequest(workflowReloadAction(args, { reloadWorkflowResources }));
 			case "quit":
-				return workflowQuitAction(args);
+				return awaitRequest(workflowQuitAction(args));
 			case "interrupt":
-				return workflowInterruptAction(args);
+				return awaitRequest(workflowInterruptAction(args));
 			case "resume":
-				return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded });
+				return awaitRequest(workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded }));
 			default: {
 				const _exhaustive: never = action;
 				throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

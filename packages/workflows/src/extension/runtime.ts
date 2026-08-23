@@ -40,6 +40,7 @@ import {
 	releaseActiveBlockedClaim,
 } from "./runtime-active-block-claim.js";
 import { createDurableResumeRuntime, type DurableResumeRuntime } from "./runtime-durable-resume.js";
+import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -122,6 +123,8 @@ export interface RuntimeDispatchOptions {
 	readonly actor?: WorkflowActor;
 	/** Run-level budget override used when a continuation is launched. */
 	readonly budget?: WorkflowBudget;
+	/** Cancels only the public request/admission wait, never detached execution after acknowledgement. */
+	readonly signal?: AbortSignal;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -397,7 +400,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		},
 
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
-			await ensureDbosReady();
+			await raceWorkflowRequestAbort(ensureDbosReady(), options?.signal);
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
 			return dispatch(args, {
 				registry,
@@ -411,6 +414,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				models,
 				policy: options?.policy,
 				...(options?.origin === undefined ? {} : { origin: options.origin }),
+				...(options?.signal === undefined ? {} : { signal: options.signal }),
 				cwd: runtimeCwd,
 				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 			});
