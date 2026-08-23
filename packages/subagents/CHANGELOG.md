@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.2] - 2026-08-23
+
 ### Breaking Changes
 
 - Removed the `subagent({ action: "doctor" })` management action and the `/subagents-doctor` slash command. `doctor` is no longer a valid `action` value, and the observing management actions available to a child are now `list`, `get`, and `status`. Agent discovery still reports invalid-frontmatter files through its load diagnostics; use `intercom({ action: "status" })` to inspect intercom bridge state.
