@@ -337,6 +337,33 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(current.sent.length, 0);
 		assert.equal(current.waiterCalls.length, 0);
 	});
+	test("empty ask reaches a parent resolved from a trimmed case-insensitive alias", async () => {
+		const current = fixture("intercom", {
+			resolveSessionTarget: async (_client, target) =>
+				target.trim().toLowerCase() === "parent-alias" ? "parent-id" : target,
+		});
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "  PARENT-ALIAS  ", message: "" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.resolverCalls, 1);
+		assert.equal(captured?.resolvedTargetId, "parent-id");
+		assert.equal(captured?.question, "");
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+	});
+
 	test("intercom ask claims the exact typed parent before an empty-list resolver miss", async () => {
 		const current = fixture("intercom", {
 			resolveSessionTarget: async () => null,
@@ -443,7 +470,7 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(result.isError, true);
 		assert.equal(result.content[0]?.text, "Missing 'to' or 'message' parameter");
 		assert.equal(parentAskEvents, 0);
-		assert.equal(current.resolverCalls, 0);
+		assert.equal(current.resolverCalls, 2);
 		assert.equal(current.sent.length, 0);
 		assert.equal(current.waiterCalls.length, 0);
 	});

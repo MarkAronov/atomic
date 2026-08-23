@@ -360,13 +360,6 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
               };
             }
 
-            if (!message && !directParentTarget) {
-              return {
-                content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
-                isError: true,
-                details: { error: true },
-              };
-            }
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               return {
