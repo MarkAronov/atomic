@@ -17,7 +17,7 @@ Explore the codebase to answer "how does X work?" questions. Produce clear archi
 Two modes:
 
 1. **Explain** (default). Explore the codebase and produce a clear explanation
-2. **Critique.** Explain first, then spawn multiple models to independently identify architectural issues
+2. **Critique.** Explain first, then run several fresh-context Atomic specialists to identify architectural issues independently
 
 ## Explain Mode
 
@@ -34,10 +34,18 @@ Identify the scope. If ambiguous, state your best-guess interpretation before ex
 
 **Assess complexity to decide the approach:**
 
-- **Simple** (a single module, a small utility, a narrow question like "how does function X work"): skip explorer agents; the explainer explores and explains in a single pass. Go to Step 2b.
-- **Complex** (a subsystem spanning multiple files/services, a cross-cutting feature, a full architectural overview): spawn parallel explorer agents first, then hand off to the explainer. Go to Step 2a.
+- **Simple** (a single module, a small utility, a narrow question like "how does function X work"): run one `codebase-analyzer` that explores and explains in a single pass. Go to Step 2b.
+- **Complex** (a subsystem spanning multiple files/services, a cross-cutting feature, a full architectural overview): run parallel Atomic exploration specialists, then synthesize their evidence in the parent. Go to Step 2a.
 
-When in doubt, lean simple. You can always spawn explorers if the explainer hits a wall.
+When in doubt, lean simple. Add a focused exploration specialist only when the first analysis exposes a real gap.
+
+Before delegating, discover the executable Atomic agents. Do not invent an agent name or pin a model:
+
+```typescript
+subagent({ action: "list" })
+```
+
+Use the listed agents' declared models and fallback policies unless the user explicitly requests an available override.
 
 ### Step 2a. Explore (complex questions only)
 
@@ -49,48 +57,57 @@ Decompose the question into 2-4 parallel exploration angles, each a distinct sli
 
 The right decomposition depends on the question. Use your judgment. Narrow questions: 2 explorers is fine. Broad subsystems: up to 4.
 
-Spawn all explorers in a single message:
+Launch the exploration as one Atomic parallel call. Use `codebase-locator` for the file map, `codebase-analyzer` for implementation flow, and `codebase-pattern-finder` only when analogous conventions materially help. Broad questions may use multiple `codebase-analyzer` tasks, one per non-overlapping slice.
 
-- `subagent_type`: `generalPurpose`
-- `model`: your configured how-explorer model (default `grok-4.6-fast-xhigh`)
-- `readonly`: `true`
+```typescript
+subagent({
+  tasks: [
+    { agent: "codebase-locator", task: "Map the files, entry points, tests, and configuration for <question>. Return paths and why each matters." },
+    { agent: "codebase-analyzer", task: "Trace <exploration-angle-1> for <question>, with file:line evidence. Inspect and report only; do not edit." },
+    { agent: "codebase-analyzer", task: "Trace <exploration-angle-2> for <question>, with file:line evidence. Inspect and report only; do not edit." },
+    { agent: "codebase-pattern-finder", task: "Find existing patterns analogous to <question> and explain where they agree or differ. Inspect and report only." }
+  ],
+  concurrency: 4,
+  context: "fresh"
+})
+```
 
-Each explorer gets the same base prompt from `references/explorer-prompt.md` plus a specific exploration angle naming its slice. Each explorer should:
-- Start broad: Glob for relevant directories, Grep for key types/interfaces/class names
-- Follow the thread: from an entry point, trace the call chain (callers, callees, data flow, type definitions)
-- Read the actual code, don't guess from file names
-- Stop when it can describe the full path from input to output (or trigger to effect) without hand-waving any step
-- Note things that are surprising, non-obvious, or that a newcomer would get wrong
+Include only the tasks the question needs; do not add a pattern pass decoratively. Build each analyzer task from `references/explorer-prompt.md` plus its specific angle. Each exploration task should:
+- Start broad with `find` and `search` for relevant directories and symbols
+- Follow the thread from an entry point through callers, callees, data flow, and type definitions
+- Read the actual code instead of guessing from file names
+- Stop when it can describe the path from input to output (or trigger to effect) without hand-waving
+- Note surprising or non-obvious behavior a newcomer could miss
 
-Each explorer returns structured findings: components found, flow traced, files read, anything non-obvious. Overlap between explorers is fine; the explainer reconciles.
+The specialists return structured findings with components, flow, files, and non-obvious details. Overlap is acceptable; the parent reconciles it.
 
 Then proceed to Step 3.
 
 ### Step 2b. Direct Explain (simple questions)
 
-Spawn a single Task subagent that explores and explains in one pass:
+Run one `codebase-analyzer` in fresh context:
 
-- `subagent_type`: `generalPurpose`
-- `model`: your configured how-explainer model (default `claude-fable-5-thinking-max`)
-- `readonly`: `true`
+```typescript
+subagent({
+  agent: "codebase-analyzer",
+  task: "Explore and explain <question> with file:line evidence. Follow the communication style and output structure from the how skill's explainer prompt. Inspect and report only; do not edit.",
+  context: "fresh"
+})
+```
 
-The agent does its own exploration (Glob, Grep, Read) and writes the explanation directly. Read `references/explainer-prompt.md` for the communication style and output format. Same structure, just no explorer findings as input.
+Build the task from `references/explainer-prompt.md`. The analyzer explores with Atomic's `find`, `search`, and `read` tools and writes the explanation directly; there are no explorer findings to hand off.
 
 Proceed to Step 4.
 
 ### Step 3. Synthesize (complex questions only)
 
-Once all explorers return, spawn a single Task subagent to synthesize their findings into one coherent explanation:
+Once all specialists return, synthesize their findings in the parent session. The parent owns orchestration and the final response; Atomic subagents cannot launch another subagent, and no generic synthesis agent is needed.
 
-- `subagent_type`: `generalPurpose`
-- `model`: your configured how-explainer model (default `claude-fable-5-thinking-max`)
-- `readonly`: `true`
-
-The explainer gets all explorers' findings and writes the human-facing explanation (output format below). Read `references/explainer-prompt.md` for the full prompt template. The explainer reconciles overlapping findings, resolves contradictions, and weaves the slices into a unified picture.
+Follow `references/explainer-prompt.md` for the communication style and output format. Reconcile overlap and contradictions against the cited code, then weave the slices into one coherent explanation. If a contradiction cannot be resolved from the returned evidence, run one focused follow-up `codebase-analyzer` call rather than guessing.
 
 ### Step 4. Present
 
-Present the explainer's output to the user. You may lightly edit for clarity or add context from the conversation, but don't substantially rewrite. The explainer's communication is the product.
+Present the final explanation to the user. You may lightly edit specialist output for clarity or add context from the conversation, but preserve evidence and file references. The explanation is the product.
 
 ### Output Format
 
@@ -114,19 +131,23 @@ Triggered when the user asks for architectural issues, problems, or improvements
 
 Run the full explain flow above (Steps 1-4). You must understand the architecture before critiquing it.
 
-### Step 2. Spawn Critics
+### Step 2. Run Atomic Critics
 
-After the explanation is complete, spawn one architectural critic per model in your configured how-critics list (defaults `claude-fable-5-thinking-max`, `gpt-5.6-sol-max`, `grok-4.6-fast-xhigh`, `claude-opus-5-thinking-xhigh`), all in a single message.
+After the explanation is complete, launch fresh-context specialists with distinct review angles. Keep their declared model defaults; do not create a model roster or override models merely for diversity.
 
-For each critic:
-- `subagent_type`: `generalPurpose`
-- `model`: one model from the configured how-critics list. These are minimum reasoning levels. The lead should escalate any model when the architecture warrants deeper analysis.
-- `readonly`: `true`
+```typescript
+subagent({
+  tasks: [
+    { agent: "codebase-analyzer", task: "Critique <explanation> for correctness, coupling, ownership, and regressions. Inspect <relevant-paths>. Report evidence-backed findings only; do not edit.", output: false },
+    { agent: "debugger", task: "Inspect-only architectural failure-mode review of <explanation> and <relevant-paths>. Do not edit. Challenge lifecycle, state, error, concurrency, and boundary assumptions using concrete code evidence.", output: false },
+    { agent: "codebase-pattern-finder", task: "Compare <explanation> and <relevant-paths> with established repository patterns. Report meaningful consistency gaps or better-fitting precedents with file:line evidence; do not edit.", output: false }
+  ],
+  concurrency: 3,
+  context: "fresh"
+})
+```
 
-Read `references/critic-prompt.md` for the prompt template. Each critic gets:
-1. The explanation from Step 1 (so they don't re-explore)
-2. The relevant file paths (so they can read the actual code)
-3. The architectural critique rubric from `references/critique-rubric.md`
+Use only agents returned by `subagent({ action: "list" })`. Read `references/critic-prompt.md` and `references/critique-rubric.md` when building each role-specific task. Every critic receives the explanation and relevant file paths, but owns a different angle rather than a different hard-coded model.
 
 ### Step 3. Lead Judgment
 

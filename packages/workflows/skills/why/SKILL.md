@@ -63,18 +63,18 @@ Parse what the user is asking. The **target** is usually a chunk of code, a patt
 - "Why does this code still exist?" Dead-code territory.
 - "What's the history of X?" Broad archaeological sweep.
 
-If the target is vague ("why do we do it this way?" with no clear referent), make your best guess from conversation context (open files, recent edits, cursor location, what was just discussed). State your interpretation briefly so the user can redirect if you're off, then proceed.
+If the target is vague ("why do we do it this way?" with no clear referent), make your best guess from conversation context (open files, recent edits, the code location under discussion, and what was just discussed). State your interpretation briefly so the user can redirect if you're off, then proceed.
 
 ## Step 2. Establish the Code Anchor
 
-Before spawning investigators, anchor the investigation in concrete code. You need:
+Before running the investigations, anchor them in concrete code. You need:
 
 - The relevant file path(s) and line range(s)
 - The key symbols (function names, class names, constants)
 - An initial commit list. The last few commits touching the target.
 - PR numbers from merge commits (pattern `(#1234)` in the subject line)
 
-Build this inline. It's cheap, and every investigator needs it.
+Build this inline. It is cheap, and every repository specialist and MCP query needs it.
 
 ```bash
 # Blame target lines for last-touch commits
@@ -96,17 +96,37 @@ Pull PR bodies and discussion via `gh` for any substantive commits:
 gh pr view <number> --json title,body,author,createdAt,mergedAt,labels,closingIssuesReferences,comments,reviews
 ```
 
-Capture this as seed context (file paths, symbols, commits, PR numbers, linked ticket IDs). Pass it to the investigators so they don't rediscover it.
+Capture this as seed context (file paths, symbols, commits, PR numbers, linked ticket IDs). Include it in delegated tasks and MCP queries so each search starts from the same anchor.
 
-## Step 3. Spawn Parallel Investigators (default posture)
+## Step 3. Run Parallel Investigations (default posture)
 
-**Default to the full parallel investigation.** Each evidence category lives in a different kind of system, and you cannot tell from the question alone which one holds the answer without looking. So look across every available category, in parallel, by default.
+**Default to broad evidence coverage.** Each category lives in a different system, and the question alone does not reveal which source contains the rationale. Search every available category independently and run unrelated searches concurrently.
 
-### Discovery
+### Discover Atomic agents and MCP servers
 
-Before spawning investigators, list the available MCPs from the Cursor environment. Use the available-tools map when present. Otherwise inspect the `mcps/` directory Cursor exposes for enabled MCP servers.
+Before delegation, list executable Atomic specialists. Do not invent an agent or pin a model:
 
-Map each available MCP to one evidence category:
+```typescript
+subagent({ action: "list" })
+```
+
+Keep each listed agent's declared model and fallback policy unless the user explicitly requests an available override.
+
+Inspect Atomic's MCP status, then list or search its lazily discovered tool metadata:
+
+```typescript
+mcp({})
+mcp({ server: "<server-name>" })
+mcp({ search: "issue ticket docs chat observability errors analytics" })
+```
+
+Use `mcp({ connect: "<server-name>" })` only when metadata is stale or the server must authenticate/connect before use. Use `mcp({ describe: "<tool-name>" })` to inspect a tool's schema, then call it with a JSON string:
+
+```typescript
+mcp({ tool: "<tool-name>", args: "{\"query\":\"<target symbols, commits, PRs, and dates>\"}" })
+```
+
+Map each available MCP server or tool to one evidence category:
 
 1. Source control history
 2. Issue / ticket tracker
@@ -116,31 +136,46 @@ Map each available MCP to one evidence category:
 6. Error / exception tracking
 7. Product analytics warehouse
 
-Source control is always available through git and `gh`. For the other six, classify using the MCP name, server instructions, tool names, and resource descriptors. If an MCP could fit more than one category, choose the one matching its primary evidence. Record ambiguous cases in the coverage map.
+Source control is always available through git and `gh`. Classify configured MCPs using server names, tool descriptions, and resource schemas. If one server fits several categories, run a separate query per category and record the overlap in the coverage map.
 
-Aim for a complete **coverage map**, not a minimal one. A null result from an issue tracker is evidence the decision was not ticketed, a useful fact in itself. Document the null, don't skip the search.
+Aim for a complete **coverage map**, not a minimal one. A null result from a searched source is evidence about the decision record; document it rather than skipping the search.
 
-Launch all matching investigators in a single message so they run concurrently. One investigator per category lets each specialize in one tool's query vocabulary and result shape. Don't ask one agent to cover multiple MCPs.
+### Delegate repository exploration with Atomic specialists
 
-Subagent config (each):
-- `subagent_type`: `generalPurpose`
-- `model`: your configured why-investigators model (default `grok-4.6-fast-xhigh`)
-- `readonly`: `false` (agent mode). **Do not use readonly/Ask mode.** It strips MCP access, which disables MCP-backed investigators entirely. The source control investigator would be safe in readonly, but keep modes uniform. Investigators still shouldn't write anything. That's a posture, not a sandbox.
+Use Atomic's focused exploration agents for repository evidence:
 
-Each investigator gets:
-1. The base prompt from `references/investigator-prompt.md`
-2. The category playbook `references/sources/<source>.md` for the selected MCP, adapted from the examples in `references/source-playbook.md`
-3. The cross-cutting `references/sources/incident-postmortem.md` **if the target code looks defensive** (null checks, retry logic, timeout handling, rate limiting, feature flags, egress guards, OOM handlers)
-4. The code anchor from Step 2 (file paths, symbols, commit hashes, PR numbers, ticket IDs)
+```typescript
+subagent({
+  tasks: [
+    { agent: "codebase-analyzer", task: "Investigate the source-control rationale for <question>. Use the supplied code anchor; inspect git blame/log, commits, PR metadata available through gh, comments, and tests. Return exact citations and null results. Do not edit." },
+    { agent: "codebase-research-locator", task: "Find local research, specs, ADRs, and decision records relevant to <question> and the supplied code anchor. Return ranked paths, dates, and supersession notes. Do not edit." }
+  ],
+  concurrency: 2,
+  context: "fresh"
+})
+```
+
+If the locator finds relevant documents, follow with `codebase-research-analyzer` to extract current decisions, constraints, contradictions, and exact file citations. Use `codebase-online-researcher` only when public web evidence is part of the question. Use only agents returned by `subagent({ action: "list" })`.
+
+### Query MCP-backed categories from the parent
+
+Atomic's built-in repository specialists do not automatically receive every configured MCP tool. Query each matching MCP category from the parent with `mcp({ tool, args })`, issuing independent calls concurrently when possible. Build each query from:
+
+1. The base method in `references/investigator-prompt.md`
+2. The category playbook in `references/sources/<source>.md`, adapted through `references/source-playbook.md`
+3. `references/sources/incident-postmortem.md` when the target looks defensive
+4. The code anchor from Step 2
 5. The user's original question
 
-### Investigator roster. One per available evidence category
+If `subagent({ action: "list" })` shows a project-specific investigator that explicitly has the required MCP access, it may own that category instead. Otherwise keep the MCP call in the parent; do not invent an agent, a tool name, or a model.
 
-Spawn one investigator per category that has a matching MCP. Each owns exactly one tool or MCP.
+### Investigation roster. One independent search per available evidence category
+
+Run one independent investigation per category that has a matching source. Keep each query scoped to one evidence system so its vocabulary, result shape, and null result remain auditable.
 
 Each entry lists what the category physically contains and the kind of "why" it uniquely surfaces. Use it to know what to expect back, how to name a gap when a category returns empty, and (only in the rare provably-irrelevant case) to justify a skip. Every category overlaps, but each owns a kind of evidence the others cannot recover.
 
-1. **Source control investigator**. Git history, `gh` for PRs, code comments, tests. Always spawn; the only guaranteed source. Best at surfacing *implementation-time rationale captured during review*. PR descriptions stating the problem, review threads debating alternatives, inline comments encoding non-obvious constraints, test names that encode motivating edge cases, and commit messages linking tickets or incidents. Most trustworthy because it ties directly to the diff that shipped.
+1. **Source control investigation**. Git history, `gh` for PRs, code comments, tests. Always run it, normally with `codebase-analyzer`; it is the only guaranteed source. Best at surfacing *implementation-time rationale captured during review*. PR descriptions stating the problem, review threads debating alternatives, inline comments encoding non-obvious constraints, test names that encode motivating edge cases, and commit messages linking tickets or incidents. Most trustworthy because it ties directly to the diff that shipped.
 
 2. **Issue / ticket tracker investigator** (e.g. Linear, Jira, GitHub Issues, Plane, Shortcut MCP). Tickets, project docs, status updates, spec attachments. Best at surfacing *the product or business forcing function*. Customer requests ("Acme needs X for their SOC2 audit"), compliance deadlines, parent-initiative framing ("Q3 enterprise readiness"), ticket-level scope changes, and labels that categorize the motivation (`customer:*`, `incident-followup`, `compliance`, `perf-regression`). Strongest when the why is external to engineering.
 
@@ -154,37 +189,33 @@ Each entry lists what the category physically contains and the kind of "why" it 
 
 7. **Product analytics warehouse investigator** (e.g. Databricks, Snowflake, BigQuery, ClickHouse, dbt, Redshift MCP). Product-analytics events, experiment and feature-flag exposure tables, usage and billing events, query history, warehouse telemetry. Product/data view. Complements infrastructure observability by covering *user behavior and data reality* around the ship date rather than infra metrics. Best at surfacing *product and data reality that shaped the code*. Feature-usage trajectories (a step-function ramp from zero is strong evidence that this PR launched it), experiment/flag exposure data tied to ship decisions, pre-ship distributions that reveal where a threshold constant came from (e.g., `limit = 128 * 1024` matching the p99 of an upload-size column), and data-pipeline scale evidence for migrations/backfills. Strongest for flag-gated code, experiment-driven ships, data migrations, and "where did this number come from" questions.
 
-### When to skip an investigator
+### When to skip an investigation
 
 Only skip with an **explicit, written justification** that goes in the final "Sources Consulted" section. Two valid reasons:
 
 - **No MCP is available for that category** in this environment. Flag this as a gap, not a choice. Example: "Real-time team chat skipped. No matching MCP available, so the conversational record was not searchable."
 - **The source is provably irrelevant**, not just "probably irrelevant." A high bar. Example: "Error / exception tracking skipped. Target is a build-time script with no runtime code path." Not "probably not in error tracking, it's a feature not an error."
 
-"It's pure feature code, error tracking won't have anything" is **not** sufficient, and neither is "I doubt long-form docs would have this." Run the search; let the null result speak. The cost of an investigator returning empty is one subagent. The cost of missing a design doc that actually exists is a wrong answer.
+"It's pure feature code, error tracking won't have anything" is **not** sufficient, and neither is "I doubt long-form docs would have this." Run the search; let the null result speak. An empty query is cheap. Missing a design record that exists produces a wrong answer.
 
 If your scope assessment suggests a single-commit trivial target where the PR description already contains the complete answer, you may answer inline **only after** confirming all seven available category searches would be redundant. Say so explicitly. This should be rare.
 
 ## Step 4. Synthesize
 
-Spawn one synthesizer subagent:
+Synthesize the collected evidence in the parent session. The parent retains orchestration and final-answer authority, so no generic synthesizer agent is needed.
 
-- `subagent_type`: `generalPurpose`
-- `model`: your configured why-synthesizer model (default `claude-fable-5-thinking-max`)
-- `readonly`: `false` (agent mode). The synthesizer's quality check spot-verifies citations, which can require MCP access. Readonly/Ask mode strips MCPs and defeats that.
-
-The synthesizer gets:
-1. The investigator findings, including any null results and any categories skipped with justification
-2. The code anchor from Step 2 (file paths, symbols, commit hashes, PR numbers, ticket IDs)
+Use:
+1. The repository-specialist findings and MCP results, including null results and justified skips
+2. The code anchor from Step 2
 3. The user's original question
 4. The epistemics framework from `references/epistemics.md`
-5. The synthesizer prompt template from `references/synthesizer-prompt.md`
+5. The structure and checks from `references/synthesizer-prompt.md`
 
-Its job is the final output: a confidence-weighted, evidence-cited narrative with clearly separated "what we know" and "what we're inferring" sections, plus honest acknowledgment of gaps and null-result sources.
+Produce a confidence-weighted, evidence-cited narrative with clearly separated direct evidence and inference, plus honest acknowledgment of gaps and null-result sources. Spot-verify critical citations yourself with the relevant repository or MCP tool before presenting them.
 
 ## Step 5. Present
 
-Take the synthesizer's output and present it to the user. You may lightly edit for clarity or add context from the conversation, but **do not rewrite the confidence language**. The epistemic framing is the product. Dropping the hedges to sound more authoritative is the exact failure mode this skill exists to prevent.
+Present the parent synthesis to the user. You may lightly edit for clarity or add context from the conversation, but **do not rewrite the confidence language**. The epistemic framing is the product. Dropping the hedges to sound more authoritative is the exact failure mode this skill exists to prevent.
 
 ## Output Format
 
@@ -202,7 +233,7 @@ The final output uses this structure. Adapt as needed, but keep the confidence s
 
 **What We Don't Know**. Explicit gaps. Questions the user asked that the evidence didn't answer. Sources we searched and came up empty. Be specific. "We searched the issue tracker for 'rate limit' and found no ticket discussing this specific threshold" is more useful than "we don't know why."
 
-**Sources Consulted**. One line per investigator, including the ones that returned nothing. The reader should see at a glance (a) which MCPs were queried, (b) which came back empty, and (c) which were skipped and why. This coverage map lets the user judge breadth and redirect if something obvious was missed.
+**Sources Consulted**. One line per independent source search, including those that returned nothing. The reader should see at a glance (a) which MCPs or repository sources were queried, (b) which came back empty, and (c) which were skipped and why. This coverage map lets the user judge breadth and redirect if something obvious was missed.
 
 Format each line as: `- <Source>: <what was searched>. <what was found, or "no relevant results," or "skipped. reason">.`
 
@@ -224,13 +255,13 @@ After the Sources Consulted block, if the user's `why` question is a precursor t
 - **Recency bias**. Assuming the most recent commit is authoritative. The current shape is often the accretion of many earlier decisions. Trace back.
 - **Sycophantic agreement**. If the user suggests a reason ("I assume this is for performance?"), treat it as a hypothesis and check the evidence independently, don't just confirm it.
 - **Skipping the gaps section**. An honest accounting of what you couldn't find out is part of the value.
-- **Skipping investigators by anticipation**. Deciding up front that "long-form docs probably don't have this" or "this isn't an error tracking thing" without searching. The default-to-all-seven posture prevents this. A null result is a data point; a skipped search is a blind spot.
-- **Collapsing investigators into one agent**. Each MCP has its own query vocabulary, result shape, and pitfalls; pooling them dilutes specialization and makes coverage harder to reason about. Always one investigator per category.
+- **Skipping investigations by anticipation**. Deciding up front that "long-form docs probably don't have this" or "this isn't an error tracking thing" without searching. The default-to-all-seven posture prevents this. A null result is a data point; a skipped search is a blind spot.
+- **Collapsing all searches into one vague task**. Each evidence system has its own query vocabulary, result shape, and pitfalls. Keep one independent query per category, using Atomic repository specialists for local evidence and parent-side `mcp(...)` calls for configured external systems.
 
 ## Reference Files
 
-- `references/epistemics.md`. Confidence tiers and phrasing guide. The synthesizer must follow it.
-- `references/investigator-prompt.md`. Base prompt template for investigator subagents.
+- `references/epistemics.md`. Confidence tiers and phrasing guide. The parent synthesis must follow it.
+- `references/investigator-prompt.md`. Base query method for independent evidence investigations.
 - `references/source-playbook.md`. Index pointing at the category playbooks below.
-- `references/sources/*.md`. One self-contained example playbook per category, plus cross-cutting `incident-postmortem.md`. Give an investigator the single file that matches its category and adapt it to the available MCP.
-- `references/synthesizer-prompt.md`. Prompt template for the synthesizer subagent, including the output format.
+- `references/sources/*.md`. One self-contained example playbook per category, plus cross-cutting `incident-postmortem.md`. Apply the matching file to that category's Atomic specialist task or parent-side MCP query.
+- `references/synthesizer-prompt.md`. Prompt template and quality checks for the parent synthesis.
