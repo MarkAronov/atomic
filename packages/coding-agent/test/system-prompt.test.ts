@@ -149,29 +149,21 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
-	test("omits the removed writing guidance while keeping other default guidelines", () => {
+	test("renders exactly the default guidelines and nothing else", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: [],
 			contextFiles: [],
 			skills: [],
 			cwd: process.cwd(),
 		});
+		const guidelines = prompt.slice(prompt.indexOf("Guidelines:\n"), prompt.indexOf("\n\nAtomic documentation"));
 
-		for (const rule of [
-			"Never use a familiar printed metaphor, simile, or figure of speech.",
-			"Never use a long word where a short one will do.",
-			"Cut every word that can be cut.",
-			"Use active rather than passive voice where possible.",
-			"Prefer everyday English to foreign phrases, scientific terms, and jargon.",
-			"Break any rule rather than say anything outright barbarous.",
-		]) {
-			expect(prompt).not.toContain(rule);
-		}
-		expect(prompt).toContain("- Be concise in your responses");
-		expect(prompt).toContain("- Show file paths clearly when working with files");
+		expect(guidelines).toBe(`Guidelines:
+- Be concise in your responses
+- Show file paths clearly when working with files`);
 	});
 
-	test("keeps custom and unrelated default guidelines when promptGuidelines are present", () => {
+	test("renders custom guidelines before the exact default guidelines", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: [],
 			promptGuidelines: ["**Workflows**: Workflow-specific sentinel."],
@@ -181,9 +173,10 @@ describe("buildSystemPrompt", () => {
 		});
 		const guidelines = prompt.slice(prompt.indexOf("Guidelines:\n"), prompt.indexOf("\n\nAtomic documentation"));
 
-		expect(guidelines).toContain("- **Workflows**: Workflow-specific sentinel.");
-		expect(guidelines).toContain("- Be concise in your responses");
-		expect(guidelines).toContain("- Show file paths clearly when working with files");
+		expect(guidelines).toBe(`Guidelines:
+- **Workflows**: Workflow-specific sentinel.
+- Be concise in your responses
+- Show file paths clearly when working with files`);
 	});
 
 	describe("workflow guidance", () => {
