@@ -8,6 +8,10 @@ export interface LocalCommandResult {
 	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
+	/** True when bounded capture discarded the beginning of stdout. */
+	readonly stdoutTruncated?: true;
+	/** True when bounded capture discarded the beginning of stderr. */
+	readonly stderrTruncated?: true;
 }
 
 const OUTPUT_LIMIT_BYTES = 16_384;
@@ -40,15 +44,21 @@ export function runLocalCommand(
 		});
 		let stdout = "";
 		let stderr = "";
+		let stdoutTruncated = false;
+		let stderrTruncated = false;
 		let settled = false;
 		let exitFallback: NodeJS.Immediate | undefined;
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		const onStdout = (chunk: string): void => {
-			stdout = boundedAppend(stdout, chunk);
+			const appended = boundedAppend(stdout, chunk);
+			stdout = appended.value;
+			stdoutTruncated ||= appended.truncated;
 		};
 		const onStderr = (chunk: string): void => {
-			stderr = boundedAppend(stderr, chunk);
+			const appended = boundedAppend(stderr, chunk);
+			stderr = appended.value;
+			stderrTruncated ||= appended.truncated;
 		};
 		const cleanup = (): void => {
 			if (exitFallback !== undefined) clearImmediate(exitFallback);
@@ -64,7 +74,13 @@ export function runLocalCommand(
 			if (settled) return;
 			settled = true;
 			cleanup();
-			resolve({ exitCode: code ?? 1, stdout, stderr });
+			resolve({
+				exitCode: code ?? 1,
+				stdout,
+				stderr,
+				...(stdoutTruncated ? { stdoutTruncated: true as const } : {}),
+				...(stderrTruncated ? { stderrTruncated: true as const } : {}),
+			});
 		};
 		const onError = (error: Error): void => {
 			if (settled) return;
@@ -111,7 +127,9 @@ export function tcpReachable(host: string, port: number, timeoutMs = 1_000): Pro
 	});
 }
 
-function boundedAppend(current: string, chunk: string): string {
+function boundedAppend(current: string, chunk: string): { readonly value: string; readonly truncated: boolean } {
 	const next = current + chunk;
-	return next.length <= OUTPUT_LIMIT_BYTES ? next : next.slice(-OUTPUT_LIMIT_BYTES);
+	return next.length <= OUTPUT_LIMIT_BYTES
+		? { value: next, truncated: false }
+		: { value: next.slice(-OUTPUT_LIMIT_BYTES), truncated: true };
 }
