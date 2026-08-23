@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
-import { afterAll, beforeAll, beforeEach, test } from "vitest";
+import { beforeEach, test } from "vitest";
 import { createEventBus, type EventBusController } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
@@ -22,11 +22,7 @@ import type {
 	ExtensionFactory,
 	ExtensionRuntime,
 } from "../../packages/coding-agent/src/core/extensions/types.ts";
-import {
-	ensureEmbeddedDbosPostgres,
-	shutdownEmbeddedDbosPostgres,
-} from "../../packages/workflows/src/durable/dbos-embedded-postgres.ts";
-import { dbosLifecycleState } from "../../packages/workflows/src/durable/dbos-lifecycle.ts";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.ts";
 import type { ToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.ts";
 import type { JobTracker } from "../../packages/workflows/src/runs/background/job-tracker.ts";
@@ -46,17 +42,6 @@ beforeEach(() => {
 
 /** Full transformed re-evaluation of the workflows graph, twice, through the host loader. */
 const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
-
-// The direct-child exit and owned-cluster startup/teardown races have focused
-// durable regressions. Keep that shared infrastructure outside individual test
-// timing so this file measures graph reload behavior rather than cold Postgres.
-beforeAll(async () => {
-	await ensureEmbeddedDbosPostgres();
-});
-
-afterAll(async () => {
-	await shutdownEmbeddedDbosPostgres();
-});
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
@@ -79,6 +64,8 @@ interface WorkflowGeneration {
 	readonly jobTracker: JobTracker;
 	readonly stageUiBroker: StageUiBroker;
 	readonly factory: ExtensionFactory;
+	readonly createInMemoryTestBackend: () => DurableWorkflowBackend;
+	readonly setDurableBackend: (backend: DurableWorkflowBackend | undefined) => void;
 	readonly adoptWorkflowSessionRunState?: (scope: object | undefined) => void;
 }
 
@@ -550,13 +537,16 @@ test.sequential(
 		let firstExtension: Extension | undefined;
 		let secondExtension: Extension | undefined;
 		let listenersAfterCleanup: number | undefined;
-		let dbosStateAfterCleanup: ReturnType<typeof dbosLifecycleState> | undefined;
 
 		try {
 			const bus = trackedBus.bus;
 			const widget = createWidgetUi();
 			const context = { hasUI: true, sessionId: "active-chat-turn", ui: widget.ui };
 			const first = await evaluateInstalledWorkflowGraph();
+			// Each jiti generation owns its durable factory, so install one shared
+			// in-memory backend across the full-reload boundary.
+			const durableBackend = first.createInMemoryTestBackend();
+			first.setDurableBackend(durableBackend);
 			firstGeneration = first;
 			const firstRuntime = createHostRuntime();
 			runtimes.push(firstRuntime);
@@ -643,14 +633,15 @@ test.sequential(
 				state: readGlobalIncidentState(stateDir).agent,
 			});
 
-			// `/reload` is a same-process DBOS boundary: shutdown flushes durable writes
-			// without stopping the process executor, and startup deliberately does not
-			// hydrate/replay live work. The identity assertions below distinguish that
-			// handoff from a fresh executor silently replacing the callback.
+			// `/reload` is a same-process durable boundary: production flushes DBOS
+			// without stopping its executor, while this test keeps the same in-memory
+			// backend across both real graph generations. Startup must not hydrate or
+			// replay live work, and the original callback must retain ownership.
 			const reloadWidgetCallStart = widget.calls.length;
 			await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 			firstRuntime.invalidate();
 			const second = await evaluateInstalledWorkflowGraph();
+			second.setDurableBackend(durableBackend);
 			secondGeneration = second;
 			const secondRuntime = createHostRuntime();
 			runtimes.push(secondRuntime);
@@ -747,10 +738,6 @@ test.sequential(
 				slashStages: slashRun.stages.length,
 				slashState: readGlobalIncidentState(stateDir).slash,
 			});
-			await emitSessionEvent(secondExtension, "session_shutdown", { reason: "quit" });
-			if (dbosLifecycleState() !== "shut_down") {
-				await emitSessionEvent(secondExtension, "session_shutdown", { reason: "quit" });
-			}
 		} finally {
 			try {
 				try {
@@ -761,13 +748,14 @@ test.sequential(
 						trackedJobs,
 					);
 					const cleanupExtension = secondExtension ?? firstExtension;
-					if (cleanupExtension !== undefined && dbosLifecycleState() !== "shut_down") {
+					if (cleanupExtension !== undefined) {
 						await emitSessionEvent(cleanupExtension, "session_shutdown", { reason: "quit" });
 					}
 				} finally {
+					firstGeneration?.setDurableBackend(undefined);
+					secondGeneration?.setDurableBackend(undefined);
 					for (const runtime of runtimes) runtime.invalidate();
 					listenersAfterCleanup = trackedBus.listenerCount();
-					dbosStateAfterCleanup = dbosLifecycleState();
 				}
 			} finally {
 				if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
@@ -778,7 +766,6 @@ test.sequential(
 			}
 		}
 		assert.equal(listenersAfterCleanup, 0, "both extension generations must release event-bus listeners");
-		assert.equal(dbosStateAfterCleanup, "shut_down", "final quit must close DBOS client pools and executor handles");
 	},
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );
