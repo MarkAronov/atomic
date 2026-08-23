@@ -92,6 +92,8 @@ test("ordinary local commands retain the bounded stdout and stderr tail", async 
 	assert.equal(result.exitCode, 0);
 	assert.equal(result.stdout, stdout.slice(-16_384));
 	assert.equal(result.stderr, stderr.slice(-16_384));
+	assert.equal(result.stdoutTruncated, true);
+	assert.equal(result.stderrTruncated, true);
 });
 
 test("successful-exit commands settle when a server descendant inherited their pipes", async () => {
@@ -108,6 +110,8 @@ test("successful-exit mode drains bounded diagnostics through close on nonzero e
 
 	assert.equal(result.exitCode, 7);
 	assert.equal(result.stderr, stderr.slice(-16_384));
+	assert.equal(result.stdoutTruncated, undefined);
+	assert.equal(result.stderrTruncated, true);
 });
 
 test("successful-exit spawn errors reject after cleaning command resources", async () => {
