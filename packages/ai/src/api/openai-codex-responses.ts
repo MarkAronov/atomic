@@ -395,7 +395,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
 							method: "POST",
 							headers: sseHeaders,
-							body: sseBody as RequestInit["body"],
+							body: sseBody,
 							signal: combinedSignal.signal,
 						});
 					} catch (error) {

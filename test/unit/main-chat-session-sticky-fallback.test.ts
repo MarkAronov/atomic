@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
-import { getModel } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
+import { createAssistantMessageEventStream, getModel } from "@bastani/pi-ai/compat";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import { test } from "vitest";
-import { AssistantMessageEventStream } from "../../packages/ai/src/utils/event-stream.js";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
@@ -24,15 +23,15 @@ const ZERO_USAGE: Usage = {
 } as Usage;
 
 interface RecordedRequest {
-	model: Model<Api>;
-	options: SimpleStreamOptions;
+	model: Parameters<StreamFn>[0];
+	options: NonNullable<Parameters<StreamFn>[2]>;
 }
 
 function stickyFallbackStream(): { streamFn: StreamFn; requests: RecordedRequest[] } {
 	const requests: RecordedRequest[] = [];
 	let primaryFailed = false;
-	const streamFn = ((model: Model<Api>, _context: unknown, options?: SimpleStreamOptions) => {
-		requests.push({ model, options: options ?? ({} as SimpleStreamOptions) });
+	const streamFn: StreamFn = (model, _context, options) => {
+		requests.push({ model, options: options ?? {} });
 		const fails = model.provider === PRIMARY.provider && !primaryFailed;
 		if (fails) primaryFailed = true;
 		const message = {
@@ -46,14 +45,14 @@ function stickyFallbackStream(): { streamFn: StreamFn; requests: RecordedRequest
 			...(fails ? { errorMessage: "OAuth token invalidated" } : {}),
 			timestamp: Date.now(),
 		} as AssistantMessage;
-		const stream = new AssistantMessageEventStream();
+		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() =>
 			stream.push(
 				fails ? { type: "error", reason: "error", error: message } : { type: "done", reason: "stop", message },
 			),
 		);
 		return stream;
-	}) as unknown as StreamFn;
+	};
 	return { streamFn, requests };
 }
 
