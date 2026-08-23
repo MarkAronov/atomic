@@ -93,6 +93,8 @@ export interface DispatcherOpts {
 	defaultSessionDir?: string;
 	/** Cancels only startup admission waiting; the detached run keeps its own lifecycle. */
 	signal?: AbortSignal;
+	/** Reports the exact detached identity before startup admission is awaited. */
+	onRunAccepted?: (runId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				return failedRunResult(def.name, runId, error instanceof Error ? error.message : String(error));
 			}
 			const { accepted } = launch;
+			opts.onRunAccepted?.(accepted.runId);
 			const admission = await raceWorkflowRequestAbort(launch.wait, opts.signal);
 			if (!admission.started) {
 				const activeStore = opts.store ?? defaultStore;

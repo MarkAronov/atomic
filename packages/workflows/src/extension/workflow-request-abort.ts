@@ -4,18 +4,12 @@ export function raceWorkflowRequestAbort<T>(operation: Promise<T>, signal: Abort
 		void operation.catch(() => {});
 		return Promise.reject(signal.reason ?? new DOMException("Workflow request aborted", "AbortError"));
 	}
-	return new Promise<T>((resolve, reject) => {
-		const onAbort = (): void => reject(signal.reason ?? new DOMException("Workflow request aborted", "AbortError"));
-		signal.addEventListener("abort", onAbort, { once: true });
-		operation.then(
-			(value) => {
-				signal.removeEventListener("abort", onAbort);
-				resolve(value);
-			},
-			(error: unknown) => {
-				signal.removeEventListener("abort", onAbort);
-				reject(error);
-			},
-		);
+	const abort = Promise.withResolvers<never>();
+	const onAbort = (): void => {
+		abort.reject(signal.reason ?? new DOMException("Workflow request aborted", "AbortError"));
+	};
+	signal.addEventListener("abort", onAbort, { once: true });
+	return Promise.race([operation, abort.promise]).finally(() => {
+		signal.removeEventListener("abort", onAbort);
 	});
 }

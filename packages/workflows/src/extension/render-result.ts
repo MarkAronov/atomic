@@ -202,6 +202,7 @@ export type WorkflowTimeoutResult = {
 	status: "failed";
 	code: "WORKFLOW_TIMEOUT";
 	timeoutMs: number;
+	runId?: string;
 	error: string;
 };
 
@@ -320,7 +321,7 @@ function transcriptNoticeText(result: TranscriptResult): string {
 	return entriesText;
 }
 
-export function renderResult(result: WorkflowRegisteredToolResult, opts?: RenderResultOpts): string {
+export function renderResult(result: WorkflowRegisteredToolResult | null | undefined, opts?: RenderResultOpts): string {
 	const partial = opts?.isPartial === true;
 	const themed = opts?.plain !== true;
 
@@ -329,7 +330,7 @@ export function renderResult(result: WorkflowRegisteredToolResult, opts?: Render
 	// paths that return content without a structured payload. Dereferencing a
 	// missing `action` here previously threw and crashed the TUI render loop, so
 	// degrade gracefully instead.
-	if (result === null || typeof result !== "object" || typeof (result as { action?: unknown }).action !== "string") {
+	if (result === null || result === undefined || typeof result.action !== "string") {
 		return partial ? "" : renderNotice("WORKFLOW", "no result", opts, themed);
 	}
 	if ("code" in result && result.code === "WORKFLOW_TIMEOUT") {

@@ -67,11 +67,17 @@ export function makeExecuteWorkflowTool(
 	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
 	sendDeps: WorkflowSendDeps = {},
-): (args: WorkflowToolArgs, ctx: PiExecuteContext, signal?: AbortSignal) => Promise<WorkflowToolResult> {
+): (
+	args: WorkflowToolArgs,
+	ctx: PiExecuteContext,
+	signal?: AbortSignal,
+	onRunAccepted?: (runId: string) => void,
+) => Promise<WorkflowToolResult> {
 	return async function executeWorkflowTool(
 		args: WorkflowToolArgs,
 		ctx: PiExecuteContext,
 		signal?: AbortSignal,
+		onRunAccepted?: (runId: string) => void,
 	): Promise<WorkflowToolResult> {
 		const action = args.action ?? "run";
 		const runId = args.runId ?? "";
@@ -121,7 +127,7 @@ export function makeExecuteWorkflowTool(
 				await ensureWorkflowResourcesVisible();
 				// A tool launch is the agent's own action: it is attributed as such and
 				// the tool result already reports the run, so it raises no chat notice.
-				return awaitRequest(getRuntime().dispatch(args, { policy, origin: "agent", signal }));
+				return awaitRequest(getRuntime().dispatch(args, { policy, origin: "agent", signal, onRunAccepted }));
 			}
 			case "status": {
 				const target = args.runId;

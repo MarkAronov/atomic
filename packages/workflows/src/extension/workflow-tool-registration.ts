@@ -1,4 +1,4 @@
-import type { ExtensionAPI, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
+import type { ExtensionAPI, PiExecuteContext, PiToolOpts, WorkflowToolArgs } from "./public-types.js";
 import { renderCall } from "./render-call.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import type { WorkflowRegisteredToolResult, WorkflowTimeoutResult, WorkflowToolResult } from "./render-result.js";
@@ -14,12 +14,15 @@ interface WorkflowToolRegistrationOptions {
 	readonly requestTimeoutMs?: number;
 }
 
+export type WorkflowToolRegistrar = Pick<ExtensionAPI, "registerTool">;
+
 export const WORKFLOW_TOOL_REQUEST_TIMEOUT_MS = 30_000;
 
 type WorkflowToolExecutor = (
 	args: WorkflowToolArgs,
 	ctx: PiExecuteContext,
 	signal?: AbortSignal,
+	onRunAccepted?: (runId: string) => void,
 ) => Promise<WorkflowToolResult>;
 
 const MUTATING_WORKFLOW_ACTIONS = new Set<NonNullable<WorkflowToolArgs["action"]>>([
@@ -32,7 +35,11 @@ const MUTATING_WORKFLOW_ACTIONS = new Set<NonNullable<WorkflowToolArgs["action"]
 	"quit",
 ]);
 
-function workflowToolTimeoutResult(args: WorkflowToolArgs, timeoutMs: number): WorkflowTimeoutResult {
+function workflowToolTimeoutResult(
+	args: WorkflowToolArgs,
+	timeoutMs: number,
+	runId: string | undefined,
+): WorkflowTimeoutResult {
 	const action = args.action ?? "run";
 	const prefix = `Workflow ${action} request timed out after ${timeoutMs}ms.`;
 	return {
@@ -40,6 +47,7 @@ function workflowToolTimeoutResult(args: WorkflowToolArgs, timeoutMs: number): W
 		status: "failed",
 		code: "WORKFLOW_TIMEOUT",
 		timeoutMs,
+		...(runId === undefined ? {} : { runId }),
 		error: MUTATING_WORKFLOW_ACTIONS.has(action)
 			? `${prefix} The outcome is unknown. Inspect workflow status before retrying.`
 			: prefix,
@@ -60,16 +68,22 @@ async function executeWithWorkflowToolDeadline(
 			? deadlineController.signal
 			: AbortSignal.any([callerSignal, deadlineController.signal]);
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let acceptedRunId: string | undefined;
 	const timeout = new Promise<WorkflowRegisteredToolResult>((resolve) => {
 		timer = setTimeout(() => {
-			const result = workflowToolTimeoutResult(params, timeoutMs);
+			const result = workflowToolTimeoutResult(params, timeoutMs, acceptedRunId);
 			resolve(result);
 			deadlineController.abort(new Error(result.error));
 		}, timeoutMs);
 	});
 	try {
 		return await raceWorkflowRequestAbort(
-			Promise.race([executeWorkflowTool(params, ctx, operationSignal), timeout]),
+			Promise.race([
+				executeWorkflowTool(params, ctx, operationSignal, (runId) => {
+					acceptedRunId = runId;
+				}),
+				timeout,
+			]),
 			callerSignal,
 		);
 	} finally {
@@ -78,16 +92,16 @@ async function executeWithWorkflowToolDeadline(
 }
 
 export function registerWorkflowTool(
-	pi: ExtensionAPI,
+	pi: WorkflowToolRegistrar,
 	executeWorkflowTool: WorkflowToolExecutor,
 	runWithLifecycleSuppressedForPolicy: <T>(
 		policy: ReturnType<typeof workflowPolicyFromContext>,
 		fn: () => Promise<T>,
 	) => Promise<T>,
 	options: WorkflowToolRegistrationOptions = {},
-): void {
-	if (typeof pi.registerTool !== "function") return;
-	pi.registerTool<WorkflowToolArgs, WorkflowRegisteredToolResult>({
+): PiToolOpts<WorkflowToolArgs, WorkflowRegisteredToolResult> | undefined {
+	if (typeof pi.registerTool !== "function") return undefined;
+	const tool: PiToolOpts<WorkflowToolArgs, WorkflowRegisteredToolResult> = {
 		name: "workflow",
 		label: "workflow",
 		description: WORKFLOW_TOOL_DESCRIPTION,
@@ -97,12 +111,12 @@ export function registerWorkflowTool(
 		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 			const policy = workflowPolicyFromContext(ctx);
 			const details = await executeWithWorkflowToolDeadline(
-				(actionParams, actionContext, operationSignal) =>
+				(actionParams, actionContext, operationSignal, onRunAccepted) =>
 					(actionParams.action ?? "run") === "run"
 						? runWithLifecycleSuppressedForPolicy(policy, () =>
-								executeWorkflowTool(actionParams, actionContext, operationSignal),
+								executeWorkflowTool(actionParams, actionContext, operationSignal, onRunAccepted),
 							)
-						: executeWorkflowTool(actionParams, actionContext, operationSignal),
+						: executeWorkflowTool(actionParams, actionContext, operationSignal, onRunAccepted),
 				params,
 				ctx,
 				signal,
@@ -125,5 +139,7 @@ export function registerWorkflowTool(
 				}),
 			);
 		},
-	});
+	};
+	pi.registerTool(tool);
+	return tool;
 }

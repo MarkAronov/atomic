@@ -1,13 +1,15 @@
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 import type { ExtensionAPI as CodingAgentExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
-import type { ExtensionAPI as WorkflowExtensionAPI } from "../../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../../packages/workflows/src/extension/render-result.js";
 import { registerWorkflowTool } from "../../../packages/workflows/src/extension/workflow-tool-registration.js";
+import type { WorkflowToolRegistrar } from "../../../packages/workflows/src/extension/workflow-tool-registration.js";
 
 const provider = "workflow-timeout-fixture";
 const model = "workflow-timeout-model";
 const FIXTURE_TIMEOUT_MS = 25;
+
+type WorkflowTimeoutFixtureAPI = CodingAgentExtensionAPI & WorkflowToolRegistrar;
 
 function assistant(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]): AssistantMessage {
 	return {
@@ -29,7 +31,7 @@ function assistant(content: AssistantMessage["content"], stopReason: AssistantMe
 	};
 }
 
-export default function workflowPublicTimeoutFixture(api: CodingAgentExtensionAPI): void {
+export default function workflowPublicTimeoutFixture(api: WorkflowTimeoutFixtureAPI): void {
 	api.registerProvider(provider, {
 		api: "anthropic-messages",
 		baseUrl: "https://workflow-timeout.invalid",
@@ -67,7 +69,7 @@ export default function workflowPublicTimeoutFixture(api: CodingAgentExtensionAP
 	});
 
 	registerWorkflowTool(
-		api as unknown as WorkflowExtensionAPI,
+		api,
 		async (args, _ctx, signal) => {
 			const action = args.action ?? "run";
 			return new Promise<WorkflowToolResult>((_resolve, reject) => {

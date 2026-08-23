@@ -125,6 +125,8 @@ export interface RuntimeDispatchOptions {
 	readonly budget?: WorkflowBudget;
 	/** Cancels only the public request/admission wait, never detached execution after acknowledgement. */
 	readonly signal?: AbortSignal;
+	/** Reports the exact detached identity before startup admission is awaited. */
+	readonly onRunAccepted?: (runId: string) => void;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -415,6 +417,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				policy: options?.policy,
 				...(options?.origin === undefined ? {} : { origin: options.origin }),
 				...(options?.signal === undefined ? {} : { signal: options.signal }),
+				...(options?.onRunAccepted === undefined ? {} : { onRunAccepted: options.onRunAccepted }),
 				cwd: runtimeCwd,
 				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 			});
