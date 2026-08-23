@@ -20,7 +20,7 @@ const ZERO_USAGE: Usage = {
 	cacheWrite: 0,
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-} as Usage;
+};
 
 interface RecordedRequest {
 	model: Parameters<StreamFn>[0];
@@ -34,7 +34,7 @@ function stickyFallbackStream(): { streamFn: StreamFn; requests: RecordedRequest
 		requests.push({ model, options: options ?? {} });
 		const fails = model.provider === PRIMARY.provider && !primaryFailed;
 		if (fails) primaryFailed = true;
-		const message = {
+		const message: AssistantMessage = {
 			role: "assistant",
 			content: fails ? [] : [{ type: "text", text: "ok" }],
 			api: model.api,
@@ -44,7 +44,7 @@ function stickyFallbackStream(): { streamFn: StreamFn; requests: RecordedRequest
 			stopReason: fails ? "error" : "stop",
 			...(fails ? { errorMessage: "OAuth token invalidated" } : {}),
 			timestamp: Date.now(),
-		} as AssistantMessage;
+		};
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() =>
 			stream.push(
