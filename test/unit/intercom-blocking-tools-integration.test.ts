@@ -58,7 +58,11 @@ type Tool = {
 	): Promise<{ content: Array<{ text: string }>; isError: boolean }>;
 };
 
-function fixture(kind: "intercom" | "supervisor") {
+interface FixtureOptions {
+	resolveSessionTarget?: (_client: object, target: string) => Promise<string | null>;
+}
+
+function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) {
 	let tool: Tool | undefined;
 	const sent: Array<{
 		to: string;
@@ -74,6 +78,7 @@ function fixture(kind: "intercom" | "supervisor") {
 	const waiterCalls: Array<{ from: string; replyTo: string }> = [];
 	const emitter = new EventEmitter();
 	let connectCalls = 0;
+	let resolverCalls = 0;
 	const slot = new ReplyWaiterSlot();
 	const client = {
 		sessionId: "child-id",
@@ -129,7 +134,14 @@ function fixture(kind: "intercom" | "supervisor") {
 			return client;
 		},
 		syncPresenceIdentity() {},
-		resolveSessionTarget: async (_client: object, target: string) => (target === "parent" ? "parent-id" : target),
+		resolveSessionTarget: async (_client: object, target: string) => {
+			resolverCalls += 1;
+			return options.resolveSessionTarget
+				? options.resolveSessionTarget(_client, target)
+				: target === "parent"
+					? "parent-id"
+					: target;
+		},
 		beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) {
 			waiterCalls.push({ from, replyTo });
 			return slot.begin(from, replyTo, signal);
@@ -172,6 +184,9 @@ function fixture(kind: "intercom" | "supervisor") {
 		events: pi.events,
 		get connectCalls() {
 			return connectCalls;
+		},
+		get resolverCalls() {
+			return resolverCalls;
 		},
 		sent,
 		waiterCalls,
@@ -284,6 +299,31 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(captured?.kind, "intercom");
 		assert.equal(captured?.question, "Keep  spacing\nraw");
 		assert.equal(captured?.resolvedTargetId, "parent-id");
+	});
+	test("intercom ask claims the exact typed parent before an empty-list resolver miss", async () => {
+		const current = fixture("intercom", {
+			resolveSessionTarget: async () => null,
+		});
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "Resolver cannot list you" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.resolverCalls, 0, "typed parent identity must win before ordinary group resolution");
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+		assert.equal(captured?.resolvedTargetId, "parent-id");
+		assert.equal(captured?.question, "Resolver cannot list you");
 	});
 	test("parent-targeted intercom ask preserves ordered attachments", async () => {
 		const current = fixture("intercom");

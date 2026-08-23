@@ -135,7 +135,7 @@ export function firstOutputLine(text: string): string {
 export function resultStatusLine(result: Details["results"][number], output: string): string {
 	if (result.detached) return result.detachedReason ? `Detached: ${result.detachedReason}` : "Detached";
 	if (result.status === "continued") return "Continued";
-	if (result.interrupted || result.status === "interrupted") return "Paused";
+	if (result.interrupted || result.status === "interrupted") return "Interrupted";
 	if (result.status === "skipped") return result.error ? `Skipped: ${result.error}` : "Skipped";
 	if (result.status === "error") return `Error: ${result.error ?? (firstOutputLine(output) || "failed")}`;
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return "Done (no text output)";

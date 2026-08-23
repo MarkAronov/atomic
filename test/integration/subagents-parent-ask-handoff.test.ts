@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -16,7 +16,7 @@ import {
 	PARENT_ASK_HANDOFF_REQUEST_EVENT,
 	type ParentAskHandoffRequest,
 } from "../../packages/subagents/src/shared/types.js";
-import { sleep } from "../helpers/runtime.js";
+import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 class TestEvents {
 	private readonly handlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -62,7 +62,9 @@ function state(): ExecutorDeps["state"] {
 	};
 }
 
-function context(root: string): ExtensionContext {
+function context(root: string, options: { forkable?: boolean } = {}): ExtensionContext {
+	const parentSessionFile = join(root, "parent.jsonl");
+	if (options.forkable) writeFileSync(parentSessionFile, "", "utf8");
 	return {
 		cwd: root,
 		mode: "tui",
@@ -71,9 +73,17 @@ function context(root: string): ExtensionContext {
 		scopedModels: [],
 		modelRegistry: { getAvailable: () => [] },
 		sessionManager: {
-			getSessionFile: () => join(root, "parent.jsonl"),
+			getSessionFile: () => parentSessionFile,
 			getSessionId: () => "parent-session-id",
-			getLeafId: () => null,
+			getLeafId: () => (options.forkable ? "parent-leaf" : null),
+			getSessionDir: () => root,
+			openSession: () => ({
+				createBranchedSession: () => {
+					const forked = join(root, "forked-child.jsonl");
+					writeFileSync(forked, "", "utf8");
+					return forked;
+				},
+			}),
 		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -89,6 +99,12 @@ function context(root: string): ExtensionContext {
 
 function text(result: Awaited<ReturnType<ReturnType<typeof createSubagentExecutor>["execute"]>>): string {
 	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+function git(root: string, args: string[]): string {
+	const result = spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	return result.stdout.toString().trim();
 }
 
 function executor(
@@ -191,6 +207,61 @@ test("SINGLE parent ask ends the old child and returns an ordered fresh-start ha
 	}
 });
 
+test("forked SINGLE handoff keeps the original unusual task verbatim instead of the fork preamble", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-fork-parent-handoff-"));
+	const events = new TestEvents();
+	const childState = state();
+	const originalTask = "  leading\tspace\r\n[TASK_CONTEXT]? `ticks` $" + "{literal}\n雪  trailing  ";
+	let runtimeTask = "";
+	let capturedRequest: ParentAskHandoffRequest | undefined;
+	const runtime: SubagentExecutorRuntimeDeps = {
+		runSync: async (_cwd, _agents, agentName, task, options) => {
+			runtimeTask = task;
+			const request: ParentAskHandoffRequest = {
+				runId: options.runId,
+				index: options.index ?? 0,
+				agent: agentName,
+				childIntercomTarget: options.intercomSessionName!,
+				orchestratorTarget: options.orchestratorIntercomTarget!,
+				kind: "decision",
+				question: "Answer exactly",
+				claimed: true,
+			};
+			capturedRequest = request;
+			options.onParentAskHandoff?.(request);
+			return {
+				agent: agentName,
+				task,
+				status: "interrupted",
+				interrupted: true,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				finalOutput: "terminal handoff",
+			};
+		},
+	};
+	const run = executor(root, events, childState, runtime);
+	clearSubagentControls();
+	try {
+		const result = await run.execute(
+			"fork-handoff",
+			{ agent: "worker", task: originalTask, context: "fork", artifacts: false, progress: false },
+			new AbortController().signal,
+			undefined,
+			context(root, { forkable: true }),
+		);
+
+		assert.match(runtimeTask, /delegated subagent running from a fork of the parent session/);
+		assert.notEqual(runtimeTask, originalTask);
+		assert.equal(capturedRequest?.taskContext, originalTask);
+		assert.equal(result.details.parentAskYielded, true);
+		assert.match(text(result), /Start a fresh subagent with a new run identity/);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("PARALLEL parent ask terminates the active set and never launches queued siblings", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-parallel-parent-handoff-"));
 	const events = new TestEvents();
@@ -254,6 +325,92 @@ test("PARALLEL parent ask terminates the active set and never launches queued si
 		assert.equal(Object.hasOwn(childState, "foregroundRuns"), false);
 		assert.match(text(yielded), /Parallel choice\?/);
 		assert.doesNotMatch(text(yielded), /active sibling|queued sibling|resume/i);
+	} finally {
+		gate.resolve();
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("PARALLEL parent handoff captures dirty worktree diffs and cleans every worktree", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-parent-handoff-worktrees-"));
+	const events = new TestEvents();
+	const childState = state();
+	const gate = Promise.withResolvers<void>();
+	const optionsByIndex = new Map<number, Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]>();
+	const runtime: SubagentExecutorRuntimeDeps = {
+		runSync: async (cwd, agents, agentName, task, runOptions) => {
+			const index = runOptions.index ?? -1;
+			optionsByIndex.set(index, runOptions);
+			assert.ok(runOptions.cwd);
+			writeFileSync(join(runOptions.cwd, `dirty-${index}.txt`), `dirty child ${index}\n`);
+			return runSync(cwd, agents, agentName, task, {
+				...runOptions,
+				testSession: { output: "must not complete", promptGate: gate.promise, abortResolvesPrompt: true },
+			});
+		},
+	};
+	try {
+		git(root, ["init", "-b", "main"]);
+		writeFileSync(join(root, "README.md"), "base\n");
+		git(root, ["add", "README.md"]);
+		git(root, [
+			"-c",
+			"user.name=Atomic Test",
+			"-c",
+			"user.email=atomic@example.com",
+			"-c",
+			"commit.gpgsign=false",
+			"commit",
+			"-m",
+			"base",
+		]);
+		const run = executor(root, events, childState, runtime);
+		clearSubagentControls();
+		const execution = run.execute(
+			"worktree-parent-handoff",
+			{
+				tasks: [
+					{ agent: "worker", task: "ask from worktree", progress: false },
+					{ agent: "worker", task: "active sibling", progress: false },
+					{ agent: "worker", task: "queued sibling", progress: false },
+				],
+				concurrency: 2,
+				worktree: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			context(root),
+		);
+		for (let attempt = 0; attempt < 200 && optionsByIndex.size < 2; attempt++) await sleep(1);
+		const asker = optionsByIndex.get(0);
+		assert.ok(asker?.intercomSessionName && asker.orchestratorIntercomTarget);
+		const worktreePaths = [optionsByIndex.get(0)?.cwd, optionsByIndex.get(1)?.cwd];
+		for (const [index, worktreePath] of worktreePaths.entries()) {
+			assert.ok(worktreePath && existsSync(worktreePath));
+			assert.equal(readFileSync(join(worktreePath, `dirty-${index}.txt`), "utf8"), `dirty child ${index}\n`);
+		}
+		const request: ParentAskHandoffRequest = {
+			runId: asker.runId,
+			index: 0,
+			agent: "worker",
+			childIntercomTarget: asker.intercomSessionName,
+			orchestratorTarget: asker.orchestratorIntercomTarget,
+			kind: "decision",
+			question: "Capture work before ending?",
+			claimed: false,
+		};
+		events.emit(PARENT_ASK_HANDOFF_REQUEST_EVENT, request);
+		const handedOff = await execution;
+
+		assert.equal(handedOff.details.parentAskYielded, true);
+		assert.match(text(handedOff), /=== Worktree Changes ===/);
+		assert.match(text(handedOff), /dirty-0\.txt/);
+		assert.match(text(handedOff), /dirty-1\.txt/);
+		assert.equal(optionsByIndex.has(2), false);
+		for (const worktreePath of worktreePaths) assert.ok(worktreePath && !existsSync(worktreePath));
+		assert.equal(git(root, ["branch", "--list", "worktree-*"]), "");
 	} finally {
 		gate.resolve();
 		clearSubagentControls();

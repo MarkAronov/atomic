@@ -193,7 +193,7 @@ Use the optional prompt shortcuts below when you want the pattern to be repeatab
 
 Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
-Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate: launches, `resume`, and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate or control another child: launches and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
 ## Optional shortcuts
 
@@ -593,7 +593,7 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `resume`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, or `doctor`. |
 | `config` | object/string | - | Agent config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
@@ -651,7 +651,7 @@ Requirements:
 - the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
 - gitignored files matched by `.worktreeinclude` are copied into the worktree
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. If a parent ask pauses the active set, Atomic leaves every worktree and its staged or unstaged child changes untouched, including across another pause after resume. Diff capture and forced cleanup run only when the released set reaches a terminal result; cleanup then waits briefly for Git's lock release and deletes each `worktree-*` branch. The same cleanup runs after post-creation setup failures.
+After a worktree parallel step reaches any terminal result, per-agent diff stats are appended to the output and full patch files are written to artifacts. A parent-directed ask terminally ends the active set, captures its staged and unstaged changes in the same handoff result, and then cleans up every worktree and `worktree-*` branch after a brief Git lock-release wait. The same cleanup runs after post-creation setup failures.
 
 ## Configuration
 

@@ -125,7 +125,8 @@ export async function runSinglePath(
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
-	let task = params.task ?? "";
+	const handoffTaskContext = params.task ?? "";
+	let task = handoffTaskContext;
 	const modelOverride: string | undefined = resolveModelCandidate(
 		(params.model as string | undefined) ?? agentConfig.model,
 		availableModels,
@@ -215,7 +216,7 @@ export async function runSinglePath(
 			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
 			onParentAskHandoff: (request) => {
 				if (parentAsk) return;
-				request.taskContext = cleanTask;
+				request.taskContext = handoffTaskContext;
 				parentAsk = request;
 				interruptController.abort();
 			},

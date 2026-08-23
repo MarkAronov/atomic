@@ -91,7 +91,7 @@ export interface ControlEvent {
 	recentFailureSummary?: string;
 }
 
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
+export type SubagentResultStatus = "completed" | "failed" | "interrupted" | "detached";
 export type SubagentRunMode = "single" | "parallel";
 
 export interface SubagentResultIntercomChild {

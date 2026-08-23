@@ -350,7 +350,6 @@ export async function runSingleInProcess(
 			lastActivityAt: Date.now(),
 		});
 	}
-	control.registerAttempt(options.runId, running);
 	let detached = false;
 	let resolveContinuation!: () => void;
 	const continuation = new Promise<void>((resolve) => {

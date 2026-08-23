@@ -273,7 +273,7 @@ Humans can use `/subagents-doctor` for the same read-only report. It checks runt
 
 ### Subagent control
 
-Subagent control is the runtime visibility and intervention layer for delegated runs. It is separate from lifecycle status. Lifecycle status says whether a child is `queued`, `running`, `paused`, `complete`, or `failed`. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
+Subagent control is the runtime visibility and intervention layer for delegated runs. Lifecycle status distinguishes queued and running children from terminal completed, failed, or interrupted results. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
 
 Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs push this as a `subagent:control-event` event, and notification-worthy control events are inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `interrupt` options. Visible notifications fire once per child run and attention state.
 
@@ -289,7 +289,7 @@ Pass `id` when targeting a specific controllable run:
 subagent({ action: "interrupt", id: "abc123" })
 ```
 
-A soft interrupt cancels the current child turn and leaves the run paused. It does not mean the delegated task succeeded or failed. After an interrupt, decide the next explicit action: resume with clearer instructions, replace the task, ask the user, or stop the workflow.
+A soft interrupt cancels the current child turn and terminally records the child as interrupted. It does not mean the delegated task succeeded. Decide the next explicit action: launch a fresh child with the relevant task context, replace the task, ask the user, or stop the workflow.
 
 Per-run control thresholds can be overridden when a task legitimately runs without observable output for longer than usual:
 
@@ -332,7 +332,7 @@ subagent({
 
 Atomic subagents work without intercom. When Atomic's bundled intercom companion or upstream `pi-intercom` is installed and enabled, the bridge can give eligible child agents a private coordination tool back to the parent session without connecting either session automatically. If a child may need live coordination, invoke `intercom({ action: "status" })` in the parent before launching it; the child connects when it first invokes `contact_supervisor` or `intercom`.
 
-The builtin `debugger` and `worker` agents declare `intercom` and `contact_supervisor`. With an active bridge route, they can send progress or pause to ask the parent for a decision. Other builtin specialists finish their pass and return without live coordination; use a custom agent with bridge tools when another role needs that ability.
+The builtin `debugger` and `worker` agents declare `intercom` and `contact_supervisor`. With an active bridge route, they can send progress or terminally hand a parent-directed question back to the supervisor. Other builtin specialists finish their pass and return without live coordination; use a custom agent with bridge tools when another role needs that ability.
 
 Custom agents that do have the bridge tool can ask the parent for a decision:
 

@@ -45,7 +45,6 @@ import {
 	type MaxOutputConfig,
 	truncateOutput,
 } from "../../shared/types.js";
-import { registerInProcessAttempt } from "./attempt-handles.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 
@@ -673,9 +672,6 @@ export class SubagentControlRuntime {
 	readonly native: SubagentControl;
 	readonly parent: ParentContext;
 	readonly sessionRoot: string;
-	private readonly sessions = new Map<string, AgentSession>();
-	private readonly specs = new Map<string, ChildSpec>();
-	private readonly sessionFiles = new Map<string, string>();
 	private readonly runningAttempts = new Map<number, RunningAttempt>();
 	private readonly attemptTokens = new Map<string, number>();
 	private readonly attemptTerminators = new Map<string, (cause: TerminationCauseName) => Promise<void>>();
@@ -713,7 +709,6 @@ export class SubagentControlRuntime {
 			? dirname(spec.sessionFile)
 			: sessionDirectory(this.sessionRoot, identity.path);
 		mkdirSync(sessionDir, { recursive: true });
-		this.specs.set(identity.path, spec);
 		return {
 			admitted: AdmittedChild.create({
 				identity,
@@ -899,8 +894,6 @@ export class SubagentControlRuntime {
 				await created.session.extensionRunner.emit({ type: "session_start", reason: "startup" });
 			}
 			session = created.session;
-			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
-			this.sessions.set(admitted.identity.path, session);
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;
 			effectiveThinking =
@@ -1071,7 +1064,6 @@ export class SubagentControlRuntime {
 			} catch {
 				// Session teardown must not replace the attempt result.
 			}
-			this.sessions.delete(admitted.identity.path);
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)
@@ -1158,16 +1150,6 @@ export class SubagentControlRuntime {
 			...(thinking === undefined ? {} : { thinking }),
 			...(running.currentFastMode === undefined ? {} : { fastMode: running.currentFastMode }),
 		};
-	}
-
-	/** Expose a direct child's live attempt so interrupt can reach it by run id or path. */
-	registerAttempt(runId: string, running: RunningAttempt): void {
-		registerInProcessAttempt({
-			runId,
-			path: running.child.identity.path,
-			status: () => running.status,
-			interrupt: () => this.terminateChildAttempt(running, "interrupt"),
-		});
 	}
 
 	async terminateChildAttempt(running: RunningAttempt, cause: TerminationCauseName): Promise<void> {

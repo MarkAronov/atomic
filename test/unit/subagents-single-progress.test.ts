@@ -12,7 +12,7 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
+import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
@@ -191,6 +191,67 @@ test("single progress false overrides default and omission inherits it", async (
 		const progressPath = join(cwd, "subagent-artifacts", "progress", runId, "progress.md");
 		assert.ok((tasks[1] ?? "").includes(`Create and maintain progress at: ${progressPath}`));
 		assert.match(readFileSync(progressPath, "utf8"), /# Progress/);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("fresh single follow-ups use new progress identities and forward live updates", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-fresh-progress-"));
+	try {
+		const progressPaths: string[] = [];
+		const executor = makeExecutor(cwd, {
+			runSync: async (_cwd, _agents, agentName, task, options) => {
+				const progressPath = extractProgressPath(task);
+				progressPaths.push(progressPath);
+				const child = makeResult(task);
+				const update: SubagentToolResult = {
+					content: [{ type: "text", text: `live:${agentName}` }],
+					details: {
+						mode: "single",
+						runId: options.runId,
+						results: [child],
+						progress: [
+							{
+								index: 0,
+								agent: agentName,
+								status: "running",
+								task,
+								recentTools: [],
+								recentOutput: [],
+								toolCount: 1,
+								tokens: 2,
+								durationMs: 3,
+							},
+						],
+					},
+				};
+				options.onUpdate?.(update);
+				return child;
+			},
+		});
+		const updates: SubagentToolResult[][] = [[], []];
+		const results = [];
+		for (const [index, task] of ["initial work", "fresh follow-up"].entries()) {
+			results.push(
+				await executor.execute(
+					`fresh-${index}`,
+					{ agent: "worker", task, progress: true, artifacts: false },
+					new AbortController().signal,
+					(update) => updates[index]!.push(update),
+					makeContext(cwd),
+				),
+			);
+		}
+
+		assert.notEqual(results[0]?.details?.runId, results[1]?.details?.runId);
+		assert.equal(new Set(progressPaths).size, 2);
+		for (const [index, updateList] of updates.entries()) {
+			assert.equal(updateList.length, 1);
+			assert.equal(updateList[0]?.details?.runId, results[index]?.details?.runId);
+			assert.equal(updateList[0]?.details?.progress?.[0]?.status, "running");
+			assert.equal(existsSync(progressPaths[index]!), false, "fresh transient progress storage is cleaned");
+		}
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

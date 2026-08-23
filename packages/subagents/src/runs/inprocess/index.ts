@@ -1,9 +1,3 @@
-export type { InProcessAttemptControlResult, InProcessAttemptHandle } from "./attempt-handles.js";
-export {
-	clearInProcessAttemptHandles,
-	interruptInProcessAttempt,
-	registerInProcessAttempt,
-} from "./attempt-handles.js";
 export type {
 	AdmissionRefusal,
 	AdmittedResult,

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { AgentSessionEvent } from "@bastani/atomic";
+import { SubagentControl as NativeSubagentControl } from "@bastani/atomic-natives";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
@@ -176,6 +177,30 @@ test("admission refuses a child whose parent already sits at the single permitte
 		assert.equal(result.refusal?.maxDepth, 1);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("native child identities stay terminal after ok, error, and interrupted attempts", async () => {
+	for (const terminalStatus of ["ok", "error", "interrupted"] as const) {
+		const native = new NativeSubagentControl(`parent-${terminalStatus}`);
+		const admission = native.admitChildSession(
+			{ taskName: "analysis", agentName: undefined, cwd: undefined },
+			{ path: `parent-${terminalStatus}`, depth: 0 },
+		);
+		assert.ok(admission.child);
+		const first = native.beginChildAttempt(admission.child.path);
+		assert.ok(first.token);
+		if (terminalStatus === "interrupted") {
+			await native.terminateChildAttempt(first.token, "interrupt");
+		} else {
+			native.finishChildAttempt(first.token, terminalStatus);
+		}
+
+		const second = native.beginChildAttempt(admission.child.path);
+		assert.equal(second.token, undefined);
+		assert.equal(second.refusal?.kind, "terminalChild");
+		native.publishChildStatus(admission.child.path, "running");
+		assert.equal(native.listChildren()[0]?.status, terminalStatus);
 	}
 });
 

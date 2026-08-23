@@ -331,6 +331,36 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
           let wait: ReplyWait | null = null;
 
           try {
+            const metadata = getMetadata();
+            const currentSupervisorId = connectedClient.supervisorSessionId ?? undefined;
+            const metadataSupervisorId = metadata?.supervisor?.supervisorSessionId;
+            const directParentTarget = Boolean(
+              metadata &&
+              (to === metadata.orchestratorTarget ||
+                to === currentSupervisorId ||
+                to === metadataSupervisorId),
+            );
+            const claimParentAsk = (resolvedTargetId: string): boolean =>
+              Boolean(
+                metadata &&
+                requestParentAskHandoff(pi.events, metadata, {
+                  kind: "intercom",
+                  question: message,
+                  attachments,
+                  resolvedTargetId,
+                }),
+              );
+            if (
+              directParentTarget &&
+              claimParentAsk(currentSupervisorId ?? metadataSupervisorId ?? to)
+            ) {
+              return {
+                content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
+                isError: false,
+                details: { yielded: true },
+              };
+            }
+
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               return {
@@ -346,19 +376,13 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 details: { error: true },
               };
             }
-            const metadata = getMetadata();
-            if (metadata) {
-              const resolvedParent = await resolveTarget(connectedClient, metadata.orchestratorTarget);
-              if (
-                resolvedParent !== null &&
-                resolvedParent === sendTo &&
-                requestParentAskHandoff(pi.events, metadata, {
-                  kind: "intercom",
-                  question: message,
-                  attachments,
-                  resolvedTargetId: sendTo,
-                })
-              ) {
+            if (metadata && !directParentTarget) {
+              const authoritativeParent = [currentSupervisorId, metadataSupervisorId].find(
+                (candidate) => candidate === sendTo,
+              );
+              const resolvedParent =
+                authoritativeParent ?? await resolveTarget(connectedClient, metadata.orchestratorTarget);
+              if (resolvedParent !== null && resolvedParent === sendTo && claimParentAsk(sendTo)) {
                 return {
                   content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
                   isError: false,

@@ -21,7 +21,7 @@ export function resolveSubagentResultStatus(input: {
 	detached?: boolean;
 }): SubagentResultStatus {
 	if (input.detached || input.status === "continued") return "detached";
-	if (input.interrupted || input.status === "interrupted" || input.state === "paused") return "paused";
+	if (input.interrupted || input.status === "interrupted" || input.state === "interrupted") return "interrupted";
 	if (input.status === "ok" || input.success === true || input.state === "complete") return "completed";
 	if (input.status === "error" || input.status === "skipped" || input.success === false || input.state === "failed")
 		return "failed";
@@ -32,7 +32,7 @@ function countStatuses(children: SubagentResultIntercomChild[]): Record<Subagent
 	const counts: Record<SubagentResultStatus, number> = {
 		completed: 0,
 		failed: 0,
-		paused: 0,
+		interrupted: 0,
 		detached: 0,
 	};
 	for (const child of children) {
@@ -45,7 +45,7 @@ function formatStatusCounts(counts: Record<SubagentResultStatus, number>): strin
 	const parts = [
 		counts.completed ? `${counts.completed} completed` : undefined,
 		counts.failed ? `${counts.failed} failed` : undefined,
-		counts.paused ? `${counts.paused} paused` : undefined,
+		counts.interrupted ? `${counts.interrupted} interrupted` : undefined,
 		counts.detached ? `${counts.detached} detached` : undefined,
 	].filter((part): part is string => Boolean(part));
 	return parts.length ? parts.join(", ") : "0 results";
@@ -54,7 +54,7 @@ function formatStatusCounts(counts: Record<SubagentResultStatus, number>): strin
 function resolveGroupedStatus(children: SubagentResultIntercomChild[]): SubagentResultStatus {
 	const counts = countStatuses(children);
 	if (counts.failed > 0) return "failed";
-	if (counts.paused > 0) return "paused";
+	if (counts.interrupted > 0) return "interrupted";
 	if (counts.completed > 0) return "completed";
 	if (counts.detached > 0) return "detached";
 	return "failed";

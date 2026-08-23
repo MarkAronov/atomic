@@ -9,8 +9,8 @@ import type { SubagentResultIntercomChild } from "../../packages/subagents/src/s
 describe("subagent result intercom helpers", () => {
 	test("resolves result status from typed statuses and legacy state projections", () => {
 		assert.equal(resolveSubagentResultStatus({ detached: true, success: true }), "detached");
-		assert.equal(resolveSubagentResultStatus({ status: "interrupted" }), "paused");
-		assert.equal(resolveSubagentResultStatus({ state: "paused" }), "paused");
+		assert.equal(resolveSubagentResultStatus({ status: "interrupted" }), "interrupted");
+		assert.equal(resolveSubagentResultStatus({ state: "interrupted" }), "interrupted");
 		assert.equal(resolveSubagentResultStatus({ status: "ok" }), "completed");
 		assert.equal(resolveSubagentResultStatus({ status: "error" }), "failed");
 		assert.equal(resolveSubagentResultStatus({ status: "skipped" }), "failed");
