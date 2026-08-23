@@ -139,8 +139,8 @@ function exactPreparationResponse(argv: readonly string[], worktreeStatus = ""):
 	if (command.includes("git ls-remote --heads origin refs/heads/main")) {
 		return commandResult(`${baseSha}\trefs/heads/main`);
 	}
-	if (command.includes(`git show-ref --verify refs/heads/${release.branch}`)) {
-		return commandResult(`${headSha} refs/heads/${release.branch}`);
+	if (command.includes(`git rev-parse --verify --quiet --end-of-options refs/heads/${release.branch}`)) {
+		return commandResult(headSha);
 	}
 	if (command.includes("/pulls?state=open")) return commandResult(JSON.stringify([apiPull()]));
 	return undefined;
@@ -219,6 +219,42 @@ test("configured checks preserve branch-protection and ruleset order, app identi
 			{ context: "legacy", appId: null },
 		],
 	);
+});
+
+test("preparation adapter treats an absent local prerelease branch as preparation state", async () => {
+	const prerelease = {
+		kind: "prerelease" as const,
+		version: "0.9.16-alpha.1",
+		branch: "prerelease/0.9.16-alpha.1",
+	};
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command === "git status --porcelain=v1 --untracked-files=all") return commandResult();
+		if (command === `git ls-remote --heads origin refs/heads/${prerelease.branch}`) return commandResult();
+		if (command === "git ls-remote --heads origin refs/heads/main") {
+			return commandResult(`${baseSha}\trefs/heads/main`);
+		}
+		if (command === `git show-ref --verify refs/heads/${prerelease.branch}`) {
+			return commandResult("", 128, `fatal: 'refs/heads/${prerelease.branch}' - not a valid ref`);
+		}
+		if (command === `git rev-parse --verify --quiet --end-of-options refs/heads/${prerelease.branch}`) {
+			return commandResult("", 1);
+		}
+		if (command.includes("/pulls?state=open")) return commandResult("[]");
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+
+	const result = await createReleaseBoundary("/safe/fake/repository", { transport }).inspectPreparation({
+		cwd: "/safe/fake/repository",
+		release: prerelease,
+		baseRef: "main",
+		signal: new AbortController().signal,
+	});
+
+	assert.deepEqual(result, {
+		mode: "prepare",
+		summary: `No existing ${prerelease.branch} branch or open PR; prepare from ${baseSha}.`,
+	});
 });
 
 test("release-0.9.15 retry regression reuses the exact changelog-only branch, commit, and PR", () => {
