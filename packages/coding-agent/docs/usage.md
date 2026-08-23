@@ -122,7 +122,6 @@ Use context files for project conventions, commands, safety rules, and preferenc
 
 ### System Prompt Files
 
-
 Replace the default system prompt with:
 
 - `.atomic/SYSTEM.md` for a project
