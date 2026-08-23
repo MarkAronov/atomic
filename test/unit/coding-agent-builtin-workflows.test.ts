@@ -272,10 +272,12 @@ describe("coding-agent builtin resources", () => {
 
 			const skillNames = new Set(loader.getSkills().skills.map((skill) => skill.name));
 			for (const skillName of [
+				"bro",
 				"create-spec",
-				"liteparse",
+				"how",
 				"impeccable",
 				"intercom",
+				"liteparse",
 				"playwright-cli",
 				"prompt-engineer",
 				"research-codebase",
@@ -283,7 +285,10 @@ describe("coding-agent builtin resources", () => {
 				"skill-creator",
 				"subagent",
 				"tdd",
+				"teach",
 				"tmux",
+				"unslop",
+				"why",
 			]) {
 				assert.ok(skillNames.has(skillName), `expected bundled package skill ${skillName}`);
 			}
