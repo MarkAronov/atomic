@@ -330,7 +330,8 @@ export function evaluatePublishRuns(
 		if (run.workflowPath !== ".github/workflows/publish.yml") {
 			return { status: "failed", summary: `Publish workflow path drifted to ${run.workflowPath}.` };
 		}
-		if (run.workflowName !== "Publish" || run.displayTitle !== `Publish ${expected.release.version}`) {
+		const workflowIdentity = `Publish ${expected.release.version}`;
+		if (run.workflowName !== workflowIdentity || run.displayTitle !== workflowIdentity) {
 			return { status: "failed", summary: `Publish workflow identity drifted for run ${run.id}.` };
 		}
 		if (run.event !== "push")
@@ -338,7 +339,13 @@ export function evaluatePublishRuns(
 		if (run.headSha !== expected.releaseSha)
 			return { status: "failed", summary: `Publish run ${run.id} SHA drifted to ${run.headSha}.` };
 	}
-	const exact = [...taggedRuns].sort((left, right) => right.id - left.id)[0];
+	if (taggedRuns.length > 1) {
+		return {
+			status: "failed",
+			summary: `Multiple publish runs materialized for ${expected.release.version}: ${taggedRuns.map((run) => run.id).join(", ")}.`,
+		};
+	}
+	const exact = taggedRuns[0];
 	if (exact === undefined)
 		return { status: "pending", summary: `Publish ${expected.release.version} has not materialized.` };
 	if (exact.status !== "completed")

@@ -24,6 +24,13 @@ const headSha = "1".repeat(40);
 const baseSha = "2".repeat(40);
 const releaseSha = "3".repeat(40);
 const release = { kind: "release" as const, version: "1.2.3", branch: "release/1.2.3" };
+const publishedReleaseSha = "5d0bed847a646e3ad6bcf63346e5523679b5615e";
+const publishedRelease = {
+	kind: "prerelease" as const,
+	version: "0.9.16-alpha.1",
+	branch: "prerelease/0.9.16-alpha.1",
+};
+const expectedPublish = { release: publishedRelease, releaseSha: publishedReleaseSha };
 const pullRequest = { url: "https://github.com/bastani-inc/atomic/pull/42", number: 42, headSha };
 const expectedCi = { release, baseRef: "main", pullRequest };
 const unprotectedBranchResponse =
@@ -52,11 +59,11 @@ function publishRun(overrides: Partial<PublishRun> = {}): PublishRun {
 		id: 100,
 		repository: "bastani-inc/atomic",
 		workflowPath: ".github/workflows/publish.yml",
-		workflowName: "Publish",
-		displayTitle: "Publish 1.2.3",
+		workflowName: "Publish 0.9.16-alpha.1",
+		displayTitle: "Publish 0.9.16-alpha.1",
 		event: "push",
-		headBranch: "1.2.3",
-		headSha: releaseSha,
+		headBranch: "0.9.16-alpha.1",
+		headSha: publishedReleaseSha,
 		status: "completed",
 		conclusion: "success",
 		url: "https://github.com/bastani-inc/atomic/actions/runs/100",
@@ -746,14 +753,175 @@ test("polling propagates aborts and inspection errors", async () => {
 	);
 });
 
-test("publish evaluation fails on identity drift and terminal failure", () => {
-	assert.match(
-		evaluatePublishRuns([publishRun({ headSha: "8".repeat(40) })], { release, releaseSha }).summary,
-		/SHA drifted/u,
+test("real GitHub REST publish payload accepts the custom run name as the exact workflow identity", () => {
+	const result = evaluatePublishRuns(
+		[
+			{
+				id: 32633038643,
+				repository: "bastani-inc/atomic",
+				workflowPath: ".github/workflows/publish.yml",
+				workflowName: "Publish 0.9.16-alpha.1",
+				displayTitle: "Publish 0.9.16-alpha.1",
+				event: "push",
+				headBranch: "0.9.16-alpha.1",
+				headSha: "5d0bed847a646e3ad6bcf63346e5523679b5615e",
+				status: "completed",
+				conclusion: "success",
+				url: "https://github.com/bastani-inc/atomic/actions/runs/32633038643",
+			},
+		],
+		{
+			release: {
+				kind: "prerelease",
+				version: "0.9.16-alpha.1",
+				branch: "prerelease/0.9.16-alpha.1",
+			},
+			releaseSha: "5d0bed847a646e3ad6bcf63346e5523679b5615e",
+		},
 	);
-	const failed = evaluatePublishRuns([publishRun({ conclusion: "failure" })], { release, releaseSha });
-	assert.equal(failed.status, "failed");
-	assert.match(failed.summary, /completed with failure/u);
+
+	assert.deepEqual(result, {
+		status: "passed",
+		summary: "Publish run 32633038643 completed successfully.",
+		evidenceUrl: "https://github.com/bastani-inc/atomic/actions/runs/32633038643",
+	});
+});
+
+test("createReleaseBoundary maps the real REST payload and accepts the exact custom run identity", async () => {
+	const payload = {
+		workflow_runs: [
+			{
+				id: 32633038643,
+				name: "Publish 0.9.16-alpha.1",
+				display_title: "Publish 0.9.16-alpha.1",
+				path: ".github/workflows/publish.yml",
+				event: "push",
+				head_branch: "0.9.16-alpha.1",
+				head_sha: "5d0bed847a646e3ad6bcf63346e5523679b5615e",
+				status: "completed",
+				conclusion: "success",
+				html_url: "https://github.com/bastani-inc/atomic/actions/runs/32633038643",
+				repository: { full_name: "bastani-inc/atomic" },
+			},
+		],
+	};
+	const transport = fakeTransport((argv) => {
+		assert.deepEqual(argv, [
+			"gh",
+			"api",
+			"repos/bastani-inc/atomic/actions/workflows/publish.yml/runs?event=push&per_page=100",
+		]);
+		return commandResult(JSON.stringify(payload));
+	});
+	const signal = new AbortController().signal;
+
+	const result = await createReleaseBoundary("/safe/fake/repository", { transport }).waitForPublish({
+		release: publishedRelease,
+		releaseSha: "5d0bed847a646e3ad6bcf63346e5523679b5615e",
+		signal,
+	});
+
+	assert.deepEqual(result, {
+		status: "passed",
+		summary: "Publish run 32633038643 completed successfully.",
+		evidenceUrl: "https://github.com/bastani-inc/atomic/actions/runs/32633038643",
+	});
+	assert.deepEqual(transport.signals, [signal]);
+});
+
+test("exact queued and in-progress publish runs retain the pending result shape", () => {
+	for (const status of ["queued", "in_progress"] as const) {
+		assert.deepEqual(evaluatePublishRuns([publishRun({ status, conclusion: null })], expectedPublish), {
+			status: "pending",
+			summary: `Publish run 100 is ${status}.`,
+			evidenceUrl: "https://github.com/bastani-inc/atomic/actions/runs/100",
+		});
+	}
+});
+
+test("publish verification fails closed on every exact identity mismatch without prefix or normalization", () => {
+	const cases: readonly {
+		readonly label: string;
+		readonly overrides: Partial<PublishRun>;
+		readonly summary: RegExp;
+	}[] = [
+		{ label: "unversioned API name", overrides: { workflowName: "Publish" }, summary: /workflow identity drifted/u },
+		{
+			label: "prefixed API name",
+			overrides: { workflowName: "Publish 0.9.16-alpha.1 retry" },
+			summary: /workflow identity drifted/u,
+		},
+		{
+			label: "normalized API name",
+			overrides: { workflowName: "publish 0.9.16-alpha.1" },
+			summary: /workflow identity drifted/u,
+		},
+		{
+			label: "mismatched display title",
+			overrides: { displayTitle: "Publish 0.9.16-alpha.1 retry" },
+			summary: /workflow identity drifted/u,
+		},
+		{
+			label: "normalized display title",
+			overrides: { displayTitle: "publish 0.9.16-alpha.1" },
+			summary: /workflow identity drifted/u,
+		},
+		{
+			label: "mismatched workflow path",
+			overrides: { workflowPath: ".github/workflows/Publish.yml" },
+			summary: /workflow path drifted/u,
+		},
+		{
+			label: "mismatched repository",
+			overrides: { repository: "bastani-inc/atomic-fork" },
+			summary: /repository drifted/u,
+		},
+		{
+			label: "mismatched event",
+			overrides: { event: "workflow_dispatch" },
+			summary: /event drifted/u,
+		},
+		{
+			label: "mismatched release SHA",
+			overrides: { headSha: "5d0bed847a646e3ad6bcf63346e5523679b5615f" },
+			summary: /SHA drifted/u,
+		},
+	];
+
+	for (const candidate of cases) {
+		const result = evaluatePublishRuns([publishRun(candidate.overrides)], expectedPublish);
+		assert.equal(result.status, "failed", candidate.label);
+		assert.match(result.summary, candidate.summary, candidate.label);
+	}
+});
+
+test("a mismatched tag branch is treated as missing and retains the missing-run pending shape", () => {
+	const missing = {
+		status: "pending" as const,
+		summary: "Publish 0.9.16-alpha.1 has not materialized.",
+	};
+	assert.deepEqual(evaluatePublishRuns([], expectedPublish), missing);
+	assert.deepEqual(evaluatePublishRuns([publishRun({ headBranch: "0.9.16-alpha.2" })], expectedPublish), missing);
+});
+
+test("duplicate exact-tag publish runs fail closed without mutating raw input order", () => {
+	const runs = [publishRun({ id: 99 }), publishRun({ id: 100 })];
+	const result = evaluatePublishRuns(runs, expectedPublish);
+
+	assert.equal(result.status, "failed");
+	assert.match(result.summary, /multiple publish runs.*0\.9\.16-alpha\.1/iu);
+	assert.deepEqual(
+		runs.map((run) => run.id),
+		[99, 100],
+	);
+});
+
+test("a completed publish run with a failure conclusion retains the failed result shape", () => {
+	assert.deepEqual(evaluatePublishRuns([publishRun({ conclusion: "failure" })], expectedPublish), {
+		status: "failed",
+		summary: "Publish run 100 completed with failure.",
+		evidenceUrl: "https://github.com/bastani-inc/atomic/actions/runs/100",
+	});
 });
 
 test("safe fake-boundary E2E executes production Git/GitHub adapters through delayed CI and publish", async () => {
@@ -812,7 +980,7 @@ test("safe fake-boundary E2E executes production Git/GitHub adapters through del
 							: [
 									{
 										id: 100,
-										name: "Publish",
+										name: "Publish 1.2.3",
 										display_title: "Publish 1.2.3",
 										path: ".github/workflows/publish.yml",
 										event: "push",
