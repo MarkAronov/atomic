@@ -80,16 +80,6 @@ The skill no longer recommends response prefilling, which returns an error on Cl
 
 The bundled `/skill:show-me` from [HumanLayer](https://github.com/humanlayer/skills) helps explain the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts. It is distributed under the MIT License.
 
-### Built-in pstack guidance
-
-Atomic bundles five skills from Lauren Tan's [pstack](https://github.com/cursor/plugins/tree/main/pstack), under the MIT License:
-
-- `/skill:how` explains subsystem architecture and runtime flow, with an optional critique mode.
-- `/skill:why` researches the history and constraints behind a design.
-- `/skill:teach` combines `how` and `why` into a plain explanation. It is manual-only and stays out of the model's automatic skill list.
-- `/skill:bro` restates the last reply in plain language. It is also manual-only.
-- `/skill:unslop` removes common AI writing patterns and adds a more natural voice.
-
 ## Skill Commands
 
 Skills register as `/skill:name` commands:
