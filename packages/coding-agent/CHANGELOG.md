@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Main-chat model fallback is now session-sticky: after failover, later turns keep using the selected fallback model and thinking level until an explicit `/model` selection or model cycle changes it.
+
 ### Removed
 
 - Removed the bundled writing-rule set from the default system prompt's `Guidelines` section. The unrelated "Be concise in your responses" and "Show file paths clearly when working with files" guidelines remain.

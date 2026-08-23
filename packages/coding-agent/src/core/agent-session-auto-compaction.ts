@@ -341,18 +341,18 @@ export function _schedulePostAutoCompactionContinuationProbe(
 	pending = new Promise<void>((resolve) => {
 		setTimeout(() => {
 			void (async () => {
-				const restoreIfOwned = async (): Promise<void> => {
+				const settleIfOwned = async (): Promise<void> => {
 					if (
 						fallbackScopeGeneration === undefined ||
 						this._fallbackOriginGeneration !== fallbackScopeGeneration ||
-						typeof this._restoreFallbackModel !== "function"
+						typeof this._settleFallbackModelScope !== "function"
 					)
 						return;
 					try {
-						await this._restoreFallbackModel();
+						await this._settleFallbackModelScope();
 					} catch {
-						// A listener must not strand the continuation waiter. The model
-						// state was already restored before lifecycle notifications ran.
+						// A listener must not strand the continuation waiter. The fallback
+						// state was already settled before lifecycle notifications ran.
 					}
 				};
 				try {
@@ -364,12 +364,12 @@ export function _schedulePostAutoCompactionContinuationProbe(
 						if (this._postCompactionContinuationToken !== token) return;
 						if (this.isCompacting || this.isStreaming) return;
 						if (!this.agent.hasQueuedMessages()) {
-							await restoreIfOwned();
+							await settleIfOwned();
 							return;
 						}
-						// A queued message starts the next user turn. Restore before
-						// Agent snapshots the next request's model.
-						await restoreIfOwned();
+						// A queued message starts the next user turn. Settle before Agent
+						// snapshots the next request's model.
+						await settleIfOwned();
 					}
 
 					if (this._pendingPostCompactionContinuation !== pending) return;
@@ -379,7 +379,7 @@ export function _schedulePostAutoCompactionContinuationProbe(
 					this._pendingPostCompactionContinuation = undefined;
 					await this._resumeAfterAutoCompaction();
 					if (willRetry && this._pendingPostCompactionContinuation === undefined) {
-						await restoreIfOwned();
+						await settleIfOwned();
 					}
 				} finally {
 					if (this._pendingPostCompactionContinuation === pending) {

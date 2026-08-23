@@ -267,7 +267,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
 	_beginFallbackModelScope(): void;
 	_clearFallbackModelScope(): void;
-	_restoreFallbackModel(): Promise<boolean>;
+	_settleFallbackModelScope(): Promise<boolean>;
 	abortRetry(): void;
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;

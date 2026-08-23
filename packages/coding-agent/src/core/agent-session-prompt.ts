@@ -124,9 +124,9 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			return;
 		}
 
-		// A fallback model is scoped to the failing turn. Restore the user-selected
-		// model before validating credentials for the next idle prompt.
-		if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
+		// Close the completed fallback lifecycle before validating credentials for
+		// the next idle prompt. The selected fallback remains the session model.
+		if (typeof this._settleFallbackModelScope === "function") await this._settleFallbackModelScope();
 		// Flush any pending bash messages before the new prompt
 		this._flushPendingBashMessages();
 
