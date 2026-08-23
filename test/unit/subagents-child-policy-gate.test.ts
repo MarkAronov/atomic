@@ -184,7 +184,7 @@ describe("subagent child policy gates fanout, not management", () => {
 	test("a child without fanout authorization can still run the observing management actions", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
 
-		for (const action of ["list", "get", "status", "doctor"] as const) {
+		for (const action of ["list", "get", "status"] as const) {
 			const result = await runAction(executor, { action });
 			assert.notEqual(
 				resultText(result),
@@ -292,7 +292,7 @@ describe("subagent child policy gates fanout, not management", () => {
 	test("an admitted child keeps the observing management actions", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full", depth: 1 }));
 
-		for (const action of ["list", "get", "status", "doctor"] as const) {
+		for (const action of ["list", "get", "status"] as const) {
 			const result = await runAction(executor, { action });
 			assert.notEqual(resultText(result), SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
 			assert.equal(result.details.mode, "management");

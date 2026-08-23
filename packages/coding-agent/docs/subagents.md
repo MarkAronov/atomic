@@ -29,9 +29,8 @@ Atomic decides whether delegation adds value, which specialist fits each bounded
 
 ## Subagent execution is non-interactive
 
-Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Ask any necessary questions in the parent conversation before delegating.
+Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, and prompt-template execution. Ask any necessary questions in the parent conversation before delegating.
 
-The human slash commands remain registered and continue to use their separate parsing and event-bridge path, including fork flags.
 Prompt-template delegation comes from the separately installed `pi-prompt-template-model` extension, whose `requestDelegatedRun` emits `prompt-template:subagent:request`. If that caller must survive an extension reload, import `registerPromptTemplateBridgeRequestSettlement` from `@bastani/subagents`, register it before the emit, and unregister it from the normal response, cancellation, or abort path. The hook rejects the caller only when the old bridge drops a stale response emit; normal completion still arrives through `prompt-template:subagent:response`. Atomic cannot register this opt-in for an out-of-tree emitter.
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
@@ -94,7 +93,7 @@ Example request:
 Review the current diff with fresh-context specialists: analyze correctness, inspect failure modes without editing, and compare the implementation to existing patterns. Synthesize only issues worth fixing now.
 ```
 
-Useful prompt templates include `/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, and `/parallel-cleanup`. Treat them as reusable compositions, not as separate bundled agent names. Their task templates define the requested outcome, evidence and delegation boundaries, downstream output shape, and an explicit stop rule; preserve those contracts when adapting a template.
+Compose those review and research passes with the `subagent` tool. Treat them as parent-side recipes, not bundled slash commands.
 
 ## Foreground work and control
 
@@ -116,9 +115,9 @@ Tool examples:
 subagent({ agent: "codebase-analyzer", task: "Trace the auth flow with file references." })
 ```
 
-Use `interrupt` to stop a live child. Interrupted children are terminal for continuation; launch a fresh child with an explicit context handoff for follow-up work. Use `doctor` for read-only setup diagnostics.
+Use `interrupt` to stop a live child. Interrupted children are terminal for continuation; launch a fresh child with an explicit context handoff for follow-up work.
 
-Status and interrupt use the live Rust registry and status watch; list and doctor remain read-only management actions. No retained foreground-run map, resume generation, session rehydration, or bare-run-ID continuation exists. Terminal delivery remains an in-memory bounded envelope with artifacts and run history persisted once.
+Status and interrupt use the live Rust registry and status watch; `list` and `get` remain read-only management actions. No retained foreground-run map, resume generation, session rehydration, or bare-run-ID continuation exists. Terminal delivery remains an in-memory bounded envelope with artifacts and run history persisted once.
 
 Inside workflow stages, completion delivery observes the stage generation boundary. A completion received before the boundary closes is queued through the stage AgentSession and processed before the stage publishes its terminal snapshot. A completion that arrives after close is routed once to the parent/main chat and cannot reopen or append to the completed stage transcript. Explicit post-mortem stage chat is still available separately.
 
@@ -157,7 +156,7 @@ Subagent tasks, parallel items, and the top-level call accept a `group` field th
 
 When a subagent call or parallel task uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level runtime errors.
 
-Single-agent calls also accept `reads: string[] | false`. Atomic prepends those files as read context for foreground execution through the same in-process session path, including `/run agent[reads=a.md+b.md]`. Relative entries resolve against the effective child `cwd` (including a relative top-level `cwd` resolved from the parent); absolute entries are unchanged. Invalid values fail before the child session starts.
+Single-agent calls also accept `reads: string[] | false`. Atomic prepends those files as read context for foreground execution through the same in-process session path. Relative entries resolve against the effective child `cwd` (including a relative top-level `cwd` resolved from the parent); absolute entries are unchanged. Invalid values fail before the child session starts.
 
 Single-agent calls accept `progress: boolean` in foreground mode. `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and instructs the child to maintain it without writing `progress.md` into the child `cwd`; `progress: false` disables an agent's `defaultProgress`. When `progress` is omitted, the agent's default is inherited, except that inherited progress is suppressed for read-only tasks (`progress: true` still explicitly opts in). Foreground runs remove this run-owned progress storage after the child exits when `artifacts: false`, including children temporarily detached for intercom coordination. This is separate from `includeProgress: true`, which only includes detailed runtime progress telemetry in the final tool result and does not create or maintain a file.
 
@@ -172,7 +171,7 @@ Child-safety boundaries are enforced by typed admission policy and the bundled s
 - In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout. The bundled subagents skill remains parent-only and is stripped from child prompts, including fanout-authorized children.
 - Child context is filtered to remove parent orchestration artifacts, old control/status messages, and prior parent `subagent` tool calls/results.
 - Children are instructed that they are not the parent orchestrator and must complete their assigned task directly rather than delegating.
-- Delegation is exactly one level deep and is not configurable. A session admitted as a subagent child is refused every launch and `interrupt`; only `list`, `get`, `status`, and `doctor` stay available. A management-restricted child is also refused `create`, `update`, and `delete`.
+- Delegation is exactly one level deep and is not configurable. A session admitted as a subagent child is refused every launch and `interrupt`; only `list`, `get`, and `status` stay available. A management-restricted child is also refused `create`, `update`, and `delete`.
 - The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state, never inherited from process environment state.
 
 This keeps the parent session responsible for orchestration.

@@ -1,8 +1,6 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.js";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.js";
-import { buildDoctorReport } from "../../extension/doctor.js";
-import { resolveIntercomSessionTarget } from "../../intercom/intercom-bridge.js";
 import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.js";
 import { inspectInProcessChildStatus, interruptInProcessChild } from "../inprocess/control-status.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
@@ -22,7 +20,7 @@ import {
 
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 /** Observing management actions do not start or mutate child execution. */
-const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status", "doctor"]);
+const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status"]);
 const FANOUT_REFUSAL_MESSAGE = "Subagent fanout is not authorized for this child.";
 
 export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.js";
@@ -70,41 +68,6 @@ async function handleManagementRequest(input: {
 	if (!READ_ONLY_MANAGEMENT_ACTIONS.has(action)) {
 		const childRefusal = refuseSubagentChildDelegation(ctx, "management");
 		if (childRefusal) return childRefusal;
-	}
-	if (action === "doctor") {
-		let currentSessionFile: string | null = null;
-		let currentSessionId = deps.state.currentSessionId;
-		let sessionError: string | undefined;
-		try {
-			currentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
-			currentSessionId = ctx.sessionManager.getSessionId();
-		} catch (error) {
-			sessionError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-		}
-		let orchestratorTarget: string | undefined;
-		try {
-			orchestratorTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
-		} catch {}
-		return {
-			content: [
-				{
-					type: "text",
-					text: buildDoctorReport({
-						cwd: requestCwd,
-						config: deps.config,
-						state: deps.state,
-						context: paramsWithResolvedCwd.context,
-						requestedSessionDir: paramsWithResolvedCwd.sessionDir,
-						currentSessionFile,
-						currentSessionId,
-						orchestratorTarget,
-						sessionError,
-						expandTilde: deps.expandTilde,
-					}),
-				},
-			],
-			details: { mode: "management", results: [] },
-		};
 	}
 	if (action === "status") {
 		const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
@@ -189,8 +152,8 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
 		}
 		// Fanout authorization gates delegation and privileged control. Only `list`,
-		// `get`, `status`, and `doctor` stay available to an unauthorized child;
-		// `interrupt` and mutating management are refused by handleManagementRequest.
+		// `get`, and `status` stay available to an unauthorized child; `interrupt`
+		// and mutating management are refused by handleManagementRequest.
 		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
 			return {
 				content: [{ type: "text", text: FANOUT_REFUSAL_MESSAGE }],

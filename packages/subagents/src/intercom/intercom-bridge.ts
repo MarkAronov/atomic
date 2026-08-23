@@ -52,19 +52,6 @@ export interface IntercomBridgeState {
 	instruction: string;
 }
 
-export interface IntercomBridgeDiagnostic {
-	active: boolean;
-	mode: IntercomBridgeMode;
-	wantsIntercom: boolean;
-	piIntercomAvailable: boolean;
-	extensionDir: string;
-	configPath?: string;
-	orchestratorTarget?: string;
-	reason?: string;
-	intercomConfigEnabled?: boolean;
-	intercomConfigError?: string;
-}
-
 interface ResolveIntercomBridgeInput {
 	config: ExtensionConfig["intercomBridge"];
 	context: "fresh" | "fork" | undefined;
@@ -315,46 +302,6 @@ function buildIntercomBridgeInstruction(orchestratorTarget: string, template: st
 	if (instruction.startsWith(INTERCOM_BRIDGE_MARKER)) return instruction;
 	return `${INTERCOM_BRIDGE_MARKER}
 ${instruction}`;
-}
-
-export function diagnoseIntercomBridge(input: ResolveIntercomBridgeInput): IntercomBridgeDiagnostic {
-	const config = resolveIntercomBridgeConfig(input.config);
-	const mode = config.mode;
-	const agentDir = path.resolve(input.agentDir ?? defaultAgentDir());
-	const extensionDir = resolveIntercomExtensionDir(input, agentDir);
-	const orchestratorTarget = input.orchestratorTarget?.trim();
-	const configPath = path.resolve(input.configPath ?? defaultIntercomConfigPath(agentDir));
-	const wantsIntercom = mode !== "off" && !(mode === "fork-only" && input.context !== "fork");
-	const piIntercomAvailable = fs.existsSync(extensionDir);
-	let configStatus: ReturnType<typeof intercomConfigStatus> | undefined;
-	let reason: string | undefined;
-	if (mode === "off") reason = "bridge mode is off";
-	else if (mode === "fork-only" && input.context !== "fork")
-		reason = "bridge mode is fork-only and context is not fork";
-	else if (!orchestratorTarget) reason = "orchestrator target is not available";
-	else if (!piIntercomAvailable) reason = "pi-intercom extension was not found";
-	else {
-		configStatus = intercomConfigStatus(configPath);
-		if (!configStatus.enabled) reason = "intercom config is disabled";
-	}
-	let intercomConfigError: string | undefined;
-	if (configStatus?.error) {
-		const error = configStatus.error;
-		intercomConfigError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-	}
-
-	return {
-		active: reason === undefined,
-		mode,
-		wantsIntercom,
-		piIntercomAvailable,
-		extensionDir,
-		configPath,
-		...(orchestratorTarget ? { orchestratorTarget } : {}),
-		...(reason ? { reason } : {}),
-		...(configStatus ? { intercomConfigEnabled: configStatus.enabled } : {}),
-		...(intercomConfigError ? { intercomConfigError } : {}),
-	};
 }
 
 export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): IntercomBridgeState {

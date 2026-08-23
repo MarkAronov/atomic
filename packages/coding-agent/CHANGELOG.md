@@ -9,6 +9,8 @@
 ### Removed
 
 - Removed the bundled writing-rule set from the default system prompt's `Guidelines` section. The unrelated "Be concise in your responses" and "Show file paths clearly when working with files" guidelines remain.
+- Removed the bundled `/subagents-doctor`, `/run`, and `/parallel` entries from the slash-command catalog, and dropped `/parallel-review` and `/parallel-cleanup` suggestions from the `/atomic` guide. Launch children with the `subagent` tool.
+
 
 ## [0.9.16-alpha.1] - 2026-08-23
 

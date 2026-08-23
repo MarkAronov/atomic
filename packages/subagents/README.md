@@ -127,11 +127,12 @@ There is no generic `reviewer` or `planner` agent; pick the specialist whose ang
 
 Builtin agents inherit your current Pi default model by default. This keeps new installs from depending on a provider you may not have configured. If you want a role to use a specific model, set an override instead of copying the bundled agent file.
 
-For one run, put the override in the command:
+For one run, pass `model` on the `subagent` call:
 
-```text
-/run codebase-analyzer[model=anthropic/claude-sonnet-4:high] "Review this diff"
+```typescript
+subagent({ agent: "codebase-analyzer", task: "Review this diff", model: "anthropic/claude-sonnet-4:high" })
 ```
+
 
 For a persistent override, edit settings. This example pins the codebase-analyzer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
 
@@ -169,18 +170,6 @@ You can ask naturally:
 Show me the current subagent status.
 ```
 
-If something feels misconfigured, run:
-
-```text
-/subagents-doctor
-```
-
-or ask:
-
-```text
-Check whether subagents and intercom are set up correctly.
-```
-
 ## Recommended orchestration pattern (scaffolding)
 
 Use orchestration as parent-agent guidance, not as a runtime workflow mode. For implementation work, the recommended loop is:
@@ -189,27 +178,13 @@ Use orchestration as parent-agent guidance, not as a runtime workflow mode. For 
 clarify → gather context → worker → fresh reviewers → worker
 ```
 
-Use the optional prompt shortcuts below when you want the pattern to be repeatable.
+
 
 Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
-Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate or control another child: launches and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, and `status`; delegation and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate or control another child: launches and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
-## Optional shortcuts
 
-The package includes reusable prompt templates for common workflows. You do not need them, but they are handy when you want the same shape every time:
-
-| Prompt | Use it for |
-|--------|------------|
-| `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `/review-loop` | Run parent-controlled write, review, and fix cycles until clean or capped. `debugger` writes fixes for bugs, `code-simplifier` for cleanup. |
-| `/parallel-research` | Combine `codebase-online-researcher` with local code specialists for external evidence, local context, and practical tradeoffs. |
-| `/parallel-context-build` | Run local code and research specialists in parallel to produce handoff context and meta-prompts. |
-| `/parallel-handoff-plan` | Combine external research with local context passes into an implementation handoff plan and meta-prompt. |
-| `/gather-context-and-clarify` | Locate and analyze first, then ask the user the clarification questions that matter. |
-| `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
-
-Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 
 ## Optional intercom companion
 
@@ -245,78 +220,16 @@ Parent-side Atomic still sends grouped completion results through Intercom: one 
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
 
-If messages do not show up, run:
-
-```text
-/subagents-doctor
-```
+If messages do not show up, check the bridge from the intercom side with `intercom({ action: "status" })`.
 
 For normal use, you do not need to configure anything. Advanced users can tune the bridge with `intercomBridge` in the configuration section below.
 
-At this point, you know enough to use the plugin. The rest of this README is reference material for exact command syntax, custom agents, worktrees, and configuration.
-
-## Direct commands
-
-Skip this section until you want exact syntax.
-
-| Command | Description |
-|---------|-------------|
-| `/run <agent> [task]` | Run one agent; omit the task for self-contained agents |
-| `/parallel agent1 "task1" -> agent2 "task2"` | Run agents in parallel |
-| `/subagents-doctor` | Show read-only setup diagnostics |
-
-Commands validate agent names locally, support tab completion, and send results back into the conversation.
-
-### Parallel tasks
-
-Use `->` to separate tasks and give each task its own prompt:
-
-```text
-/parallel codebase-pattern-finder "find security issues" -> codebase-analyzer "check code style"
-```
-
-Both double and single quotes work. You can also use `--` as a delimiter:
-
-```text
-/parallel codebase-locator codebase-analyzer -- check for security issues
-```
-
-Tasks without a prompt use the first available task as a fallback.
-
-### Inline per-step config
-
-Append `[key=value,...]` to an agent name to override defaults for that step:
-
-```text
-/run codebase-locator[model=anthropic/claude-sonnet-4] summarize this codebase
-/parallel codebase-analyzer[skills=code-review+security] "review backend" -> codebase-analyzer[model=openai/gpt-5-mini] "review frontend"
-```
-
-| Key | Example | Description |
-|-----|---------|-------------|
-| `output` | `output=context.md` | Write results to a file. For `/parallel`, relative paths resolve against the child working directory; for `/run`, relative paths resolve against cwd. |
-| `outputMode` | `outputMode=file-only` | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`. |
-| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. `/run` forwards these through the same resolver as tool-based foreground launches, so relative paths use the effective child working directory. |
-| `model` | `model=anthropic/claude-sonnet-4` | Override model for this step. |
-| `skills` | `skills=planning+review` | Override injected skills. `+` separates multiple skills. |
-| `progress` | `progress` | Enable progress tracking. |
-
-Set `output=false`, `reads=false`, or `skills=false` to disable that behavior explicitly. Do not use `output=false` for file-only returns; use `outputMode=file-only` with an `output` path.
-
-### Forked runs
-
-Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
-
-```text
-/run codebase-analyzer "review this diff" --fork
-/parallel codebase-locator "audit frontend" -> codebase-analyzer "audit backend" --fork
-```
-
-`worker` is designed for an explicit decision loop. A typical pattern is to ask a read-only specialist such as `codebase-analyzer` or `debugger` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
+At this point, you know enough to use the plugin. The rest of this README is reference material for custom agents, worktrees, and configuration.
 
 ## Non-interactive execution
 
-Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Gather any needed context and ask the user questions in the parent conversation before launching.
+Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, and prompt-template execution. Gather any needed context and ask the user questions in the parent conversation before launching.
+
 
 ## Agents
 
@@ -408,7 +321,7 @@ interactive: true
 Your system prompt goes here.
 ```
 
-Frontmatter is parsed with a real YAML parser, so it must be valid YAML: a file whose frontmatter does not parse (for example a colon-space inside an unquoted scalar like `description: Deploy: fast`, duplicate keys, or tab-indented block lists) is skipped during discovery. `subagent({ action: "doctor" })` lists every skipped file with the parser's message, so a bad file never disappears silently.
+Frontmatter is parsed with a real YAML parser, so it must be valid YAML: a file whose frontmatter does not parse (for example a colon-space inside an unquoted scalar like `description: Deploy: fast`, duplicate keys, or tab-indented block lists) is skipped during discovery. Discovery records the parser's message for every skipped file, so a bad file never disappears silently.
 
 Important fields:
 
@@ -499,11 +412,11 @@ The package bundles a `subagent` skill that is automatically available to the pa
 
 What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single or parallel mode, and whether to use fresh or forked context
-- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
+- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel research, parallel context-build, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers
 - **Safety boundaries**: child agents must not run subagents, must not invent intercom targets, and must escalate unapproved decisions
 - **Intercom conventions**: when to ask vs send, and how parent-side result delivery works with `pi-intercom`
-- **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
+- **Control signals**: attention signals, soft interrupts, and status
 
 If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and prompt shortcuts encode the same workflows in user-facing form.
 
@@ -593,7 +506,7 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, or `interrupt`. |
 | `config` | object/string | - | Agent config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
@@ -624,7 +537,6 @@ Status and control actions:
 subagent({ action: "status" })
 subagent({ action: "status", id: "<run-id>" })
 subagent({ action: "interrupt", id: "<run-id>" })
-subagent({ action: "doctor" })
 ```
 
 Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work.
@@ -783,7 +695,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Delegation boundary
 
-Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `doctor` stay available to a child.
+Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, and `status` stay available to a child.
 
 There is no configuration option, agent frontmatter field, or tool parameter for the delegation level. The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state and is not inherited through an environment variable.
 
@@ -840,13 +752,13 @@ The main runtime files are:
 |------|---------|
 | `src/extension/index.ts` | Extension registration, tool registration, message/render wiring. |
 | `src/agents/agents.ts` | Agent discovery and frontmatter parsing. |
-| `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, management, status, interrupt, and doctor actions. |
+| `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, management, status, and interrupt actions. |
 | `src/runs/foreground/execution.ts` | Core foreground `runSync` handling. |
 | `src/runs/foreground/notify.ts` | Completion-notification delivery for a detached Intercom child. |
 | `src/runs/foreground/completion-notification.ts` | Local completion acknowledgement and ordering barrier for detached children. |
 | `src/shared/settings.ts` | Shared task behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |
-| `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |
+| `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions. |
 | `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
 | `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |
 
