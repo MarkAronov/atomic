@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@bastani/atomic";
+import { createGitEnvironment, type ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -103,7 +103,11 @@ function text(result: Awaited<ReturnType<ReturnType<typeof createSubagentExecuto
 }
 
 function git(root: string, args: string[]): string {
-	const result = spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
+	const result = spawnSyncCollect(["git", "-C", root, ...args], {
+		stdout: "pipe",
+		stderr: "pipe",
+		env: createGitEnvironment(),
+	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	return result.stdout.toString().trim();
 }
