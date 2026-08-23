@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.16-alpha.2] - 2026-08-23
+
 ### Added
 
 - Added Lauren Tan's bundled `bro`, `how`, `teach`, `unslop`, and `why` pstack skills for plain-language restatement, codebase explanation, teaching, writing cleanup, and evidence-backed design rationale. Sourced from https://github.com/cursor/plugins and distributed under the MIT License.

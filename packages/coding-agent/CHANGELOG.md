@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.2] - 2026-08-23
+
 ### Changed
 
 - Main-chat model fallback is now session-sticky: after failover, later turns keep using the selected fallback model and thinking level until an explicit `/model` selection or model cycle changes it.
