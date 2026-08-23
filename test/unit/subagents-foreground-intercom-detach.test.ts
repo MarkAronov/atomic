@@ -87,7 +87,7 @@ describe("foreground intercom detach routing", () => {
 				allowIntercomDetach: true,
 				intercomEvents: eventBus(emitter),
 				artifactsDir: dir,
-				testSession: { output: "resumed result", promptGate: gate.promise },
+				testSession: { output: "detached result", promptGate: gate.promise },
 				onDetachedExit: (result) => {
 					recovered.push(result);
 					resolveRecovery();
@@ -103,10 +103,10 @@ describe("foreground intercom detach routing", () => {
 			assert.equal(recovered.length, 1);
 			const actual = recovered[0]!;
 			assert.equal(actual.status, "ok");
-			assert.match(actual.finalOutput ?? "", /resumed result/);
+			assert.match(actual.finalOutput ?? "", /detached result/);
 			const actualArtifacts = actual.artifactPaths;
 			assert.ok(actualArtifacts);
-			assert.match(fs.readFileSync(actualArtifacts.outputPath, "utf8"), /resumed result/);
+			assert.match(fs.readFileSync(actualArtifacts.outputPath, "utf8"), /detached result/);
 			const metadata = JSON.parse(fs.readFileSync(actualArtifacts.metadataPath, "utf8")) as { status: string };
 			assert.equal(metadata.status, "ok");
 		});

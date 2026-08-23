@@ -3,8 +3,8 @@ import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
 import type {
-	ForegroundParentAskPause,
-	ParentAskPauseRequest,
+	ForegroundParentAskHandoff,
+	ParentAskHandoffRequest,
 	SingleResult,
 } from "../../packages/subagents/src/shared/types.js";
 
@@ -112,10 +112,10 @@ test("one parallel child's supervisor detach releases every active foreground si
 	assert.match(output[2]?.error ?? "", /Skipped after foreground group detached/);
 });
 
-test("one parallel parent ask pauses active siblings and withholds queued work", async () => {
+test("one parallel parent ask ends active siblings and withholds queued work", async () => {
 	const started: number[] = [];
 	const siblingStarted = Promise.withResolvers<void>();
-	let pause: ForegroundParentAskPause | undefined;
+	let handoff: ForegroundParentAskHandoff | undefined;
 	const output = await runForegroundParallelTasks({
 		tasks: [
 			{ agent: "fake-worker", task: "ask parent" },
@@ -162,8 +162,8 @@ test("one parallel parent ask pauses active siblings and withholds queued work",
 		concurrencyLimit: 2,
 		liveResults: [],
 		liveProgress: [],
-		onParentAskPause: (value) => {
-			pause = value;
+		onParentAskHandoff: (value) => {
+			handoff = value;
 		},
 		runtime: {
 			async runSync(_cwd, _agents, _agentName, _task, options) {
@@ -172,7 +172,7 @@ test("one parallel parent ask pauses active siblings and withholds queued work",
 				if (index === 1) siblingStarted.resolve();
 				if (index === 0) {
 					await siblingStarted.promise;
-					const request: ParentAskPauseRequest = {
+					const request: ParentAskHandoffRequest = {
 						runId: "parallel-parent-ask",
 						index: 0,
 						agent: "fake-worker",
@@ -182,7 +182,7 @@ test("one parallel parent ask pauses active siblings and withholds queued work",
 						question: "Pick one",
 						claimed: true,
 					};
-					options.onParentAskClaim?.(request);
+					options.onParentAskHandoff?.(request);
 				}
 				await new Promise<void>((resolve) => {
 					options.interruptSignal?.addEventListener("abort", () => resolve(), { once: true });
@@ -203,12 +203,12 @@ test("one parallel parent ask pauses active siblings and withholds queued work",
 	});
 
 	assert.deepEqual(started, [0, 1]);
-	assert.deepEqual(pause?.releasedChildIndices, [0, 1]);
-	assert.equal(pause?.askingChildIndex, 0);
-	assert.deepEqual(pause?.unlaunchedChildIndices, [2]);
+	assert.deepEqual(handoff?.releasedChildIndices, [0, 1]);
+	assert.equal(handoff?.askingChildIndex, 0);
+	assert.deepEqual(handoff?.unlaunchedChildIndices, [2]);
 	assert.ok(output.slice(0, 2).every((entry) => entry.interrupted));
 	assert.equal(output[2]?.status, "skipped");
-	assert.match(output[2]?.error ?? "", /Skipped after parent ask pause/);
+	assert.match(output[2]?.error ?? "", /Skipped after parent ask handoff/);
 });
 
 test("parallel authorization is exact and a child still waiting after a parent ask never starts", async () => {
@@ -220,7 +220,7 @@ test("parallel authorization is exact and a child still waiting after a parent a
 	const twoRequests = Promise.withResolvers<void>();
 	const firstStarted = Promise.withResolvers<void>();
 	const started: number[] = [];
-	let pause: ForegroundParentAskPause | undefined;
+	let handoff: ForegroundParentAskHandoff | undefined;
 	const execution = runForegroundParallelTasks({
 		tasks: [
 			{ agent: "fake-worker", task: "ask parent" },
@@ -285,8 +285,8 @@ test("parallel authorization is exact and a child still waiting after a parent a
 		concurrencyLimit: 2,
 		liveResults: [],
 		liveProgress: [],
-		onParentAskPause: (value) => {
-			pause = value;
+		onParentAskHandoff: (value) => {
+			handoff = value;
 		},
 		runtime: {
 			async runSync(_cwd, _agents, _agentName, _task, options) {
@@ -295,7 +295,7 @@ test("parallel authorization is exact and a child still waiting after a parent a
 				if (index === 0) firstStarted.resolve();
 				assert.equal(options.supervisorAuthorization?.childName, `child-${index}`);
 				assert.equal(options.supervisorAuthorization?.capability, `cap-child-${index}`);
-				const request: ParentAskPauseRequest = {
+				const request: ParentAskHandoffRequest = {
 					runId: "parallel-authorization",
 					index,
 					agent: "fake-worker",
@@ -305,7 +305,7 @@ test("parallel authorization is exact and a child still waiting after a parent a
 					question: "Pick one",
 					claimed: true,
 				};
-				options.onParentAskClaim?.(request);
+				options.onParentAskHandoff?.(request);
 				return {
 					agent: "fake-worker",
 					task: `task-${index}`,
@@ -334,7 +334,7 @@ test("parallel authorization is exact and a child still waiting after a parent a
 	const output = await execution;
 
 	assert.deepEqual(started, [0]);
-	assert.deepEqual(pause?.releasedChildIndices, [0]);
+	assert.deepEqual(handoff?.releasedChildIndices, [0]);
 	assert.deepEqual(requestedChildren, ["child-0", "child-1"]);
 	assert.equal(output[0]?.status, "interrupted");
 	assert.equal(output[1]?.status, "skipped");

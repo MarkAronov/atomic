@@ -19,7 +19,7 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type {
-	ParentAskPauseRequest,
+	ParentAskHandoffRequest,
 	SingleResult,
 	SubagentAttemptStatus,
 	SubagentToolResult,
@@ -54,7 +54,6 @@ function makeState(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -229,8 +228,8 @@ test("coalesces concurrent sibling SINGLE calls and routes one child result to e
 			[["A"], ["B"], ["C"]],
 		);
 		for (let index = 0; index < outputs.length; index++) {
-			assert.equal(Object.hasOwn(outputs[index]!.details!, "parentAskPaused"), true);
-			assert.equal(outputs[index]!.details?.parentAskPaused, false);
+			assert.equal(Object.hasOwn(outputs[index]!.details!, "parentAskYielded"), true);
+			assert.equal(outputs[index]!.details?.parentAskYielded, false);
 			const content = outputs[index]?.content[0];
 			const text = content?.type === "text" ? content.text : "";
 			assert.match(text, new RegExp(`output:${["A", "B", "C"][index]}`));
@@ -1125,13 +1124,13 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 	}
 });
 
-test("preserves parent ask pause fields and projects text only to the asking route", async () => {
+test("preserves parent ask handoff fields and projects text only to the asking route", async () => {
 	const harness = makeHarness({
 		runSync: async (_parentCwd, _agents, agentName, task, options) => {
 			const child = result(agentName, task);
 			if (task === "asking-child") {
-				assert.ok(options.onParentAskClaim);
-				const request: ParentAskPauseRequest = {
+				assert.ok(options.onParentAskHandoff);
+				const request: ParentAskHandoffRequest = {
 					runId: options.runId,
 					index: options.index ?? 0,
 					agent: agentName,
@@ -1141,7 +1140,7 @@ test("preserves parent ask pause fields and projects text only to the asking rou
 					question: "Keep  this question\nverbatim.",
 					claimed: true,
 				};
-				options.onParentAskClaim(request);
+				options.onParentAskHandoff(request);
 				child.interrupted = true;
 			}
 			return child;
@@ -1158,16 +1157,18 @@ test("preserves parent ask pause fields and projects text only to the asking rou
 			[["asking-child"], ["released-sibling"]],
 		);
 		for (const output of outputs) {
-			assert.equal(Object.hasOwn(output.details!, "parentAskPaused"), true);
-			assert.equal(output.details?.parentAskPaused, true);
+			assert.equal(Object.hasOwn(output.details!, "parentAskYielded"), true);
+			assert.equal(output.details?.parentAskYielded, true);
 		}
 		const ownerText = outputs[0]!.content[0]?.type === "text" ? outputs[0]!.content[0].text : "";
-		assert.match(ownerText, /Subagent paused for parent input \(echo, child 1\)\./);
+		assert.match(ownerText, /Subagent yielded for parent input \(echo, child 1\)\./);
 		assert.match(ownerText, /Question:\nKeep {2}this question\nverbatim\./);
-		assert.match(ownerText, /Resume with: subagent\(\{ action: "resume", id:/);
+		assert.match(ownerText, /Start a fresh subagent with a new run identity/);
+		assert.match(ownerText, /\[TASK_CONTEXT\]/);
+		assert.doesNotMatch(ownerText, /action.*resume/i);
 		assert.doesNotMatch(ownerText, /released-sibling/);
 		const siblingText = outputs[1]!.content[0]?.type === "text" ? outputs[1]!.content[0].text : "";
-		assert.doesNotMatch(siblingText, /Subagent paused for parent input|Keep {2}this question|asking-child/);
+		assert.doesNotMatch(siblingText, /Subagent yielded for parent input|Keep {2}this question|asking-child/);
 
 		const ownerContext = {
 			toolCallId: "parent-ask-first",
@@ -1180,9 +1181,9 @@ test("preserves parent ask pause fields and projects text only to the asking rou
 				120,
 			),
 		].join("\n");
-		assert.match(rendered, /paused parallel/);
+		assert.match(rendered, /yielded parallel/);
 		assert.match(rendered, /Keep {2}this question/);
-		assert.match(rendered, /Resume with: subagent/);
+		assert.match(rendered, /Start a fresh subagent/);
 	} finally {
 		harness.cleanup();
 	}
@@ -1194,8 +1195,8 @@ test("rebases later-route parent ask guidance without leaking it to sibling outp
 		runSync: async (_parentCwd, _agents, agentName, task, options) => {
 			const child = result(agentName, task);
 			if (task === "later-asking-child") {
-				assert.ok(options.onParentAskClaim);
-				const request: ParentAskPauseRequest = {
+				assert.ok(options.onParentAskHandoff);
+				const request: ParentAskHandoffRequest = {
 					runId: options.runId,
 					index: options.index ?? 0,
 					agent: agentName,
@@ -1205,7 +1206,7 @@ test("rebases later-route parent ask guidance without leaking it to sibling outp
 					question,
 					claimed: true,
 				};
-				options.onParentAskClaim(request);
+				options.onParentAskHandoff(request);
 				child.interrupted = true;
 			}
 			return child;
@@ -1228,21 +1229,16 @@ test("rebases later-route parent ask guidance without leaking it to sibling outp
 		const firstText = first.content[0]?.type === "text" ? first.content[0].text : "";
 		const laterText = later.content[0]?.type === "text" ? later.content[0].text : "";
 		assert.match(firstText, /output:earlier-sibling/);
-		assert.doesNotMatch(firstText, /Subagent paused for parent input|this later question|later-asking-child/);
+		assert.doesNotMatch(firstText, /Subagent yielded for parent input|this later question|later-asking-child/);
 
 		const runId = later.details?.runId;
 		assert.ok(runId);
-		assert.equal(
-			laterText,
-			[
-				"Subagent paused for parent input (echo, child 1).",
-				`Run: ${runId}`,
-				"Question:",
-				question,
-				"",
-				`Resume with: subagent({ action: "resume", id: "${runId}", message: "<answer>" })`,
-			].join("\n"),
-		);
+		assert.match(laterText, /Subagent yielded for parent input \(echo, child 1\)\./);
+		assert.match(laterText, new RegExp(`Previous run \\(terminal\\): ${runId}`));
+		assert.match(laterText, /Keep {2}this later question\nverbatim\./);
+		assert.match(laterText, /\[TASK_CONTEXT\]/);
+		assert.match(laterText, /Original delegated task and objective:\\nlater-asking-child/);
+		assert.doesNotMatch(laterText, /action.*resume/i);
 		assert.doesNotMatch(laterText, /child 2|earlier-sibling/);
 		assert.doesNotMatch(JSON.stringify(later.details), /earlier-sibling/);
 	} finally {
@@ -1332,7 +1328,7 @@ test("preserves shared interrupt guidance while projecting each caller's child r
 			execute(harness, "first", { agent: "echo", task: "A" }),
 			execute(harness, "second", { agent: "echo", task: "B" }),
 		]);
-		const expected = "Parallel run paused after interrupt (echo). Waiting for explicit next action.";
+		const expected = "Parallel run ended after interrupt (echo). Launch fresh subagents for any follow-up.";
 
 		assert.deepEqual(
 			outputs.map((output) => output.content),

@@ -218,7 +218,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			baseCwd: "",
 			currentSessionId: null,
 			subagentInProgress: false,
-			foregroundRuns: new Map(),
 			foregroundControls: new Map(),
 			lastForegroundControlId: null,
 			pendingForegroundControlNotices: new Map(),

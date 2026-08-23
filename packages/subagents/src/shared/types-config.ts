@@ -41,7 +41,7 @@ export interface IntercomEventBus {
 }
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
-export const PARENT_ASK_PAUSE_REQUEST_EVENT = "subagent:parent-ask-pause-request";
+export const PARENT_ASK_HANDOFF_REQUEST_EVENT = "subagent:parent-ask-handoff-request";
 export const SUBAGENT_COMPLETE_EVENT = "subagent:complete";
 export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
@@ -72,7 +72,7 @@ export interface ParentAskAttachment {
 	language?: string;
 }
 
-export interface ParentAskPauseRequest {
+export interface ParentAskHandoffRequest {
 	runId: string;
 	index: number;
 	agent: string;
@@ -83,6 +83,8 @@ export interface ParentAskPauseRequest {
 	attachments?: ParentAskAttachment[];
 	interview?: ParentAskInterviewRequest;
 	resolvedTargetId?: string;
+	/** Original delegated task supplied by the parent model for a fresh-child handoff. */
+	taskContext?: string;
 	claimed: boolean;
 }
 
@@ -101,8 +103,8 @@ export interface RunSyncOptions {
 	intercomDetachSignal?: AbortSignal;
 	/** Releases every active foreground sibling only after this exact child accepts a detach commit. */
 	onIntercomDetachCommit?: () => void;
-	/** Claims a blocking ask from this exact child and starts retained interruption. */
-	onParentAskClaim?: (request: ParentAskPauseRequest) => void;
+	/** Claims a blocking ask from this exact child and ends it with a fresh-child handoff. */
+	onParentAskHandoff?: (request: ParentAskHandoffRequest) => void;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;

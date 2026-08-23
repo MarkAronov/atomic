@@ -1,31 +1,14 @@
-/**
- * In-process attempt handles for a top-level session's direct children.
- *
- * Delegation is one level deep, so this registry only ever holds a parent's own
- * children. A live child is addressed by its run id or canonical task path, and
- * interrupt/resume reach it through the handle registered when its attempt
- * started — never through a request file, a capability token, or a poller.
- */
-
-export interface InProcessAttemptResumeOutcome {
-	readonly status: "ok" | "error" | "interrupted" | "continued";
-	readonly path: string;
-	readonly sessionFile?: string;
-	readonly envelope?: string;
-}
-
+/** Live in-process attempt handles used only for separately supported interrupt control. */
 export interface InProcessAttemptHandle {
 	readonly runId: string;
 	readonly path: string;
 	readonly status: () => string;
 	readonly interrupt: () => Promise<void>;
-	readonly resume: (message: string) => Promise<InProcessAttemptResumeOutcome>;
 }
 
 export interface InProcessAttemptControlResult {
 	readonly ok: boolean;
 	readonly message: string;
-	readonly outcome?: InProcessAttemptResumeOutcome;
 }
 
 const attemptHandles = new Map<string, Map<string, InProcessAttemptHandle>>();
@@ -74,29 +57,6 @@ export async function interruptInProcessAttempt(targetId: string): Promise<InPro
 	}
 	await Promise.all(active.map((handle) => handle.interrupt()));
 	return { ok: true, message: `Interrupt requested for run ${targetId}.` };
-}
-
-export async function resumeInProcessAttempt(
-	targetId: string,
-	message: string,
-): Promise<InProcessAttemptControlResult | undefined> {
-	const handles = handlesFor(targetId);
-	if (handles.length === 0) return undefined;
-	const handle =
-		handles.find((candidate) => candidate.status() === "interrupted" || candidate.status() === "error") ?? handles[0];
-	if (!handle) return undefined;
-	if (handle.status() === "running" || handle.status() === "continued") {
-		return { ok: false, message: `Run ${targetId} is still running; resume is not required.` };
-	}
-	const outcome = await handle.resume(message);
-	return {
-		ok: outcome.status === "ok" || outcome.status === "continued",
-		message:
-			outcome.status === "ok"
-				? `Reloaded run ${targetId} through the in-process control plane.`
-				: `Run ${targetId} resume ended with status '${outcome.status}'.`,
-		outcome,
-	};
 }
 
 export function clearInProcessAttemptHandles(): void {

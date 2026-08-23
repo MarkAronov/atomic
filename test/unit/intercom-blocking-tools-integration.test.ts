@@ -11,17 +11,17 @@ import {
 } from "../../packages/intercom/foreground-detach-handoff.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import {
-	PARENT_ASK_PAUSE_REQUEST_EVENT,
-	type ParentAskPauseRequest,
-	requestParentAskPause,
-} from "../../packages/intercom/parent-ask-pause.js";
+	PARENT_ASK_HANDOFF_REQUEST_EVENT,
+	type ParentAskHandoffRequest,
+	requestParentAskHandoff,
+} from "../../packages/intercom/parent-ask-handoff.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { Attachment, Message, SessionInfo } from "../../packages/intercom/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
-import { registerExecutionParentAskPause } from "../../packages/subagents/src/runs/foreground/execution-parent-ask-pause.js";
+import { registerExecutionParentAskHandoff } from "../../packages/subagents/src/runs/foreground/execution-parent-ask-handoff.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -201,9 +201,9 @@ const context = { sessionManager: { getSessionId: () => "child-session" }, hasUI
 describe("registered blocking intercom tools", () => {
 	test("contact_supervisor need_decision yields to a claimed parent ask before broker connection", async () => {
 		const current = fixture("supervisor");
-		let captured: ParentAskPauseRequest | undefined;
-		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, (payload) => {
-			captured = payload as ParentAskPauseRequest;
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
 			captured.claimed = true;
 		});
 
@@ -227,9 +227,9 @@ describe("registered blocking intercom tools", () => {
 	});
 	test("contact_supervisor interview_request preserves validated question order in the pause request", async () => {
 		const current = fixture("supervisor");
-		let captured: ParentAskPauseRequest | undefined;
-		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, (payload) => {
-			captured = payload as ParentAskPauseRequest;
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
 			captured.claimed = true;
 		});
 
@@ -263,9 +263,9 @@ describe("registered blocking intercom tools", () => {
 	});
 	test("intercom ask yields when its target resolves to the launching parent", async () => {
 		const current = fixture("intercom");
-		let captured: ParentAskPauseRequest | undefined;
-		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, (payload) => {
-			captured = payload as ParentAskPauseRequest;
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
 			captured.claimed = true;
 		});
 
@@ -287,9 +287,9 @@ describe("registered blocking intercom tools", () => {
 	});
 	test("parent-targeted intercom ask preserves ordered attachments", async () => {
 		const current = fixture("intercom");
-		let captured: ParentAskPauseRequest | undefined;
-		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, (payload) => {
-			captured = payload as ParentAskPauseRequest;
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
 			captured.claimed = true;
 		});
 		const attachments: Attachment[] = [
@@ -311,9 +311,9 @@ describe("registered blocking intercom tools", () => {
 	});
 	test("intercom ask also yields for the exact launching-parent session ID", async () => {
 		const current = fixture("intercom");
-		let captured: ParentAskPauseRequest | undefined;
-		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, (payload) => {
-			captured = payload as ParentAskPauseRequest;
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
 			captured.claimed = true;
 		});
 		const result = await current.tool.execute(
@@ -331,7 +331,7 @@ describe("registered blocking intercom tools", () => {
 	test("intercom ask to a non-parent peer keeps the normal waiter and send path", async () => {
 		const current = fixture("intercom");
 		let parentAskEvents = 0;
-		current.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, () => {
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
 			parentAskEvents += 1;
 		});
 		const execution = current.tool.execute(
@@ -437,7 +437,7 @@ describe("registered blocking intercom tools", () => {
 	test("send and progress_update return without creating a reply waiter", async () => {
 		const send = fixture("intercom");
 		let parentAskEvents = 0;
-		send.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, () => {
+		send.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
 			parentAskEvents += 1;
 		});
 		const sent = await send.tool.execute(
@@ -453,7 +453,7 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(parentAskEvents, 0);
 
 		const progress = fixture("supervisor");
-		progress.events.on(PARENT_ASK_PAUSE_REQUEST_EVENT, () => {
+		progress.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
 			parentAskEvents += 1;
 		});
 		const updated = await progress.tool.execute(
@@ -492,11 +492,11 @@ test("a child-scoped event bus claims the exact live parent execution through th
 	const emitter = new EventEmitter();
 	const listenerReady = Promise.withResolvers<void>();
 	const interruptController = new AbortController();
-	let captured: ParentAskPauseRequest | undefined;
+	let captured: ParentAskHandoffRequest | undefined;
 	const bus = {
 		on(channel: string, handler: (payload: unknown) => void) {
 			emitter.on(channel, handler);
-			if (channel === PARENT_ASK_PAUSE_REQUEST_EVENT) listenerReady.resolve();
+			if (channel === PARENT_ASK_HANDOFF_REQUEST_EVENT) listenerReady.resolve();
 			return () => emitter.off(channel, handler);
 		},
 		emit(channel: string, payload: unknown) {
@@ -522,7 +522,7 @@ test("a child-scoped event bus claims the exact live parent execution through th
 			orchestratorIntercomTarget: "parent-id",
 			intercomEvents: bus,
 			interruptSignal: interruptController.signal,
-			onParentAskClaim: (request) => {
+			onParentAskHandoff: (request) => {
 				captured = request;
 				interruptController.abort();
 			},
@@ -534,7 +534,7 @@ test("a child-scoped event bus claims the exact live parent execution through th
 			await foreground;
 			assert.fail("parent-ask listener was not registered");
 		}
-		const claimed = requestParentAskPause(
+		const claimed = requestParentAskHandoff(
 			childBus as never,
 			{
 				runId: "exact-run",
@@ -553,7 +553,7 @@ test("a child-scoped event bus claims the exact live parent execution through th
 		assert.equal(result.interrupted, true);
 		assert.notEqual(result.finalOutput, "must not complete");
 		assert.equal(
-			requestParentAskPause(
+			requestParentAskHandoff(
 				childBus as never,
 				{
 					runId: "exact-run",
@@ -585,21 +585,21 @@ test("a parent ask request can be claimed only once", () => {
 	};
 	let claims = 0;
 	for (let listener = 0; listener < 2; listener++) {
-		registerExecutionParentAskPause(
+		registerExecutionParentAskHandoff(
 			{
 				runId: "same-run",
 				index: 0,
 				intercomSessionName: "same-child",
 				orchestratorIntercomTarget: "same-parent",
 				intercomEvents: events,
-				onParentAskClaim: () => {
+				onParentAskHandoff: () => {
 					claims += 1;
 				},
 			},
 			{ agent: "worker", isUnavailable: () => false },
 		);
 	}
-	const unmatched: ParentAskPauseRequest[] = [
+	const unmatched: ParentAskHandoffRequest[] = [
 		{
 			runId: "other-run",
 			index: 0,
@@ -631,10 +631,10 @@ test("a parent ask request can be claimed only once", () => {
 			claimed: false,
 		},
 	];
-	for (const candidate of unmatched) events.emit(PARENT_ASK_PAUSE_REQUEST_EVENT, candidate);
+	for (const candidate of unmatched) events.emit(PARENT_ASK_HANDOFF_REQUEST_EVENT, candidate);
 	assert.ok(unmatched.every((candidate) => !candidate.claimed));
 	assert.equal(claims, 0);
-	const request: ParentAskPauseRequest = {
+	const request: ParentAskHandoffRequest = {
 		runId: "same-run",
 		index: 0,
 		agent: "worker",
@@ -644,7 +644,7 @@ test("a parent ask request can be claimed only once", () => {
 		question: "one owner",
 		claimed: false,
 	};
-	events.emit(PARENT_ASK_PAUSE_REQUEST_EVENT, request);
+	events.emit(PARENT_ASK_HANDOFF_REQUEST_EVENT, request);
 	assert.equal(request.claimed, true);
 	assert.equal(claims, 1);
 });

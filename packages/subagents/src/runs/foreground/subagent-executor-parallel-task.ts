@@ -9,7 +9,7 @@ import type {
 	AgentProgress,
 	ArtifactConfig,
 	ControlEvent,
-	ForegroundParentAskPause,
+	ForegroundParentAskHandoff,
 	IntercomEventBus,
 	MaxOutputConfig,
 	RunSyncOptions,
@@ -62,7 +62,7 @@ interface ForegroundParallelRunInput {
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
-	onParentAskPause?: (pause: ForegroundParentAskPause) => void;
+	onParentAskHandoff?: (handoff: ForegroundParentAskHandoff) => void;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
 	onExecution?: (index: number, runtimeCwd: string, options: RunSyncOptions) => void;
 	worktreeSetup?: WorktreeSetup;
@@ -87,7 +87,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const activeIndices = new Set<number>();
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
 		if (parentAskController.signal.aborted) {
-			return skippedParallelResult(task, input.taskTexts[index] ?? task.task, "Skipped after parent ask pause");
+			return skippedParallelResult(task, input.taskTexts[index] ?? task.task, "Skipped after parent ask handoff");
 		}
 		if (intercomDetachController.signal.aborted) {
 			return skippedParallelResult(
@@ -117,7 +117,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		const childIntercomTarget = input.childIntercomTarget?.(task.agent, index);
 		const supervisorAuthorization = await requestSupervisorAuthorization(input.intercomEvents, childIntercomTarget);
 		if (parentAskController.signal.aborted) {
-			return skippedParallelResult(task, input.taskTexts[index] ?? task.task, "Skipped after parent ask pause");
+			return skippedParallelResult(task, input.taskTexts[index] ?? task.task, "Skipped after parent ask handoff");
 		}
 		if (intercomDetachController.signal.aborted) {
 			return skippedParallelResult(
@@ -179,10 +179,11 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 			intercomDetachSignal: intercomDetachController.signal,
 			onIntercomDetachCommit: () => intercomDetachController.abort(),
-			onParentAskClaim: input.onParentAskPause
+			onParentAskHandoff: input.onParentAskHandoff
 				? (request) => {
 						if (parentAskController.signal.aborted) return;
-						input.onParentAskPause?.({
+						request.taskContext = input.tasks[request.index]?.task ?? "";
+						input.onParentAskHandoff?.({
 							askingChildIndex: request.index,
 							releasedChildIndices: [...activeIndices].sort((left, right) => left - right),
 							unlaunchedChildIndices: input.tasks

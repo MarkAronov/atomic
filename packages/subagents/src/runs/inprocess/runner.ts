@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -45,7 +45,7 @@ import {
 	type MaxOutputConfig,
 	truncateOutput,
 } from "../../shared/types.js";
-import { type InProcessAttemptResumeOutcome, registerInProcessAttempt } from "./attempt-handles.js";
+import { registerInProcessAttempt } from "./attempt-handles.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 
@@ -1143,56 +1143,6 @@ export class SubagentControlRuntime {
 		return running.child.identity.path;
 	}
 
-	reloadColdChild(pathValue: string, message: string): AdmittedResult {
-		let sessionDir: string;
-		try {
-			sessionDir = sessionDirectory(this.sessionRoot, pathValue);
-		} catch (error) {
-			return {
-				refusal: {
-					kind: "invalidCwd",
-					reason: error instanceof Error ? error.message : String(error),
-				},
-			};
-		}
-		const identity = this.native.listChildren().find((child) => child.path === pathValue);
-		if (!identity)
-			return {
-				refusal: { kind: "unknownAgent", reason: "unknown child identity" },
-			};
-		const sessionFile = this.sessionFiles.get(pathValue) ?? this.findSessionFile(sessionDir);
-		if (!sessionFile)
-			return {
-				refusal: {
-					kind: "invalidCwd",
-					reason: "child session file is missing",
-				},
-			};
-		sessionDir = dirname(sessionFile);
-		const native = this.native.reloadColdChild(pathValue, message);
-		if (!native.child) return refusal(native);
-		const previous = this.specs.get(pathValue);
-		if (!previous)
-			return {
-				refusal: {
-					kind: "unknownAgent",
-					reason: "child policy is not resident",
-				},
-			};
-		const spec: ChildSpec = { ...previous, task: message };
-		this.specs.set(pathValue, spec);
-		return {
-			admitted: AdmittedChild.create({
-				identity: native.child,
-				spec,
-				policy: { ...this.policyFor(spec, native.child.depth) },
-				sessionDir,
-				sessionFile,
-				control: this,
-			}),
-		};
-	}
-
 	getChildMetadata(pathValue: string): ChildRuntimeMetadata | undefined {
 		const running = [...this.runningAttempts.values()].find(
 			(attempt) =>
@@ -1210,31 +1160,13 @@ export class SubagentControlRuntime {
 		};
 	}
 
-	/** Expose a direct child's live attempt so `interrupt`/`resume` can reach it by run id or path. */
-	registerAttempt(runId: string, running: RunningAttempt, candidate: ModelCandidate): void {
+	/** Expose a direct child's live attempt so interrupt can reach it by run id or path. */
+	registerAttempt(runId: string, running: RunningAttempt): void {
 		registerInProcessAttempt({
 			runId,
 			path: running.child.identity.path,
 			status: () => running.status,
 			interrupt: () => this.terminateChildAttempt(running, "interrupt"),
-			resume: async (message): Promise<InProcessAttemptResumeOutcome> => {
-				const admission = this.reloadColdChild(running.child.identity.path, message);
-				if (!admission.admitted) {
-					throw new Error(admission.refusal?.reason ?? "child cold reload was refused");
-				}
-				const neverAbort = new AbortController().signal;
-				const resumed = this.startAttempt(admission.admitted, candidate, {
-					abort: neverAbort,
-					interrupt: neverAbort,
-				});
-				const outcome = await resumed.promise;
-				return {
-					status: outcome.status,
-					path: outcome.path,
-					sessionFile: outcome.sessionFile,
-					envelope: outcome.envelope,
-				};
-			},
 		});
 	}
 
@@ -1286,48 +1218,9 @@ export class SubagentControlRuntime {
 		await this.terminateChildAttempt(running, "interrupt");
 		return true;
 	}
-	async resumeChild(
-		pathValue: string,
-		message: string,
-		candidate: ModelCandidate,
-		signals: AttemptSignals = {
-			abort: new AbortController().signal,
-			interrupt: new AbortController().signal,
-		},
-	): Promise<AttemptOutcome> {
-		const admission = this.reloadColdChild(pathValue, message);
-		if (!admission.admitted) {
-			const reason = admission.refusal?.reason ?? "cold child reload was refused";
-			return {
-				status: "error",
-				cause: reason,
-				stats: { ...EMPTY_STATS, sessionId: pathValue },
-				path: pathValue,
-				envelope: boundedEnvelope(reason),
-			};
-		}
-		const running = this.startAttempt(admission.admitted, candidate, signals);
-		return running.promise;
-	}
 
 	subscribe(pathValue: string, callback: (status: ChildStatus) => void): void {
 		this.native.subscribeChildStatus(pathValue, callback);
-	}
-
-	private policyFor(spec: ChildSpec, depth: number): ChildPolicy {
-		return {
-			...resolveChildModePolicy(spec),
-			cwd: spec.cwd,
-			tools: spec.tools ?? spec.agent.tools,
-			excludedTools: spec.excludedTools,
-			mcpDirectTools: spec.mcpDirectTools ?? spec.agent.mcpDirectTools,
-			skills: [...(spec.skills ?? spec.agent.skills ?? [])],
-			customTools: spec.customTools,
-			model: spec.model,
-			thinkingLevel: spec.thinkingLevel ?? (spec.agent.thinking as ChildPolicy["thinkingLevel"]),
-			intercomGroup: spec.parent?.intercomGroup,
-			depth,
-		};
 	}
 
 	private async terminateRunningAttempt(running: RunningAttempt, cause: TerminationCauseName): Promise<void> {
@@ -1345,17 +1238,6 @@ export class SubagentControlRuntime {
 			await this.native.terminateChildAttempt(token, nativeCause(cause));
 		} catch {
 			// The runner's signal path owns the race with terminal completion.
-		}
-	}
-
-	private findSessionFile(sessionDir: string): string | undefined {
-		try {
-			const entry = readdirSync(sessionDir, { withFileTypes: true }).find(
-				(candidate) => candidate.isFile() && candidate.name.endsWith(".jsonl"),
-			);
-			return entry ? join(sessionDir, entry.name) : undefined;
-		} catch {
-			return undefined;
 		}
 	}
 }
@@ -1397,10 +1279,6 @@ export function continue_detached(
 	reason: ContinuationReason,
 ): string {
 	return control.continueDetached(running, reason);
-}
-
-export function reload_cold_child(control: SubagentControlRuntime, pathValue: string, message: string): AdmittedResult {
-	return control.reloadColdChild(pathValue, message);
 }
 
 export function terminate_child_attempt(

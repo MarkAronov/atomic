@@ -16,10 +16,6 @@ import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
-	interruptInProcessAttempt,
-	resumeInProcessAttempt,
-} from "../../packages/subagents/src/runs/inprocess/attempt-handles.ts";
-import {
 	clearSubagentControls,
 	findSubagentControl,
 } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
@@ -30,7 +26,6 @@ import {
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import { DEFAULT_ARTIFACT_CONFIG } from "../../packages/subagents/src/shared/types.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
-import { sleep } from "../helpers/runtime.ts";
 
 const LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS = 120_000;
 
@@ -179,18 +174,6 @@ test("admission refuses a child whose parent already sits at the single permitte
 		assert.equal(result.admitted, undefined);
 		assert.equal(result.refusal?.kind, "depthExceeded");
 		assert.equal(result.refusal?.maxDepth, 1);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("cold reload refuses a path outside the trusted session root", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-cold-"));
-	try {
-		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
-		const result = control.reloadColdChild("../escape", "resume");
-		assert.equal(result.admitted, undefined);
-		assert.equal(result.refusal?.kind, "invalidCwd");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -352,13 +335,6 @@ test("parallel siblings share one control plane and persist distinct terminal ar
 			"parallel-parent/analysis_2",
 			"parallel-parent/analysis_3",
 		]);
-		const thirdPath = results[2]?.path;
-		assert.ok(thirdPath);
-		const control = findSubagentControl(thirdPath);
-		assert.ok(control);
-		const resumed = await control.resumeChild(thirdPath, "inspect one more fixture", {});
-		assert.equal(resumed.status, "ok", resumed.status === "error" ? resumed.cause : undefined);
-		assert.equal(resumed.path, thirdPath);
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
@@ -559,42 +535,6 @@ test("typed status is the sole result outcome discriminator", async () => {
 		assert.equal(resultStatusLine({ ...result, status: "skipped" }, ""), "Skipped");
 		assert.equal(resultStatusLine({ ...result, status: "continued" }, ""), "Continued");
 	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("interrupt flushes JSONL and resume reloads the same in-process child", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-nested-control-"));
-	const gate = Promise.withResolvers<void>();
-	try {
-		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, join(root, "sessions"));
-		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(
-			{ ...sampleSpec(root), testSession: { output: "resumed", promptGate: gate.promise } },
-			{ path: "parent", depth: 0 },
-		).admitted;
-		assert.ok(admitted);
-		const neverAbort = new AbortController().signal;
-		const running = control.startAttempt(admitted, {}, { abort: neverAbort, interrupt: neverAbort });
-		control.registerAttempt("child-run", running, {});
-		await sleep(50);
-
-		const interrupt = await interruptInProcessAttempt("child-run");
-		assert.equal(interrupt?.ok, true);
-		const interrupted = await running.promise;
-		assert.equal(interrupted.status, "interrupted");
-		assert.ok(interrupted.sessionFile);
-		const interruptedLines = readFileSync(interrupted.sessionFile!, "utf8").trim().split("\n");
-		assert.ok(interruptedLines.length > 0);
-		for (const line of interruptedLines) assert.doesNotThrow(() => JSON.parse(line));
-
-		gate.resolve();
-		const resumed = await resumeInProcessAttempt("child-run", "continue with the saved context");
-		assert.equal(resumed?.ok, true);
-		assert.equal(resumed?.outcome?.status, "ok");
-		assert.equal(resumed?.outcome?.path, interrupted.path);
-	} finally {
-		gate.resolve();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

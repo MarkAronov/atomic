@@ -251,24 +251,17 @@ Avoid duplicate output paths in parallel tasks. Concurrent children should not w
 Concurrent writers conflict. `code-simplifier` and `debugger` change files. Do not run two writers in parallel against the same worktree unless you isolate them with `worktree: true`.
 
 
-### Foreground execution and resume
+### Foreground execution and fresh follow-ups
 
 All subagent execution runs in the foreground and returns its result to the parent call. Parallel tasks may still run concurrently within one foreground invocation, and forked context still creates branched child sessions.
 
-Use `resume` for a follow-up on a retained child:
+Completed, interrupted, and parent-question children are terminal for continuation. Do not address a prior child or sibling set by run ID. Start follow-up work with the normal launch form and an explicit handoff:
 
 ```typescript
-subagent({ action: "resume", id: "run-id", message: "Follow up on this point." })
-subagent({ action: "resume", id: "run-id", index: 1, message: "Continue reviewer 2." })
+subagent({ agent: "worker", task: "[TASK_CONTEXT] Continue with this supervisor answer: ..." })
 ```
 
-Resume behavior:
-
-- If a child is still running and reachable, `resume` sends the follow-up through its intercom route when available.
-- Completed foreground single and parallel runs can be revived by `index` while their run metadata remains in extension state.
-- A revived child starts a new in-process attempt from its persisted session file.
-- Multi-child runs require `index` unless only one child is selectable.
-- If the chosen child has no persisted `.jsonl` session file, resume fails and reports that directly.
+A parent-ask handoff supplies the original question, ordered attachments, previous agent identity, and dynamic task context. The fresh launch receives a new run identity.
 
 Use diagnostics when setup or child startup looks wrong:
 
@@ -461,8 +454,8 @@ If a prompt-template extension is installed, additional user prompt templates ca
 
 - **Forking requires a persisted parent session.** If the current session does not have a persisted session file, forked runs fail.
 - **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts. Use fresh context for adversarial review unless the user explicitly asks for forked context.
-- **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch, `resume`, and `interrupt` from inside a child is refused. Only `list`, `get`, `status`, and `doctor` stay available to a child.
-- **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `paused` means the child turn was intentionally interrupted or is awaiting direction; it is not the same as `failed`.
+- **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch and `interrupt` from inside a child is refused. Only `list`, `get`, `status`, and `doctor` stay available to a child.
+- **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `interrupted` means the child turn ended before completion; it is terminal for continuation and is not the same as `failed`.
 - **Builtin coordination varies by agent.** `debugger` and `worker` declare `intercom` and `contact_supervisor`; the other builtin specialists do not. For agents without bridge tools, decide the task up front or use a custom agent when mid-run coordination is required.
 - **Intercom asks are blocking.** A session can only maintain one pending outbound ask wait state at a time.
 - **Keep conversational authority clear.** Advisory specialists should not silently become second decision-makers.
@@ -550,7 +543,7 @@ For complex or risky changes, increase review and validation fanout when user in
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review, a fix pass, and parent approval before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, and review only.
 
-Keep orchestration authority in the parent session. Child subagents cannot launch more subagents or run their own orchestration loops: delegation is one level deep and nothing configures it. This skill is parent-only and is stripped from every child prompt. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a child use only `list`, `get`, `status`, and `doctor`, and refuses delegation, `resume`, and `interrupt`. Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, that the `subagent` tool refuses every launch, `resume`, and `interrupt` from inside a subagent, and that writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
+Keep orchestration authority in the parent session. Child subagents cannot launch more subagents or run their own orchestration loops: delegation is one level deep and nothing configures it. This skill is parent-only and is stripped from every child prompt. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a child use only `list`, `get`, `status`, and `doctor`, and refuses delegation and `interrupt`. Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, that the `subagent` tool refuses every launch and `interrupt` from inside a subagent, and that writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
 1. Clarify only when needed. Use existing context first; gather missing code or research context selectively, then ask only unresolved questions that materially affect scope, completion criteria, constraints, or non-goals.
 2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.

@@ -46,7 +46,7 @@ function parallelChild(
 
 function renderParallel(
 	results: Details["results"],
-	options: { parentAskPaused?: boolean; expanded?: boolean; content?: string } = {},
+	options: { parentAskYielded?: boolean; expanded?: boolean; content?: string } = {},
 ): string {
 	const result: AgentToolResult<Details> = {
 		content: [{ type: "text", text: options.content ?? "done" }],
@@ -54,7 +54,7 @@ function renderParallel(
 			mode: "parallel",
 			results,
 			totalSteps: results.length,
-			parentAskPaused: options.parentAskPaused,
+			parentAskYielded: options.parentAskYielded,
 		},
 	};
 	return renderSubagentResult(result, { expanded: options.expanded ?? true }, theme)
@@ -87,13 +87,14 @@ describe("top-level parallel status reduction", () => {
 		assert.doesNotMatch(rendered, /paused parallel/);
 	});
 
-	test("a parent-ask interruption reads paused and shows the resume prompt", () => {
+	test("a parent-ask interruption reads yielded and shows the fresh-start handoff", () => {
 		const content = [
-			"Subagent paused for parent input (beta, child 2).",
-			"Run: exact-run",
+			"Subagent yielded for parent input (beta, child 2).",
+			"Previous run (terminal): exact-run",
 			"Question:",
 			"Keep  this question verbatim?",
-			'Resume with: subagent({ action: "resume", id: "exact-run", message: "<answer>" })',
+			"Start a fresh subagent with a new run identity:",
+			'subagent({ "agent": "beta", "task": "[TASK_CONTEXT] Continue with this supervisor answer: <SUPERVISOR_ANSWER>" })',
 		].join("\n");
 		const children = [
 			parallelChild("alpha", "interrupted", { interrupted: true }),
@@ -101,10 +102,11 @@ describe("top-level parallel status reduction", () => {
 			parallelChild("queued", "skipped"),
 		];
 		for (const expanded of [false, true]) {
-			const rendered = renderParallel(children, { parentAskPaused: true, expanded, content });
-			assert.match(rendered, expanded ? /paused parallel/ : /■ parallel/);
+			const rendered = renderParallel(children, { parentAskYielded: true, expanded, content });
+			assert.match(rendered, expanded ? /yielded parallel/ : /■ parallel/);
 			assert.match(rendered, /Keep {2}this question verbatim\?/);
-			assert.match(rendered, /Resume with: subagent/);
+			assert.match(rendered, /Start a fresh subagent/);
+			assert.doesNotMatch(rendered, /action.*resume/i);
 			assert.doesNotMatch(rendered, /failed parallel/);
 		}
 	});
@@ -114,7 +116,7 @@ describe("top-level parallel status reduction", () => {
 		assert.match(rendered, /ok parallel · 2\/2 done/);
 	});
 
-	test("resumed children with canonical indexes render 2/2 and distinct rows", () => {
+	test("children with canonical indexes render 2/2 and distinct rows", () => {
 		const rendered = renderParallel([
 			parallelChild("alpha", "ok", { progressIndex: 0 }),
 			parallelChild("beta", "ok", { progressIndex: 1 }),

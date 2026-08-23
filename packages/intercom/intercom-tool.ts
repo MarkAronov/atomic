@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
-import { requestParentAskPause } from "./parent-ask-pause.js";
+import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
@@ -352,7 +352,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
               if (
                 resolvedParent !== null &&
                 resolvedParent === sendTo &&
-                requestParentAskPause(pi.events, metadata, {
+                requestParentAskHandoff(pi.events, metadata, {
                   kind: "intercom",
                   question: message,
                   attachments,
@@ -360,9 +360,9 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 })
               ) {
                 return {
-                  content: [{ type: "text", text: "Parent ask claimed; pausing for subagent resume." }],
+                  content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
                   isError: false,
-                  details: { paused: true },
+                  details: { yielded: true },
                 };
               }
             }
