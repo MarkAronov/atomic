@@ -6,14 +6,13 @@
  */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
-import { beforeEach, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, test } from "vitest";
 import { createEventBus, type EventBusController } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
@@ -23,6 +22,10 @@ import type {
 	ExtensionFactory,
 	ExtensionRuntime,
 } from "../../packages/coding-agent/src/core/extensions/types.ts";
+import {
+	ensureEmbeddedDbosPostgres,
+	shutdownEmbeddedDbosPostgres,
+} from "../../packages/workflows/src/durable/dbos-embedded-postgres.ts";
 import { dbosLifecycleState } from "../../packages/workflows/src/durable/dbos-lifecycle.ts";
 import type { ToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.ts";
@@ -43,7 +46,17 @@ beforeEach(() => {
 
 /** Full transformed re-evaluation of the workflows graph, twice, through the host loader. */
 const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
-const EARLY_FAILURE_REPORT_ENV = "ATOMIC_REAL_RELOAD_EARLY_FAILURE_REPORT";
+
+// The direct-child exit and owned-cluster startup/teardown races have focused
+// durable regressions. Keep that shared infrastructure outside individual test
+// timing so this file measures graph reload behavior rather than cold Postgres.
+beforeAll(async () => {
+	await ensureEmbeddedDbosPostgres();
+});
+
+afterAll(async () => {
+	await shutdownEmbeddedDbosPostgres();
+});
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
@@ -287,6 +300,39 @@ async function executeWorkflowTool(
 	return result.details as WorkflowDispatchDetails;
 }
 
+function trackWorkflowJob(
+	generation: Pick<WorkflowGeneration, "jobTracker">,
+	runId: string,
+	runIds: Set<string>,
+	jobs: Set<Promise<void>>,
+): ReturnType<JobTracker["get"]> {
+	runIds.add(runId);
+	const owner = generation.jobTracker.get(runId);
+	if (owner !== undefined) jobs.add(owner.promise);
+	return owner;
+}
+
+async function releaseAndSettleGlobalReloadJobs(
+	stateDir: string,
+	generation: Pick<WorkflowGeneration, "store" | "cancellationRegistry"> | undefined,
+	runIds: ReadonlySet<string>,
+	jobs: ReadonlySet<Promise<void>>,
+): Promise<void> {
+	for (const label of ["agent", "slash"]) {
+		try {
+			writeFileSync(join(stateDir, `${label}.release`), "release", "utf8");
+		} catch {}
+	}
+	if (generation !== undefined) {
+		for (const runId of runIds) {
+			if (generation.store.runs().find((run) => run.id === runId)?.status === "running") {
+				generation.cancellationRegistry.abort(runId);
+			}
+		}
+	}
+	await Promise.allSettled(jobs);
+}
+
 function createHostRuntime(): ReturnType<typeof createExtensionRuntime> {
 	const runtime = createExtensionRuntime();
 	Object.assign(runtime, {
@@ -486,8 +532,6 @@ test.sequential(
 	"user-global agent launch keeps its real publish watcher through resource and installed full reload",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-global-reload-"));
-		const earlyFailureReportPath = process.env[EARLY_FAILURE_REPORT_ENV];
-		if (earlyFailureReportPath !== undefined) writeFileSync(earlyFailureReportPath, root, "utf8");
 		const agentDir = join(root, "agent");
 		const stateDir = join(root, "state");
 		mkdirSync(join(agentDir, "workflows"), { recursive: true });
@@ -536,10 +580,7 @@ test.sequential(
 				{ action: "run", workflow: "global-publish-watch", inputs: { label: "agent" } },
 				context,
 			);
-			trackedRunIds.add(launched.runId);
-			const jobOwner = first.jobTracker.get(launched.runId);
-			if (jobOwner !== undefined) trackedJobs.add(jobOwner.promise);
-			if (earlyFailureReportPath !== undefined) throw new Error("injected failure after agent launch tracking");
+			const jobOwner = trackWorkflowJob(first, launched.runId, trackedRunIds, trackedJobs);
 			assert.equal(launched.action, "run");
 			assert.notEqual(launched.runId, "", launched.error);
 			assert.equal(launched.status, "running", JSON.stringify(launched));
@@ -713,20 +754,12 @@ test.sequential(
 		} finally {
 			try {
 				try {
-					for (const label of ["agent", "slash"]) {
-						try {
-							writeFileSync(join(stateDir, `${label}.release`), "release", "utf8");
-						} catch {}
-					}
-					const activeGeneration = secondGeneration ?? firstGeneration;
-					if (activeGeneration !== undefined) {
-						for (const runId of trackedRunIds) {
-							if (activeGeneration.store.runs().find((run) => run.id === runId)?.status === "running") {
-								activeGeneration.cancellationRegistry.abort(runId);
-							}
-						}
-					}
-					await Promise.allSettled(trackedJobs);
+					await releaseAndSettleGlobalReloadJobs(
+						stateDir,
+						secondGeneration ?? firstGeneration,
+						trackedRunIds,
+						trackedJobs,
+					);
 					const cleanupExtension = secondExtension ?? firstExtension;
 					if (cleanupExtension !== undefined && dbosLifecycleState() !== "shut_down") {
 						await emitSessionEvent(cleanupExtension, "session_shutdown", { reason: "quit" });
@@ -750,39 +783,38 @@ test.sequential(
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );
 
-test.sequential(
-	"an early post-launch failure still settles the agent job and removes fixture state",
-	() => {
-		const probeRoot = mkdtempSync(join(tmpdir(), "atomic-global-reload-probe-"));
-		const reportPath = join(probeRoot, "fixture-root.txt");
-		try {
-			const childEnv: NodeJS.ProcessEnv = { ...process.env, [EARLY_FAILURE_REPORT_ENV]: reportPath };
-			delete childEnv.VITEST_POOL_ID;
-			delete childEnv.VITEST_WORKER_ID;
-			const child = spawnSync(
-				process.execPath,
-				[
-					join(repoRoot, "node_modules", "vitest", "vitest.mjs"),
-					"--run",
-					"--project",
-					"unit",
-					"test/unit/workflow-run-state-real-reload.test.ts",
-					"-t",
-					"user-global agent launch keeps its real publish watcher through resource and installed full reload",
-				],
-				{ cwd: repoRoot, encoding: "utf8", env: childEnv, timeout: WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS },
-			);
-			const output = `${child.stdout}\n${child.stderr}`;
-			assert.equal(child.status, 1, output);
-			assert.match(output, /injected failure after agent launch tracking/);
-			const fixtureRoot = readFileSync(reportPath, "utf8");
-			assert.equal(existsSync(fixtureRoot), false, "failure cleanup must remove the temporary fixture root");
-		} finally {
-			rmSync(probeRoot, { recursive: true, force: true });
-		}
-	},
-	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
-);
+test("an early post-launch failure settles tracked work before fixture removal", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-global-reload-probe-"));
+	const stateDir = join(root, "state");
+	mkdirSync(stateDir, { recursive: true });
+	const runIds = new Set<string>();
+	const jobs = new Set<Promise<void>>();
+	let releaseObserved = false;
+	const job = new Promise<void>((resolve) => {
+		const timer = setInterval(() => {
+			if (!existsSync(join(stateDir, "agent.release"))) return;
+			clearInterval(timer);
+			releaseObserved = true;
+			resolve();
+		}, 1);
+	});
+	const generation = {
+		jobTracker: { get: () => ({ promise: job }) },
+	} as unknown as Pick<WorkflowGeneration, "jobTracker">;
+
+	try {
+		trackWorkflowJob(generation, "early-failure-run", runIds, jobs);
+		throw new Error("injected early failure");
+	} catch (error) {
+		assert.match(String(error), /injected early failure/);
+		await releaseAndSettleGlobalReloadJobs(stateDir, undefined, runIds, jobs);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+
+	assert.equal(releaseObserved, true, "cleanup must release and await tracked work before removing its fixture");
+	assert.equal(existsSync(root), false);
+});
 
 test(
 	"without a host scope every singleton stays module-local",
