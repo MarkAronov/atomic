@@ -26,6 +26,8 @@ const releaseSha = "3".repeat(40);
 const release = { kind: "release" as const, version: "1.2.3", branch: "release/1.2.3" };
 const pullRequest = { url: "https://github.com/bastani-inc/atomic/pull/42", number: 42, headSha };
 const expectedCi = { release, baseRef: "main", pullRequest };
+const unprotectedBranchResponse =
+	'{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection","status":"404"}';
 
 function ciSnapshot(overrides: Partial<RequiredChecksSnapshot> = {}): RequiredChecksSnapshot {
 	return {
@@ -538,7 +540,7 @@ test("the exact classic unprotected-branch response is the only allowed absent s
 		const command = argv.join(" ");
 		if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
 		if (command.includes("/protection/required_status_checks")) {
-			return commandResult("", 1, "gh: Branch not protected (HTTP 404)");
+			return commandResult(unprotectedBranchResponse, 1, "gh: Branch not protected (HTTP 404)");
 		}
 		if (command.includes("/rules/branches/main")) {
 			return commandResult(
@@ -601,6 +603,51 @@ test("a generic classic protection 404 cannot hide a partial required-check set"
 		}).waitForRequiredChecks({ release, baseRef: "main", pullRequest, signal: new AbortController().signal }),
 		/protection\/required_status_checks failed.*HTTP 404: Not Found/u,
 	);
+});
+
+test("malformed or mismatched classic protection stdout fails closed", async () => {
+	const cases = [
+		{ name: "empty legacy body", stdout: "", exitCode: 1 },
+		{ name: "malformed JSON", stdout: "{", exitCode: 1 },
+		{
+			name: "mismatched JSON",
+			stdout: JSON.stringify({
+				message: "Not Found",
+				documentation_url: "https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection",
+				status: "404",
+			}),
+			exitCode: 1,
+		},
+		{ name: "mismatched exit code", stdout: unprotectedBranchResponse, exitCode: 2 },
+	] as const;
+	for (const candidate of cases) {
+		const transport = fakeTransport((argv) => {
+			const command = argv.join(" ");
+			if (command.endsWith(`/pulls/${pullRequest.number}`)) return commandResult(JSON.stringify(apiPull()));
+			if (command.includes("/protection/required_status_checks")) {
+				return commandResult(candidate.stdout, candidate.exitCode, "gh: Branch not protected (HTTP 404)");
+			}
+			if (command.includes("/rules/branches/main")) return commandResult(JSON.stringify([]));
+			if (command.includes("/check-runs")) return commandResult(JSON.stringify({ check_runs: [] }));
+			if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+			throw new Error(`unexpected fake command: ${command}`);
+		});
+		await assert.rejects(
+			createReleaseBoundary("/safe/fake/repository", { transport }).waitForRequiredChecks({
+				release,
+				baseRef: "main",
+				pullRequest,
+				signal: new AbortController().signal,
+			}),
+			/protection\/required_status_checks failed.*Branch not protected/u,
+			candidate.name,
+		);
+		assert.equal(
+			transport.calls.some((argv) => argv.join(" ").includes("/rules/branches/main")),
+			false,
+			candidate.name,
+		);
+	}
 });
 test("release-0.9.15 CI regression keeps configured checks pending until they materialize", () => {
 	const result = evaluateRequiredChecks(ciSnapshot(), expectedCi);

@@ -514,6 +514,10 @@ async function ghJson<T>(
 	return parseJson<T>(await checkedCommand(transport, ["gh", "api", endpoint], cwd, signal));
 }
 
+const UNPROTECTED_BRANCH_STDOUT =
+	'{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection","status":"404"}';
+const UNPROTECTED_BRANCH_STDERR = "gh: Branch not protected (HTTP 404)";
+
 async function optionalClassicProtection<T>(
 	transport: ReleaseCommandTransport,
 	endpoint: string,
@@ -523,7 +527,12 @@ async function optionalClassicProtection<T>(
 	const command = ["gh", "api", endpoint] as const;
 	const result = await transport.run(command, cwd, signal);
 	if (result.exitCode === 0) return parseJson<T>(result.stdout);
-	if (result.stdout.trim() === "" && result.stderr.trim() === "gh: Branch not protected (HTTP 404)") return undefined;
+	if (
+		result.exitCode === 1 &&
+		result.stdout === UNPROTECTED_BRANCH_STDOUT &&
+		result.stderr === UNPROTECTED_BRANCH_STDERR
+	)
+		return undefined;
 	throw new ReleaseCommandError(command, result);
 }
 
