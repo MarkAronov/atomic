@@ -312,14 +312,13 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         }
 
         case "ask": {
-          if (!to || !message) {
+          if (!to) {
             return {
               content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
               isError: true,
               details: { error: true },
             };
           }
-
 
           if (_signal?.aborted) {
             return {
@@ -345,7 +344,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 metadata &&
                 requestParentAskHandoff(pi.events, metadata, {
                   kind: "intercom",
-                  question: message,
+                  question: typeof message === "string" ? message : "",
                   attachments,
                   resolvedTargetId,
                 }),
@@ -361,6 +360,13 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
               };
             }
 
+            if (!message && !directParentTarget) {
+              return {
+                content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               return {
@@ -389,6 +395,13 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                   details: { yielded: true },
                 };
               }
+            }
+            if (!message) {
+              return {
+                content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+                isError: true,
+                details: { error: true },
+              };
             }
             if (hasReplyWaiter()) {
               return {

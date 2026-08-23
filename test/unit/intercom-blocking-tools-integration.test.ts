@@ -240,7 +240,23 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(captured?.index, 2);
 		assert.equal(captured?.agent, "worker");
 	});
-	test("contact_supervisor interview_request preserves validated question order in the pause request", async () => {
+	test("contact_supervisor need_decision preserves an omitted message as an empty parent question", async () => {
+		const current = fixture("supervisor");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute("call", { reason: "need_decision" }, undefined, undefined, context);
+
+		assert.equal(result.isError, false);
+		assert.equal(current.connectCalls, 0);
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
+		assert.equal(captured?.question, "");
+	});
+	test("contact_supervisor interview_request preserves validated question order in the terminal fresh-start handoff", async () => {
 		const current = fixture("supervisor");
 		let captured: ParentAskHandoffRequest | undefined;
 		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
@@ -299,6 +315,27 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(captured?.kind, "intercom");
 		assert.equal(captured?.question, "Keep  spacing\nraw");
 		assert.equal(captured?.resolvedTargetId, "parent-id");
+	});
+	test("parent-targeted intercom ask preserves an empty message as an empty parent question", async () => {
+		const current = fixture("intercom");
+		let captured: ParentAskHandoffRequest | undefined;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, (payload) => {
+			captured = payload as ParentAskHandoffRequest;
+			captured.claimed = true;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "parent", message: "" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false);
+		assert.equal(captured?.question, "");
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
 	});
 	test("intercom ask claims the exact typed parent before an empty-list resolver miss", async () => {
 		const current = fixture("intercom", {
@@ -387,6 +424,28 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(current.waiterCalls.length, 1);
 		current.reply("Peer answer");
 		assert.equal((await execution).isError, false);
+	});
+	test("non-parent intercom ask still rejects an empty message", async () => {
+		const current = fixture("intercom");
+		let parentAskEvents = 0;
+		current.events.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, () => {
+			parentAskEvents += 1;
+		});
+
+		const result = await current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, "Missing 'to' or 'message' parameter");
+		assert.equal(parentAskEvents, 0);
+		assert.equal(current.resolverCalls, 0);
+		assert.equal(current.sent.length, 0);
+		assert.equal(current.waiterCalls.length, 0);
 	});
 	test("non-parent intercom ask sends attachments unchanged", async () => {
 		const current = fixture("intercom");

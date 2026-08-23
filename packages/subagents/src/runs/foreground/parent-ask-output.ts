@@ -16,7 +16,7 @@ function formatQuestion(request: ParentAskHandoffRequest): string {
 	const parts: string[] = [];
 	if (request.question.length > 0) parts.push(request.question);
 	if (request.interview) parts.push(JSON.stringify(request.interview, null, 2));
-	return (parts.join("\n\n") || "(No question text supplied.)") + formatAttachments(request);
+	return parts.join("\n\n") + formatAttachments(request);
 }
 
 function freshTask(request: ParentAskHandoffRequest): string {

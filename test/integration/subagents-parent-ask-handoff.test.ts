@@ -6,6 +6,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { formatParentAskHandoffOutput } from "../../packages/subagents/src/runs/foreground/parent-ask-output.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
 	ExecutorDeps,
@@ -124,6 +125,39 @@ function executor(
 		runtime,
 	});
 }
+
+test("empty parent question is preserved exactly in the parent block and fresh task context", () => {
+	const output = formatParentAskHandoffOutput({
+		askingChildIndex: 0,
+		releasedChildIndices: [0],
+		unlaunchedChildIndices: [],
+		request: {
+			runId: "terminal-run",
+			index: 0,
+			agent: "worker",
+			childIntercomTarget: "child",
+			orchestratorTarget: "parent",
+			kind: "decision",
+			question: "",
+			taskContext: "Original task",
+			claimed: true,
+		},
+	});
+
+	assert.equal(
+		output,
+		`Subagent yielded for parent input (worker, child 1).
+Previous run (terminal): terminal-run
+Question:
+
+
+Start a fresh subagent with a new run identity, replacing <SUPERVISOR_ANSWER> with your answer:
+subagent({
+  "agent": "worker",
+  "task": "[TASK_CONTEXT]\\nOriginal delegated task and objective:\\nOriginal task\\n\\nPrevious child identity: worker (child 1)\\nPrevious child question:\\n\\n\\nContinue with this supervisor answer: <SUPERVISOR_ANSWER>"
+})`,
+	);
+});
 
 test("SINGLE parent ask ends the old child and returns an ordered fresh-start handoff", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-single-parent-handoff-"));

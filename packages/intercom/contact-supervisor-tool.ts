@@ -80,7 +80,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             details: { error: true },
           };
         }
-        if ((reason === "need_decision" || reason === "progress_update") && typeof params.message !== "string") {
+        if (reason === "progress_update" && typeof params.message !== "string") {
           return {
             content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
             isError: true,
@@ -98,8 +98,15 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           };
         }
         const supervisorInterview = interviewValidation?.ok === true ? interviewValidation.interview : undefined;
-
 		const metadata = getMetadata();
+		if (reason === "need_decision" && typeof params.message !== "string" && !metadata) {
+			return {
+				content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+
 		if (!metadata) {
 			return {
 				content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
@@ -129,6 +136,13 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 			};
 		}
 
+		if (reason === "need_decision" && typeof params.message !== "string") {
+			return {
+				content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
 		let connectedClient: IntercomClient;
 		try {
 			connectedClient = await ensureConnected("tool");
