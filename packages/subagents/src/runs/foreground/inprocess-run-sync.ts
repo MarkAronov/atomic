@@ -23,7 +23,7 @@ import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runn
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates } from "../shared/model-fallback.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
-import { registerExecutionParentAskPause } from "./execution-parent-ask-pause.js";
+import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
 
 function emptyUsage(): Usage {
 	return {
@@ -350,11 +350,6 @@ export async function runSingleInProcess(
 			lastActivityAt: Date.now(),
 		});
 	}
-	control.registerAttempt(options.runId, running, {
-		model: resolvedCandidate?.model,
-		modelId: candidate,
-		thinkingLevel: spec.thinkingLevel,
-	});
 	let detached = false;
 	let resolveContinuation!: () => void;
 	const continuation = new Promise<void>((resolve) => {
@@ -370,7 +365,7 @@ export async function runSingleInProcess(
 			resolveContinuation();
 		},
 	});
-	const parentAskCleanup = registerExecutionParentAskPause(options, {
+	const parentAskCleanup = registerExecutionParentAskHandoff(options, {
 		agent: agent.name,
 		isUnavailable: () => running.status !== "running" || detached,
 	});

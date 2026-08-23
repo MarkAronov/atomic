@@ -38,10 +38,8 @@ export interface SubagentParamsLike {
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
 	runId?: string;
-	index?: number;
 	agent?: string;
 	task?: string;
-	message?: string;
 	config?: unknown;
 	tasks?: TaskParam[];
 	concurrency?: number;

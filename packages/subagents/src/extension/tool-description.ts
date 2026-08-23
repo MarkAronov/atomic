@@ -14,7 +14,6 @@ MANAGEMENT (use action field, omit agent/task/tasks):
 • { action: "delete", agent: "code-analysis.custom-agent" }
 CONTROL:
 • { action: "status", id: "..." } - inspect an in-process run by id or prefix
-• { action: "interrupt", id?: "..." } - soft-interrupt the current child turn and leave the run paused
-• { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live child or revive a retained foreground child
+• { action: "interrupt", id?: "..." } - soft-interrupt the current child turn; the child is terminal for continuation, so follow-up work starts a fresh launch
 DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`;

@@ -86,7 +86,6 @@ function makeExecutor(cwd: string, agents: AgentConfig[], runtime: Partial<Subag
 		baseCwd: "",
 		currentSessionId: null,
 		subagentInProgress: false,
-		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),

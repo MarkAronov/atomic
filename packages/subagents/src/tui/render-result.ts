@@ -25,7 +25,7 @@ import {
 } from "./render-status-progress.js";
 
 function parentAskOutput(result: AgentToolResult<Details>): string | undefined {
-	if (!result.details?.parentAskPaused) return undefined;
+	if (!result.details?.parentAskYielded) return undefined;
 	return result.content.find((part) => part.type === "text")?.text;
 }
 
@@ -92,21 +92,21 @@ export function renderSubagentResult(
 
 	const expanded = options.expanded;
 	const mdTheme = getMarkdownTheme();
-	const pausedOutput = parentAskOutput(result);
+	const handoffOutput = parentAskOutput(result);
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
 		if (!expanded)
 			return appendParentAskOutput(
 				renderSingleCompact(d, r, theme, options.now, options.pulseFrame),
-				pausedOutput,
+				handoffOutput,
 				theme,
 			);
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: d.parentAskPaused
-				? theme.fg("warning", "paused")
+			: d.parentAskYielded
+				? theme.fg("warning", "yielded")
 				: r.detached || r.status === "continued"
 					? theme.fg("warning", "detached")
 					: r.status === "ok"
@@ -204,11 +204,11 @@ export function renderSubagentResult(
 			c.addChild(new Spacer(1));
 			c.addChild(new Text(fit(theme.fg("dim", `Artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 		}
-		return appendParentAskOutput(c, pausedOutput, theme);
+		return appendParentAskOutput(c, handoffOutput, theme);
 	}
 
 	if (!expanded)
-		return appendParentAskOutput(renderMultiCompact(d, theme, options.now, options.pulseFrame), pausedOutput, theme);
+		return appendParentAskOutput(renderMultiCompact(d, theme, options.now, options.pulseFrame), handoffOutput, theme);
 
 	const hasRunning =
 		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");
@@ -223,8 +223,8 @@ export function renderSubagentResult(
 	);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
-		: d.parentAskPaused
-			? theme.fg("warning", "paused")
+		: d.parentAskYielded
+			? theme.fg("warning", "yielded")
 			: hasEmptyWithoutTarget
 				? theme.fg("warning", "warning")
 				: ok === d.results.length
@@ -434,5 +434,5 @@ export function renderSubagentResult(
 		c.addChild(new Spacer(1));
 		c.addChild(new Text(fit(theme.fg("dim", `Artifacts dir: ${shortenPath(d.artifacts.dir)}`)), 0, 0));
 	}
-	return appendParentAskOutput(c, pausedOutput, theme);
+	return appendParentAskOutput(c, handoffOutput, theme);
 }

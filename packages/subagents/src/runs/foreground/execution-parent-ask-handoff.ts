@@ -1,4 +1,8 @@
-import { PARENT_ASK_PAUSE_REQUEST_EVENT, type ParentAskPauseRequest, type RunSyncOptions } from "../../shared/types.js";
+import {
+	PARENT_ASK_HANDOFF_REQUEST_EVENT,
+	type ParentAskHandoffRequest,
+	type RunSyncOptions,
+} from "../../shared/types.js";
 
 interface ExecutionParentAskState {
 	readonly agent: string;
@@ -30,9 +34,9 @@ function registerProcessClaimHandler(handler: ProcessParentAskClaimHandler): () 
 	};
 }
 
-function isParentAskPauseRequest(payload: unknown): payload is ParentAskPauseRequest {
+function isParentAskHandoffRequest(payload: unknown): payload is ParentAskHandoffRequest {
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
-	const request = payload as Partial<ParentAskPauseRequest>;
+	const request = payload as Partial<ParentAskHandoffRequest>;
 	return (
 		typeof request.runId === "string" &&
 		typeof request.index === "number" &&
@@ -46,10 +50,10 @@ function isParentAskPauseRequest(payload: unknown): payload is ParentAskPauseReq
 }
 
 /** Claim a blocking ask only for the exact live child attempt that issued it. */
-export function registerExecutionParentAskPause(options: RunSyncOptions, state: ExecutionParentAskState): () => void {
-	if (!options.onParentAskClaim) return () => {};
+export function registerExecutionParentAskHandoff(options: RunSyncOptions, state: ExecutionParentAskState): () => void {
+	if (!options.onParentAskHandoff) return () => {};
 	const handleRequest = (payload: unknown): void => {
-		if (state.isUnavailable() || !isParentAskPauseRequest(payload)) return;
+		if (state.isUnavailable() || !isParentAskHandoffRequest(payload)) return;
 		if (
 			payload.claimed ||
 			payload.runId !== options.runId ||
@@ -60,9 +64,9 @@ export function registerExecutionParentAskPause(options: RunSyncOptions, state: 
 		)
 			return;
 		payload.claimed = true;
-		options.onParentAskClaim?.(payload);
+		options.onParentAskHandoff?.(payload);
 	};
-	const eventCleanup = options.intercomEvents?.on(PARENT_ASK_PAUSE_REQUEST_EVENT, handleRequest) ?? (() => {});
+	const eventCleanup = options.intercomEvents?.on(PARENT_ASK_HANDOFF_REQUEST_EVENT, handleRequest) ?? (() => {});
 	const processCleanup = registerProcessClaimHandler(handleRequest);
 	let cleaned = false;
 	return () => {

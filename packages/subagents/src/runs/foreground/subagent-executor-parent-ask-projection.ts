@@ -1,11 +1,11 @@
-import type { ForegroundParentAskPause, SubagentToolResult } from "../../shared/types.js";
+import type { ForegroundParentAskHandoff, SubagentToolResult } from "../../shared/types.js";
 
-const parentAskPauses = new WeakMap<SubagentToolResult, ForegroundParentAskPause>();
+const parentAskHandoffs = new WeakMap<SubagentToolResult, ForegroundParentAskHandoff>();
 
-export function markParentAskPause(result: SubagentToolResult, pause: ForegroundParentAskPause): void {
-	parentAskPauses.set(result, pause);
+export function markParentAskHandoff(result: SubagentToolResult, handoff: ForegroundParentAskHandoff): void {
+	parentAskHandoffs.set(result, handoff);
 }
 
-export function getParentAskPause(result: SubagentToolResult): ForegroundParentAskPause | undefined {
-	return parentAskPauses.get(result);
+export function getParentAskHandoff(result: SubagentToolResult): ForegroundParentAskHandoff | undefined {
+	return parentAskHandoffs.get(result);
 }

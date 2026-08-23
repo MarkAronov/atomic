@@ -91,7 +91,7 @@ export interface ControlEvent {
 	recentFailureSummary?: string;
 }
 
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
+export type SubagentResultStatus = "completed" | "failed" | "interrupted" | "detached";
 export type SubagentRunMode = "single" | "parallel";
 
 export interface SubagentResultIntercomChild {
@@ -220,8 +220,8 @@ export interface Details {
 	controlEvents?: ControlEvent[];
 	progress?: AgentProgress[];
 	totalSteps?: number;
-	/** Aggregate pause override for a parent ask whose queued tasks remain explicitly skipped. */
-	parentAskPaused?: boolean;
+	/** Parent ask ended the current child and returned a fresh-subagent handoff. */
+	parentAskYielded?: boolean;
 	progressSummary?: ProgressSummary;
 	artifacts?: {
 		dir: string;

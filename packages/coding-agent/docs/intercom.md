@@ -152,7 +152,7 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 | `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
 | `list` | Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed full session ID is a valid target. |
 | `send` | Fire-and-forget delivery. Requires `to` and `message`; returns delivery confirmation or the delivery-failure reason. Cannot message the current session. |
-| `ask` | Sends a message and blocks until the recipient replies (10-minute timeout). From a foreground child to its resolved launching parent, it instead pauses the retained child and returns the question through the parent `subagent` call. |
+| `ask` | Sends a message and blocks until the recipient replies (10-minute timeout). From a foreground child to its resolved launching parent, it instead ends the child and returns a fresh-subagent handoff through the parent `subagent` call. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. |
 | `status` | Shows connection status, session ID, current group, and the count of active sessions in that group. A `group` filter remains a read-only peek. |
@@ -179,19 +179,19 @@ Every session belongs to exactly one intercom **group**. Sessions with no group 
 - `list`/`status` show your own group and only same-group peers. Pass `group: "name"` to `list`/`status` for a **read-only** peek at another group's membership. `send`/`ask` are always locked to your own group and error if you pass a different `group`.
 - `session_joined`/`session_left`/`presence_update` are group-scoped, so you never see peers outside your group appear or disappear.
 
-A session's home group is resolved with this precedence: explicit stage/task/subagent group > runtime-owned workflow invocation group or inherited launching-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > Intercom `config.json` `"group"` > `"default"`. Each top-level workflow invocation gets a stable non-default group from its persistent run identity; Intercom-capable stages, nested workflows, and their delegated subagents inherit it without authors threading IDs. Explicit `group: "default"` opts back into the shared group. Boolean `true` and the trimmed, case-insensitive strings `"true"`/`"auto"` request an automatically generated subgroup; those string names are reserved. Stages and children without Intercom access receive no group. See [workflows.md](/workflows) for workflow-stage rules. The subagent-only `contact_supervisor` path can cross groups only after a broker capability binds the registered child socket to the issuing supervisor session. The broker, not the client, marks validated traffic as `supervisor`; ordinary `send` frames remain isolated even if a raw client forges that flag, and replies cross back only through an exact broker-recorded `replyTo` match. Parent-held authorization state is restored after broker reconnects. Before an Intercom-enabled foreground child first runs, the parent wrapper may lazy-load and connect the broker provider to mint that exact child's capability; queued children request no capability. The child still connects only when it uses an Intercom delivery path, and claimed decisions or interviews pause before child send or waiter admission. A claimed provider failure aborts launch, while runtimes with no provider omit supervisor metadata and do not expose a broken channel.
+A session's home group is resolved with this precedence: explicit stage/task/subagent group > runtime-owned workflow invocation group or inherited launching-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > Intercom `config.json` `"group"` > `"default"`. Each top-level workflow invocation gets a stable non-default group from its persistent run identity; Intercom-capable stages, nested workflows, and their delegated subagents inherit it without authors threading IDs. Explicit `group: "default"` opts back into the shared group. Boolean `true` and the trimmed, case-insensitive strings `"true"`/`"auto"` request an automatically generated subgroup; those string names are reserved. Stages and children without Intercom access receive no group. See [workflows.md](/workflows) for workflow-stage rules. The subagent-only `contact_supervisor` path can cross groups only after a broker capability binds the registered child socket to the issuing supervisor session. The broker, not the client, marks validated traffic as `supervisor`; ordinary `send` frames remain isolated even if a raw client forges that flag, and replies cross back only through an exact broker-recorded `replyTo` match. Parent-held authorization state is restored after broker reconnects. Before an Intercom-enabled foreground child first runs, the parent wrapper may lazy-load and connect the broker provider to mint that exact child's capability; queued children request no capability. The child still connects only when it uses an Intercom delivery path, and claimed decisions or interviews terminally hand off before child send or waiter admission. A claimed provider failure aborts launch, while runtimes with no provider omit supervisor metadata and do not expose a broken channel.
 
 ### send vs ask vs reply
 
 **`send`** is fire-and-forget — the tool returns immediately after delivery. By default it sends immediately, including in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config; replies that include `replyTo` still skip confirmation so reply-hint flows continue without an extra approval step.
 
-**`ask`** normally sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. A foreground child asking its resolved launching parent is the exception: Atomic pauses the child before send or waiter admission, returns the question through the parent `subagent` call, and continues only through `subagent({ action: "resume", id, message })`. Asks to siblings and other peers keep the normal waiter path. Only one normal pending `ask` is allowed per session at a time; if several such requests race, one wins the reservation and each other call returns "Already waiting for a reply" without disturbing it.
+**`ask`** normally sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. A foreground child asking its resolved launching parent is the exception: Atomic ends the child before send or waiter admission and returns a dynamic `[TASK_CONTEXT]` handoff through the parent `subagent` call. The supervisor answer is placed in a fresh child task with a new run identity. Asks to siblings and other peers keep the normal waiter path. Only one normal pending `ask` is allowed per session at a time; if several such requests race, one wins the reservation and each other call returns "Already waiting for a reply" without disturbing it.
 
 **`reply`** is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom message, `intercom({ action: "reply", message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask; with multiple pending asks, use `pending` to inspect them and pass `to` to disambiguate. Under the hood this is still a normal `send` with the exact `replyTo` value.
 
 ### Attachments
 
-`send`, `ask`, and `reply` accept an `attachments` array of `{ type, name, content, language? }` objects where `type` is `"file"`, `"snippet"`, or `"context"`. Attachment content is included in the recipient's agent-visible message body. When a parent-targeted foreground `ask` pauses at the source, the same ordered attachment array is retained and rendered with the question for the launching parent; duplicate names and content are not rewritten. Attachments are supported in the protocol but not in the ALT+M compose overlay.
+`send`, `ask`, and `reply` accept an `attachments` array of `{ type, name, content, language? }` objects where `type` is `"file"`, `"snippet"`, or `"context"`. Attachment content is included in the recipient's agent-visible message body. When a parent-targeted foreground `ask` is terminally handed off at the source, the same ordered attachment array is retained and rendered with the question for the launching parent; duplicate names and content are not rewritten. Attachments are supported in the protocol but not in the ALT+M compose overlay.
 
 ## Coordination Patterns
 
@@ -253,7 +253,7 @@ When Atomic's [subagent runtime](/subagents) admits a delegated child, the child
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and any broker-issued capability to that in-process child session; none of those values are inherited from environment variables. If the parent did not grant supervisor coordination, the session receives only the regular `intercom` tool.
 
-The child identity stays stable across foreground continuation, interruption, and retained resume. A blocking ask to the launching parent pauses the same canonical child; ordinary Intercom detach still uses in-process continuation for sends, progress updates, and non-parent asks. Successfully completed children are terminal and cannot resume.
+A parent-targeted blocking ask makes the current child terminal for continuation. The handoff identifies the previous agent and run, but follow-up uses a fresh child and new run identity. Ordinary Intercom detach remains separate for sends, progress updates, and non-parent asks.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -265,9 +265,9 @@ The child identity stays stable across foreground continuation, interruption, an
 
 | Reason | Behavior | Use When |
 |--------|----------|----------|
-| `need_decision` | In a live foreground run, pauses the retained child and returns the question through the parent `subagent` call; the parent continues it with `subagent({ action: "resume", id, message })` | The subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision |
-| `interview_request` | In a live foreground run, pauses the retained child and returns the structured questions through the parent `subagent` call | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
-| `progress_update` | Fire-and-forget update to the supervisor; does not pause | Meaningful progress or unexpected discoveries that change the plan |
+| `need_decision` | Ends a live foreground child and returns the original question plus a fresh-child `[TASK_CONTEXT]` handoff through the parent `subagent` call | The subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision |
+| `interview_request` | Ends a live foreground child and returns the structured questions in a fresh-child handoff through the parent `subagent` call | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
+| `progress_update` | Fire-and-forget update to the supervisor; does not end the child | Meaningful progress or unexpected discoveries that change the plan |
 
 Do not use `contact_supervisor` for routine completion handoffs—return the final subagent result normally. Blocking reasons are intercepted before broker connection or reply-waiter admission when the exact foreground child claims them. If no live owner claims a request, the existing Intercom send/wait fallback remains available.
 
@@ -277,7 +277,7 @@ contact_supervisor({
   reason: "need_decision",
   message: "The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?"
 })
-// → Parent subagent call returns paused with the question and resume hint
+// → Parent subagent call returns a fresh-child [TASK_CONTEXT] handoff
 
 // Fire-and-forget progress update
 contact_supervisor({
@@ -289,18 +289,22 @@ contact_supervisor({
 
 ### What the Supervisor Sees
 
-For a claimed foreground parent ask, the supervisor's `subagent` tool call returns to the prompt with the run metadata, the question, and a resume hint:
+For a claimed foreground parent ask, the supervisor receives terminal run metadata, the original question, ordered attachments, the previous agent identity, and an explicit fresh-start call:
 
-```
-Subagent paused for parent input (worker, child 1).
-Run: 78f659a3
+```text
+Subagent yielded for parent input (worker, child 1).
+Previous run (terminal): 78f659a3
 Question:
 Which API should I use?
 
-Resume with: subagent({ action: "resume", id: "78f659a3", message: "<answer>" })
+Start a fresh subagent with a new run identity, replacing <SUPERVISOR_ANSWER> with your answer:
+subagent({
+  "agent": "worker",
+  "task": "[TASK_CONTEXT] ... Continue with this supervisor answer: <SUPERVISOR_ANSWER>"
+})
 ```
 
-The supervisor supplies the answer as the resume `message`. For a parallel pause, the bare run ID resumes the asker and every released active sibling while tasks that never launched remain withheld. Messages that do not target the launching parent retain the regular `intercom` ask/reply flow.
+The generated task context includes the original delegated task, what the previous child was working on, the question, and the supervisor answer placeholder. Parallel asks do not retain active sibling sets; any follow-up is an explicit fresh launch.
 
 ### Structured Interview Replies
 
@@ -320,7 +324,7 @@ contact_supervisor({
 })
 ```
 
-The paused output includes the structured questions without reordering or rewriting them. The supervisor can pass a plain or fenced JSON answer as the resume `message`; this stable shape keeps answers tied to question IDs:
+The handoff includes the structured questions without reordering or rewriting them. The supervisor can include a plain or fenced JSON answer in the fresh child task; this stable shape keeps answers tied to question IDs:
 
 ```json
 {
@@ -331,7 +335,7 @@ The paused output includes the structured questions without reordering or rewrit
 }
 ```
 
-Atomic preserves the resume message as supplied. The resumed child interprets the answer in context; the parent-ask pause path does not create an Intercom reply or a `structuredReply` tool-result field. An unclaimed fallback request keeps the existing Intercom structured-reply parsing behavior.
+Atomic preserves the supplied answer in the fresh task context. The parent-ask handoff does not create an Intercom reply or a `structuredReply` tool-result field. An unclaimed fallback request keeps the existing Intercom structured-reply parsing behavior.
 
 ## Workflow and Subagent Notifications
 
@@ -357,7 +361,7 @@ workflow({
 
 When neither `enabled` nor `delivery` is set, direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from direct runs as user-visible workflow output.
 
-While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. Parent-targeted blocking asks from that stage's own foreground child bypass destination delivery: the child pauses at the source and returns the question through the stage's `subagent` call. Other messages keep the destination-side reservation and exact-child probe/commit detach handshake, so terminal stage close cannot overtake an admitted delivery. A destination-side admission failure returns a correlated actionable error to a blocking non-parent asker instead of waiting for the 10-minute reply timeout.
+While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. Parent-targeted blocking asks from that stage's own foreground child bypass destination delivery: the child ends at the source and returns a fresh-child handoff through the stage's `subagent` call. Other messages keep the destination-side reservation and exact-child probe/commit detach handshake, so terminal stage close cannot overtake an admitted delivery. A destination-side admission failure returns a correlated actionable error to a blocking non-parent asker instead of waiting for the 10-minute reply timeout.
 
 ### Subagent Control Notices
 
@@ -368,13 +372,13 @@ The `subagent` tool's `control` options select which control events notify the p
 
 Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
 
-If live peer coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first ordinary Intercom call. A claimed `contact_supervisor` decision or interview can pause before child broker connection because typed admission already identifies the launching parent. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
+If live peer coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first ordinary Intercom call. A claimed `contact_supervisor` decision or interview can yield before child broker connection because typed admission already identifies the launching parent. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
 
 ### Delivery Ordering
 
-Blocking `contact_supervisor` decisions and interviews, plus `intercom.ask` calls whose resolved target is the launching parent, pause at the source before Intercom send or waiter admission. The exact live child becomes retained and the parent `subagent` tool returns the question. In parallel, the same claim interrupts all active siblings and prevents queued work from starting; bare run-ID resume continues only that released set. Progress updates, sends, and asks to other peers retain the probe/commit detach path. If a destination-side owner disappears between probe and commit, a still-current receiver uses its ordinary fallback route rather than dropping the broker-delivered message.
+Blocking `contact_supervisor` decisions and interviews, plus `intercom.ask` calls whose resolved target is the launching parent, end at the source before Intercom send or waiter admission. The parent receives the verbatim question, ordered attachments, child identity, and fresh-start handoff. In parallel, the claim interrupts active siblings and prevents queued work from starting without retaining the sibling set. Progress updates, sends, and asks to other peers retain the probe/commit detach path.
 
-For delegated children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
+For delegated children, queued messages and terminal lifecycle notices remain ordered per child. Exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
 
 ## Configuration
 

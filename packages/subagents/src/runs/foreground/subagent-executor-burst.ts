@@ -3,11 +3,11 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
-import { formatParentAskPauseOutput } from "./parent-ask-output.js";
+import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
+import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
-import { getParentAskPause } from "./subagent-executor-parent-ask-projection.js";
-import { resolveRequestedCwd } from "./subagent-executor-resume.js";
+import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
 	BURST_TASK_DISCOVERY_CWD,
 	type BurstTaskParam,
@@ -199,27 +199,27 @@ function projectParentAskContent(
 	route: ResultRoute,
 	projectedResults: SingleResult[],
 ): SubagentToolResult["content"] | undefined {
-	const pause = getParentAskPause(result);
-	if (!pause) return undefined;
+	const handoff = getParentAskHandoff(result);
+	if (!handoff) return undefined;
 	const originalItem =
 		result.content.length === 1 && result.content[0]?.type === "text"
 			? result.content[0]
 			: { type: "text" as const, text: "" };
 	const routeEnd = route.start + route.length;
 	const inRoute = (index: number): boolean => index >= route.start && index < routeEnd;
-	if (!inRoute(pause.askingChildIndex)) {
+	if (!inRoute(handoff.askingChildIndex)) {
 		return [{ ...originalItem, text: formatStandardParallelContent(projectedResults) }];
 	}
 	const projectIndex = (index: number): number => index - route.start;
 	return [
 		{
 			...originalItem,
-			text: formatParentAskPauseOutput({
-				...pause,
-				askingChildIndex: projectIndex(pause.askingChildIndex),
-				releasedChildIndices: pause.releasedChildIndices.filter(inRoute).map(projectIndex),
-				unlaunchedChildIndices: pause.unlaunchedChildIndices.filter(inRoute).map(projectIndex),
-				request: { ...pause.request, index: projectIndex(pause.request.index) },
+			text: formatParentAskHandoffOutput({
+				...handoff,
+				askingChildIndex: projectIndex(handoff.askingChildIndex),
+				releasedChildIndices: handoff.releasedChildIndices.filter(inRoute).map(projectIndex),
+				unlaunchedChildIndices: handoff.unlaunchedChildIndices.filter(inRoute).map(projectIndex),
+				request: { ...handoff.request, index: projectIndex(handoff.request.index) },
 			}),
 		},
 	];
@@ -279,7 +279,7 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 			...(progress?.length ? { progress } : {}),
 			...(controlEvents?.length ? { controlEvents } : {}),
 			...(sharedDetails.totalSteps !== undefined ? { totalSteps: route.length } : {}),
-			...(sharedDetails.parentAskPaused !== undefined ? { parentAskPaused: sharedDetails.parentAskPaused } : {}),
+			...(sharedDetails.parentAskYielded !== undefined ? { parentAskYielded: sharedDetails.parentAskYielded } : {}),
 			...(sharedDetails.artifacts && artifactFiles.length
 				? { artifacts: { dir: sharedDetails.artifacts.dir, files: artifactFiles } }
 				: {}),

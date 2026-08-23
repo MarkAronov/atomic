@@ -27,7 +27,7 @@ export function buildMultiProgressLabel(
 
 	if (details.mode === "parallel") {
 		const statuses = new Array(totalCount).fill("pending") as Array<
-			"pending" | "running" | "completed" | "failed" | "paused" | "detached"
+			"pending" | "running" | "completed" | "failed" | "interrupted" | "detached"
 		>;
 		for (const progress of details.progress ?? []) {
 			if (progress.index >= 0 && progress.index < totalCount) statuses[progress.index] = progress.status;
@@ -42,7 +42,7 @@ export function buildMultiProgressLabel(
 			const status =
 				result.progress?.status ??
 				(result.interrupted || result.status === "interrupted"
-					? "paused"
+					? "interrupted"
 					: result.detached || result.status === "continued"
 						? "detached"
 						: result.status === "ok"

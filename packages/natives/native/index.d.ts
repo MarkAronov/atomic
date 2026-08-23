@@ -42,7 +42,6 @@ export declare class SubagentControl {
   beginChildAttempt(path: string): NativeExecutionGuardResult
   finishChildAttempt(token: number, status: AgentStatus): void
   terminateChildAttempt(token: number, cause: TerminationCause): Promise<NativeTerminationResult>
-  reloadColdChild(path: string, message: string): NativeAdmissionResult
 }
 export type NapiSubagentControl = SubagentControl
 
@@ -50,7 +49,8 @@ export type AdmissionRefusalKind =  'depthExceeded'|
 'capacityExhausted'|
 'dispatchGuardBusy'|
 'invalidCwd'|
-'unknownAgent';
+'unknownAgent'|
+'terminalChild';
 
 /** The only statuses emitted by a child status watch. */
 export type AgentStatus =  'pending'|

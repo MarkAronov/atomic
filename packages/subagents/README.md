@@ -161,7 +161,7 @@ Workflow invocations receive a stable, non-`default` Intercom group automaticall
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run. Parallel calls keep their grouped task shape in progress and results, and status/control actions can inspect or interrupt retained foreground children.
+Foreground runs stream progress in the conversation while they run. Parallel calls keep their grouped task shape in progress and results, and status/control actions can inspect or interrupt live foreground children.
 
 You can ask naturally:
 
@@ -193,7 +193,7 @@ Use the optional prompt shortcuts below when you want the pattern to be repeatab
 
 Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
-Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate: launches, `resume`, and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate or control another child: launches and `interrupt` are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
 ## Optional shortcuts
 
@@ -235,11 +235,11 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for a blocking decision, `reason: "interview_request"` for structured questions, and `reason: "progress_update"` for a short non-blocking update when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the Intercom bridge active, a blocking decision or interview from the exact foreground child pauses at the source before broker send or reply-waiter admission. The parent `subagent` call returns with the unmodified question, ordered attachments when present, run ID, and a resume hint. `intercom.ask` does the same only when its resolved target is the launching parent. The parent answers with `subagent({ action: "resume", id, message })`, which continues the same retained child.
+Child-side routine completion handoffs are still not expected. With the Intercom bridge active, a blocking decision or interview from the exact foreground child ends at the source before broker send or reply-waiter admission. The parent `subagent` call returns the verbatim question, ordered attachments with duplicates preserved, agent identity, terminal run ID, and a dynamic `[TASK_CONTEXT]` handoff. `intercom.ask` does the same only when its resolved target is the launching parent. The parent answers by launching a fresh child with a new run identity and the supervisor answer in its task.
 
-For parallel runs, the claim interrupts every active sibling and prevents queued work from starting or requesting authorization. Bare run-ID resume sends the answer only to the asker and gives neutral continuation only to other still-paused released siblings; a sibling that completed at the ask boundary stays terminal and cannot block the paused members. Released children keep their original cwd, Intercom group, execution settings, canonical indexes, and worktrees while each resume generation receives fresh supervisor authorization, control forwarding, and shared detach coordination. `intercom.send`, progress updates, and asks to siblings or other peers retain the exact-child probe/commit detach and ordinary Intercom delivery paths.
+For parallel runs, the claim interrupts every active sibling and prevents queued work from starting or requesting authorization. The sibling set, sessions, and worktrees are not retained for continuation. Any follow-up starts fresh SINGLE or PARALLEL children explicitly. `intercom.send`, progress updates, and asks to siblings or other peers retain the exact-child probe/commit detach and ordinary Intercom delivery paths.
 
-With the Intercom bridge active, the parent may load and connect its Intercom runtime before initial child execution to issue the exact child's broker capability. The child connection remains tool-driven. A claimed `contact_supervisor` decision or interview still pauses before child send or reply-waiter admission; `intercom.ask` connects the child to resolve both targets.
+With the Intercom bridge active, the parent may load and connect its Intercom runtime before initial child execution to issue the exact child's broker capability. The child connection remains tool-driven. A claimed `contact_supervisor` decision or interview still yields before child send or reply-waiter admission; `intercom.ask` connects the child to resolve both targets.
 
 Parent-side Atomic still sends grouped completion results through Intercom: one grouped message per foreground parent `subagent` run and one per detached child completion. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child Intercom targets and full child summaries.
 
@@ -593,7 +593,7 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `resume`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, or `doctor`. |
 | `config` | object/string | - | Agent config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
@@ -624,12 +624,10 @@ Status and control actions:
 subagent({ action: "status" })
 subagent({ action: "status", id: "<run-id>" })
 subagent({ action: "interrupt", id: "<run-id>" })
-subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
-subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
 subagent({ action: "doctor" })
 ```
 
-`resume` sends a follow-up to a paused, detached, or otherwise reachable retained child. A parent-ask pause keeps the canonical session file; bare run-ID resume continues the full active parallel set that the ask released. Successfully completed children are terminal and cannot resume—start a fresh subagent call for follow-up work. No new OS process is created.
+Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work.
 
 ## Worktree isolation
 
@@ -653,7 +651,7 @@ Requirements:
 - the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
 - gitignored files matched by `.worktreeinclude` are copied into the worktree
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. If a parent ask pauses the active set, Atomic leaves every worktree and its staged or unstaged child changes untouched, including across another pause after resume. Diff capture and forced cleanup run only when the released set reaches a terminal result; cleanup then waits briefly for Git's lock release and deletes each `worktree-*` branch. The same cleanup runs after post-creation setup failures.
+After a worktree parallel step reaches any terminal result, per-agent diff stats are appended to the output and full patch files are written to artifacts. A parent-directed ask terminally ends the active set, captures its staged and unstaged changes in the same handoff result, and then cleans up every worktree and `worktree-*` branch after a brief Git lock-release wait. The same cleanup runs after post-creation setup failures.
 
 ## Configuration
 
@@ -785,7 +783,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Delegation boundary
 
-Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch, `resume`, and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `doctor` stay available to a child.
+Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `doctor` stay available to a child.
 
 There is no configuration option, agent frontmatter field, or tool parameter for the delegation level. The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state and is not inherited through an environment variable.
 

@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
-import { requestParentAskPause } from "./parent-ask-pause.js";
+import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import { renderContactSupervisorResult } from "./result-renderers.js";
 import {
   type ChildOrchestratorMetadata,
@@ -43,18 +43,18 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
     pi.registerTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
-      promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",
+      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. In a live foreground child, need_decision and interview_request end the child and return a fresh-subagent handoff to the supervisor; fallback Intercom delivery waits for a reply when no foreground owner claims the request. progress_update is fire-and-forget. Do not use for routine completion handoffs.",
+      promptSnippet: "Subagent-only: yield decisions or structured interviews to the supervisor for a fresh-child follow-up, or send meaningful plan-changing progress updates.",
       promptGuidelines: [
-        "Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision before continuing.",
-        "Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers from the supervisor in one blocking exchange.",
+        "Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision. A claimed foreground request ends this child; do not wait for a reply.",
+        "Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers. A claimed foreground request ends this child; the supervisor starts a fresh child with the answers.",
         "Use contact_supervisor with reason='progress_update' only for meaningful progress or unexpected discoveries that change the plan.",
         "Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
       ],
       parameters: Type.Object({
         reason: Type.String({
           enum: ["need_decision", "progress_update", "interview_request"],
-          description: "Contact reason: 'need_decision' waits for a reply; 'interview_request' sends structured questions and waits for a reply; 'progress_update' sends a non-blocking update",
+          description: "Contact reason: 'need_decision' and 'interview_request' yield a live foreground child for a fresh follow-up; 'progress_update' sends a non-blocking update",
         }),
         message: Type.Optional(Type.String({
           description: "Decision request, optional interview note, or meaningful progress update for the supervisor",
@@ -80,7 +80,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             details: { error: true },
           };
         }
-        if ((reason === "need_decision" || reason === "progress_update") && typeof params.message !== "string") {
+        if (reason === "progress_update" && typeof params.message !== "string") {
           return {
             content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
             isError: true,
@@ -98,8 +98,15 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           };
         }
         const supervisorInterview = interviewValidation?.ok === true ? interviewValidation.interview : undefined;
-
 		const metadata = getMetadata();
+		if (reason === "need_decision" && typeof params.message !== "string" && !metadata) {
+			return {
+				content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
+
 		if (!metadata) {
 			return {
 				content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
@@ -116,19 +123,26 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 		}
 		if (
 			reason !== "progress_update" &&
-			requestParentAskPause(pi.events, metadata, {
+			requestParentAskHandoff(pi.events, metadata, {
 				kind: reason === "interview_request" ? "interview" : "decision",
 				question: typeof params.message === "string" ? params.message : "",
 				...(supervisorInterview ? { interview: supervisorInterview } : {}),
 			})
 		) {
 			return {
-				content: [{ type: "text", text: "Parent ask claimed; pausing for subagent resume." }],
+				content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
 				isError: false,
-				details: { paused: true },
+				details: { yielded: true },
 			};
 		}
 
+		if (reason === "need_decision" && typeof params.message !== "string") {
+			return {
+				content: [{ type: "text", text: `Missing 'message' parameter for reason '${reason}'.` }],
+				isError: true,
+				details: { error: true },
+			};
+		}
 		let connectedClient: IntercomClient;
 		try {
 			connectedClient = await ensureConnected("tool");

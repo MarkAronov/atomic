@@ -5,7 +5,7 @@ import type {
 } from "./intercom-utils.js";
 import type { Attachment } from "./types.js";
 
-export const PARENT_ASK_PAUSE_REQUEST_EVENT = "subagent:parent-ask-pause-request";
+export const PARENT_ASK_HANDOFF_REQUEST_EVENT = "subagent:parent-ask-handoff-request";
 
 const PROCESS_PARENT_ASK_CLAIMS = Symbol.for("atomic/subagents/parent-ask-claims@1");
 
@@ -22,7 +22,7 @@ function processClaimRegistry(): ProcessParentAskClaimRegistry | undefined {
 
 export type ParentAskKind = "decision" | "interview" | "intercom";
 
-export interface ParentAskPauseRequest {
+export interface ParentAskHandoffRequest {
   runId: string;
   index: number;
   agent: string;
@@ -33,17 +33,18 @@ export interface ParentAskPauseRequest {
   attachments?: Attachment[];
   interview?: SupervisorInterviewRequest;
   resolvedTargetId?: string;
+  taskContext?: string;
   claimed: boolean;
 }
 
-export function requestParentAskPause(
+export function requestParentAskHandoff(
   events: ExtensionAPI["events"] | undefined,
   metadata: ChildOrchestratorMetadata,
-  input: Pick<ParentAskPauseRequest, "kind" | "question" | "attachments" | "interview" | "resolvedTargetId">,
+  input: Pick<ParentAskHandoffRequest, "kind" | "question" | "attachments" | "interview" | "resolvedTargetId">,
 ): boolean {
   const index = Number(metadata.index);
   if (!events || !Number.isInteger(index) || index < 0 || !metadata.sessionName) return false;
-  const request: ParentAskPauseRequest = {
+  const request: ParentAskHandoffRequest = {
     runId: metadata.runId,
     index,
     agent: metadata.agent,
@@ -57,7 +58,7 @@ export function requestParentAskPause(
     claimed: false,
   };
   try {
-    events.emit(PARENT_ASK_PAUSE_REQUEST_EVENT, request);
+    events.emit(PARENT_ASK_HANDOFF_REQUEST_EVENT, request);
   } catch (error) {
     if (!isStaleExtensionContextError(error)) throw error;
   }

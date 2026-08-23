@@ -157,7 +157,7 @@ export function renderSubagentNotification(
 	const icon =
 		details.status === "completed"
 			? theme.fg("success", "✓")
-			: details.status === "paused"
+			: details.status === "interrupted"
 				? theme.fg("warning", "■")
 				: theme.fg("error", "✗");
 	const parts: string[] = [];
@@ -218,7 +218,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			baseCwd: "",
 			currentSessionId: null,
 			subagentInProgress: false,
-			foregroundRuns: new Map(),
 			foregroundControls: new Map(),
 			lastForegroundControlId: null,
 			pendingForegroundControlNotices: new Map(),
