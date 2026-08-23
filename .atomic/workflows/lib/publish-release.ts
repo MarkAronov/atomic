@@ -559,13 +559,11 @@ async function inspectPreparation(input: {
 	if (remoteSha !== undefined && !/^[0-9a-f]{40}$/u.test(remoteSha))
 		throw new Error(`${input.release.branch} remote identity is malformed`);
 
-	const localBranch = await input.transport.run(
-		["git", "show-ref", "--verify", `refs/heads/${input.release.branch}`],
-		input.cwd,
-		input.signal,
-	);
+	const localRef = `refs/heads/${input.release.branch}`;
+	const localRefCommand = ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", localRef] as const;
+	const localBranch = await input.transport.run(localRefCommand, input.cwd, input.signal);
 	if (localBranch.exitCode !== 0 && localBranch.exitCode !== 1) {
-		throw new ReleaseCommandError(["git", "show-ref", "--verify", `refs/heads/${input.release.branch}`], localBranch);
+		throw new ReleaseCommandError(localRefCommand, localBranch);
 	}
 	const localSha = localBranch.exitCode === 0 ? localBranch.stdout.split(/\s+/u)[0] : undefined;
 
