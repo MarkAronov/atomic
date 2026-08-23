@@ -1027,9 +1027,9 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 				assert.equal(readFileSync(result.initdb, "utf8"), "source initdb\n", form);
 				assert.notEqual(dirname(dirname(result.initdb)), selected, form);
 				if (form === "file") assert.equal(readFileSync(selected, "utf8"), "not a runtime");
-				if (form === "relative-link") assert.equal(readlinkSync(selected), "../redirect");
+				if (form === "relative-link") assert.equal(readlinkSync(selected), join("..", "redirect"));
 				if (form === "absolute-link") assert.equal(readlinkSync(selected), join(baseDir, "absolute-redirect"));
-				if (form === "dangling-link") assert.equal(readlinkSync(selected), "../missing-runtime");
+				if (form === "dangling-link") assert.equal(readlinkSync(selected), join("..", "missing-runtime"));
 			}
 		} finally {
 			removeSealedScratch(scratch);
