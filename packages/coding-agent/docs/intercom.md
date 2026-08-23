@@ -370,7 +370,7 @@ The `subagent` tool's `control` options select which control events notify the p
 - **`notifyOn`** — defaults to `["active_long_running", "needs_attention"]`
 - **`notifyChannels`** — defaults to `["event", "intercom"]` (all that are available)
 
-Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
+Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `intercom({ action: "status" })` reports connection state and the resolved group for the current session.
 
 If live peer coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first ordinary Intercom call. A claimed `contact_supervisor` decision or interview can yield before child broker connection because typed admission already identifies the launching parent. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
 

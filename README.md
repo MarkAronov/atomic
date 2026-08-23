@@ -145,7 +145,7 @@ Every row is a real Atomic session recorded from the installed product. Open the
 </tr>
 </table>
 
-<p><a href="#more-atomic-capabilities"><strong>Explore 33 more Atomic capabilities ↓</strong></a></p>
+<p><a href="#more-atomic-capabilities"><strong>Explore 32 more Atomic capabilities ↓</strong></a></p>
 
 <!-- feature-wall:featured:end -->
 
@@ -432,22 +432,6 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <picture>
 <source srcset="assets/feature-wall/39-nesting-builtin-workflows.gif" type="image/gif">
 <img src="assets/feature-wall/39-nesting-builtin-workflows.jpg" alt="Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Parallel review composition</h4>
-<p>One command fans a real diff out to fresh-context specialists, with independent roles and live parallel tool progress.</p>
-<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a5-parallel-review-composition"><sub>Crash course · A.5 Parallel review composition</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a5-parallel-review-composition">
-<picture>
-<source srcset="assets/feature-wall/35-parallel-review-composition.gif" type="image/gif">
-<img src="assets/feature-wall/35-parallel-review-composition.jpg" alt="Atomic composing three concurrent review specialists against a planted retry function diff with live independent progress" width="100%">
 </picture>
 </a>
 </td>

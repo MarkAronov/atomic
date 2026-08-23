@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `subagent({ action: "doctor" })` management action and the `/subagents-doctor` slash command. `doctor` is no longer a valid `action` value, and the observing management actions available to a child are now `list`, `get`, and `status`. Agent discovery still reports invalid-frontmatter files through its load diagnostics; use `intercom({ action: "status" })` to inspect intercom bridge state.
+- Removed the `/run` and `/parallel` slash commands. Launch children with the `subagent` tool (`{ agent, task }` or `{ tasks: [...] }`).
+- Removed `diagnoseIntercomBridge` and the `IntercomBridgeDiagnostic` type. Use `resolveIntercomBridge` when you need bridge availability.
+
+### Removed
+
+- Removed every packaged subagent prompt template, including `/parallel-review`, `/parallel-handoff-plan`, `/gather-context-and-clarify`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, and `/parallel-cleanup`. Compose those passes directly with `subagent(...)` or a workflow.
+
+
 ## [0.9.16-alpha.1] - 2026-08-23
 
 ### Breaking Changes
