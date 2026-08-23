@@ -1,13 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 
-const DEFAULT_COMMUNICATION_GUIDELINES = `- Never use a familiar printed metaphor, simile, or figure of speech.
-- Never use a long word where a short one will do.
-- Cut every word that can be cut.
-- Use active rather than passive voice where possible.
-- Prefer everyday English to foreign phrases, scientific terms, and jargon.
-- Break any rule rather than say anything outright barbarous.`;
-
 describe("buildSystemPrompt", () => {
 	describe("empty tools", () => {
 		test("shows (none) for empty tools list", () => {
@@ -156,7 +149,7 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
-	test("includes all six core communication rules without promptGuidelines", () => {
+	test("omits the removed writing guidance while keeping other default guidelines", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: [],
 			contextFiles: [],
@@ -164,10 +157,21 @@ describe("buildSystemPrompt", () => {
 			cwd: process.cwd(),
 		});
 
-		expect(prompt).toContain(`Guidelines:\n${DEFAULT_COMMUNICATION_GUIDELINES}`);
+		for (const rule of [
+			"Never use a familiar printed metaphor, simile, or figure of speech.",
+			"Never use a long word where a short one will do.",
+			"Cut every word that can be cut.",
+			"Use active rather than passive voice where possible.",
+			"Prefer everyday English to foreign phrases, scientific terms, and jargon.",
+			"Break any rule rather than say anything outright barbarous.",
+		]) {
+			expect(prompt).not.toContain(rule);
+		}
+		expect(prompt).toContain("- Be concise in your responses");
+		expect(prompt).toContain("- Show file paths clearly when working with files");
 	});
 
-	test("keeps core communication rules when tool promptGuidelines are present", () => {
+	test("keeps custom and unrelated default guidelines when promptGuidelines are present", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: [],
 			promptGuidelines: ["**Workflows**: Workflow-specific sentinel."],
@@ -178,7 +182,8 @@ describe("buildSystemPrompt", () => {
 		const guidelines = prompt.slice(prompt.indexOf("Guidelines:\n"), prompt.indexOf("\n\nAtomic documentation"));
 
 		expect(guidelines).toContain("- **Workflows**: Workflow-specific sentinel.");
-		expect(guidelines).toContain(DEFAULT_COMMUNICATION_GUIDELINES);
+		expect(guidelines).toContain("- Be concise in your responses");
+		expect(guidelines).toContain("- Show file paths clearly when working with files");
 	});
 
 	describe("workflow guidance", () => {
