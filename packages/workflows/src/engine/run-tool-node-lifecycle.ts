@@ -22,9 +22,9 @@ export function createToolNodeLifecycle(input: {
 	readonly store: Store;
 	readonly tracker: GraphFrontierTracker;
 	readonly run: RunSnapshot;
-	readonly sourceToReplayedNodeIds: Map<string, string>;
+	readonly sourceToContinuationNodeIds: Map<string, string>;
 }): ToolNodeLifecycle {
-	const { store, tracker, run, sourceToReplayedNodeIds } = input;
+	const { store, tracker, run, sourceToContinuationNodeIds } = input;
 	/**
 	 * True while this executor's own run snapshot is the one the store holds.
 	 *
@@ -39,11 +39,11 @@ export function createToolNodeLifecycle(input: {
 			const inferredParents = tracker.onSpawn(node.id, node.name);
 			const sourceParents =
 				node.replayed === true && node.topologyState !== "unavailable" ? node.parentIds : undefined;
-			const restored = sourceParents?.map((sourceId) => sourceToReplayedNodeIds.get(sourceId));
+			const restored = sourceParents?.map((sourceId) => sourceToContinuationNodeIds.get(sourceId));
 			const parentIds = restored?.every((id): id is string => id !== undefined) ? restored : inferredParents;
 			tracker.replaceParents(node.id, parentIds);
 			(node as ToolNodeSnapshot & { parentIds: readonly string[] }).parentIds = Object.freeze([...parentIds]);
-			sourceToReplayedNodeIds.set(node.id, node.id);
+			sourceToContinuationNodeIds.set(node.id, node.id);
 			if (ownsCurrentRun()) store.recordToolNodeStart(run.id, node);
 		},
 		onNodeRunning: (nodeId, startedAt) => {
@@ -69,7 +69,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly store: Store;
 	readonly tracker: GraphFrontierTracker;
 	readonly run: RunSnapshot;
-	readonly sourceToReplayedNodeIds: Map<string, string>;
+	readonly sourceToContinuationNodeIds: Map<string, string>;
 	readonly toolControls: ToolControlRegistry;
 	readonly toolAdmission: ToolAdmissionBoundary;
 	readonly budget: RunBudgetController;

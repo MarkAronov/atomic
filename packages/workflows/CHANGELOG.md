@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed raised-budget resume of a blocked workflow when parallel stages shared a completed `ctx.tool` parent. Fresh-ID continuations now translate tool parent identities during fail-closed topology validation instead of reporting a false replay-topology mismatch ([#2639](https://github.com/bastani-inc/atomic/issues/2639)).
+
 ## [0.9.16-alpha.2] - 2026-08-23
 
 ### Added
