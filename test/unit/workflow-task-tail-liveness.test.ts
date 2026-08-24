@@ -331,6 +331,106 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(prompts, 0);
 	});
 
+	test("terminal-only stage checkpoint preserves fallback metadata without rerunning the task", async () => {
+		const backend = new InMemoryDurableBackend();
+		const attemptedModels = ["openai/gpt-primary", "anthropic/claude-fallback", "openai/gpt-primary"];
+		const modelAttempts = [
+			{
+				model: "openai/gpt-primary",
+				success: false,
+				reasoningLevel: "high" as const,
+				error: "rate limited",
+				usage: { input: 11, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.25, turns: 1 },
+			},
+			{
+				model: "anthropic/claude-fallback",
+				success: true,
+				reasoningLevel: "medium" as const,
+				usage: { input: 17, output: 9, cacheRead: 5, cacheWrite: 6, cost: 0.75, turns: 2 },
+			},
+		];
+		backend.registerWorkflow({
+			workflowId: "wf-task-terminal-only",
+			name: "task-terminal-only",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: "wf-task-terminal-only",
+			checkpointId: "stage:stage:task:review:1",
+			name: "review",
+			replayKey: "stage:task:review:1",
+			output: "terminal review text",
+			completedAt: 2,
+			sessionId: "sess-review",
+			sessionFile: "/tmp/review.jsonl",
+			model: "openai/gpt-test",
+			fastMode: false,
+			attemptedModels,
+			modelAttempts,
+			structured: { approved: true, score: 4 },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["used fallback model"],
+		});
+		let prompts = 0;
+		const replayOnly = workflow({
+			name: "task-terminal-only",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				const review = await ctx.task("review", { prompt: "ignored" });
+				return {
+					result: JSON.stringify({
+						text: review.text,
+						structured: review.structured,
+						artifacts: review.artifacts,
+						warnings: review.warnings,
+						sessionId: review.sessionId,
+						sessionFile: review.sessionFile,
+						model: review.model,
+						fastMode: review.fastMode,
+						attemptedModels: review.attemptedModels,
+						modelAttempts: review.modelAttempts,
+					}),
+				};
+			},
+		});
+		const replayed = await run(
+			replayOnly,
+			{},
+			{
+				runId: "wf-task-terminal-only",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "must not rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(replayed.status, "completed");
+		assert.deepEqual(JSON.parse(replayed.result?.result ?? ""), {
+			text: "terminal review text",
+			structured: { approved: true, score: 4 },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["used fallback model"],
+			sessionId: "sess-review",
+			sessionFile: "/tmp/review.jsonl",
+			model: "openai/gpt-test",
+			fastMode: false,
+			attemptedModels,
+			modelAttempts,
+		});
+		assert.equal(prompts, 0);
+	});
+
 	test("terminal-only replay returns structured artifacts and warnings without rerunning", async () => {
 		const backend = new InMemoryDurableBackend();
 		const replayKey = "stage:task:review:1";
