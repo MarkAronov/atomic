@@ -184,6 +184,8 @@ export function createDurableTaskPrimitive(input: {
 		checkpoint: DurableCompletedStageCheckpoint,
 		stageFailFastScope?: ParallelFailFastScope,
 	) => void;
+	readonly afterLiveResult?: (name: string) => Promise<void>;
+	readonly signal?: AbortSignal;
 }): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
@@ -216,19 +218,50 @@ export function createDurableTaskPrimitive(input: {
 		};
 		const result = await input.task(name, taskOptions, stageFailFastScope);
 		const completedTopology = activeStageTopology(input.backend, input.workflowId, replayKey);
-		await recordCheckpointDurably(input.backend, {
-			kind: "stage",
-			workflowId: input.workflowId,
-			checkpointId: stableCheckpointId("task", replayKey),
-			name,
-			replayKey,
-			output: result,
-			completedAt: Date.now(),
-			...taskCheckpointMetadata(result),
-			...(completedTopology !== undefined ? { topology: completedTopology } : {}),
-		});
+		try {
+			await awaitAbortable(
+				input.signal,
+				recordCheckpointDurably(input.backend, {
+					kind: "stage",
+					workflowId: input.workflowId,
+					checkpointId: stableCheckpointId("task", replayKey),
+					name,
+					replayKey,
+					output: result,
+					completedAt: Date.now(),
+					...taskCheckpointMetadata(result),
+					...(completedTopology !== undefined ? { topology: completedTopology } : {}),
+				}),
+			);
+		} catch (error) {
+			if (error instanceof Error) throw error;
+			throw new Error(String(error));
+		}
+		if (input.afterLiveResult !== undefined) await input.afterLiveResult(name);
 		return result;
 	};
+}
+
+function abortReasonError(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+async function awaitAbortable(signal: AbortSignal | undefined, work: Promise<void>): Promise<void> {
+	if (signal === undefined) {
+		await work;
+		return;
+	}
+	if (signal.aborted) throw abortReasonError(signal);
+	let onAbort: (() => void) | undefined;
+	try {
+		await new Promise<void>((resolve, reject) => {
+			onAbort = () => reject(abortReasonError(signal));
+			signal.addEventListener("abort", onAbort, { once: true });
+			work.then(resolve, reject);
+		});
+	} finally {
+		if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+	}
 }
 
 function wrapSchemaStageForDurability(input: {

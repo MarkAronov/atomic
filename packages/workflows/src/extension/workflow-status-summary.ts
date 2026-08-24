@@ -13,6 +13,7 @@
  *  - src/extension/workflow-targets.ts      topLevelExpandedSnapshots()
  */
 
+import { IMPOSSIBLE_ROOT_LIVENESS_MESSAGE, isImpossibleRootLiveness } from "../engine/run-liveness.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
@@ -97,8 +98,9 @@ export interface WorkflowRunStatusSummary {
 	readonly budgetState?: RunBudgetState;
 	readonly exitReason?: string;
 	readonly error?: string;
+	/** True when a raw-running root has a completed frontier and an exhausted duration budget. */
+	readonly strandedRoot?: true;
 }
-
 /** Filtered, ordered status listing: `runs[i]` summarizes `snapshots[i]`. */
 export interface WorkflowStatusListing {
 	readonly filter: WorkflowRunStatusFilter;
@@ -198,6 +200,7 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 					...(tokens !== undefined ? { tokens } : {}),
 					...(cost !== undefined ? { cost } : {}),
 				};
+	const strandedRoot = isImpossibleRootLiveness(run, now);
 	return {
 		runId: run.id,
 		name: run.name,
@@ -239,7 +242,8 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 		awaitingInputCount: awaitingInput.length,
 		awaitingInput,
 		exitReason: run.exitReason,
-		error: run.error,
+		error: run.error ?? (strandedRoot ? IMPOSSIBLE_ROOT_LIVENESS_MESSAGE : undefined),
+		...(strandedRoot ? { strandedRoot: true as const } : {}),
 	};
 }
 

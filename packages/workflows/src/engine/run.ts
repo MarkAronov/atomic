@@ -586,6 +586,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		task: taskRunners.task,
 		recordCachedTask: cachedStage.record,
+		signal: ownController.signal,
+		...(budget.enabled ? { afterLiveResult: (name) => budget.stopAtBoundaryAsync(name) } : {}),
 	});
 	const durableWorkflow = createDurableChildWorkflowPrimitive({
 		workflowId: runId,
