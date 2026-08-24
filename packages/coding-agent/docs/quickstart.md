@@ -12,11 +12,21 @@ This page gets you from install to a useful first Atomic session. Atomic is the 
 
 ### Package managers
 
-Install the published package globally with npm, pnpm, or Bun:
+Install with npm:
 
 ```bash
 npm install -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
 pnpm add -g @bastani/atomic
+```
+
+With Bun:
+
+```bash
 bun add -g @bastani/atomic
 ```
 
@@ -38,18 +48,16 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
 
-**Default paths:**
+Default paths:
 
 - macOS/Linux: `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer prints a paste-safe `export PATH=...` command if needed.
 - Windows: `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer updates the User PATH and current process, then asks you to restart the terminal.
 
-**Custom locations.** Use `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` to change those paths:
+The installer accepts these environment variables:
 
-- On macOS/Linux, relative values resolve against the physical directory where the installer starts, and both are used exactly as given, including any trailing whitespace or newline.
-- The install root cannot equal or sit inside the launcher path (`ATOMIC_BIN_DIR/atomic`), and `ATOMIC_BIN_DIR` cannot sit inside the install root's `current` or `versions` directories, which the installer replaces on every install. Impossible layouts fail before any download or filesystem change.
-- A custom Unix `ATOMIC_BIN_DIR` containing `:` cannot be one PATH entry, so the installer prints direct-run guidance instead.
+#### ATOMIC_VERSION
 
-**Exact versions.** Set `ATOMIC_VERSION` to an exact release tag, or pass a flag that overrides it:
+Pin an exact release tag instead of the latest release, or pass a flag that overrides it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --ref 0.9.11
@@ -61,7 +69,17 @@ curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh 
 
 Pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form and are honored literally: if GitHub answers with a different release tag, the installer stops before downloading anything rather than installing a version you did not ask for.
 
-**GitHub API limits.** `GITHUB_TOKEN` or `GH_TOKEN` is optional and raises GitHub API limits on shared networks. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
+#### ATOMIC_INSTALL_DIR
+
+Override the install root that holds the versioned payloads (default `~/.local/share/atomic` on macOS/Linux, `%LOCALAPPDATA%\atomic` on Windows). On macOS/Linux, a relative value resolves against the physical directory where the installer starts and is used exactly as given, including any trailing whitespace or newline. The install root cannot equal or sit inside the launcher path (`ATOMIC_BIN_DIR/atomic`); impossible layouts fail before any download or filesystem change.
+
+#### ATOMIC_BIN_DIR
+
+Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALAPPDATA%\atomic\bin` on Windows). Relative values resolve the same way as `ATOMIC_INSTALL_DIR`. It cannot sit inside the install root's `current` or `versions` directories, which the installer replaces on every install. A Unix value containing `:` cannot be one PATH entry, so the installer prints direct-run guidance instead of editing PATH.
+
+#### GITHUB_TOKEN / GH_TOKEN
+
+Optional; raises GitHub API limits on shared networks. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
 
 ### Which runtime runs your workflows
 
@@ -82,11 +100,21 @@ atomic
 
 For a default archive install on macOS or Linux, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link. On Windows, remove `%LOCALAPPDATA%\atomic`; if you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove the directory from your User PATH.
 
-For a package install, remove the global package with the same package manager:
+For a package install, remove the global package with the same package manager. With npm:
 
 ```bash
 npm uninstall -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
 pnpm remove -g @bastani/atomic
+```
+
+With Bun:
+
+```bash
 bun remove -g @bastani/atomic
 ```
 
