@@ -1,6 +1,6 @@
 import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
 import { rebasedStageStartedAt } from "../../shared/timing.js";
-import type { StageOptions, WorkflowModelUsage } from "../../shared/types.js";
+import type { StageOptions, WorkflowModelUsage, WorkflowSerializableValue } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { raceAbort } from "./executor-abort.js";
 import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
@@ -321,9 +321,12 @@ export function createTrackedStageCaller(input: {
 					? (stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText())
 					: runtime.innerCtx.__getLastAssistantText();
 				terminalStateIsSuccess = true;
+				const structuredOutput =
+					typeof result === "object" && result !== null ? (result as WorkflowSerializableValue) : undefined;
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
 					if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+					if (structuredOutput !== undefined) runtime.stageSnapshot.structured = structuredOutput;
 				};
 			}
 			return result;

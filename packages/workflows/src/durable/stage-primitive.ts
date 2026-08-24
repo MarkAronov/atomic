@@ -284,22 +284,68 @@ function replayableTaskResult(
 ): { readonly result: WorkflowTaskResult; readonly checkpoint: DurableCompletedStageCheckpoint } | undefined {
 	const taskShaped = stageCheckpointWithOutput(backend, workflowId, replayKey, isWorkflowTaskResult);
 	if (taskShaped !== undefined && isWorkflowTaskResult(taskShaped.output)) {
-		return { result: taskShaped.output, checkpoint: taskShaped };
+		return { result: completeTaskResult(name, taskShaped.output, taskShaped), checkpoint: taskShaped };
 	}
 	const terminal = stageCheckpointWithOutput(backend, workflowId, replayKey);
-	if (terminal === undefined || typeof terminal.output !== "string") return undefined;
-	const result: WorkflowTaskResult = {
-		name,
-		stageName: name,
-		text: terminal.output,
-		...(terminal.sessionId !== undefined ? { sessionId: terminal.sessionId } : {}),
-		...(terminal.sessionFile !== undefined ? { sessionFile: terminal.sessionFile } : {}),
-		...(terminal.model !== undefined ? { model: terminal.model } : {}),
-		...(terminal.fastMode !== undefined ? { fastMode: terminal.fastMode } : {}),
-		...(terminal.attemptedModels !== undefined ? { attemptedModels: [...terminal.attemptedModels] } : {}),
-		...(terminal.modelAttempts !== undefined ? { modelAttempts: [...terminal.modelAttempts] } : {}),
-	};
+	if (terminal === undefined) return undefined;
+	const result = taskResultFromTerminalCheckpoint(name, terminal);
+	if (result === undefined) return undefined;
 	return { result, checkpoint: { ...terminal, output: result } };
+}
+
+function taskResultFromTerminalCheckpoint(
+	name: string,
+	terminal: DurableCompletedStageCheckpoint,
+): WorkflowTaskResult | undefined {
+	if (isWorkflowTaskResult(terminal.output)) return completeTaskResult(name, terminal.output, terminal);
+	if (typeof terminal.output === "string") {
+		return completeTaskResult(name, { name, stageName: name, text: terminal.output }, terminal);
+	}
+	if (typeof terminal.output === "object" && terminal.output !== null && !Array.isArray(terminal.output)) {
+		const text = terminal.result ?? JSON.stringify(terminal.output);
+		return completeTaskResult(name, { name, stageName: name, text, structured: terminal.output }, terminal);
+	}
+	if (typeof terminal.result === "string") {
+		return completeTaskResult(name, { name, stageName: name, text: terminal.result }, terminal);
+	}
+	return undefined;
+}
+
+function completeTaskResult(
+	name: string,
+	base: WorkflowTaskResult,
+	checkpoint: DurableStageCheckpoint,
+): WorkflowTaskResult {
+	return {
+		name: typeof base.name === "string" && base.name.length > 0 ? base.name : name,
+		stageName: typeof base.stageName === "string" && base.stageName.length > 0 ? base.stageName : name,
+		text: base.text,
+		...(base.structured !== undefined || checkpoint.structured !== undefined
+			? { structured: base.structured ?? checkpoint.structured }
+			: {}),
+		...(base.sessionId !== undefined || checkpoint.sessionId !== undefined
+			? { sessionId: base.sessionId ?? checkpoint.sessionId }
+			: {}),
+		...(base.sessionFile !== undefined || checkpoint.sessionFile !== undefined
+			? { sessionFile: base.sessionFile ?? checkpoint.sessionFile }
+			: {}),
+		...(base.artifacts !== undefined || checkpoint.artifacts !== undefined
+			? { artifacts: [...(base.artifacts ?? checkpoint.artifacts ?? [])] }
+			: {}),
+		...(base.model !== undefined || checkpoint.model !== undefined ? { model: base.model ?? checkpoint.model } : {}),
+		...(base.fastMode !== undefined || checkpoint.fastMode !== undefined
+			? { fastMode: base.fastMode ?? checkpoint.fastMode }
+			: {}),
+		...(base.attemptedModels !== undefined || checkpoint.attemptedModels !== undefined
+			? { attemptedModels: [...(base.attemptedModels ?? checkpoint.attemptedModels ?? [])] }
+			: {}),
+		...(base.modelAttempts !== undefined || checkpoint.modelAttempts !== undefined
+			? { modelAttempts: [...(base.modelAttempts ?? checkpoint.modelAttempts ?? [])] }
+			: {}),
+		...(base.warnings !== undefined || checkpoint.warnings !== undefined
+			? { warnings: [...(base.warnings ?? checkpoint.warnings ?? [])] }
+			: {}),
+	};
 }
 
 async function awaitAbortable(signal: AbortSignal | undefined, work: Promise<void>): Promise<void> {
@@ -416,6 +462,9 @@ function taskCheckpointMetadata(result: WorkflowTaskResult): Partial<DurableStag
 		...(result.fastMode !== undefined ? { fastMode: result.fastMode } : {}),
 		...(result.attemptedModels !== undefined ? { attemptedModels: [...result.attemptedModels] } : {}),
 		...(result.modelAttempts !== undefined ? { modelAttempts: [...result.modelAttempts] } : {}),
+		...(result.structured !== undefined ? { structured: result.structured } : {}),
+		...(result.artifacts !== undefined ? { artifacts: [...result.artifacts] } : {}),
+		...(result.warnings !== undefined ? { warnings: [...result.warnings] } : {}),
 	};
 }
 
@@ -462,6 +511,9 @@ function mergeCheckpointHydrationMetadata(
 		...(replayValueCheckpoint.fastMode === undefined ? metadataValue(checkpoints, "fastMode") : {}),
 		...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
 		...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
+		...(replayValueCheckpoint.structured === undefined ? metadataValue(checkpoints, "structured") : {}),
+		...(replayValueCheckpoint.artifacts === undefined ? metadataValue(checkpoints, "artifacts") : {}),
+		...(replayValueCheckpoint.warnings === undefined ? metadataValue(checkpoints, "warnings") : {}),
 	};
 }
 
@@ -573,6 +625,9 @@ export function recordCachedStageIntoStore(
 		...(checkpoint?.fastMode !== undefined ? { fastMode: checkpoint.fastMode } : {}),
 		...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
 		...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),
+		...(checkpoint?.structured !== undefined ? { structured: checkpoint.structured } : {}),
+		...(checkpoint?.artifacts !== undefined ? { artifacts: checkpoint.artifacts } : {}),
+		...(checkpoint?.warnings !== undefined ? { warnings: checkpoint.warnings } : {}),
 	};
 	store.recordStageStart(runId, snapshot);
 	store.recordStageEnd(runId, snapshot);

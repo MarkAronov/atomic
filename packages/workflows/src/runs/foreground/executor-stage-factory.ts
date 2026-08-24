@@ -152,6 +152,10 @@ export function createWorkflowStageFactory(input: {
 			}
 			if (meta.attemptedModels !== undefined) stageSnapshot.attemptedModels = meta.attemptedModels;
 			if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
+			if (meta.warnings !== undefined) {
+				if (meta.warnings.length > 0) stageSnapshot.warnings = meta.warnings;
+				else delete stageSnapshot.warnings;
+			}
 		};
 
 		let runtime!: LiveStageRuntime;

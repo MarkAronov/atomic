@@ -14,7 +14,6 @@ import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
-import { createStore, run, Type, workflow } from "./executor-shared.js";
 import type {
 	DurableStageCheckpoint,
 	DurableToolCheckpoint,
@@ -23,6 +22,7 @@ import type {
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
+import { createStore, run, Type, workflow } from "./executor-shared.js";
 
 describe("DbosDurableBackend hydration (fresh process)", () => {
 	let sdk: ReturnType<typeof createMockSdk>;
@@ -490,23 +490,63 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 			sessionFile: "/tmp/review.jsonl",
 			startedAt: 1000,
 			durationMs: 400,
+			structured: { approved: true },
+			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
+			warnings: ["hydrated warning"],
 		};
 		seedMockWorkflow(sdk, { workflowId, name: "task-terminal-hydrate", status: "PENDING" });
 		seedMockCheckpoint(sdk, workflowId, cp);
 		const fresh = new DbosDurableBackend(sdk);
 		await fresh.hydrateWorkflow(workflowId);
 		assert.equal(fresh.getStageOutput(workflowId, replayKey), "hydrated terminal review");
+		const hydrated = fresh
+			.listCheckpoints(workflowId)
+			.find((checkpoint): checkpoint is DurableStageCheckpoint => checkpoint.kind === "stage");
+		assert.deepEqual(hydrated?.structured, { approved: true });
+		assert.deepEqual(hydrated?.artifacts, [{ kind: "output", path: "/tmp/review.md" }]);
+		assert.deepEqual(hydrated?.warnings, ["hydrated warning"]);
 		let prompts = 0;
 		const def = workflow({
 			name: "task-terminal-hydrate",
 			description: "",
 			inputs: {},
 			outputs: { result: Type.String() },
-			run: async (ctx) => ({ result: (await ctx.task("review", { prompt: "ignored" })).text }),
+			run: async (ctx) => {
+				const review = await ctx.task("review", { prompt: "ignored" });
+				return {
+					result: JSON.stringify({
+						text: review.text,
+						structured: review.structured,
+						artifacts: review.artifacts,
+						warnings: review.warnings,
+					}),
+				};
+			},
 		});
-		const result = await run(def, {}, { runId: workflowId, store: createStore(), durableBackend: fresh, adapters: { prompt: { prompt: async () => { prompts += 1; return "rerun"; } } } });
+		const result = await run(
+			def,
+			{},
+			{
+				runId: workflowId,
+				store: createStore(),
+				durableBackend: fresh,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "rerun";
+						},
+					},
+				},
+			},
+		);
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.result, "hydrated terminal review");
+		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
+			text: "hydrated terminal review",
+			structured: { approved: true },
+			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
+			warnings: ["hydrated warning"],
+		});
 		assert.equal(prompts, 0);
 		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");
 	});

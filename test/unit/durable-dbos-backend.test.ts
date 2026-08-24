@@ -133,6 +133,9 @@ describe("DbosDurableBackend (mock SDK)", () => {
 			fastMode: true,
 			attemptedModels: ["gpt-test"],
 			modelAttempts: [{ model: "gpt-test", success: true, usage }],
+			structured: { verdict: "pass", confidence: 0.9 },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["used fallback model"],
 			topology: { version: 1, stageId: "review", parentIds: [] },
 		};
 
@@ -158,6 +161,9 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		assert.deepEqual(decoded.attemptedModels, ["gpt-test"]);
 		assert.equal(decoded.modelAttempts?.[0]?.success, true);
 		assert.deepEqual(decoded.modelAttempts?.[0]?.usage, usage);
+		assert.deepEqual(decoded.structured, { verdict: "pass", confidence: 0.9 });
+		assert.deepEqual(decoded.artifacts, [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }]);
+		assert.deepEqual(decoded.warnings, ["used fallback model"]);
 	});
 
 	test("stage checkpoint without model usage round-trips without a usage property", () => {

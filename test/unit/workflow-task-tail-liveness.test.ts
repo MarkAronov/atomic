@@ -193,7 +193,12 @@ describe("ctx.task tail liveness", () => {
 			replayKey: "stage:task:review:1",
 			output: "terminal review text",
 			completedAt: 2,
+			sessionId: "sess-review",
 			sessionFile: "/tmp/review.jsonl",
+			model: "openai/gpt-test",
+			structured: { approved: true, score: 4 },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["used fallback model"],
 		});
 		let prompts = 0;
 		const replayOnly = workflow({
@@ -201,7 +206,20 @@ describe("ctx.task tail liveness", () => {
 			description: "",
 			inputs: {},
 			outputs: { result: Type.String() },
-			run: async (ctx) => ({ result: (await ctx.task("review", { prompt: "ignored" })).text }),
+			run: async (ctx) => {
+				const review = await ctx.task("review", { prompt: "ignored" });
+				return {
+					result: JSON.stringify({
+						text: review.text,
+						structured: review.structured,
+						artifacts: review.artifacts,
+						warnings: review.warnings,
+						sessionId: review.sessionId,
+						sessionFile: review.sessionFile,
+						model: review.model,
+					}),
+				};
+			},
 		});
 		const replayed = await run(
 			replayOnly,
@@ -221,8 +239,58 @@ describe("ctx.task tail liveness", () => {
 			},
 		);
 		assert.equal(replayed.status, "completed");
-		assert.equal(replayed.result?.result, "terminal review text");
+		assert.deepEqual(JSON.parse(replayed.result?.result ?? ""), {
+			text: "terminal review text",
+			structured: { approved: true, score: 4 },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["used fallback model"],
+			sessionId: "sess-review",
+			sessionFile: "/tmp/review.jsonl",
+			model: "openai/gpt-test",
+		});
 		assert.equal(prompts, 0);
+	});
+
+	test("terminal-only replay returns structured artifacts and warnings without rerunning", async () => {
+		const backend = new InMemoryDurableBackend();
+		const replayKey = "stage:task:review:1";
+		backend.registerWorkflow({
+			workflowId: "wf-task-terminal-fields",
+			name: "task-terminal-fields",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: "wf-task-terminal-fields",
+			checkpointId: `stage:${replayKey}`,
+			name: "review",
+			replayKey,
+			output: "terminal review text",
+			completedAt: 2,
+			sessionFile: "/tmp/review.jsonl",
+			structured: { approved: false },
+			artifacts: [{ kind: "patch", path: "/tmp/review.patch" }],
+			warnings: ["rate limited once"],
+		});
+		const task = createDurableTaskPrimitive({
+			workflowId: "wf-task-terminal-fields",
+			backend,
+			nextReplayKey: () => replayKey,
+			task: async () => {
+				throw new Error("live task should not run");
+			},
+		});
+		assert.deepEqual(await task("review", { prompt: "ignored" }), {
+			name: "review",
+			stageName: "review",
+			text: "terminal review text",
+			structured: { approved: false },
+			sessionFile: "/tmp/review.jsonl",
+			artifacts: [{ kind: "patch", path: "/tmp/review.patch" }],
+			warnings: ["rate limited once"],
+		});
 	});
 
 	test("quit and interrupt terminate a root awaiting a never-settling task-result checkpoint", async () => {

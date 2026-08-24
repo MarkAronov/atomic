@@ -59,10 +59,7 @@ export interface DurableWorkflowBackend {
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
 
 	/** Persist a checkpoint before exposing its side effect. */
-	recordCheckpointAsync(
-		checkpoint: DurableCheckpoint,
-		options?: { readonly signal?: AbortSignal },
-	): Promise<void>;
+	recordCheckpointAsync(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void>;
 
 	/**
 	 * Persist additive replay metadata without turning a rejected storage write
