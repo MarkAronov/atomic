@@ -17,7 +17,7 @@ import {
 } from "../../packages/workflows/src/engine/run-liveness.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
-import { interruptRun } from "../../packages/workflows/src/runs/background/status.js";
+import { interruptAllRuns, interruptRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { resolve_budget } from "../../packages/workflows/src/shared/budget.js";
@@ -335,6 +335,77 @@ describe("ctx.task tail liveness", () => {
 		backend.gate.release();
 		const result = await pending;
 		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
+	});
+
+	test("an expanded child task-checkpoint control is not diagnosed as a stranded root", () => {
+		const toolControls = createToolControlRegistry();
+		toolControls.register({
+			runId: "child",
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}stage:task:review:1`,
+			name: "review",
+			controller: new AbortController(),
+			settled: new Promise(() => {}),
+		});
+		const parent: RunSnapshot = {
+			id: "parent",
+			name: "parent",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "review",
+					name: "review",
+					status: "completed",
+					parentIds: [],
+					toolEvents: [],
+					workflowGraphTarget: { runId: "child", stageId: "review", runName: "child-wf", depth: 1 },
+				} as RunSnapshot["stages"][number],
+			],
+			toolNodes: [],
+			startedAt: 0,
+			budget: { maxDurationMs: 10, warnAtPercent: 80 },
+		};
+		assert.equal(isImpossibleRootLiveness(parent, 20), true);
+		assert.equal(summarizeRunSnapshot(parent, 20, { toolControlRegistry: toolControls }).strandedRoot, undefined);
+		assert.equal(summarizeRunSnapshot(parent, 20, { toolControlRegistry: toolControls }).error, undefined);
+	});
+
+	test("interruptAllRuns forwards an injected tool-control registry to a task tail", async () => {
+		const backend = new DelayedTaskCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const pending = run(
+			taskThenTool,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				stageControlRegistry: registry,
+				toolControlRegistry: toolControls,
+				adapters: { prompt: { prompt: async () => "review done" } },
+			},
+		);
+		const deadline = Date.now() + 2_000;
+		let runId = "";
+		while (Date.now() < deadline) {
+			runId = store.runs().find((candidate) => candidate.name === taskThenTool.name)?.id ?? "";
+			if (runId !== "" && toolControls.active(runId).some((handle) => handle.nodeId.startsWith("task-checkpoint:")))
+				break;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.ok(runId.length > 0);
+		const interrupted = await interruptAllRuns({
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		assert.equal(interrupted.length, 1);
+		assert.equal(interrupted[0]?.ok, true);
+		const finished = await pending;
+		assert.equal(finished.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.exitReason, "quit");
 	});
 
 	test("status reports a stranded completed frontier that is still raw-running over budget", () => {

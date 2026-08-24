@@ -18,6 +18,7 @@ import {
 	IMPOSSIBLE_ROOT_LIVENESS_MESSAGE,
 	isImpossibleRootLiveness,
 } from "../engine/run-liveness.js";
+import type { ExpandedWorkflowStage } from "../shared/expanded-workflow-graph.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
@@ -174,6 +175,23 @@ function awaitingInputEntries(run: RunSnapshot): WorkflowStatusAwaitingInput[] {
 	return entries;
 }
 
+function isExpandedWorkflowStage(stage: StageSnapshot): stage is ExpandedWorkflowStage {
+	return "workflowGraphTarget" in stage;
+}
+
+/** Root plus any expanded child run ids visible on this status snapshot. */
+function statusControlRunIds(run: RunSnapshot): readonly string[] {
+	const ids = new Set<string>([run.id]);
+	for (const stage of run.stages) {
+		if (isExpandedWorkflowStage(stage)) ids.add(stage.workflowGraphTarget.runId);
+	}
+	for (const tool of run.toolNodes ?? []) {
+		const owner = tool as typeof tool & { readonly runId?: string };
+		if (owner.runId !== undefined) ids.add(owner.runId);
+	}
+	return [...ids];
+}
+
 function budgetReport(dimension: "duration" | "tokens" | "cost", reading: number, ceiling: number) {
 	return { dimension, reading, ceiling, percent: ceiling === 0 ? 0 : (reading / ceiling) * 100 };
 }
@@ -219,7 +237,9 @@ export function summarizeRunSnapshot(
 					...(cost !== undefined ? { cost } : {}),
 				};
 	const hasActiveControlNode = hasActiveTaskCheckpointControl(
-		(options?.toolControlRegistry?.active(run.id) ?? []).map((handle) => handle.nodeId),
+		statusControlRunIds(run).flatMap((runId) =>
+			(options?.toolControlRegistry?.active(runId) ?? []).map((handle) => handle.nodeId),
+		),
 	);
 	const strandedRoot = isImpossibleRootLiveness(run, now, { hasActiveControlNode });
 	return {

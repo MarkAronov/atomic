@@ -504,7 +504,9 @@ export async function interruptRun(
 		const activeStore = opts?.store ?? defaultStore;
 		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
 		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
-			toolControls.active(controlRunId).some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
+			toolControls
+				.active(controlRunId)
+				.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
 		);
 		if (hasTaskTail) {
 			const quit = await quitRun(runId, {
@@ -523,12 +525,17 @@ export async function interruptRun(
 export async function interruptAllRuns(opts?: {
 	store?: Store;
 	stageControlRegistry?: StageControlRegistry;
+	toolControlRegistry?: ToolControlRegistry;
 }): Promise<InterruptRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
 	return Promise.all(
 		inFlight.map((run) =>
-			interruptRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry }),
+			interruptRun(run.id, {
+				store: activeStore,
+				stageControlRegistry: opts?.stageControlRegistry,
+				toolControlRegistry: opts?.toolControlRegistry,
+			}),
 		),
 	);
 }
