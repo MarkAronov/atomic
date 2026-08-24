@@ -10,7 +10,6 @@ import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
 
-const REAL_BROKER_TIMEOUT_MS = 30_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-peer-disconnect-"));
@@ -111,154 +110,150 @@ afterAll(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-test(
-	"broker emits exact idempotent peer_disconnected frames for graceful and abrupt target exits",
-	async () => {
-		const gracefulAsker = new WireClient();
-		const secondAsker = new WireClient();
-		const gracefulTarget = new WireClient();
-		const gracefulAskerId = await register(gracefulAsker, "graceful-asker");
-		await register(secondAsker, "second-asker");
-		const gracefulTargetId = await register(gracefulTarget, "graceful-target-exact");
+test("broker emits exact idempotent peer_disconnected frames for graceful and abrupt target exits", async () => {
+	const gracefulAsker = new WireClient();
+	const secondAsker = new WireClient();
+	const gracefulTarget = new WireClient();
+	const gracefulAskerId = await register(gracefulAsker, "graceful-asker");
+	await register(secondAsker, "second-asker");
+	const gracefulTargetId = await register(gracefulTarget, "graceful-target-exact");
 
-		for (const [asker, questionId] of [
-			[gracefulAsker, "graceful-question-1"],
-			[gracefulAsker, "graceful-question-2"],
-			[secondAsker, "second-question-exact"],
-			[gracefulAsker, "answered-question-exact"],
-		] as const) {
-			asker.send({
-				type: "send",
-				to: gracefulTargetId,
-				message: { id: questionId, timestamp: 1, expectsReply: true, content: { text: "question" } },
-			});
-			await asker.next("delivered");
-			await gracefulTarget.next("message");
-		}
-		gracefulTarget.send({
+	for (const [asker, questionId] of [
+		[gracefulAsker, "graceful-question-1"],
+		[gracefulAsker, "graceful-question-2"],
+		[secondAsker, "second-question-exact"],
+		[gracefulAsker, "answered-question-exact"],
+	] as const) {
+		asker.send({
 			type: "send",
-			to: gracefulAskerId,
-			message: { id: "answer-exact", timestamp: 2, replyTo: "answered-question-exact", content: { text: "answer" } },
+			to: gracefulTargetId,
+			message: { id: questionId, timestamp: 1, expectsReply: true, content: { text: "question" } },
 		});
-		await gracefulTarget.next("delivered");
-		await gracefulAsker.next("message");
-		gracefulTarget.send({ type: "unregister" });
-		gracefulTarget.socket.end();
-		assert.deepEqual(await gracefulAsker.next("peer_disconnected"), {
-			type: "peer_disconnected",
-			replyTo: "graceful-question-1",
-			peerSessionId: gracefulTargetId,
-			peerName: "graceful-target-exact",
-		});
-		assert.deepEqual(await gracefulAsker.next("peer_disconnected"), {
-			type: "peer_disconnected",
-			replyTo: "graceful-question-2",
-			peerSessionId: gracefulTargetId,
-			peerName: "graceful-target-exact",
-		});
-		assert.deepEqual(await secondAsker.next("peer_disconnected"), {
-			type: "peer_disconnected",
-			replyTo: "second-question-exact",
-			peerSessionId: gracefulTargetId,
-			peerName: "graceful-target-exact",
-		});
-		await gracefulAsker.next("session_left", (frame) => frame.sessionId === gracefulTargetId);
-		await secondAsker.next("session_left", (frame) => frame.sessionId === gracefulTargetId);
+		await asker.next("delivered");
+		await gracefulTarget.next("message");
+	}
+	gracefulTarget.send({
+		type: "send",
+		to: gracefulAskerId,
+		message: { id: "answer-exact", timestamp: 2, replyTo: "answered-question-exact", content: { text: "answer" } },
+	});
+	await gracefulTarget.next("delivered");
+	await gracefulAsker.next("message");
+	gracefulTarget.send({ type: "unregister" });
+	gracefulTarget.socket.end();
+	assert.deepEqual(await gracefulAsker.next("peer_disconnected"), {
+		type: "peer_disconnected",
+		replyTo: "graceful-question-1",
+		peerSessionId: gracefulTargetId,
+		peerName: "graceful-target-exact",
+	});
+	assert.deepEqual(await gracefulAsker.next("peer_disconnected"), {
+		type: "peer_disconnected",
+		replyTo: "graceful-question-2",
+		peerSessionId: gracefulTargetId,
+		peerName: "graceful-target-exact",
+	});
+	assert.deepEqual(await secondAsker.next("peer_disconnected"), {
+		type: "peer_disconnected",
+		replyTo: "second-question-exact",
+		peerSessionId: gracefulTargetId,
+		peerName: "graceful-target-exact",
+	});
+	await gracefulAsker.next("session_left", (frame) => frame.sessionId === gracefulTargetId);
+	await secondAsker.next("session_left", (frame) => frame.sessionId === gracefulTargetId);
 
-		const abruptAsker = new WireClient();
-		const abruptTarget = new WireClient();
-		await register(abruptAsker, "abrupt-asker");
-		const abruptTargetId = await register(abruptTarget);
-		for (const [asker, questionId] of [
-			[abruptAsker, "abrupt-question-exact"],
-			[gracefulAsker, "mixed-target-question"],
-		] as const) {
-			asker.send({
-				type: "send",
-				to: abruptTargetId,
-				message: { id: questionId, timestamp: 3, expectsReply: true, content: { text: "question" } },
-			});
-			await asker.next("delivered");
-			await abruptTarget.next("message");
-		}
-		abruptTarget.socket.destroy();
-		assert.deepEqual(await abruptAsker.next("peer_disconnected"), {
-			type: "peer_disconnected",
-			replyTo: "abrupt-question-exact",
-			peerSessionId: abruptTargetId,
+	const abruptAsker = new WireClient();
+	const abruptTarget = new WireClient();
+	await register(abruptAsker, "abrupt-asker");
+	const abruptTargetId = await register(abruptTarget);
+	for (const [asker, questionId] of [
+		[abruptAsker, "abrupt-question-exact"],
+		[gracefulAsker, "mixed-target-question"],
+	] as const) {
+		asker.send({
+			type: "send",
+			to: abruptTargetId,
+			message: { id: questionId, timestamp: 3, expectsReply: true, content: { text: "question" } },
 		});
-		assert.deepEqual(await gracefulAsker.next("peer_disconnected"), {
-			type: "peer_disconnected",
-			replyTo: "mixed-target-question",
-			peerSessionId: abruptTargetId,
-		});
-		await abruptAsker.next("session_left", (frame) => frame.sessionId === abruptTargetId);
-		await gracefulAsker.next("session_left", (frame) => frame.sessionId === abruptTargetId);
+		await asker.next("delivered");
+		await abruptTarget.next("message");
+	}
+	abruptTarget.socket.destroy();
+	assert.deepEqual(await abruptAsker.next("peer_disconnected"), {
+		type: "peer_disconnected",
+		replyTo: "abrupt-question-exact",
+		peerSessionId: abruptTargetId,
+	});
+	assert.deepEqual(await gracefulAsker.next("peer_disconnected"), {
+		type: "peer_disconnected",
+		replyTo: "mixed-target-question",
+		peerSessionId: abruptTargetId,
+	});
+	await abruptAsker.next("session_left", (frame) => frame.sessionId === abruptTargetId);
+	await gracefulAsker.next("session_left", (frame) => frame.sessionId === abruptTargetId);
 
-		const gracefulDepartedAsker = new WireClient();
-		const abruptDepartedAsker = new WireClient();
-		const survivingAsker = new WireClient();
-		const scopedTarget = new WireClient();
-		const gracefulDepartedId = await register(gracefulDepartedAsker, "graceful-departed-asker");
-		const abruptDepartedId = await register(abruptDepartedAsker, "abrupt-departed-asker");
-		await register(survivingAsker, "surviving-asker");
-		const scopedTargetId = await register(scopedTarget, "scoped-target");
-		for (const [asker, questionId] of [
-			[gracefulDepartedAsker, "gracefully-pruned-question"],
-			[abruptDepartedAsker, "abruptly-pruned-question"],
-			[survivingAsker, "surviving-question"],
-		] as const) {
-			asker.send({
-				type: "send",
-				to: scopedTargetId,
-				message: {
-					id: questionId,
-					timestamp: 4,
-					expectsReply: true,
-					content: { text: "question" },
-				},
-			});
-			await asker.next("delivered");
-			await scopedTarget.next("message");
-		}
-		gracefulDepartedAsker.send({ type: "unregister" });
-		gracefulDepartedAsker.socket.end();
-		await scopedTarget.next("session_left", (frame) => frame.sessionId === gracefulDepartedId);
-		abruptDepartedAsker.socket.destroy();
-		await scopedTarget.next("session_left", (frame) => frame.sessionId === abruptDepartedId);
-		scopedTarget.socket.destroy();
-		assert.deepEqual(await survivingAsker.next("peer_disconnected"), {
+	const gracefulDepartedAsker = new WireClient();
+	const abruptDepartedAsker = new WireClient();
+	const survivingAsker = new WireClient();
+	const scopedTarget = new WireClient();
+	const gracefulDepartedId = await register(gracefulDepartedAsker, "graceful-departed-asker");
+	const abruptDepartedId = await register(abruptDepartedAsker, "abrupt-departed-asker");
+	await register(survivingAsker, "surviving-asker");
+	const scopedTargetId = await register(scopedTarget, "scoped-target");
+	for (const [asker, questionId] of [
+		[gracefulDepartedAsker, "gracefully-pruned-question"],
+		[abruptDepartedAsker, "abruptly-pruned-question"],
+		[survivingAsker, "surviving-question"],
+	] as const) {
+		asker.send({
+			type: "send",
+			to: scopedTargetId,
+			message: {
+				id: questionId,
+				timestamp: 4,
+				expectsReply: true,
+				content: { text: "question" },
+			},
+		});
+		await asker.next("delivered");
+		await scopedTarget.next("message");
+	}
+	gracefulDepartedAsker.send({ type: "unregister" });
+	gracefulDepartedAsker.socket.end();
+	await scopedTarget.next("session_left", (frame) => frame.sessionId === gracefulDepartedId);
+	abruptDepartedAsker.socket.destroy();
+	await scopedTarget.next("session_left", (frame) => frame.sessionId === abruptDepartedId);
+	scopedTarget.socket.destroy();
+	assert.deepEqual(await survivingAsker.next("peer_disconnected"), {
+		type: "peer_disconnected",
+		replyTo: "surviving-question",
+		peerSessionId: scopedTargetId,
+		peerName: "scoped-target",
+	});
+	await survivingAsker.next("session_left", (frame) => frame.sessionId === scopedTargetId);
+	for (const client of [gracefulAsker, secondAsker, abruptAsker]) {
+		await client.next("session_left", (frame) => frame.sessionId === scopedTargetId);
+	}
+	const notices = (client: WireClient) => client.received.filter((frame) => frame.type === "peer_disconnected");
+	assert.deepEqual(
+		notices(gracefulAsker).map((frame) => frame.replyTo),
+		["graceful-question-1", "graceful-question-2", "mixed-target-question"],
+	);
+	assert.deepEqual(
+		notices(secondAsker).map((frame) => frame.replyTo),
+		["second-question-exact"],
+	);
+	assert.deepEqual(
+		notices(abruptAsker).map((frame) => frame.replyTo),
+		["abrupt-question-exact"],
+	);
+	assert.deepEqual(notices(survivingAsker), [
+		{
 			type: "peer_disconnected",
 			replyTo: "surviving-question",
 			peerSessionId: scopedTargetId,
 			peerName: "scoped-target",
-		});
-		await survivingAsker.next("session_left", (frame) => frame.sessionId === scopedTargetId);
-		for (const client of [gracefulAsker, secondAsker, abruptAsker]) {
-			await client.next("session_left", (frame) => frame.sessionId === scopedTargetId);
-		}
-		const notices = (client: WireClient) => client.received.filter((frame) => frame.type === "peer_disconnected");
-		assert.deepEqual(
-			notices(gracefulAsker).map((frame) => frame.replyTo),
-			["graceful-question-1", "graceful-question-2", "mixed-target-question"],
-		);
-		assert.deepEqual(
-			notices(secondAsker).map((frame) => frame.replyTo),
-			["second-question-exact"],
-		);
-		assert.deepEqual(
-			notices(abruptAsker).map((frame) => frame.replyTo),
-			["abrupt-question-exact"],
-		);
-		assert.deepEqual(notices(survivingAsker), [
-			{
-				type: "peer_disconnected",
-				replyTo: "surviving-question",
-				peerSessionId: scopedTargetId,
-				peerName: "scoped-target",
-			},
-		]);
-		for (const client of [gracefulAsker, secondAsker, abruptAsker, survivingAsker]) client.socket.destroy();
-	},
-	REAL_BROKER_TIMEOUT_MS,
-);
+		},
+	]);
+	for (const client of [gracefulAsker, secondAsker, abruptAsker, survivingAsker]) client.socket.destroy();
+});
