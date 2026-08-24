@@ -9,7 +9,29 @@ Atomic is the loop engine for all engineering work: a terminal coding-agent runt
 
 ## Quick start
 
-Install the self-contained release archive on macOS or Linux:
+Install the published package globally with npm:
+
+```bash
+npm install -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
+pnpm add -g @bastani/atomic
+```
+
+With Bun:
+
+```bash
+bun add -g @bastani/atomic
+```
+
+Package installation requires Node.js. Atomic does not require package install scripts; add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
+
+Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
+
+On macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
@@ -21,23 +43,7 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
-Archive installation does not require Node.js or a package manager. It verifies the GitHub Release checksum and installs the full payload under a versioned root. See the [Quickstart](/quickstart#release-archive) for exact-version flags, default paths, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `ATOMIC_VERSION`, optional `GITHUB_TOKEN`/`GH_TOKEN`, and PATH guidance.
-
-Package installation still requires Node.js. With npm, pnpm, or Bun:
-
-```bash
-npm install -g @bastani/atomic
-pnpm add -g @bastani/atomic
-bun add -g @bastani/atomic
-```
-
-Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
-
-### Alpine and musl Linux archives
-
-The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Each archive includes its matching native search and PTY bindings plus payload-local `libgcc` and `libstdc++` runtimes. It runs on stock Alpine without installing runtime packages.
-
-The musl archives deliberately omit a clipboard native binding because `@mariozechner/clipboard` 0.3.9 publishes metadata-only musl stubs without a `.node` payload; Atomic uses Linux clipboard commands and OSC52 fallback instead. They also omit `@embedded-postgres/*` binary packages because those packages are glibc-linked. Durable workflows on Alpine therefore require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker; without a durable backend, Atomic uses a loud non-durable in-memory fallback.
+The archive installer verifies the GitHub Release checksum and installs the full payload under a versioned root. See the [Quickstart](/quickstart#release-archive) for its parameters (`ATOMIC_VERSION`, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `GITHUB_TOKEN`/`GH_TOKEN`), default paths, and PATH guidance.
 
 Then run it in a project directory:
 
