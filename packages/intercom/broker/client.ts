@@ -365,6 +365,9 @@ export class IntercomClient extends EventEmitter {
         pending.reject(new Error(brokerMessage.reason));
         break;
       }
+      case "peer_disconnected":
+        // Reply-side handling lands in a later slice; tolerate the frame without changing client behavior.
+        break;
       case "error": {
         if (typeof brokerMessage.error !== "string") {
           throw new Error("Invalid error message");
