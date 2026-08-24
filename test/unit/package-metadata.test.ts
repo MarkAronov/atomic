@@ -155,15 +155,8 @@ describe("package metadata", () => {
 		});
 	});
 
-	test("@bastani/atomic publish payload excludes source maps and keeps in-product docs", async () => {
-		assert.deepEqual(atomicPackageJson.files, [
-			"dist",
-			"docs",
-			"examples",
-			"CHANGELOG.md",
-			"npm-shrinkwrap.json",
-			"!**/*.map",
-		]);
+	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {
+		assert.deepEqual(atomicPackageJson.files, ["dist", "docs", "examples", "CHANGELOG.md", "npm-shrinkwrap.json"]);
 		assert.equal(Object.hasOwn(atomicPackageJson, "contentPolicy"), false);
 
 		const buildTsconfig = (await readJson("packages/coding-agent/tsconfig.build.json")) as {
@@ -173,9 +166,9 @@ describe("package metadata", () => {
 				inlineSources?: boolean;
 			};
 		};
-		assert.equal(buildTsconfig.compilerOptions?.sourceMap, false);
-		assert.equal(buildTsconfig.compilerOptions?.declarationMap, false);
-		assert.equal(buildTsconfig.compilerOptions?.inlineSources, false);
+		assert.equal(buildTsconfig.compilerOptions?.sourceMap, undefined);
+		assert.equal(buildTsconfig.compilerOptions?.declarationMap, undefined);
+		assert.equal(buildTsconfig.compilerOptions?.inlineSources, undefined);
 		assert.deepEqual(Object.values(INSTALLED_EXTENSION_ENTRIES), [
 			"src/extension/index.bundle.mjs",
 			"src/extension/index.bundle.mjs",
