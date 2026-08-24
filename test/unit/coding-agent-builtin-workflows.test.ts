@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, test } from "vitest";
+import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { type PackageSource, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
@@ -48,6 +49,29 @@ describe("coding-agent builtin resources", () => {
 			for (const fixture of builtinPackageFixtures) {
 				const builtinDir = join(packageDir, "builtin", fixture.dirname);
 				const entryPath = join(builtinDir, fixture.requiredEntry);
+				mkdirSync(dirname(entryPath), { recursive: true });
+				writeFileSync(join(builtinDir, "package.json"), JSON.stringify({ name: fixture.packageName }), "utf-8");
+				writeFileSync(entryPath, "export default function register() {}\n", "utf-8");
+			}
+			process.env.ATOMIC_PACKAGE_DIR = packageDir;
+
+			assert.deepEqual(
+				getBuiltinPackagePaths(),
+				builtinPackageFixtures.map((fixture) => join(packageDir, "builtin", fixture.dirname)),
+			);
+		} finally {
+			if (previousPackageDir === undefined) delete process.env.ATOMIC_PACKAGE_DIR;
+			else process.env.ATOMIC_PACKAGE_DIR = previousPackageDir;
+		}
+	});
+
+	test("discovers shipped builtin packages from prebundled extension entries", () => {
+		const packageDir = tempDir("atomic-binary-bundled-package-dir-");
+		const previousPackageDir = process.env.ATOMIC_PACKAGE_DIR;
+		try {
+			for (const fixture of builtinPackageFixtures) {
+				const builtinDir = join(packageDir, "builtin", fixture.dirname);
+				const entryPath = join(builtinDir, INSTALLED_EXTENSION_ENTRIES[fixture.dirname]);
 				mkdirSync(dirname(entryPath), { recursive: true });
 				writeFileSync(join(builtinDir, "package.json"), JSON.stringify({ name: fixture.packageName }), "utf-8");
 				writeFileSync(entryPath, "export default function register() {}\n", "utf-8");
