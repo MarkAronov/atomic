@@ -298,17 +298,41 @@ function taskResultFromTerminalCheckpoint(
 	terminal: DurableCompletedStageCheckpoint,
 ): WorkflowTaskResult | undefined {
 	if (isWorkflowTaskResult(terminal.output)) return completeTaskResult(name, terminal.output, terminal);
+	if (terminal.structured !== undefined) {
+		return completeTaskResult(
+			name,
+			{
+				name,
+				stageName: name,
+				text: taskTextFromValue(terminal.structured),
+				structured: terminal.structured,
+			},
+			terminal,
+		);
+	}
 	if (typeof terminal.output === "string") {
 		return completeTaskResult(name, { name, stageName: name, text: terminal.output }, terminal);
 	}
 	if (terminal.output !== undefined) {
-		const text = terminal.result ?? JSON.stringify(terminal.output);
-		return completeTaskResult(name, { name, stageName: name, text, structured: terminal.output }, terminal);
+		return completeTaskResult(
+			name,
+			{
+				name,
+				stageName: name,
+				text: terminal.result ?? taskTextFromValue(terminal.output),
+				structured: terminal.output,
+			},
+			terminal,
+		);
 	}
 	if (typeof terminal.result === "string") {
 		return completeTaskResult(name, { name, stageName: name, text: terminal.result }, terminal);
 	}
 	return undefined;
+}
+
+function taskTextFromValue(value: WorkflowSerializableValue): string {
+	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function completeTaskResult(

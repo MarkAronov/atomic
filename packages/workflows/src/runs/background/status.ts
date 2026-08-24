@@ -509,13 +509,13 @@ export async function interruptRun(
 				.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
 		);
 		if (hasTaskTail) {
-			const quit = await quitRun(runId, {
+			const quit = await quitRun(aggregateWorkflowRootRunId(activeStore, runId), {
 				store: activeStore,
 				stageControlRegistry: opts?.stageControlRegistry,
 				toolControlRegistry: toolControls,
 			});
-			if (quit.ok) return { ok: true, runId, paused: quit.paused };
-			return { ok: false, runId, reason: quit.reason };
+			if (quit.ok) return { ok: true, runId: quit.runId, paused: quit.paused };
+			return { ok: false, runId: quit.runId, reason: quit.reason };
 		}
 	}
 	return pauseRun(runId, opts);

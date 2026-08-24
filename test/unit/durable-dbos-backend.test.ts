@@ -413,6 +413,23 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		});
 	});
 
+	test("same-process hydration rejects unknown checkpoints", async () => {
+		const workflowId = "wf-same-process-unknown";
+		const hash = durableHash({ name: "side-effect", args: {} });
+		backend.registerWorkflow({
+			workflowId,
+			name: "unknown-history",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		await sdk.recordStepOutput(workflowId, `tool:${hash}`, { not: "an envelope" });
+		await backend.hydrateWorkflow(workflowId);
+		assert.equal(backend.isWorkflowLoadable(workflowId), false);
+		assert.equal(backend.getWorkflow(workflowId), undefined);
+		assert.equal(backend.getToolOutput(workflowId, hash), undefined);
+	});
+
 	test("cancelWorkflow delegates to DBOS cancelWorkflow", async () => {
 		backend.registerWorkflow({
 			workflowId: "wf-3",

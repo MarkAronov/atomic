@@ -490,7 +490,11 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 					continue;
 				}
 				const classified = classifyCheckpointPayload(workflowId, record.stepName, record.output);
-				if (classified.kind === "current") this.mem.recordCheckpoint(classified.checkpoint);
+				if (classified.kind === "unknown") {
+					await this.suppressWorkflow(workflowId);
+					return { kind: "malformed" };
+				}
+				this.mem.recordCheckpoint(classified.checkpoint);
 			}
 			const handle = this.getLoadableWorkflow(workflowId);
 			return handle === undefined ? { kind: "malformed" } : { kind: "current", handle };

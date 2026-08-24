@@ -19,7 +19,7 @@ import type {
 	DurableToolCheckpoint,
 	DurableUiCheckpoint,
 } from "../../packages/workflows/src/durable/types.js";
-import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowSerializableValue, WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 import { createStore, run, Type, workflow } from "./executor-shared.js";
@@ -542,10 +542,90 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		);
 		assert.equal(result.status, "completed");
 		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
-			text: "hydrated terminal review",
+			text: JSON.stringify({ approved: true }, null, 2),
 			structured: { approved: true },
 			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
 			warnings: ["hydrated warning"],
+		});
+		assert.equal(prompts, 0);
+		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");
+	});
+
+	test("complete task result round-trips through fresh DBOS hydration", async () => {
+		const workflowId = "wf-complete-task-hydrate";
+		const replayKey = "stage:task:review:1";
+		const output: WorkflowTaskResult = {
+			name: "review",
+			stageName: "review",
+			text: JSON.stringify({ approved: true }, null, 2),
+			structured: { approved: true },
+			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
+			warnings: ["hydrated warning"],
+			sessionFile: "/tmp/review.jsonl",
+			model: "openai/gpt-test",
+		};
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId,
+			checkpointId: `task:${replayKey}`,
+			name: "review",
+			replayKey,
+			output,
+			completedAt: 1400,
+			structured: output.structured,
+			artifacts: output.artifacts,
+			warnings: output.warnings,
+			sessionFile: output.sessionFile,
+			model: output.model,
+		};
+		seedMockWorkflow(sdk, { workflowId, name: "complete-task-hydrate", status: "PENDING" });
+		seedMockCheckpoint(sdk, workflowId, cp);
+		const fresh = new DbosDurableBackend(sdk);
+		await fresh.hydrateWorkflow(workflowId);
+		let prompts = 0;
+		const result = await run(
+			workflow({
+				name: "complete-task-hydrate",
+				description: "",
+				inputs: {},
+				outputs: { result: Type.String() },
+				run: async (ctx) => {
+					const review = await ctx.task("review", { prompt: "ignored" });
+					return {
+						result: JSON.stringify({
+							text: review.text,
+							structured: review.structured,
+							artifacts: review.artifacts,
+							warnings: review.warnings,
+							sessionFile: review.sessionFile,
+							model: review.model,
+						}),
+					};
+				},
+			}),
+			{},
+			{
+				runId: workflowId,
+				store: createStore(),
+				durableBackend: fresh,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
+			text: output.text,
+			structured: output.structured,
+			artifacts: output.artifacts,
+			warnings: output.warnings,
+			sessionFile: output.sessionFile,
+			model: output.model,
 		});
 		assert.equal(prompts, 0);
 		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");

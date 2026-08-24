@@ -320,7 +320,7 @@ describe("ctx.task tail liveness", () => {
 		);
 		assert.equal(replayed.status, "completed");
 		assert.deepEqual(JSON.parse(replayed.result?.result ?? ""), {
-			text: "terminal review text",
+			text: JSON.stringify({ approved: true, score: 4 }, null, 2),
 			structured: { approved: true, score: 4 },
 			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
 			warnings: ["used fallback model"],
@@ -365,12 +365,119 @@ describe("ctx.task tail liveness", () => {
 		assert.deepEqual(await task("review", { prompt: "ignored" }), {
 			name: "review",
 			stageName: "review",
-			text: "terminal review text",
+			text: JSON.stringify({ approved: false }, null, 2),
 			structured: { approved: false },
 			sessionFile: "/tmp/review.jsonl",
 			artifacts: [{ kind: "patch", path: "/tmp/review.patch" }],
 			warnings: ["rate limited once"],
 		});
+	});
+
+	test("terminal-only replay preserves schema task text", async () => {
+		const backend = new InMemoryDurableBackend();
+		const replayKey = "stage:task:review:1";
+		backend.registerWorkflow({
+			workflowId: "wf-schema-receipt",
+			name: "schema-receipt",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: "wf-schema-receipt",
+			checkpointId: `stage:${replayKey}`,
+			name: "review",
+			replayKey,
+			output: "Saved output to /tmp/review.md",
+			completedAt: 2,
+			result: "Saved output to /tmp/review.md",
+			structured: { approved: true, findings: ["ok"] },
+		});
+		let prompts = 0;
+		const replayed = await run(
+			workflow({
+				name: "schema-receipt",
+				description: "",
+				inputs: {},
+				outputs: { result: Type.String() },
+				run: async (ctx) => {
+					const review = await ctx.task("review", { prompt: "ignored" });
+					return { result: review.text };
+				},
+			}),
+			{},
+			{
+				runId: "wf-schema-receipt",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "must not rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(replayed.status, "completed");
+		assert.equal(replayed.result?.result, JSON.stringify({ approved: true, findings: ["ok"] }, null, 2));
+		assert.equal(prompts, 0);
+	});
+
+	test("direct nested task-tail control settles the aggregate root", async () => {
+		const store = createStore();
+		const toolControls = createToolControlRegistry();
+		store.recordRunStart({
+			id: "parent",
+			name: "parent",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "boundary",
+					name: "child-wf",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child" },
+					workflowGraphTarget: { runId: "child", stageId: "review", runName: "child-wf", depth: 1 },
+				} as RunSnapshot["stages"][number],
+			],
+			startedAt: 0,
+		});
+		store.recordRunStart({
+			id: "child",
+			name: "child-wf",
+			inputs: {},
+			status: "running",
+			parentRunId: "parent",
+			parentStageId: "boundary",
+			rootRunId: "parent",
+			stages: [
+				{
+					id: "review",
+					name: "review",
+					status: "completed",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
+			startedAt: 0,
+		});
+		toolControls.register({
+			runId: "child",
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}stage:task:review:1`,
+			name: "review",
+			controller: new AbortController(),
+			settled: new Promise(() => {}),
+		});
+		const interrupted = await interruptRun("child", { store, toolControlRegistry: toolControls });
+		assert.equal(interrupted.ok, true);
+		assert.equal(interrupted.runId, "parent");
+		assert.equal(store.runs().find((run) => run.id === "parent")?.status, "paused");
+		assert.equal(store.runs().find((run) => run.id === "child")?.status, "paused");
 	});
 
 	test("live null structured survives after the task-result persist is dropped", async () => {
