@@ -682,6 +682,21 @@ $tempCleanupRetryDelayMilliseconds = 125
 $primaryError = $null
 $tempCleanupError = $null
 
+$architecture = $env:PROCESSOR_ARCHITEW6432
+if ([string]::IsNullOrWhiteSpace($architecture)) {
+    $architecture = $env:PROCESSOR_ARCHITECTURE
+}
+if ([string]::IsNullOrWhiteSpace($architecture)) {
+    throw "Unable to determine the Windows processor architecture."
+}
+
+switch ($architecture.ToUpperInvariant()) {
+    "AMD64" { $assetName = "atomic-windows-x64.zip" }
+    "X86_64" { $assetName = "atomic-windows-x64.zip" }
+    "ARM64" { $assetName = "atomic-windows-arm64.zip" }
+    default { throw "Unsupported Windows processor architecture: $architecture" }
+}
+
 $installRoot = $env:ATOMIC_INSTALL_DIR
 if ([string]::IsNullOrWhiteSpace($installRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
@@ -732,20 +747,6 @@ if (-not [string]::IsNullOrWhiteSpace($requestedRef) -and -not (Test-AtomicRelea
     throw "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
 }
 
-$architecture = $env:PROCESSOR_ARCHITEW6432
-if ([string]::IsNullOrWhiteSpace($architecture)) {
-    $architecture = $env:PROCESSOR_ARCHITECTURE
-}
-if ([string]::IsNullOrWhiteSpace($architecture)) {
-    throw "Unable to determine the Windows processor architecture."
-}
-
-switch ($architecture.ToUpperInvariant()) {
-    "AMD64" { $assetName = "atomic-windows-x64.zip" }
-    "X86_64" { $assetName = "atomic-windows-x64.zip" }
-    "ARM64" { $assetName = "atomic-windows-arm64.zip" }
-    default { throw "Unsupported Windows processor architecture: $architecture" }
-}
 
 $binDirHasPathSeparator = $binDir.Contains(";")
 $atomicCurrentPath = Join-Path $binDir "atomic-current"
