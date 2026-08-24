@@ -61,7 +61,8 @@
     "docs",
     "examples",
     "CHANGELOG.md",
-    "npm-shrinkwrap.json"
+    "npm-shrinkwrap.json",
+    "!**/*.map"
   ],
   "scripts": {
     "clean": "shx rm -rf dist",

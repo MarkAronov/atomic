@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The published `@bastani/atomic` tarball no longer includes TypeScript source maps or declaration maps. Installed `.d.ts` types, `docs/`, and `examples/` are unchanged.
+- Installed builtin extensions (`workflows`, `subagents`, `mcp`, `web-access`, `intercom`) now ship as prebundled ESM entry files. Resource trees (`skills/`, `agents/`, workflow builtins) stay on disk; leftover extension TypeScript is pruned from the npm/binary payload.
+
+
 ## [0.9.16-alpha.2] - 2026-08-23
 
 ### Changed
