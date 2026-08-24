@@ -204,6 +204,87 @@ function Test-AtomicPathContains {
     return $false
 }
 
+function Get-AtomicReparseTarget {
+    param($Item)
+
+    if ($null -eq $Item) {
+        return $null
+    }
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+        return $null
+    }
+    $raw = $null
+    if ($Item.PSObject.Properties["Target"] -and $null -ne $Item.Target) {
+        if ($Item.Target -is [string]) {
+            $raw = [string]$Item.Target
+        }
+        elseif ($Item.Target.Count -gt 0) {
+            $raw = [string]$Item.Target[0]
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $null
+    }
+    if ($raw.StartsWith("\\?\UNC\", [StringComparison]::OrdinalIgnoreCase)) {
+        $raw = "\\" + $raw.Substring(8)
+    }
+    elseif ($raw.StartsWith("\\?\", [StringComparison]::OrdinalIgnoreCase)) {
+        $raw = $raw.Substring(4)
+    }
+    if (-not [IO.Path]::IsPathRooted($raw)) {
+        $parent = [IO.Path]::GetDirectoryName($Item.FullName)
+        $raw = [IO.Path]::Combine($parent, $raw)
+    }
+    return [IO.Path]::GetFullPath($raw)
+}
+
+function Get-AtomicPhysicalPath {
+    param([string]$Path)
+
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrEmpty($root)) {
+        return $full
+    }
+    $relative = ""
+    if ($full.Length -gt $root.Length) {
+        $relative = $full.Substring($root.Length)
+    }
+    $parts = @()
+    if (-not [string]::IsNullOrEmpty($relative)) {
+        $parts = $relative.Split(
+            [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar),
+            [StringSplitOptions]::RemoveEmptyEntries
+        )
+    }
+    $current = $root
+    $unresolved = New-Object System.Collections.ArrayList
+    $pastExisting = $false
+    foreach ($part in $parts) {
+        if ($pastExisting) {
+            [void]$unresolved.Add($part)
+            continue
+        }
+        $next = [IO.Path]::Combine($current, $part)
+        if (-not (Test-Path -LiteralPath $next)) {
+            $pastExisting = $true
+            [void]$unresolved.Add($part)
+            continue
+        }
+        $item = Get-Item -LiteralPath $next -Force
+        $target = Get-AtomicReparseTarget $item
+        if (-not [string]::IsNullOrWhiteSpace($target)) {
+            $current = $target
+            continue
+        }
+        $current = $item.FullName
+    }
+    foreach ($part in $unresolved) {
+        $current = [IO.Path]::Combine($current, $part)
+    }
+    return [IO.Path]::GetFullPath($current)
+}
+
 function Get-AtomicDirectoryEntry {
     param([string]$Path)
 
@@ -615,15 +696,22 @@ if ([string]::IsNullOrWhiteSpace($binDir)) {
     $binDir = Join-Path $installRoot "bin"
 }
 $binDir = [IO.Path]::GetFullPath($binDir)
+$physicalInstallRoot = Get-AtomicPhysicalPath $installRoot
+$physicalBinDir = Get-AtomicPhysicalPath $binDir
 $ownedInstallPaths = @(
     (Join-Path $installRoot "current"),
-    (Join-Path $installRoot "versions")
+    (Join-Path $installRoot "versions"),
+    (Join-Path $physicalInstallRoot "current"),
+    (Join-Path $physicalInstallRoot "versions")
 )
+$binCandidates = @($binDir, $physicalBinDir)
 foreach ($ownedInstallPath in $ownedInstallPaths) {
     $ownedInstallPrefix = $ownedInstallPath.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
-    if ($binDir -ieq $ownedInstallPath -or
-        $binDir.StartsWith($ownedInstallPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\current or ATOMIC_INSTALL_DIR\versions"
+    foreach ($binCandidate in $binCandidates) {
+        if ($binCandidate -ieq $ownedInstallPath -or
+            $binCandidate.StartsWith($ownedInstallPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\current or ATOMIC_INSTALL_DIR\versions"
+        }
     }
 }
 

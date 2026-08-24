@@ -113,8 +113,19 @@ test("Windows bin paths under transaction-owned install paths fail before any re
 		powershell,
 		/\$ownedInstallPaths = @\([\s\S]+Join-Path \$installRoot "current"[\s\S]+Join-Path \$installRoot "versions"/u,
 	);
-	assert.match(powershell, /\$binDir -ieq \$ownedInstallPath/u);
-	assert.match(powershell, /\$binDir\.StartsWith\(\$ownedInstallPrefix, \[StringComparison\]::OrdinalIgnoreCase\)/u);
+	assert.match(powershell, /\$binCandidate -ieq \$ownedInstallPath/u);
+	assert.match(
+		powershell,
+		/\$binCandidate\.StartsWith\(\$ownedInstallPrefix, \[StringComparison\]::OrdinalIgnoreCase\)/u,
+	);
+	assert.match(powershell, /function Get-AtomicPhysicalPath/u);
+	assert.match(powershell, /function Get-AtomicReparseTarget/u);
+	assert.match(powershell, /\$physicalInstallRoot = Get-AtomicPhysicalPath \$installRoot/u);
+	assert.match(powershell, /\$physicalBinDir = Get-AtomicPhysicalPath \$binDir/u);
+	assert.match(powershell, /\$binCandidates = @\(\$binDir, \$physicalBinDir\)/u);
+	assert.match(powershell, /Join-Path \$physicalInstallRoot "current"/u);
+	assert.match(powershell, /Join-Path \$physicalInstallRoot "versions"/u);
+	assert.match(powershell, /\[IO\.FileAttributes\]::ReparsePoint/u);
 	const preflight = powershell.indexOf(
 		"ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions",
 	);
