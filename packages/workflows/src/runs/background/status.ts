@@ -8,7 +8,12 @@
  * cross-ref: spec §5.5, §8.1 Phase D
  */
 
+import { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } from "../../durable/stage-primitive.js";
 import { selectedRunTerminalEvent } from "../../engine/run-terminal-event.js";
+import {
+	toolControlRegistry as defaultToolControlRegistry,
+	type ToolControlRegistry,
+} from "../../engine/run-tool-control-registry.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { appendRunEnd } from "../../shared/persistence-session-entries.js";
 import { effectiveRunStatus } from "../../shared/returned-run-status.js";
@@ -22,6 +27,7 @@ import type { StageControlRegistry } from "../foreground/stage-control-registry.
 import { stageControlRegistry as defaultStageControlRegistry } from "../foreground/stage-control-registry.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import { markDurableResumed } from "./durable-resume-transition.js";
+import { quitRun } from "./quit.js";
 import {
 	resumeAcknowledgementMessage,
 	settleResumeAcknowledgements,
@@ -490,9 +496,26 @@ export async function interruptRun(
 	opts?: {
 		store?: Store;
 		stageControlRegistry?: StageControlRegistry;
+		toolControlRegistry?: ToolControlRegistry;
 		stageId?: string;
 	},
 ): Promise<InterruptRunResult> {
+	if (opts?.stageId === undefined) {
+		const activeStore = opts?.store ?? defaultStore;
+		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
+			toolControls.active(controlRunId).some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
+		);
+		if (hasTaskTail) {
+			const quit = await quitRun(runId, {
+				store: activeStore,
+				stageControlRegistry: opts?.stageControlRegistry,
+				toolControlRegistry: toolControls,
+			});
+			if (quit.ok) return { ok: true, runId, paused: quit.paused };
+			return { ok: false, runId, reason: quit.reason };
+		}
+	}
 	return pauseRun(runId, opts);
 }
 

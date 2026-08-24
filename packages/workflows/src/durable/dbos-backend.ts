@@ -229,14 +229,37 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.enqueueWrite(() => this.persistCheckpoint(checkpoint));
 	}
 
-	async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+	async recordCheckpointAsync(
+		checkpoint: DurableCheckpoint,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<void> {
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
+		const signal = options?.signal;
+		if (signal?.aborted) throw abortSignalReason(signal);
 		await this.enqueueWrite(async () => {
-			if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
-			await this.persistCheckpointRecord(checkpoint);
-			this.mem.recordCheckpoint(checkpoint);
-			await this.writeMetadata(checkpoint.workflowId);
+			if (signal?.aborted || !this.isWorkflowLoadable(checkpoint.workflowId)) return;
+			const persist = (async () => {
+				await this.persistCheckpointRecord(checkpoint);
+				if (signal?.aborted) return;
+				this.mem.recordCheckpoint(checkpoint);
+				await this.writeMetadata(checkpoint.workflowId);
+			})();
+			if (signal === undefined) {
+				await persist;
+				return;
+			}
+			try {
+				await Promise.race([persist, abortSignalWait(signal)]);
+			} catch (error) {
+				if (signal.aborted) {
+					void persist.catch(() => undefined);
+					return;
+				}
+				throw error;
+			}
+			if (signal.aborted) void persist.catch(() => undefined);
 		});
+		if (signal?.aborted) throw abortSignalReason(signal);
 	}
 
 	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
@@ -576,5 +599,19 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		if (metadata.workflowId !== workflowId) return;
 		this.mem.registerWorkflow(metadata);
 	}
+}
+
+function abortSignalReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+function abortSignalWait(signal: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal.aborted) {
+			resolve();
+			return;
+		}
+		signal.addEventListener("abort", () => resolve(), { once: true });
+	});
 }
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.

@@ -334,6 +334,45 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		assert.equal(failingBackend.getToolOutput("wf-async-fail", hash), undefined);
 	});
 
+	test("aborting a hung recordCheckpointAsync lets flush settle", async () => {
+		const controller = new AbortController();
+		const persistStarted = Promise.withResolvers<void>();
+		const hanging = new DbosDurableBackend({
+			...sdk,
+			async recordStepOutput(workflowId, stepName, output) {
+				if (stepName.startsWith("task:")) {
+					persistStarted.resolve();
+					await new Promise<never>(() => {});
+				}
+				await sdk.recordStepOutput(workflowId, stepName, output);
+			},
+		});
+		hanging.registerWorkflow({
+			workflowId: "wf-hung-checkpoint",
+			name: "test",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "running",
+		});
+		await hanging.flush();
+		const pending = hanging.recordCheckpointAsync(
+			{
+				kind: "stage",
+				workflowId: "wf-hung-checkpoint",
+				checkpointId: "task:stage:task:review:1",
+				name: "review",
+				replayKey: "stage:task:review:1",
+				output: { name: "review", stageName: "review", text: "review" },
+				completedAt: Date.now(),
+			},
+			{ signal: controller.signal },
+		);
+		await persistStarted.promise;
+		controller.abort(new Error("cancelled during persist"));
+		await assert.rejects(pending, /cancelled during persist/);
+		await hanging.flush();
+	});
+
 	test("cancelWorkflow delegates to DBOS cancelWorkflow", async () => {
 		backend.registerWorkflow({
 			workflowId: "wf-3",

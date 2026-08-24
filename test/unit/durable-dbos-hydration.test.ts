@@ -14,6 +14,7 @@ import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
+import { createStore, run, Type, workflow } from "./executor-shared.js";
 import type {
 	DurableStageCheckpoint,
 	DurableToolCheckpoint,
@@ -473,5 +474,40 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		assert.equal(session2.getToolOutput("wf-resume", hash), "COMPUTED");
 		assert.equal(session2.getWorkflow("wf-resume")!.name, "test");
 		assert.equal(session2.listCheckpoints("wf-resume").length, 1);
+	});
+
+	test("hydrateWorkflow reconstructs a terminal-only task stage and replays without prompting", async () => {
+		const workflowId = "wf-task-terminal-hydrate";
+		const replayKey = "stage:task:review:1";
+		const cp: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId,
+			checkpointId: `stage:${replayKey}`,
+			name: "review",
+			replayKey,
+			output: "hydrated terminal review",
+			completedAt: 1400,
+			sessionFile: "/tmp/review.jsonl",
+			startedAt: 1000,
+			durationMs: 400,
+		};
+		seedMockWorkflow(sdk, { workflowId, name: "task-terminal-hydrate", status: "PENDING" });
+		seedMockCheckpoint(sdk, workflowId, cp);
+		const fresh = new DbosDurableBackend(sdk);
+		await fresh.hydrateWorkflow(workflowId);
+		assert.equal(fresh.getStageOutput(workflowId, replayKey), "hydrated terminal review");
+		let prompts = 0;
+		const def = workflow({
+			name: "task-terminal-hydrate",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: (await ctx.task("review", { prompt: "ignored" })).text }),
+		});
+		const result = await run(def, {}, { runId: workflowId, store: createStore(), durableBackend: fresh, adapters: { prompt: { prompt: async () => { prompts += 1; return "rerun"; } } } });
+		assert.equal(result.status, "completed");
+		assert.equal(result.result?.result, "hydrated terminal review");
+		assert.equal(prompts, 0);
+		assert.equal(fresh.getWorkflow(workflowId)?.status, "completed");
 	});
 });

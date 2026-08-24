@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed a completed `ctx.task` leaving the root raw `running` with no active stage or tool and no path to the next budget boundary. The durable task-result checkpoint now fails closed and duration is rechecked after that checkpoint, so an exhausted run becomes a resumable `budget_exceeded` block instead of hanging between nodes. Status reports the impossible completed-frontier liveness state ([#2650](https://github.com/bastani-inc/atomic/issues/2650)).
+- Fixed a completed `ctx.task` leaving the root raw `running` with no active stage or tool and no path to the next budget boundary. The durable task-result checkpoint now fails closed, duration is rechecked after that checkpoint, quit/interrupt can abort a never-settling persist, cancellation settles the DBOS write queue, and a terminal-only stage checkpoint replays without rerunning the task ([#2650](https://github.com/bastani-inc/atomic/issues/2650)).
 
 ## [0.9.16-alpha.2] - 2026-08-23
 

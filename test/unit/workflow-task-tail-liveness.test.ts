@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isLiveRunningWorkflow } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { createRunBudgetController } from "../../packages/workflows/src/engine/run-budget.js";
@@ -10,14 +11,20 @@ import {
 	IMPOSSIBLE_ROOT_LIVENESS_MESSAGE,
 	isImpossibleRootLiveness,
 } from "../../packages/workflows/src/engine/run-liveness.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { interruptRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { resolve_budget } from "../../packages/workflows/src/shared/budget.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	vi.useRealTimers();
+	setDurableBackend(undefined);
+});
 
 function budgetOutcome(value: object | undefined): { readonly status?: string } | undefined {
 	return value as { readonly status?: string } | undefined;
@@ -165,6 +172,95 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(prompts, 0);
 	});
 
+	test("terminal-only stage checkpoint replays a completed task without rerunning it", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: "wf-task-terminal-only",
+			name: "task-terminal-only",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: "wf-task-terminal-only",
+			checkpointId: "stage:stage:task:review:1",
+			name: "review",
+			replayKey: "stage:task:review:1",
+			output: "terminal review text",
+			completedAt: 2,
+			sessionFile: "/tmp/review.jsonl",
+		});
+		let prompts = 0;
+		const replayOnly = workflow({
+			name: "task-terminal-only",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => ({ result: (await ctx.task("review", { prompt: "ignored" })).text }),
+		});
+		const replayed = await run(
+			replayOnly,
+			{},
+			{
+				runId: "wf-task-terminal-only",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "must not rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(replayed.status, "completed");
+		assert.equal(replayed.result?.result, "terminal review text");
+		assert.equal(prompts, 0);
+	});
+
+	test("quit and interrupt terminate a root awaiting a never-settling task-result checkpoint", async () => {
+		const backend = new DelayedTaskCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const pending = run(
+			taskThenTool,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				stageControlRegistry: registry,
+				toolControlRegistry: toolControls,
+				adapters: { prompt: { prompt: async () => "review done" } },
+			},
+		);
+		const deadline = Date.now() + 2_000;
+		let runId = "";
+		while (Date.now() < deadline) {
+			runId = store.runs().find((candidate) => candidate.name === taskThenTool.name)?.id ?? "";
+			if (runId !== "" && toolControls.active(runId).some((handle) => handle.nodeId.startsWith("task-checkpoint:")))
+				break;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.ok(runId.length > 0);
+		assert.equal(registry.run(runId).stages().length, 0);
+		const interrupted = await interruptRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		assert.equal(interrupted.ok, true);
+		const finished = await pending;
+		assert.equal(finished.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.exitReason, "quit");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	});
+
 	test("status reports a stranded completed frontier that is still raw-running over budget", () => {
 		const runSnapshot: RunSnapshot = {
 			id: "stranded",
@@ -191,7 +287,7 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(summary.status, "running");
 	});
 
-	test("stale DBOS hydration cannot treat a completed-frontier running handle as live", () => {
+	test("stale running handles remain crashed rather than live", () => {
 		assert.equal(isLiveRunningWorkflow({ status: "running", updatedAt: 1 }, 200_000), false);
 	});
 

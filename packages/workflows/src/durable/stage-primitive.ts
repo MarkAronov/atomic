@@ -169,6 +169,8 @@ export function createDurableStagePrimitive(input: {
 	};
 }
 
+export const TASK_RESULT_CHECKPOINT_CONTROL_PREFIX = "task-checkpoint:";
+
 export function createDurableTaskPrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
@@ -186,6 +188,12 @@ export function createDurableTaskPrimitive(input: {
 	) => void;
 	readonly afterLiveResult?: (name: string) => Promise<void>;
 	readonly signal?: AbortSignal;
+	readonly registerTailControl?: (registration: {
+		readonly nodeId: string;
+		readonly name: string;
+		readonly controller: AbortController;
+		readonly settled: Promise<void>;
+	}) => () => void;
 }): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
@@ -193,10 +201,10 @@ export function createDurableTaskPrimitive(input: {
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		const replayKey = input.nextReplayKey(`task:${name}`);
-		const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowTaskResult);
-		if (cached !== undefined && isWorkflowTaskResult(cached.output)) {
-			input.recordCachedTask?.(name, replayKey, cached, stageFailFastScope);
-			return cached.output;
+		const replayed = replayableTaskResult(name, input.backend, input.workflowId, replayKey);
+		if (replayed !== undefined) {
+			input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
+			return replayed.result;
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
@@ -218,24 +226,40 @@ export function createDurableTaskPrimitive(input: {
 		};
 		const result = await input.task(name, taskOptions, stageFailFastScope);
 		const completedTopology = activeStageTopology(input.backend, input.workflowId, replayKey);
+		const tailController = new AbortController();
+		const settlement = Promise.withResolvers<void>();
+		const unregisterTail = input.registerTailControl?.({
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}${replayKey}`,
+			name,
+			controller: tailController,
+			settled: settlement.promise,
+		});
+		const signal = mergeAbortSignals(input.signal, tailController.signal);
 		try {
 			await awaitAbortable(
-				input.signal,
-				recordCheckpointDurably(input.backend, {
-					kind: "stage",
-					workflowId: input.workflowId,
-					checkpointId: stableCheckpointId("task", replayKey),
-					name,
-					replayKey,
-					output: result,
-					completedAt: Date.now(),
-					...taskCheckpointMetadata(result),
-					...(completedTopology !== undefined ? { topology: completedTopology } : {}),
-				}),
+				signal,
+				recordCheckpointDurably(
+					input.backend,
+					{
+						kind: "stage",
+						workflowId: input.workflowId,
+						checkpointId: stableCheckpointId("task", replayKey),
+						name,
+						replayKey,
+						output: result,
+						completedAt: Date.now(),
+						...taskCheckpointMetadata(result),
+						...(completedTopology !== undefined ? { topology: completedTopology } : {}),
+					},
+					signal,
+				),
 			);
 		} catch (error) {
 			if (error instanceof Error) throw error;
 			throw new Error(String(error));
+		} finally {
+			settlement.resolve();
+			unregisterTail?.();
 		}
 		if (input.afterLiveResult !== undefined) await input.afterLiveResult(name);
 		return result;
@@ -244,6 +268,38 @@ export function createDurableTaskPrimitive(input: {
 
 function abortReasonError(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+function mergeAbortSignals(left?: AbortSignal, right?: AbortSignal): AbortSignal | undefined {
+	if (left === undefined) return right;
+	if (right === undefined) return left;
+	return AbortSignal.any([left, right]);
+}
+
+function replayableTaskResult(
+	name: string,
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	replayKey: string,
+): { readonly result: WorkflowTaskResult; readonly checkpoint: DurableCompletedStageCheckpoint } | undefined {
+	const taskShaped = stageCheckpointWithOutput(backend, workflowId, replayKey, isWorkflowTaskResult);
+	if (taskShaped !== undefined && isWorkflowTaskResult(taskShaped.output)) {
+		return { result: taskShaped.output, checkpoint: taskShaped };
+	}
+	const terminal = stageCheckpointWithOutput(backend, workflowId, replayKey);
+	if (terminal === undefined || typeof terminal.output !== "string") return undefined;
+	const result: WorkflowTaskResult = {
+		name,
+		stageName: name,
+		text: terminal.output,
+		...(terminal.sessionId !== undefined ? { sessionId: terminal.sessionId } : {}),
+		...(terminal.sessionFile !== undefined ? { sessionFile: terminal.sessionFile } : {}),
+		...(terminal.model !== undefined ? { model: terminal.model } : {}),
+		...(terminal.fastMode !== undefined ? { fastMode: terminal.fastMode } : {}),
+		...(terminal.attemptedModels !== undefined ? { attemptedModels: [...terminal.attemptedModels] } : {}),
+		...(terminal.modelAttempts !== undefined ? { modelAttempts: [...terminal.modelAttempts] } : {}),
+	};
+	return { result, checkpoint: { ...terminal, output: result } };
 }
 
 async function awaitAbortable(signal: AbortSignal | undefined, work: Promise<void>): Promise<void> {

@@ -91,6 +91,7 @@ import { EngineRuntime } from "./runtime.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
 import {
 	findWorkflowGracefulQuit,
+	isWorkflowToolAbortError,
 	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
 	type WorkflowGracefulQuitSignal,
 } from "./workflow-tool-abort.js";
@@ -580,6 +581,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		completedStageReplayKeys,
 		sourceToReplayedNodeIds,
 	});
+	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
 	const durableTask = createDurableTaskPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
@@ -587,6 +589,23 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		task: taskRunners.task,
 		recordCachedTask: cachedStage.record,
 		signal: ownController.signal,
+		registerTailControl: (registration) => {
+			registration.controller.signal.addEventListener(
+				"abort",
+				() => {
+					const reason: unknown = registration.controller.signal.reason;
+					if (isWorkflowToolAbortError(reason) && reason.scope === "quit") observedTaskTailQuit ??= reason;
+				},
+				{ once: true },
+			);
+			return toolControls.register({
+				runId,
+				nodeId: registration.nodeId,
+				name: registration.name,
+				controller: registration.controller,
+				settled: registration.settled,
+			});
+		},
 		...(budget.enabled ? { afterLiveResult: (name) => budget.stopAtBoundaryAsync(name) } : {}),
 	});
 	const durableWorkflow = createDurableChildWorkflowPrimitive({
@@ -730,6 +749,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		// that catches the quit error and throws something else cannot erase it.
 		const gracefulQuit =
 			observedQuitCancellation() ??
+			observedTaskTailQuit ??
 			findWorkflowGracefulQuit(err) ??
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
