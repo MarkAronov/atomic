@@ -307,7 +307,10 @@ async function awaitAbortable(signal: AbortSignal | undefined, work: Promise<voi
 		await work;
 		return;
 	}
-	if (signal.aborted) throw abortReasonError(signal);
+	if (signal.aborted) {
+		void work.catch(() => undefined);
+		throw abortReasonError(signal);
+	}
 	let onAbort: (() => void) | undefined;
 	try {
 		await new Promise<void>((resolve, reject) => {

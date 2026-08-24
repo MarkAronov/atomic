@@ -1,4 +1,5 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
+import { toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { inspectRun } from "../runs/background/status.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
@@ -147,7 +148,14 @@ export function makeExecuteWorkflowTool(
 						? { action: "statusDetail", runId: result.runId, detail: result.detail }
 						: { action: "statusDetail", runId: target, error: `run not found: ${target}` };
 				}
-				const listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), args.statusFilter ?? "all");
+				const listing = buildWorkflowStatusListing(
+					topLevelExpandedSnapshots(),
+					args.statusFilter ?? "all",
+					Date.now(),
+					{
+						toolControlRegistry,
+					},
+				);
 				const result = {
 					action: "status" as const,
 					filter: listing.filter,

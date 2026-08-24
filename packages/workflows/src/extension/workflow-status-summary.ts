@@ -13,7 +13,11 @@
  *  - src/extension/workflow-targets.ts      topLevelExpandedSnapshots()
  */
 
-import { IMPOSSIBLE_ROOT_LIVENESS_MESSAGE, isImpossibleRootLiveness } from "../engine/run-liveness.js";
+import {
+	hasActiveTaskCheckpointControl,
+	IMPOSSIBLE_ROOT_LIVENESS_MESSAGE,
+	isImpossibleRootLiveness,
+} from "../engine/run-liveness.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
@@ -98,9 +102,19 @@ export interface WorkflowRunStatusSummary {
 	readonly budgetState?: RunBudgetState;
 	readonly exitReason?: string;
 	readonly error?: string;
-	/** True when a raw-running root has a completed frontier and an exhausted duration budget. */
+	/** True when a raw-running root has a completed frontier, no control node, and an exhausted duration budget. */
 	readonly strandedRoot?: true;
 }
+
+/** Live control lookup used so a task-checkpoint tail is not reported as stranded. */
+export interface WorkflowStatusControlLookup {
+	readonly active: (runId: string) => readonly { readonly nodeId: string }[];
+}
+
+export interface WorkflowStatusSummaryOptions {
+	readonly toolControlRegistry?: WorkflowStatusControlLookup;
+}
+
 /** Filtered, ordered status listing: `runs[i]` summarizes `snapshots[i]`. */
 export interface WorkflowStatusListing {
 	readonly filter: WorkflowRunStatusFilter;
@@ -164,7 +178,11 @@ function budgetReport(dimension: "duration" | "tokens" | "cost", reading: number
 	return { dimension, reading, ceiling, percent: ceiling === 0 ? 0 : (reading / ceiling) * 100 };
 }
 /** Reduce one run snapshot to its concise status summary. */
-export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): WorkflowRunStatusSummary {
+export function summarizeRunSnapshot(
+	run: RunSnapshot,
+	now = Date.now(),
+	options?: WorkflowStatusSummaryOptions,
+): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
 	const elapsedMs = elapsedRunMs(run, now);
 	const duration =
@@ -200,7 +218,10 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 					...(tokens !== undefined ? { tokens } : {}),
 					...(cost !== undefined ? { cost } : {}),
 				};
-	const strandedRoot = isImpossibleRootLiveness(run, now);
+	const hasActiveControlNode = hasActiveTaskCheckpointControl(
+		(options?.toolControlRegistry?.active(run.id) ?? []).map((handle) => handle.nodeId),
+	);
+	const strandedRoot = isImpossibleRootLiveness(run, now, { hasActiveControlNode });
 	return {
 		runId: run.id,
 		name: run.name,
@@ -262,9 +283,10 @@ export function buildWorkflowStatusListing(
 	snapshots: readonly RunSnapshot[],
 	filter: WorkflowRunStatusFilter = "all",
 	now = Date.now(),
+	options?: WorkflowStatusSummaryOptions,
 ): WorkflowStatusListing {
 	const paired = snapshots
-		.map((snapshot) => ({ snapshot, summary: summarizeRunSnapshot(snapshot, now) }))
+		.map((snapshot) => ({ snapshot, summary: summarizeRunSnapshot(snapshot, now, options) }))
 		.filter(({ summary }) => runMatchesStatusFilter(summary, filter));
 	paired.sort((a, b) => {
 		const aEnded = a.snapshot.endedAt === undefined ? 0 : 1;

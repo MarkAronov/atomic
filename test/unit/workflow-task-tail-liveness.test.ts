@@ -5,6 +5,10 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isLiveRunningWorkflow } from "../../packages/workflows/src/durable/resume-eligibility.js";
+import {
+	createDurableTaskPrimitive,
+	TASK_RESULT_CHECKPOINT_CONTROL_PREFIX,
+} from "../../packages/workflows/src/durable/stage-primitive.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { createRunBudgetController } from "../../packages/workflows/src/engine/run-budget.js";
 import {
@@ -259,6 +263,78 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
 		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.exitReason, "quit");
 		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	});
+
+	test("a checkpoint created after its signal is already aborted does not become an unhandled rejection", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const backend = new InMemoryDurableBackend();
+			const controller = new AbortController();
+			const reason = new Error("cancelled before checkpoint");
+			const task = createDurableTaskPrimitive({
+				workflowId: "wf-preabort-checkpoint",
+				backend,
+				nextReplayKey: () => "stage:task:review:1",
+				signal: controller.signal,
+				task: async () => {
+					controller.abort(reason);
+					return { name: "review", stageName: "review", text: "done" };
+				},
+			});
+			await assert.rejects(
+				() => task("review", { prompt: "review the change" }),
+				(error) => error === reason,
+			);
+			await Promise.resolve();
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			assert.deepEqual(unhandled, []);
+			assert.equal(backend.getStageOutput("wf-preabort-checkpoint", "stage:task:review:1"), undefined);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
+	test("an active task-checkpoint control is not diagnosed as a stranded root", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new DelayedTaskCheckpointBackend();
+		const store = createStore();
+		const toolControls = createToolControlRegistry();
+		const pending = run(
+			taskThenTool,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				toolControlRegistry: toolControls,
+				budget: { maxDurationMs: 10 },
+				adapters: { prompt: { prompt: async () => "review done" } },
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		const snapshotAfterTask = store.runs().find((candidate) => candidate.name === taskThenTool.name);
+		assert.ok(snapshotAfterTask);
+		assert.equal(
+			toolControls
+				.active(snapshotAfterTask.id)
+				.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
+			true,
+		);
+		await vi.advanceTimersByTimeAsync(20);
+		const live = store.runs().find((candidate) => candidate.id === snapshotAfterTask.id);
+		assert.ok(live);
+		assert.equal(live.status, "running");
+		assert.equal(isImpossibleRootLiveness(live, 20), true);
+		assert.equal(isImpossibleRootLiveness(live, 20, { hasActiveControlNode: true }), false);
+		assert.equal(summarizeRunSnapshot(live, 20, { toolControlRegistry: toolControls }).strandedRoot, undefined);
+		assert.equal(summarizeRunSnapshot(live, 20, { toolControlRegistry: toolControls }).error, undefined);
+		backend.gate.release();
+		const result = await pending;
+		assert.equal(budgetOutcome(result.result)?.status, "budget_exceeded");
 	});
 
 	test("status reports a stranded completed frontier that is still raw-running over budget", () => {
