@@ -858,38 +858,42 @@ try {
 
 
     # Junction aliases of current/versions must fail before requests or mutation.
-    $null = New-ProbeSpace
-    New-Item -ItemType Directory -Path $env:ATOMIC_INSTALL_DIR -Force | Out-Null
-    $aliasRoot = Join-Path (Split-Path $env:ATOMIC_INSTALL_DIR -Parent) "install-alias"
-    New-Item -ItemType Junction -Path $aliasRoot -Target $env:ATOMIC_INSTALL_DIR | Out-Null
-    $env:ATOMIC_BIN_DIR = Join-Path $aliasRoot "current"
-    $requestStart = $script:requestCount
-    $failure = $null
-    try { & $InstallerPath -Ref "1.0.0" | Out-Null }
-    catch { $failure = $_ }
-    if ($null -eq $failure) { throw "junction alias current was accepted" }
-    if ($failure.Exception.Message -notmatch 'ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions') {
-        throw "junction alias current failed for the wrong reason: $($failure.Exception.Message)"
-    }
-    if ($script:requestCount -ne $requestStart) { throw "junction alias current performed a request" }
-    if (Test-Path -LiteralPath (Join-Path $env:ATOMIC_INSTALL_DIR "versions")) { throw "junction alias current created versions" }
+    # Windows-only: Linux pwsh cannot create NTFS junctions, so the overlap
+    # guard would miss and the fixture would hit the GitHub API stub.
+    if ($env:OS -eq "Windows_NT") {
+        $null = New-ProbeSpace
+        New-Item -ItemType Directory -Path $env:ATOMIC_INSTALL_DIR -Force | Out-Null
+        $aliasRoot = Join-Path (Split-Path $env:ATOMIC_INSTALL_DIR -Parent) "install-alias"
+        New-Item -ItemType Junction -Path $aliasRoot -Target $env:ATOMIC_INSTALL_DIR | Out-Null
+        $env:ATOMIC_BIN_DIR = Join-Path $aliasRoot "current"
+        $requestStart = $script:requestCount
+        $failure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $failure = $_ }
+        if ($null -eq $failure) { throw "junction alias current was accepted" }
+        if ($failure.Exception.Message -notmatch 'ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions') {
+            throw "junction alias current failed for the wrong reason: $($failure.Exception.Message)"
+        }
+        if ($script:requestCount -ne $requestStart) { throw "junction alias current performed a request" }
+        if (Test-Path -LiteralPath (Join-Path $env:ATOMIC_INSTALL_DIR "versions")) { throw "junction alias current created versions" }
 
-    $null = New-ProbeSpace
-    New-Item -ItemType Directory -Path $env:ATOMIC_INSTALL_DIR -Force | Out-Null
-    $aliasRoot = Join-Path (Split-Path $env:ATOMIC_INSTALL_DIR -Parent) "install-alias"
-    New-Item -ItemType Junction -Path $aliasRoot -Target $env:ATOMIC_INSTALL_DIR | Out-Null
-    $physicalBin = Join-Path $env:ATOMIC_INSTALL_DIR "versions"
-    $env:ATOMIC_INSTALL_DIR = $aliasRoot
-    $env:ATOMIC_BIN_DIR = $physicalBin
-    $requestStart = $script:requestCount
-    $failure = $null
-    try { & $InstallerPath -Ref "1.0.0" | Out-Null }
-    catch { $failure = $_ }
-    if ($null -eq $failure) { throw "physical versions under aliased install root was accepted" }
-    if ($failure.Exception.Message -notmatch 'ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions') {
-        throw "physical versions under aliased install root failed for the wrong reason: $($failure.Exception.Message)"
+        $null = New-ProbeSpace
+        New-Item -ItemType Directory -Path $env:ATOMIC_INSTALL_DIR -Force | Out-Null
+        $aliasRoot = Join-Path (Split-Path $env:ATOMIC_INSTALL_DIR -Parent) "install-alias"
+        New-Item -ItemType Junction -Path $aliasRoot -Target $env:ATOMIC_INSTALL_DIR | Out-Null
+        $physicalBin = Join-Path $env:ATOMIC_INSTALL_DIR "versions"
+        $env:ATOMIC_INSTALL_DIR = $aliasRoot
+        $env:ATOMIC_BIN_DIR = $physicalBin
+        $requestStart = $script:requestCount
+        $failure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $failure = $_ }
+        if ($null -eq $failure) { throw "physical versions under aliased install root was accepted" }
+        if ($failure.Exception.Message -notmatch 'ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions') {
+            throw "physical versions under aliased install root failed for the wrong reason: $($failure.Exception.Message)"
+        }
+        if ($script:requestCount -ne $requestStart) { throw "physical versions under aliased install root performed a request" }
     }
-    if ($script:requestCount -ne $requestStart) { throw "physical versions under aliased install root performed a request" }
     # Bin paths under installer-owned transaction paths must fail before requests or mutation.
     foreach ($binSuffix in @("current", "current\nested", "versions", "versions\1.0.0", "versions\1.2.3\bin")) {
         $null = New-ProbeSpace
