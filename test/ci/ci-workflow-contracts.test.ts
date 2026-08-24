@@ -140,6 +140,14 @@ test("workspace selectors precede the run verb so Bun cannot rewrite them", asyn
 	}
 });
 
+test("typecheck aliases the local pi-ai build before compiling dependents", async () => {
+	const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
+	assert.equal(
+		manifest.scripts.typecheck,
+		"npm --workspace=@bastani/pi-ai run build && node scripts/alias-pi-ai.mjs && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
+	);
+});
+
 /**
  * SQLite selectors must keep working on both runtimes, and their tests must
  * keep asserting on both.
