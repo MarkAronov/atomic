@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Blocking `ask` and `contact_supervisor` waits now fail promptly with the departed session's name when their target disconnects after delivery, instead of hanging until the 10-minute timeout ([#2627](https://github.com/bastani-inc/atomic/issues/2627)).
+
 ## [0.9.16-alpha.1] - 2026-08-23
 
 ### Breaking Changes

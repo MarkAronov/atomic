@@ -15,6 +15,7 @@ import {
 	type ParentAskHandoffRequest,
 	requestParentAskHandoff,
 } from "../../packages/intercom/parent-ask-handoff.js";
+import { routePeerDisconnect } from "../../packages/intercom/peer-disconnect-routing.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
@@ -206,6 +207,15 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 				replyTo: current.replyTo,
 				...(replyError !== undefined ? { replyError } : {}),
 				content: { text },
+			});
+		},
+		disconnect(peerName: string) {
+			const current = slot.current();
+			assert.ok(current);
+			return routePeerDisconnect(current, {
+				replyTo: current.replyTo,
+				peerSessionId: current.from,
+				peerName,
 			});
 		},
 	};
@@ -558,6 +568,40 @@ describe("registered blocking intercom tools", () => {
 		const result = await execution;
 		assert.equal(result.isError, false);
 		assert.match(result.content[0]?.text ?? "", /Use option B/);
+	});
+
+	test("intercom ask fails on peer disconnect while its ten-minute timeout remains armed", async () => {
+		const current = fixture("intercom");
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(current.disconnect("sibling"), true);
+
+		const result = await execution;
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, 'Failed: Session "sibling" disconnected before replying');
+	});
+
+	test("contact_supervisor blocking waits receive the same peer disconnect release", async () => {
+		const current = fixture("supervisor");
+		const execution = current.tool.execute(
+			"call",
+			{ reason: "need_decision", message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		assert.equal(current.disconnect("parent"), true);
+
+		const result = await execution;
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, 'Failed: Session "parent" disconnected before replying');
 	});
 
 	test("send and progress_update return without creating a reply waiter", async () => {

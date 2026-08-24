@@ -8,6 +8,8 @@ import { afterAll, beforeAll, test } from "vitest";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
+import { type PeerDisconnectNotice, routePeerDisconnect } from "../../packages/intercom/peer-disconnect-routing.js";
+import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -252,5 +254,32 @@ test("real client stays connected when a pending peer disconnects", async () => 
 		(await asker.listSessions()).map((session) => session.id),
 		[asker.sessionId],
 	);
+	await asker.disconnect();
+});
+
+test("real client rejects the exact waiter when its target disconnects", async () => {
+	const asker = new IntercomClient();
+	const target = new WireClient();
+	const slot = new ReplyWaiterSlot();
+	const targetName = "waiter-release-target";
+	const questionId = "waiter-release-question";
+	asker.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
+		routePeerDisconnect(slot.current(), notice);
+	});
+	await asker.connect({ ...session, name: "waiter-release-asker" });
+	const targetId = await register(target, targetName);
+	const admission = slot.begin(targetName, questionId);
+	assert.equal(admission.ok, true);
+	if (!admission.ok) throw new Error("Reply waiter admission failed");
+	assert.deepEqual(await asker.send(targetId, { text: "question", expectsReply: true, messageId: questionId }), {
+		id: questionId,
+		delivered: true,
+	});
+	await target.next("message");
+
+	target.socket.destroy();
+	await assert.rejects(admission.wait.promise, {
+		message: `Session "${targetName}" disconnected before replying`,
+	});
 	await asker.disconnect();
 });

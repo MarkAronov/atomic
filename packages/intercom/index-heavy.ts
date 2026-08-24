@@ -14,6 +14,7 @@ import { registerIntercomLifecycle } from "./lifecycle.js";
 import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
+import { routePeerDisconnect, type PeerDisconnectNotice } from "./peer-disconnect-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
 import { readSubagentMessageSource } from "./source-ownership.js";
 import { buildIncomingCustomMessage, createIncomingMessageSender } from "./incoming-message-delivery.js";
@@ -357,6 +358,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         return;
       }
       handleIncomingMessage(liveContext, from, message, channel);
+    });
+    nextClient.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
+      if (client !== nextClient) {
+        return;
+      }
+      routePeerDisconnect(replyWaiters.current(), notice);
     });
     nextClient.on("disconnected", (error: Error) => {
       if (client !== nextClient) {
