@@ -601,6 +601,32 @@ $tempCleanupRetryDelayMilliseconds = 125
 $primaryError = $null
 $tempCleanupError = $null
 
+$installRoot = $env:ATOMIC_INSTALL_DIR
+if ([string]::IsNullOrWhiteSpace($installRoot)) {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "LOCALAPPDATA is not set; set ATOMIC_INSTALL_DIR explicitly."
+    }
+    $installRoot = Join-Path $env:LOCALAPPDATA "atomic"
+}
+$installRoot = [IO.Path]::GetFullPath($installRoot)
+
+$binDir = $env:ATOMIC_BIN_DIR
+if ([string]::IsNullOrWhiteSpace($binDir)) {
+    $binDir = Join-Path $installRoot "bin"
+}
+$binDir = [IO.Path]::GetFullPath($binDir)
+$ownedInstallPaths = @(
+    (Join-Path $installRoot "current"),
+    (Join-Path $installRoot "versions")
+)
+foreach ($ownedInstallPath in $ownedInstallPaths) {
+    $ownedInstallPrefix = $ownedInstallPath.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+    if ($binDir -ieq $ownedInstallPath -or
+        $binDir.StartsWith($ownedInstallPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\current or ATOMIC_INSTALL_DIR\versions"
+    }
+}
+
 $previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
     [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -633,31 +659,6 @@ switch ($architecture.ToUpperInvariant()) {
     default { throw "Unsupported Windows processor architecture: $architecture" }
 }
 
-$installRoot = $env:ATOMIC_INSTALL_DIR
-if ([string]::IsNullOrWhiteSpace($installRoot)) {
-    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        throw "LOCALAPPDATA is not set; set ATOMIC_INSTALL_DIR explicitly."
-    }
-    $installRoot = Join-Path $env:LOCALAPPDATA "atomic"
-}
-$installRoot = [IO.Path]::GetFullPath($installRoot)
-
-$binDir = $env:ATOMIC_BIN_DIR
-if ([string]::IsNullOrWhiteSpace($binDir)) {
-    $binDir = Join-Path $installRoot "bin"
-}
-$binDir = [IO.Path]::GetFullPath($binDir)
-$ownedInstallPaths = @(
-    (Join-Path $installRoot "current"),
-    (Join-Path $installRoot "versions")
-)
-foreach ($ownedInstallPath in $ownedInstallPaths) {
-    $ownedInstallPrefix = $ownedInstallPath.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
-    if ($binDir -ieq $ownedInstallPath -or
-        $binDir.StartsWith($ownedInstallPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\current or ATOMIC_INSTALL_DIR\versions"
-    }
-}
 $binDirHasPathSeparator = $binDir.Contains(";")
 $atomicCurrentPath = Join-Path $binDir "atomic-current"
 $shimPath = Join-Path $binDir "atomic.cmd"

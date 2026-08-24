@@ -119,6 +119,13 @@ test("Windows bin paths under transaction-owned install paths fail before any re
 		"ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions",
 	);
 	assert.ok(preflight >= 0);
+	const tlsCapture = powershell.indexOf("$previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol");
+	const tlsEnable = powershell.indexOf(
+		"[Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12",
+	);
+	assert.ok(tlsCapture >= 0 && tlsEnable > tlsCapture, "the Windows TLS assignment is missing or malformed");
+	assert.ok(preflight < tlsCapture, "the Windows transaction-owned preflight runs after TLS state is captured");
+	assert.ok(preflight < tlsEnable, "the Windows transaction-owned preflight runs after TLS is assigned");
 	for (const boundary of [
 		'$apiHeaders = @{ Accept = "application/vnd.github+json" }',
 		'$redirectTag = Get-AtomicRedirectTag "https://github.com',

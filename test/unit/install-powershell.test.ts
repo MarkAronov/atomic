@@ -132,6 +132,13 @@ test("Windows installer rejects bin directories inside transaction-owned install
 		"ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions",
 	);
 	assert.ok(guard >= 0, "the transaction-owned bin-directory guard is missing");
+	const tlsCapture = source.indexOf("$previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol");
+	const tlsEnable = source.indexOf(
+		"[Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12",
+	);
+	assert.ok(tlsCapture >= 0 && tlsEnable > tlsCapture, "the TLS assignment is missing or malformed");
+	assert.ok(guard < tlsCapture, "the transaction-owned bin-directory guard runs after TLS state is captured");
+	assert.ok(guard < tlsEnable, "the transaction-owned bin-directory guard runs after TLS is assigned");
 	assert.match(
 		source,
 		/\$ownedInstallPaths = @\([\s\S]+Join-Path \$installRoot "current"[\s\S]+Join-Path \$installRoot "versions"/u,
