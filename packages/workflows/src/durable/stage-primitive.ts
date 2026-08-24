@@ -304,7 +304,7 @@ function taskResultFromTerminalCheckpoint(
 			{
 				name,
 				stageName: name,
-				text: taskTextFromValue(terminal.structured),
+				text: persistedTaskText(terminal, terminal.structured),
 				structured: terminal.structured,
 			},
 			terminal,
@@ -329,6 +329,12 @@ function taskResultFromTerminalCheckpoint(
 		return completeTaskResult(name, { name, stageName: name, text: terminal.result }, terminal);
 	}
 	return undefined;
+}
+
+function persistedTaskText(terminal: DurableCompletedStageCheckpoint, fallback: WorkflowSerializableValue): string {
+	if (typeof terminal.result === "string") return terminal.result;
+	if (typeof terminal.output === "string") return terminal.output;
+	return taskTextFromValue(fallback);
 }
 
 function taskTextFromValue(value: WorkflowSerializableValue): string {

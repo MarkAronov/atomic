@@ -320,7 +320,7 @@ describe("ctx.task tail liveness", () => {
 		);
 		assert.equal(replayed.status, "completed");
 		assert.deepEqual(JSON.parse(replayed.result?.result ?? ""), {
-			text: JSON.stringify({ approved: true, score: 4 }, null, 2),
+			text: "terminal review text",
 			structured: { approved: true, score: 4 },
 			artifacts: [{ kind: "diff", path: "/tmp/review.diff", taskName: "review" }],
 			warnings: ["used fallback model"],
@@ -365,7 +365,7 @@ describe("ctx.task tail liveness", () => {
 		assert.deepEqual(await task("review", { prompt: "ignored" }), {
 			name: "review",
 			stageName: "review",
-			text: JSON.stringify({ approved: false }, null, 2),
+			text: "terminal review text",
 			structured: { approved: false },
 			sessionFile: "/tmp/review.jsonl",
 			artifacts: [{ kind: "patch", path: "/tmp/review.patch" }],
@@ -389,9 +389,9 @@ describe("ctx.task tail liveness", () => {
 			checkpointId: `stage:${replayKey}`,
 			name: "review",
 			replayKey,
-			output: "Saved output to /tmp/review.md",
+			output: JSON.stringify({ approved: true, findings: ["ok"] }, null, 2),
 			completedAt: 2,
-			result: "Saved output to /tmp/review.md",
+			result: JSON.stringify({ approved: true, findings: ["ok"] }, null, 2),
 			structured: { approved: true, findings: ["ok"] },
 		});
 		let prompts = 0;
@@ -424,6 +424,64 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(replayed.status, "completed");
 		assert.equal(replayed.result?.result, JSON.stringify({ approved: true, findings: ["ok"] }, null, 2));
 		assert.equal(prompts, 0);
+	});
+
+	test("terminal-only schema maxOutput replay keeps the truncated text", async () => {
+		const backend = new InMemoryDurableBackend();
+		const replayKey = "stage:task:review:1";
+		const structured = { approved: true, notes: "line1\nline2\nline3" };
+		const truncated = `{\n\n[workflow output truncated; limits: 204800 bytes, 1 lines]`;
+		backend.registerWorkflow({
+			workflowId: "wf-schema-max-output",
+			name: "schema-max-output",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: "wf-schema-max-output",
+			checkpointId: `stage:${replayKey}`,
+			name: "review",
+			replayKey,
+			output: truncated,
+			completedAt: 2,
+			result: truncated,
+			structured,
+		});
+		let prompts = 0;
+		const replayed = await run(
+			workflow({
+				name: "schema-max-output",
+				description: "",
+				inputs: {},
+				outputs: { result: Type.String() },
+				run: async (ctx) => {
+					const review = await ctx.task("review", { prompt: "ignored", maxOutput: { lines: 1 } });
+					return {
+						result: JSON.stringify({ text: review.text, structured: review.structured }),
+					};
+				},
+			}),
+			{},
+			{
+				runId: "wf-schema-max-output",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "must not rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(replayed.status, "completed");
+		assert.deepEqual(JSON.parse(replayed.result?.result ?? ""), { text: truncated, structured });
+		assert.equal(prompts, 0);
+		assert.notEqual(truncated, JSON.stringify(structured, null, 2));
 	});
 
 	test("direct nested task-tail control settles the aggregate root", async () => {
@@ -574,6 +632,60 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(interrupted.ok, true);
 		const finished = await pending;
 		assert.equal(finished.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.exitReason, "quit");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	});
+
+	test("a caught task-tail quit still pauses instead of completing", async () => {
+		const backend = new DelayedTaskCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const catching = workflow({
+			name: "catch-task-tail-quit",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				try {
+					await ctx.task("review", { prompt: "review the change" });
+				} catch {
+					return { result: "caught" };
+				}
+				return { result: "ok" };
+			},
+		});
+		const pending = run(
+			catching,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				stageControlRegistry: registry,
+				toolControlRegistry: toolControls,
+				adapters: { prompt: { prompt: async () => "review done" } },
+			},
+		);
+		const deadline = Date.now() + 2_000;
+		let runId = "";
+		while (Date.now() < deadline) {
+			runId = store.runs().find((candidate) => candidate.name === catching.name)?.id ?? "";
+			if (runId !== "" && toolControls.active(runId).some((handle) => handle.nodeId.startsWith("task-checkpoint:")))
+				break;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.ok(runId.length > 0);
+		const interrupted = await interruptRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		assert.equal(interrupted.ok, true);
+		const finished = await pending;
+		assert.equal(finished.status, "paused");
+		assert.equal(finished.result?.result, undefined);
 		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
 		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.exitReason, "quit");
 		assert.equal(backend.getWorkflow(runId)?.status, "paused");

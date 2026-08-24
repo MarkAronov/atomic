@@ -542,7 +542,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		);
 		assert.equal(result.status, "completed");
 		assert.deepEqual(JSON.parse(result.result?.result ?? ""), {
-			text: JSON.stringify({ approved: true }, null, 2),
+			text: "hydrated terminal review",
 			structured: { approved: true },
 			artifacts: [{ kind: "output", path: "/tmp/review.md" }],
 			warnings: ["hydrated warning"],

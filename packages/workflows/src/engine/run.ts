@@ -705,14 +705,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		selectedAdmittedToolFailure = admittedTools.firstFailure();
 		if (normalTerminalEvent?.kind === "failure") throw normalTerminalEvent.error;
 		// Whole-run quit is authoritative even when author code caught the tool
-		// rejection and returned normally: this executor observed its own call
-		// aborted (or refused) by that quit, so the caught call's later return must
-		// not become a terminal completion over quit's paused record. A catch may
-		// clean up; it is not an opt-out. Targeted node abort (scope "node") never
-		// closes admission, and a quit that only paused stages — which a later
-		// resume legitimately releases — never reaches a tool, so neither suspends
-		// a run here.
-		const quitDuringSuccess = observedQuitCancellation();
+		// or task-tail rejection and returned normally: this executor observed its
+		// own call aborted (or refused) by that quit, so the caught call's later
+		// return must not become a terminal completion over quit's paused record.
+		// A catch may clean up; it is not an opt-out. Targeted node abort (scope
+		// "node") never closes admission, and a quit that only paused stages —
+		// which a later resume legitimately releases — never reaches a tool, so
+		// neither suspends a run here.
+		const quitDuringSuccess = observedQuitCancellation() ?? observedTaskTailQuit;
 		if (quitDuringSuccess !== undefined) return suspendForGracefulQuit(quitDuringSuccess);
 
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
