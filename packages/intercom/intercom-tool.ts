@@ -56,7 +56,7 @@ Usage:
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
-  intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
+  intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status and your group
 
@@ -83,7 +83,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         language: Type.Optional(Type.String()),
       }))),
       replyTo: Type.Optional(Type.String({
-        description: "Message ID to reply to (for threading or responding to an 'ask')",
+        description: "Exact pending-ask message ID; disambiguates concurrent asks, including asks from one sender",
       })),
       group: Type.Optional(Type.String({
         description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group.",
@@ -471,7 +471,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
           }
 
           try {
-            const target = activeReplyTracker().resolveReplyTarget({ to });
+			const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],

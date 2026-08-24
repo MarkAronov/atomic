@@ -566,12 +566,12 @@ subagent({ action: "list" })
 // Persist the current session before using context: "fork".
 ```
 
-**Intercom "Already waiting for a reply"**
+**Intercom ask capacity and supervisor exclusivity**
 
 ```typescript
-// Only one blocking intercom request (ask or contact_supervisor) can wait per
-// session. Concurrent attempts lose the reservation with this normal tool
-// error; resolve or await the current outbound ask, then retry or use send.
+// Peer asks coexist up to maxPendingAsks (default 6). At capacity, wait for a
+// pending ask to settle or use send. Only blocking supervisor requests remain
+// exclusive and return "Already waiting for a supervisor reply" when occupied.
 ```
 
 **Parallel output-path conflict**

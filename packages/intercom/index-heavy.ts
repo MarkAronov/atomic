@@ -522,7 +522,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
-    hasReplyWaiter: () => replyWaiters.has(),
   });
   registerIntercomTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
