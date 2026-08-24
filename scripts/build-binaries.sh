@@ -216,7 +216,7 @@ shared_app_dir="binaries/.app"
 rm -rf "$shared_app_dir"
 mkdir -p "$shared_app_dir"
 echo "==> Building shared app bundle..."
-bun build --target=bun --format=cjs --external mupdf ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
+bun build --target=bun --format=cjs --external mupdf --external @earendil-works/pi-tui ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
 bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
 
 for platform in "${PLATFORMS[@]}"; do

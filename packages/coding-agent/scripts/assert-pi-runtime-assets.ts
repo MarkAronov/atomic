@@ -17,6 +17,13 @@ const requiredPiAiFiles = [
 	"dist/auth/oauth/openrouter.js",
 	"dist/bun-oauth.js",
 ] as const;
+const requiredPiTuiFiles = [
+	"package.json",
+	"dist/index.js",
+	"native/win32/prebuilds/win32-x64/win32-console-mode.node",
+	"native/win32/prebuilds/win32-arm64/win32-console-mode.node",
+] as const;
+const bundledPiTuiModuleMarker = "@earendil-works/pi-tui/dist/native-modifiers.js";
 const requiredAppMarkers = [
 	"global.anthropic.claude-opus-5",
 	"https://openrouter.ai/auth",
@@ -37,8 +44,11 @@ function requireFile(path: string): void {
 }
 
 export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
-	const piAiRoot = packagePath(resolve(options.nodeModulesRoot), "@bastani/pi-ai");
+	const nodeModulesRoot = resolve(options.nodeModulesRoot);
+	const piAiRoot = packagePath(nodeModulesRoot, "@bastani/pi-ai");
 	for (const relativePath of requiredPiAiFiles) requireFile(join(piAiRoot, relativePath));
+	const piTuiRoot = packagePath(nodeModulesRoot, "@earendil-works/pi-tui");
+	for (const relativePath of requiredPiTuiFiles) requireFile(join(piTuiRoot, relativePath));
 
 	const packageJson = JSON.parse(readFileSync(join(piAiRoot, "package.json"), "utf-8")) as {
 		name?: string;
@@ -54,6 +64,11 @@ export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 		const appBundle = readFileSync(appBundlePath, "utf-8");
 		for (const marker of requiredAppMarkers) {
 			if (!appBundle.includes(marker)) throw new Error(`Pi runtime marker is absent from ${appBundlePath}: ${marker}`);
+		}
+		if (appBundle.includes(bundledPiTuiModuleMarker)) {
+			throw new Error(
+				`pi-tui must stay external to ${appBundlePath}; bundling freezes the build host's import.meta.url`,
+			);
 		}
 	}
 }
@@ -81,5 +96,5 @@ if (import.meta.main) {
 		throw new Error(`Unknown argument: ${arg}`);
 	}
 	assertPiRuntimeAssets({ nodeModulesRoot, appBundlePath });
-	console.log(`Pi ${expectedPiVersion} model-data and OAuth runtime assets verified.`);
+	console.log(`Pi ${expectedPiVersion} model-data, OAuth, and external TUI runtime assets verified.`);
 }
