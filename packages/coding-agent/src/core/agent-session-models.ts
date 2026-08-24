@@ -149,7 +149,7 @@ export async function _cycleScopedModel(
 	const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
 	const nextModel = next.model;
 
-	// An explicit cycle cancels any pending per-turn fallback restoration.
+	// An explicit cycle finishes any active fallback lifecycle before switching.
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = nextModel;
 	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
@@ -184,7 +184,7 @@ export async function _cycleAvailableModel(
 	const selectedModel = availableModels[nextIndex];
 
 	const thinkingLevel = this._getThinkingLevelForModelSwitch();
-	// An explicit cycle cancels any pending per-turn fallback restoration.
+	// An explicit cycle finishes any active fallback lifecycle before switching.
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = selectedModel;
 	this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
@@ -221,11 +221,9 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel): void
 	this.agent.state.thinkingLevel = effectiveLevel;
 
 	if (isChanging) {
-		// A reasoning choice is not a model choice, so it must not strand the
-		// session on a fallback candidate: keep the pending restore. Carry the
-		// explicit level into the scope so the restore does not overwrite it.
-		// (A no-op level assignment — a registry refresh re-applying the current
-		// level — changes nothing here.)
+		// A reasoning choice is not a model choice, so it leaves the selected
+		// fallback model in place. Keep the active lifecycle open until the turn
+		// settles. (A no-op assignment from a registry refresh changes nothing.)
 		if (this._fallbackOriginModel !== undefined) this._fallbackOriginThinkingLevel = effectiveLevel;
 		this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 		this._refreshBaseSystemPromptFromActiveTools();

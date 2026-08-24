@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.16-alpha.2] - 2026-08-23
+
+### Added
+
+- Added Lauren Tan's bundled `bro`, `how`, `teach`, `unslop`, and `why` pstack skills for plain-language restatement, codebase explanation, teaching, writing cleanup, and evidence-backed design rationale. Sourced from https://github.com/cursor/plugins and distributed under the MIT License.
+
+## [0.9.16-alpha.1] - 2026-08-23
+
+### Fixed
+
+- Fixed Windows embedded Postgres startup waiting forever when the daemon inherited `pg_ctl` pipes by directly spawning Postgres behind an opaque native process lease. Orderly shutdown now sends fast shutdown and bounded-waits on that exact retained child/HANDLE, preventing mutable-pidfile and PID-reuse races while leaving attached clusters untouched; failed or timed-out shutdown retains the lease for retry. Linux root runtime copies are now exact, root-owned, read/execute-only generations for the dropped Postgres account, with source and post-rename validation, atomically replaced monotonic setup heartbeats, final publication-lease checks, and bounded fail-closed corruption handling ([#2547](https://github.com/bastani-inc/atomic/issues/2547), [#2544](https://github.com/bastani-inc/atomic/pull/2544) by [@darionco](https://github.com/darionco)).
+
+- Fixed active zero-stage workflows whose only work is durable `ctx.tool` calls being under-represented in the below-editor `BACKGROUND` panel. Normal-width cards now show a single pending or running tool node by name and status; when multiple nodes are live, their total appears before the width-clamped node details. The narrow collapsed form shows only the live-tool count, and no synthetic stage is created. The panel mounts for tool-only runs loaded after installation, keeps updating through workflow-resource reload, and remounts from the adopted run store after full `/reload`. Installed builds can evaluate the extension and host SDK as separate jiti module copies; their canonical session-bus map is now process-shared, preventing a replacement generation from adopting an empty store and dropping the live job, cancellation, and tool-control owners. Same-process extension reload preserves the live durable tool callback so its active node settles normally alongside cached completed siblings; a real process exit continues to require explicit durable resume for unfinished callbacks.
+
+- Fixed a never-settling public workflow tool request blocking the interactive agent indefinitely. All 15 workflow actions now share one hard 30-second request deadline that aborts cancellable work, emits one structured timeout error, discards late settlement, and never retries. Timed-out mutations report an unknown outcome and direct callers to inspect workflow status before retrying; a timed-out run that already allocated detached execution returns its exact run id for that inspection, while background run/resume execution remains independent after its acknowledgement ([#2605](https://github.com/bastani-inc/atomic/issues/2605)).
+
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Changed
+
+- Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. A stage remains a top-level session and may still delegate once, while its subagent children cannot delegate further.
+
+### Fixed
+
+- Fixed `/workflow` dispatch, list, and status cards being held as steering messages while an agent streamed. Rendered cards now enter the transcript at once without starting a turn; lifecycle notices still nudge the model.
+- Persistent workflow progress widgets now reattach after host UI resets or remote-engine release while keeping mount-once, in-place updates ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Fixed one stalled heartbeat send blocking all later workflow heartbeats in the session. In-flight sends now have a two-minute watchdog, release the run's pending slot on expiry, advance the shared FIFO queue, and guard against late double settlement while preserving retry behavior ([#2557](https://github.com/bastani-inc/atomic/issues/2557)).
+- Fixed disposal of a confirmed-paused stage turning an acknowledged pause into a terminal failure. Disposal now waits while the run remains paused and resumable; abort and kill still fail visibly ([#2558](https://github.com/bastani-inc/atomic/issues/2558)).
+- Fixed a workflow stage session leak when a confirmed-paused stage was cleared from the live registry, resumed through its stale handle, and completed. Deferred cleanup now drains once on terminal completion.
+
+## [0.9.15-alpha.1] - 2026-08-21
+
 ### Changed
 
 - Workflow-stage orchestration context no longer carries a subagent delegation-depth constraint. Stage delegation itself is unchanged: a stage is a top-level session and still launches subagents once. What changed is that the children it launches can no longer delegate further, and nothing configures that.
@@ -13,6 +47,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed `/workflow` cards being swallowed while the agent is streaming. The dispatch, list, and status cards were sent as ordinary turn-triggering messages, so a card emitted during a live model turn — for example right after a workflow lifecycle notice started one — was queued as steering and did not reach the transcript until that turn ended. Cards are already-rendered transcript surfaces and are now sent as non-turn messages, so they appear immediately whether or not a turn is in flight. Workflow lifecycle notices are unchanged and still nudge the model.
+- Persistent workflow progress widgets now reattach after a host UI reset or remote-engine release while keeping the existing mount-once, update-in-place behavior ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Fixed one stuck heartbeat send silencing every workflow heartbeat for the rest of the session. All runs in a session share a single FIFO heartbeat-delivery queue, and its in-flight head had no deadline: a `sendMessage` promise that never settled held that head forever, so later runs queued behind it and never delivered a card, with no error and no degraded mode. Terminal cleanup could not rescue it either, because it deliberately spares a send already handed to the host. Each in-flight send now carries a bounded two-minute watchdog; on expiry the attempt is abandoned as an undelivered heartbeat, its run's pending slot is released so the run re-arms at its next future boundary, and the queue advances to the next run. Settlement is guarded by a per-attempt token, so a late resolution or rejection from an abandoned attempt cannot settle twice, restart retries, or disturb the current head. An emitter that rejects directly now settles as a failed delivery through the existing retry path instead of wedging the queue. The intended one-heartbeat-per-run rule before the deadline, the existing retry backoff and attempt budget, and the deadline-free hold on a card already admitted into the parent's queue are all unchanged ([#2557](https://github.com/bastani-inc/atomic/issues/2557)).
+- Fixed a confirmed workflow pause silently reversing to a terminal failed run. Disposing a stage session while its stage was parked on an acknowledged pause rejected the parked pause waiter with `stage "<name>" session has been disposed`, which surfaced as a stage failure and emitted a terminal `workflow.run.end` with status `failed` — after `workflow pause` had already reported success and status had reported the run paused and resumable. Disposal that arrives during a confirmed pause is now deferred instead of rejecting the waiter, so the run stays paused and resumable and explicit resume continues through the normal path with intact metadata. Abort and kill still reject a parked waiter and fail visibly, a deferred disposal is still completed once that abort arrives, and disposal outside a confirmed pause is unchanged and still reported ([#2558](https://github.com/bastani-inc/atomic/issues/2558)).
+- Fixed a workflow stage session leak when a confirmed-paused stage was cleared from the live control registry, resumed through its stale handle, and then completed. Deferred controller cleanup now drains once at terminal completion, releasing the session and its listeners without double-disposal.
 
 ## [0.9.14] - 2026-08-19
 

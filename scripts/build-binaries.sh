@@ -4,12 +4,13 @@
 # Mirrors .github/workflows/publish.yml binary build.
 #
 # Usage:
-#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--platform <platform>]
+#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--offline-model-data] [--platform <platform>]
 #
 # Options:
 #   --skip-deps          Skip installing cross-platform native bindings
 #   --skip-install       Reuse dependencies installed by the caller
 #   --skip-package-build Reuse packages/coding-agent/dist built by the caller
+#   --offline-model-data Build @bastani/pi-ai with bundled model data instead of refreshing it
 #   --platform <name>    Build only for specified platform
 #                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
 #                         linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64)
@@ -37,6 +38,7 @@ cd -- "$(dirname -- "$0")/.."
 SKIP_DEPS=false
 SKIP_INSTALL=false
 SKIP_PACKAGE_BUILD=false
+OFFLINE_MODEL_DATA=false
 PLATFORM=""
 
 ALPINE_MUSL_RUNTIME_BRANCH="v3.22"
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_PACKAGE_BUILD=true
             shift
             ;;
+        --offline-model-data)
+            OFFLINE_MODEL_DATA=true
+            shift
+            ;;
         --platform)
             PLATFORM="$2"
             shift 2
@@ -100,6 +106,21 @@ if [[ -n "$PLATFORM" ]]; then
     esac
 fi
 
+alias_pi_ai() {
+    echo "==> Aliasing @earendil-works/pi-ai onto packages/ai..."
+    node scripts/alias-pi-ai.mjs
+}
+
+build_pi_ai() {
+    if [[ "$OFFLINE_MODEL_DATA" == "true" ]]; then
+        echo "==> Building @bastani/pi-ai with bundled model data..."
+        npm run build:offline --workspace=@bastani/pi-ai
+    else
+        echo "==> Building @bastani/pi-ai..."
+        npm run build --workspace=@bastani/pi-ai
+    fi
+}
+
 if [[ "$SKIP_INSTALL" == "false" ]]; then
     echo "==> Installing dependencies..."
     npm ci --ignore-scripts
@@ -107,10 +128,8 @@ else
     echo "==> Reusing caller-installed dependencies (--skip-install)"
 fi
 
-echo "==> Aliasing @earendil-works/pi-ai onto packages/ai..."
-node scripts/alias-pi-ai.mjs
-echo "==> Building @bastani/pi-ai..."
-npm run build --workspace=@bastani/pi-ai
+alias_pi_ai
+build_pi_ai
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
     echo "==> Installing cross-platform Atomic native bindings..."
@@ -129,6 +148,12 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
     # than let npm prune the installed tree on its way to ETARGET.
     if [[ "$natives_version" == "0.0.0" ]]; then
         echo "==> Skipping cross-platform bindings: packages/natives is at the 0.0.0 placeholder"
+    elif compgen -G "packages/natives/native/*.node" >/dev/null; then
+        # publish.yml stages the just-built bindings before this script. Fetching
+        # @bastani/atomic-natives-*@$VERSION from npm can only fail: this release
+        # is what would publish them. The failed --force install then requires
+        # npm ci, which drops the pi-ai alias and breaks the coding-agent build.
+        echo "==> Skipping registry install of @bastani/atomic-natives-*: local native artifacts are already staged"
     elif ! npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
         "${natives_targets[@]}"; then
         # `--no-save --force` mutates node_modules before it fails, and it prunes
@@ -136,6 +161,8 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
         # broke the release binary). Put the tree back before continuing.
         echo "==> Cross-platform bindings unavailable; restoring the dependency tree"
         npm ci --ignore-scripts
+        alias_pi_ai
+        build_pi_ai
     fi
 
     echo "==> Staging cross-platform native bindings for clipboard..."

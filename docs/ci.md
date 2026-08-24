@@ -411,7 +411,7 @@ After native and smoke jobs pass, `build`:
 
 1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
-3. Runs `scripts/build-binaries.sh --skip-install` for all eight archives.
+3. Hydrates `@bastani/pi-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by re-aliasing `@earendil-works/pi-ai` onto `packages/ai` and rebuilding `@bastani/pi-ai`.
    Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly ten npm tarballs.
@@ -466,6 +466,16 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, clean failed drafts |
 | `.github/workflows/warm-toolchain-cache.yml` | manual dispatch (see gate above) | write the Zig and MSVC CRT cache keys into the default-branch scope |
+
+## Repository-local release workflow gates
+
+The `.atomic/workflows/publish-release.ts` workflow keeps the versionless-base and detached-tag sequence above, but external waiting is deterministic workflow code rather than model judgment.
+
+- A durable preparation preflight requires a clean worktree and reads the exact remote base/branch and matching open PR. It reuses an existing release only when the branch is one changelog-only commit atop the current remote base, every paginated commit-file destination and rename source is changelog-only, an optional local branch points to that same commit, and exactly one open PR matches the repository, base, head branch, and head SHA. Otherwise dirty state or conflicting base, commit, file set, branch, or PR fails closed. Reuse never resets or force-pushes and skips changelog preparation and PR creation entirely.
+- The required-CI tool reads configured contexts from both branch protection and active branch rulesets, preserving configured context/app identity. Only the classic unprotected-branch status-check lookup may return absent; a rules lookup error fails closed rather than accepting a partial set. A configured check missing from the commit remains pending. The gate fails on an actually empty configured set, PR/base/head drift, a terminal required-check failure, GitHub/auth/command errors, abort, or 45-minute timeout. It passes only when every exact configured check succeeds or the exact captured PR is already admin-merged.
+- The publish tool waits up to 60 minutes for the push-event run from `.github/workflows/publish.yml` with repository `bastani-inc/atomic`, exact tag, exact detached release SHA, and exact workflow identity. A run that has not appeared remains pending; drift or a completed non-success conclusion fails closed. The tool never dispatches or reruns publication.
+
+Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSignal` to GitHub commands and sleeps, and have a finite tool deadline beyond their polling window. Tests use injected fake Git/GitHub observations and never exercise a real release side effect.
 
 ## Release checklist
 

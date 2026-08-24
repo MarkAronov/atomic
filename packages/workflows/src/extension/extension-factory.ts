@@ -89,8 +89,8 @@ function factory(pi: ExtensionAPI): void {
 		runtimeState.ensureWorkflowResourcesLoaded,
 		{ resolvePostMortemDeps: (runId) => postMortemDepsForRun(runId, postMortemResolverDeps) },
 	);
-	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx) => {
-		const result = await executeWorkflowTool(args, ctx);
+	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
+		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);
 		if (
 			workflowPolicyFromContext(ctx).mode === "interactive" &&
 			typeof args.workflow === "string" &&

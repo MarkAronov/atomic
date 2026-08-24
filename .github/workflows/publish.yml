@@ -444,8 +444,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y patchelf
+      - name: Hydrate release model data
+        run: npm run hydrate:model-data
       - name: Build release archives
-        run: ./scripts/build-binaries.sh --skip-install
+        run: ./scripts/build-binaries.sh --skip-install --offline-model-data
       - name: Validate package metadata and prepare payload
         env:
           VERSION: ${{ needs.integrity.outputs.version }}

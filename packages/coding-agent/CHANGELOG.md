@@ -2,11 +2,70 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.4] - 2026-08-23
+
+### Fixed
+
+- Workflow stages on installed/prebundled builds now resolve credentials from `~/.atomic/agent` again. The companion extension bundle was treating `@bastani/workflows` as the app package, so stages created an empty `~/.workflows/agent` and reported `No API key found` for every provider.
+
+
+## [0.9.16-alpha.3] - 2026-08-23
+
+### Changed
+
+- Installed builtin extensions (`workflows`, `subagents`, `mcp`, `web-access`, `intercom`) now ship as prebundled ESM entry files. Resource trees (`skills/`, `agents/`, workflow builtins) stay on disk; leftover extension TypeScript is pruned from the npm/binary payload. Source maps stay in the published `dist/`, matching upstream pi.
+
+
+## [0.9.16-alpha.2] - 2026-08-23
+
+### Changed
+
+- Main-chat model fallback is now session-sticky: after failover, later turns keep using the selected fallback model and thinking level until an explicit `/model` selection or model cycle changes it.
+
+### Removed
+
+- Removed the bundled writing-rule set from the default system prompt's `Guidelines` section. The unrelated "Be concise in your responses" and "Show file paths clearly when working with files" guidelines remain.
+- Removed the bundled `/subagents-doctor`, `/run`, and `/parallel` entries from the slash-command catalog, and dropped `/parallel-review` and `/parallel-cleanup` suggestions from the `/atomic` guide. Launch children with the `subagent` tool.
+
+
+## [0.9.16-alpha.1] - 2026-08-23
+
+### Fixed
+
+- Foreground child decisions, structured interviews, and `intercom.ask` calls resolved to their launching parent now pause the retained child and return the question plus ordered attachments through the parent `subagent` call instead of deadlocking behind Intercom reply delivery. Real typed foreground children receive exact broker authorization for `contact_supervisor`, including successful non-blocking progress delivery. Bare run-ID resume preserves each paused child's session, cwd, Intercom group, execution settings, canonical index, worktree, and dirty changes while rebuilding control and detach callbacks; a sibling completed at the ask boundary stays terminal without blocking paused siblings. Queued work remains unlaunched and unauthorized, worktree diff capture and cleanup wait for terminal resume, and completed children remain non-resumable ([#2589](https://github.com/bastani-inc/atomic/issues/2589)).
+- Coalesced same-turn sibling `subagent` execution calls into one indexed parallel run instead of rejecting every call after the first. Live result, progress, control, and artifact updates and final results stay route-local without sibling data, while the TUI redraws the shared run as one aggregate parallel widget. Solitary, sequential, management, and true-overlap behavior remains unchanged ([#2588](https://github.com/bastani-inc/atomic/issues/2588)).
+
+## [0.9.15] - 2026-08-21
+
+Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Breaking Changes
+
+- Subagent delegation is now fixed at one level. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth field and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. SDK callers that construct stage orchestration contexts must drop the removed field.
+
+### Changed
+
+- Vendored `@earendil-works/pi-ai` into the Atomic monorepo as `@bastani/pi-ai` and switched first-party imports, loader aliases, shrinkwrap, and tagged release publishing to the workspace package. Legacy extensions that import `@earendil-works/pi-ai` still resolve through the loader.
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build instead of shipping the frozen v0.84.2 snapshot.
+- Moved `COPILOT_GITHUB_TOKEN` env-token host routing into `@bastani/pi-ai/providers/github-copilot-env`, preserving `models.json` endpoint overrides ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- SQLite resource selectors now use `node:sqlite` only. The `bun:sqlite` fallback was removed as Atomic's Bun floor moved to 1.4.0; Node ≥ 22.13 and Bun ≥ 1.4.0 provide `node:sqlite` without a flag.
+
+### Fixed
+
+- Fixed fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN` failing with `Personal Access Tokens are not supported for this endpoint`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`, exchanged OAuth tokens retain their behavior, and explicit provider/model header overrides keep precedence ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- Fixed workflow stages hanging after GitHub Copilot stream decompression failures. Provider stream stalls now settle as transient transport errors and can retry or fail over; the new `streamDeadlineMs` setting bounds idle gaps and supports duration strings or disabling the deadline ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
+- Extension widgets now remount once after the interactive host clears or disposes them, preserve in-place updates, and discard stale isolated-engine mounts before reopening ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Ported unreleased upstream pi-ai fixes for Copilot throttling, provider usage and reasoning metadata, Bedrock headers and reasoning, Anthropic fallback pricing, Azure tool choice, model catalogs, xAI Responses routing, stream request options, User-Agent headers, and OpenAI reasoning replay. Cerebras now defaults to `gpt-oss-120b`, and the unused OpenTelemetry dependency was removed.
+
+## [0.9.15-alpha.1] - 2026-08-21
+
 ### Breaking Changes
 
 - Two exported SDK types each lose a field, because subagent delegation is now a fixed one-level rule rather than a configurable depth. `WorkflowStageOrchestrationContext.constraints` no longer has the required nesting-depth number and is now `{ disableWorkflowTool: true }`; `SubagentChildPolicy` no longer has the optional inherited delegation limit and keeps `depth` alone. Code that constructs a stage orchestration context must drop the removed required field.
 
 ### Changed
+
+- `@bastani/pi-ai` now refreshes its models.dev catalog at package build, matching upstream pi-ai, instead of shipping the frozen v0.84.2 snapshot.
 
 - Vendored `@earendil-works/pi-ai` into `packages/ai` as `@bastani/pi-ai` and switched Atomic onto the workspace package. First-party imports, extension loader aliases, shrinkwrap, and the release publisher now use `@bastani/pi-ai`. Extensions that still import `@earendil-works/pi-ai` keep resolving through the loader. The first npm version of `@bastani/pi-ai` must be published by hand before a tagged Atomic release can publish it via trusted publishing.
 
@@ -17,6 +76,9 @@
 ### Fixed
 
 - Fixed the `400 checking third-party user token: bad request: Personal Access Tokens are not supported for this endpoint` failure for fine-grained PATs supplied through `COPILOT_GITHUB_TOKEN`. Raw tokens now send `Copilot-Integration-Id: copilot-developer-cli`; exchanged OAuth tokens containing a `tid=` segment remain unchanged, and per-request or `models.json` provider/model header overrides win. Catalog default headers are no longer promoted into the per-request override layer, while remaining visible to `before_provider_headers` extension hooks ([#2522](https://github.com/bastani-inc/atomic/issues/2522)).
+- Fixed workflow stages staying `running` forever when GitHub Copilot on the default `transport: "auto"` hit a repeated `Library error: zlib error: incorrect header check`. The stalled provider stream never settled, so retry and model fallback never advanced and the stage transcript kept only its user prompt. Such a failure now settles as a transient transport error and fails over, and a new `streamDeadlineMs` setting (default `300000`; accepts durations such as `30s` and `5m`; `0`/`"disabled"` disables it) bounds the idle gap between provider stream events below the HTTP layer ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
+- Extension widgets now recover after the interactive host clears or disposes a live widget: reactive controllers receive a release signal, remount exactly once on the next refresh, and preserve in-place updates without flicker. Isolated-engine widgets also discard stale remote mounts before reopening ([#2556](https://github.com/bastani-inc/atomic/issues/2556)).
+- Ported unreleased `packages/ai` commits from `earendil-works/pi` main after the vendored v0.84.2 snapshot into `@bastani/pi-ai`: Copilot login rate-limit handling, Kimi cached-token accounting, Google thinking-level maps, Bedrock response headers and redacted reasoning, Anthropic fallback pricing, Azure Responses `toolChoice`, OpenAI Completions reasoning-details replay, catalog fixes for Xiaomi, China ZAI Coding Plan, Qwen Token Plan Individual, Baseten GLM-5.2, and DeepSeek V4 Flash `low` thinking, plus xAI Responses routing, simple `toolChoice`, generalized thinking-token budgets, adapter User-Agent headers, and dropping the unused OpenTelemetry dependency. Cerebras now defaults to `gpt-oss-120b`.
 
 ## [0.9.14] - 2026-08-19
 

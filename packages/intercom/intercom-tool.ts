@@ -3,9 +3,11 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
+import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
+  type ChildOrchestratorMetadata,
   formatAttachments,
   formatSessionListRow,
   getErrorMessage,
@@ -17,6 +19,7 @@ import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, validateRuntimeGroup } from "./group.js";
 
 interface IntercomToolDeps {
+  childOrchestratorMetadata?: ChildOrchestratorMetadata | null | (() => ChildOrchestratorMetadata | null);
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
@@ -36,8 +39,11 @@ interface IntercomToolDeps {
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
+  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
+  const getMetadata = typeof childOrchestratorMetadata === "function"
+    ? childOrchestratorMetadata
+    : () => childOrchestratorMetadata ?? null;
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   pi.registerTool({
@@ -306,17 +312,9 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         }
 
         case "ask": {
-          if (!to || !message) {
+          if (!to) {
             return {
               content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
-              isError: true,
-              details: { error: true },
-            };
-          }
-
-          if (hasReplyWaiter()) {
-            return {
-              content: [{ type: "text", text: "Already waiting for a reply" }],
               isError: true,
               details: { error: true },
             };
@@ -332,6 +330,36 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
           let wait: ReplyWait | null = null;
 
           try {
+            const metadata = getMetadata();
+            const currentSupervisorId = connectedClient.supervisorSessionId ?? undefined;
+            const metadataSupervisorId = metadata?.supervisor?.supervisorSessionId;
+            const directParentTarget = Boolean(
+              metadata &&
+              (to === metadata.orchestratorTarget ||
+                to === currentSupervisorId ||
+                to === metadataSupervisorId),
+            );
+            const claimParentAsk = (resolvedTargetId: string): boolean =>
+              Boolean(
+                metadata &&
+                requestParentAskHandoff(pi.events, metadata, {
+                  kind: "intercom",
+                  question: typeof message === "string" ? message : "",
+                  attachments,
+                  resolvedTargetId,
+                }),
+              );
+            if (
+              directParentTarget &&
+              claimParentAsk(currentSupervisorId ?? metadataSupervisorId ?? to)
+            ) {
+              return {
+                content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
+                isError: false,
+                details: { yielded: true },
+              };
+            }
+
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               return {
@@ -343,6 +371,34 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
+            if (metadata && !directParentTarget) {
+              const authoritativeParent = [currentSupervisorId, metadataSupervisorId].find(
+                (candidate) => candidate === sendTo,
+              );
+              const resolvedParent =
+                authoritativeParent ?? await resolveTarget(connectedClient, metadata.orchestratorTarget);
+              if (resolvedParent !== null && resolvedParent === sendTo && claimParentAsk(sendTo)) {
+                return {
+                  content: [{ type: "text", text: "Parent ask claimed; this child is ending for a fresh subagent start." }],
+                  isError: false,
+                  details: { yielded: true },
+                };
+              }
+            }
+            if (!message) {
+              return {
+                content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
+            if (hasReplyWaiter()) {
+              return {
+                content: [{ type: "text", text: "Already waiting for a reply" }],
                 isError: true,
                 details: { error: true },
               };
