@@ -216,7 +216,9 @@ shared_app_dir="binaries/.app"
 rm -rf "$shared_app_dir"
 mkdir -p "$shared_app_dir"
 echo "==> Building shared app bundle..."
-bun build --target=bun --format=cjs --external mupdf --external @earendil-works/pi-tui ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
+# Bun's compiled launcher cannot resolve bare packages from the dynamically loaded CJS sidecar.
+# Bundle pi-tui itself, but keep the import.meta.url-sensitive native loader payload-relative.
+bun build --target=bun --format=cjs --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
 bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
 
 for platform in "${PLATFORMS[@]}"; do
@@ -243,6 +245,7 @@ echo "==> Copying runtime dependencies..."
 runtime_deps_dir="binaries/.runtime-node_modules"
 rm -rf "$runtime_deps_dir"
 bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
+cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-modifiers.js" "$shared_app_dir/native-modifiers.js"
 bun run scripts/assert-pi-runtime-assets.ts --node-modules "$runtime_deps_dir" --app "$shared_app_dir/app.js"
 clipboard_copy_args=()
 if [[ "$SKIP_DEPS" == "true" ]]; then
@@ -415,6 +418,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp README.md "binaries/$platform/"
     cp CHANGELOG.md "binaries/$platform/"
     cp "$shared_app_dir/app.js" "binaries/$platform/"
+    cp "$shared_app_dir/native-modifiers.js" "binaries/$platform/"
     cp "$shared_app_dir/image-resize-worker.js" "binaries/$platform/"
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "binaries/$platform/"
     mkdir -p "binaries/$platform/theme"
