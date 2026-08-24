@@ -90,7 +90,12 @@ How you install Atomic decides which runtime hosts it: a package-manager install
 
 ### Alpine and musl Linux archives
 
-The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. These archives bundle payload-local `libgcc` and `libstdc++`, so stock Alpine needs no runtime package install. See the [Alpine and musl Linux archive notes](/index#alpine-and-musl-linux-archives) for the clipboard fallback and external Postgres or Docker requirement for durable workflows.
+The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Each archive includes its matching native search and PTY bindings plus payload-local `libgcc` and `libstdc++` runtimes, so stock Alpine needs no runtime package install.
+
+Two features work differently on musl:
+
+- **Clipboard:** the musl archives omit a clipboard native binding because `@mariozechner/clipboard` 0.3.9 publishes metadata-only musl stubs without a `.node` payload; Atomic uses Linux clipboard commands and OSC52 fallback instead.
+- **Durable workflows:** the archives omit the glibc-linked `@embedded-postgres/*` binary packages, so durable workflows on Alpine require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker. Without a durable backend, Atomic uses a loud non-durable in-memory fallback.
 
 Then start Atomic in the project directory you want it to work on:
 
