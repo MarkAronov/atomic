@@ -27,19 +27,13 @@ interface IntercomToolDeps {
   setJoinedGroup(group: string): void;
   clearJoinedGroup(): void;
   confirmSend: boolean;
-  /**
-   * Atomically reserve the single reply-waiter slot. Returns a structured
-   * refusal when another blocking ask already holds it, so concurrent calls
-   * never observe a rejected promise.
-   */
+  /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
   replyTracker: ReplyTracker | (() => ReplyTracker);
-  /** Advisory fast-path check; beginReplyWait is the authoritative reservation. */
-  hasReplyWaiter(): boolean;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
+  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
   const getMetadata = typeof childOrchestratorMetadata === "function"
     ? childOrchestratorMetadata
@@ -396,18 +390,14 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 details: { error: true },
               };
             }
-            if (hasReplyWaiter()) {
-              return {
-                content: [{ type: "text", text: "Already waiting for a reply" }],
-                isError: true,
-                details: { error: true },
-              };
-            }
             const questionId = randomUUID();
             const admission = beginReplyWait(sendTo, questionId, _signal);
             if (!admission.ok) {
+              const text = admission.reason === "busy"
+                ? `Too many pending asks (${admission.limit}); reply-wait slots are full`
+                : "Cancelled";
               return {
-                content: [{ type: "text", text: admission.reason === "busy" ? "Already waiting for a reply" : "Cancelled" }],
+                content: [{ type: "text", text }],
                 isError: true,
                 details: { error: true },
               };

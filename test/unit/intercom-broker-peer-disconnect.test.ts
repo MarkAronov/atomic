@@ -9,7 +9,7 @@ import { createMessageReader, writeMessage } from "../../packages/intercom/broke
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { type PeerDisconnectNotice, routePeerDisconnect } from "../../packages/intercom/peer-disconnect-routing.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -260,11 +260,11 @@ test("real client stays connected when a pending peer disconnects", async () => 
 test("real client rejects the exact waiter when its target disconnects", async () => {
 	const asker = new IntercomClient();
 	const target = new WireClient();
-	const slot = new ReplyWaiterSlot();
+	const slot = new ReplyWaiterRegistry();
 	const targetName = "waiter-release-target";
 	const questionId = "waiter-release-question";
 	asker.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
-		routePeerDisconnect(slot.current(), notice);
+		routePeerDisconnect(slot.pending(), notice);
 	});
 	await asker.connect({ ...session, name: "waiter-release-asker" });
 	const targetId = await register(target, targetName);

@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Concurrent blocking asks now use a correlation-keyed waiter registry, with configurable `maxPendingAsks` capacity and a structured refusal when full.
+
+### Changed
+
+- Session teardown rejects every pending reply waiter while preserving per-waiter reply, timeout, abort, cancel, and peer-disconnect settlement.
+
 ### Fixed
 
 - Blocking `ask` and `contact_supervisor` waits now fail promptly with the departed session's name when their target disconnects after delivery, instead of hanging until the 10-minute timeout ([#2627](https://github.com/bastani-inc/atomic/issues/2627)).

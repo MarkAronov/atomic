@@ -18,7 +18,7 @@ import {
 import { routePeerDisconnect } from "../../packages/intercom/peer-disconnect-routing.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { Attachment, Message, SessionInfo } from "../../packages/intercom/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -80,7 +80,7 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 	const emitter = new EventEmitter();
 	let connectCalls = 0;
 	let resolverCalls = 0;
-	const slot = new ReplyWaiterSlot();
+	const slot = new ReplyWaiterRegistry();
 	const client = {
 		sessionId: "child-id",
 		supervisorSessionId: "parent-id",
@@ -192,14 +192,14 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 		sent,
 		waiterCalls,
 		get waiter() {
-			return slot.current() ?? undefined;
+			return slot.pending()[0];
 		},
 		get tool() {
 			assert.ok(tool);
 			return tool;
 		},
 		reply(text: string, replyError?: string) {
-			const current = slot.current();
+			const current = slot.pending()[0];
 			assert.ok(current);
 			current.resolve({
 				id: "reply",
@@ -210,7 +210,7 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 			});
 		},
 		disconnect(peerName: string) {
-			const current = slot.current();
+			const current = slot.pending()[0];
 			assert.ok(current);
 			return routePeerDisconnect(current, {
 				replyTo: current.replyTo,
@@ -852,7 +852,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
 			);
 
 			let registered: Tool | undefined;
-			const slot = new ReplyWaiterSlot();
+			const slot = new ReplyWaiterRegistry();
 			const surfaced: Message[] = [];
 			const handoff = new ForegroundDetachHandoff(piForHandoff as never, 1000);
 			const from: SessionInfo = {
@@ -960,10 +960,10 @@ for (const kind of ["intercom", "supervisor"] as const) {
 			assert.equal(detached.detached, true);
 			assert.equal(surfaced.length, 1);
 			assert.deepEqual(order.slice(0, 3), ["probe", "commit", "surface"]);
-			assert.equal(slot.current()?.replyTo, surfaced[0]?.id);
+			assert.equal(slot.pending()[0]?.replyTo, surfaced[0]?.id);
 			order.push("reply");
 			const routed = routeIncomingReply(
-				slot.current(),
+				slot.pending(),
 				{
 					id: "parent-id",
 					name: "parent",

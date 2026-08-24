@@ -4,7 +4,7 @@ import { registerContactSupervisorTool } from "../../packages/intercom/contact-s
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
-import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
+import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -33,7 +33,7 @@ interface SendBehavior {
  */
 function fixture(options: { send?: SendBehavior; resolveGate?: Promise<void> } = {}) {
 	const tools = new Map<string, Tool>();
-	const slot = new ReplyWaiterSlot();
+	const slot = new ReplyWaiterRegistry();
 	const sent: Array<{ to: string; message: { messageId?: string; text: string } }> = [];
 	const send = async (to: string, message: { messageId?: string; text: string }) => {
 		if (options.send?.delayMs) await sleep(options.send.delayMs);
@@ -102,7 +102,7 @@ function fixture(options: { send?: SendBehavior; resolveGate?: Promise<void> } =
 			return tool.execute("call", { reason: "need_decision", message: "Choose" }, signal, undefined, context);
 		},
 		replyToPending() {
-			const waiter = slot.current();
+			const waiter = slot.pending()[0];
 			assert.ok(waiter, "a pending waiter is required to reply");
 			const routed = routeIncomingReply(waiter, from, {
 				id: "parent-reply",
@@ -134,32 +134,26 @@ afterAll(() => {
 });
 
 describe("concurrent blocking intercom requests", () => {
-	test("two concurrent asks: the loser gets a structured error and the winner still completes", async () => {
+	test("two concurrent asks are both admitted and complete independently", async () => {
 		let release!: () => void;
 		const resolveGate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		const current = fixture({ send: { delayMs: 15 }, resolveGate });
 
-		// Start both in the same tick so both pass the advisory pre-check
-		// before either reserves the waiter slot — the exact interleaving that
-		// used to surface a pre-rejected promise.
+		// Start both in the same tick, as parallel sibling tool calls do.
 		const first = current.ask();
 		const second = current.ask();
 		await sleep(0);
 		release();
-		await sleep(5);
-
-		const loser = await second;
-		assert.equal(loser.isError, true);
-		assert.match(loser.content[0]?.text ?? "", /Already waiting for a reply/);
-
-		await sleep(15);
-		assert.equal(current.sent.length, 1, "only the winning ask sends its question");
+		await sleep(20);
+		assert.equal(current.sent.length, 2, "both asks send their questions");
 		current.replyToPending();
-		const winner = await first;
-		assert.equal(winner.isError, false);
-		assert.match(winner.content[0]?.text ?? "", /Approved/);
+		current.replyToPending();
+		for (const result of await Promise.all([first, second])) {
+			assert.equal(result.isError, false);
+			assert.match(result.content[0]?.text ?? "", /Approved/);
+		}
 	});
 
 	test("cross-tool concurrency: ask and contact_supervisor share one reservation without interference", async () => {
@@ -239,7 +233,7 @@ describe("concurrent blocking intercom requests", () => {
 		assert.equal(current.slot.has(), false);
 	});
 
-	test("replies correlate by exact sender and thread id even after a losing concurrent attempt", async () => {
+	test("replies correlate by exact sender and thread id with concurrent asks", async () => {
 		let release!: () => void;
 		const resolveGate = new Promise<void>((resolve) => {
 			release = resolve;
@@ -250,9 +244,8 @@ describe("concurrent blocking intercom requests", () => {
 		await sleep(0);
 		release();
 		await sleep(5);
-		assert.equal((await loser).isError, true);
 
-		const waiter = current.slot.current();
+		const waiter = current.slot.pending();
 		assert.ok(waiter);
 		const from: SessionInfo = {
 			id: "parent-id",
@@ -277,13 +270,15 @@ describe("concurrent blocking intercom requests", () => {
 			{
 				id: "wrong-sender",
 				timestamp: Date.now(),
-				replyTo: waiter.replyTo,
+				replyTo: waiter[0]!.replyTo,
 				content: { text: "Right thread, wrong session" },
 			},
 		);
 		assert.equal(wrongSender, false, "parent or unrelated sessions cannot resolve a child-to-child ask");
 		current.replyToPending();
 		assert.match((await winner).content[0]?.text ?? "", /Approved/);
+		current.replyToPending();
+		assert.match((await loser).content[0]?.text ?? "", /Approved/);
 	});
 
 	test("aborting a blocking ask mid-send frees the slot for a second ask, and the first call's late cleanup never disturbs the new reservation", async () => {
