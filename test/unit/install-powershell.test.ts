@@ -126,6 +126,38 @@ test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before 
 	}
 });
 
+test("Windows installer rejects bin directories inside transaction-owned install paths before any request or mutation", () => {
+	const source = installerSource();
+	const guard = source.indexOf(
+		"ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions",
+	);
+	assert.ok(guard >= 0, "the transaction-owned bin-directory guard is missing");
+	assert.match(
+		source,
+		/\$ownedInstallPaths = @\([\s\S]+Join-Path \$installRoot "current"[\s\S]+Join-Path \$installRoot "versions"/u,
+	);
+	assert.match(source, /\$binDir -ieq \$ownedInstallPath/u);
+	assert.match(source, /\$binDir\.StartsWith\(\$ownedInstallPrefix, \[StringComparison\]::OrdinalIgnoreCase\)/u);
+	for (const boundary of [
+		'$apiHeaders = @{ Accept = "application/vnd.github+json" }',
+		'$redirectTag = Get-AtomicRedirectTag "https://github.com',
+		"New-Item -ItemType Directory -Path $tempDir",
+		'Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath',
+	]) {
+		const boundaryIndex = source.indexOf(boundary);
+		assert.ok(boundaryIndex >= 0, boundary);
+		assert.ok(guard < boundaryIndex, `the transaction-owned bin-directory guard runs after: ${boundary}`);
+	}
+	assert.doesNotMatch(
+		source.slice(
+			source.indexOf("$ownedInstallPaths = @("),
+			source.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }'),
+		),
+		/Move-Item|Remove-Item|New-Item/u,
+		"the transaction-owned path preflight must not mutate caller paths",
+	);
+});
+
 test("Windows installer initializes cleanup state before preflight and API resolution", () => {
 	const source = installerSource();
 	const outerTry = source.indexOf("$previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol");
@@ -757,6 +789,12 @@ $originalPathExt = $env:PATHEXT
 $env:PROCESSOR_ARCHITEW6432 = "AMD64"
 $env:PROCESSOR_ARCHITECTURE = "AMD64"
 $caseIndex = 0
+$requestCount = 0
+
+function Invoke-WebRequest {
+    $script:requestCount++
+    throw "unexpected network request"
+}
 
 function New-ProbeSpace {
     $script:caseIndex++
@@ -801,6 +839,16 @@ try {
     $env:ATOMIC_VERSION = "not-a-tag"
     $null = Assert-Rejected "ATOMIC_VERSION not-a-tag" 'unsupported release tag'
     $env:ATOMIC_VERSION = $null
+
+    # Bin paths under installer-owned transaction paths must fail before requests or mutation.
+    foreach ($binSuffix in @("current", "current\nested", "versions", "versions\1.0.0", "versions\1.2.3\bin")) {
+        $null = New-ProbeSpace
+        $env:ATOMIC_BIN_DIR = Join-Path $env:ATOMIC_INSTALL_DIR $binSuffix
+        $requestStart = $script:requestCount
+        $null = Assert-Rejected "bin path $binSuffix" 'ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions' -Ref "1.0.0"
+        if ($script:requestCount -ne $requestStart) { throw "bin path $binSuffix performed a request" }
+        if (Test-Path -LiteralPath $env:ATOMIC_BIN_DIR) { throw "bin path $binSuffix was created" }
+    }
 
     # A regular installRoot\current entry must be reported, never moved or deleted.
     foreach ($kind in @("Directory", "File")) {

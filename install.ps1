@@ -647,6 +647,17 @@ if ([string]::IsNullOrWhiteSpace($binDir)) {
     $binDir = Join-Path $installRoot "bin"
 }
 $binDir = [IO.Path]::GetFullPath($binDir)
+$ownedInstallPaths = @(
+    (Join-Path $installRoot "current"),
+    (Join-Path $installRoot "versions")
+)
+foreach ($ownedInstallPath in $ownedInstallPaths) {
+    $ownedInstallPrefix = $ownedInstallPath.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+    if ($binDir -ieq $ownedInstallPath -or
+        $binDir.StartsWith($ownedInstallPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\current or ATOMIC_INSTALL_DIR\versions"
+    }
+}
 $binDirHasPathSeparator = $binDir.Contains(";")
 $atomicCurrentPath = Join-Path $binDir "atomic-current"
 $shimPath = Join-Path $binDir "atomic.cmd"

@@ -107,6 +107,35 @@ test("POSIX container installer keeps bind-mounted fixture trees host-owned", as
 	assert.match(smoke, /printf '%s \*%s\\n' "\$archive_hash" "\$asset"/u);
 });
 
+test("Windows bin paths under transaction-owned install paths fail before any request or mutation", async () => {
+	const { powershell } = await installers();
+	assert.match(
+		powershell,
+		/\$ownedInstallPaths = @\([\s\S]+Join-Path \$installRoot "current"[\s\S]+Join-Path \$installRoot "versions"/u,
+	);
+	assert.match(powershell, /\$binDir -ieq \$ownedInstallPath/u);
+	assert.match(powershell, /\$binDir\.StartsWith\(\$ownedInstallPrefix, \[StringComparison\]::OrdinalIgnoreCase\)/u);
+	const preflight = powershell.indexOf(
+		"ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\\current or ATOMIC_INSTALL_DIR\\versions",
+	);
+	assert.ok(preflight >= 0);
+	for (const boundary of [
+		'$apiHeaders = @{ Accept = "application/vnd.github+json" }',
+		'$redirectTag = Get-AtomicRedirectTag "https://github.com',
+		"New-Item -ItemType Directory -Path $tempDir",
+		'Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath',
+	]) {
+		const boundaryIndex = powershell.indexOf(boundary);
+		assert.ok(boundaryIndex >= 0, boundary);
+		assert.ok(preflight < boundaryIndex, `the Windows transaction-owned preflight runs after: ${boundary}`);
+	}
+	assert.doesNotMatch(
+		powershell.slice(powershell.indexOf("$ownedInstallPaths = @("), powershell.indexOf("$apiHeaders = @{")),
+		/Move-Item|Remove-Item|New-Item/u,
+		"the Windows transaction-owned preflight must not mutate caller paths",
+	);
+});
+
 test("Windows same-stem PATHEXT launchers are rejected before any request", async () => {
 	const { powershell } = await installers();
 	assert.match(powershell, /function Get-AtomicShimShadowingExtensions/u);
