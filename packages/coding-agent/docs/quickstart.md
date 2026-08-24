@@ -34,7 +34,9 @@ Atomic does not require package install scripts. Add `--ignore-scripts` if you w
 
 ### Release archive
 
-Alternatively, install the self-contained release archive, which needs no Node.js or package manager. On macOS or Linux:
+Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
+
+On macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
