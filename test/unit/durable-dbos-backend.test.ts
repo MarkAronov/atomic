@@ -379,6 +379,40 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		await hanging.flush();
 	});
 
+	test("same-process hydration recovers a DBOS checkpoint that never reached the memory mirror", async () => {
+		const workflowId = "wf-abort-after-persist";
+		const replayKey = "stage:task:review:1";
+		backend.registerWorkflow({
+			workflowId,
+			name: "test",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "running",
+		});
+		await backend.flush();
+		await sdk.recordStepOutput(
+			workflowId,
+			`task:${replayKey}`,
+			encodeCheckpoint({
+				kind: "stage",
+				workflowId,
+				checkpointId: `task:${replayKey}`,
+				name: "review",
+				replayKey,
+				output: { name: "review", stageName: "review", text: "review", structured: null },
+				completedAt: Date.now(),
+			}),
+		);
+		assert.equal(backend.getStageOutput(workflowId, replayKey), undefined);
+		await backend.hydrateWorkflow(workflowId);
+		assert.deepEqual(backend.getStageOutput(workflowId, replayKey), {
+			name: "review",
+			stageName: "review",
+			text: "review",
+			structured: null,
+		});
+	});
+
 	test("cancelWorkflow delegates to DBOS cancelWorkflow", async () => {
 		backend.registerWorkflow({
 			workflowId: "wf-3",

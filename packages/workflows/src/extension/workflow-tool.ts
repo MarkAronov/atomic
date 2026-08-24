@@ -143,7 +143,7 @@ export function makeExecuteWorkflowTool(
 							? { action: "statusDetail", runId: target, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
 					}
-					const result = inspectRun(resolved.runId);
+					const result = inspectRun(resolved.runId, { toolControlRegistry });
 					return result.ok
 						? { action: "statusDetail", runId: result.runId, detail: result.detail }
 						: { action: "statusDetail", runId: target, error: `run not found: ${target}` };

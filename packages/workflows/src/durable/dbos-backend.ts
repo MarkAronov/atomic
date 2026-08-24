@@ -240,8 +240,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			if (signal?.aborted || !this.isWorkflowLoadable(checkpoint.workflowId)) return;
 			const persist = (async () => {
 				await this.persistCheckpointRecord(checkpoint);
-				if (signal?.aborted) return;
 				this.mem.recordCheckpoint(checkpoint);
+				if (signal?.aborted || !this.isWorkflowLoadable(checkpoint.workflowId)) return;
 				await this.writeMetadata(checkpoint.workflowId);
 			})();
 			if (signal === undefined) {
@@ -480,6 +480,18 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 	async hydrateWorkflowForInspection(workflowId: string): Promise<DurableWorkflowHydrationResult> {
 		if (this.locallyRegistered.has(workflowId)) {
+			const records = await this.sdk.listStepRecords(workflowId);
+			for (const record of records) {
+				if (
+					isMetadataStep(record.stepName) ||
+					isDbosPromptStateStep(record.stepName) ||
+					record.stepName === DBOS_DELETION_STEP
+				) {
+					continue;
+				}
+				const classified = classifyCheckpointPayload(workflowId, record.stepName, record.output);
+				if (classified.kind === "current") this.mem.recordCheckpoint(classified.checkpoint);
+			}
 			const handle = this.getLoadableWorkflow(workflowId);
 			return handle === undefined ? { kind: "malformed" } : { kind: "current", handle };
 		}

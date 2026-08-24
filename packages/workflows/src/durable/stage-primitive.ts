@@ -301,7 +301,7 @@ function taskResultFromTerminalCheckpoint(
 	if (typeof terminal.output === "string") {
 		return completeTaskResult(name, { name, stageName: name, text: terminal.output }, terminal);
 	}
-	if (typeof terminal.output === "object" && terminal.output !== null && !Array.isArray(terminal.output)) {
+	if (terminal.output !== undefined) {
 		const text = terminal.result ?? JSON.stringify(terminal.output);
 		return completeTaskResult(name, { name, stageName: name, text, structured: terminal.output }, terminal);
 	}
@@ -321,7 +321,7 @@ function completeTaskResult(
 		stageName: typeof base.stageName === "string" && base.stageName.length > 0 ? base.stageName : name,
 		text: base.text,
 		...(base.structured !== undefined || checkpoint.structured !== undefined
-			? { structured: base.structured ?? checkpoint.structured }
+			? { structured: base.structured !== undefined ? base.structured : checkpoint.structured }
 			: {}),
 		...(base.sessionId !== undefined || checkpoint.sessionId !== undefined
 			? { sessionId: base.sessionId ?? checkpoint.sessionId }

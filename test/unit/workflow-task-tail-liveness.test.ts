@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -17,9 +20,10 @@ import {
 } from "../../packages/workflows/src/engine/run-liveness.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
-import { interruptAllRuns, interruptRun } from "../../packages/workflows/src/runs/background/status.js";
+import { inspectRun, interruptAllRuns, interruptRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { resolve_budget } from "../../packages/workflows/src/shared/budget.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -53,6 +57,82 @@ class DelayedTaskCheckpointBackend extends InMemoryDurableBackend {
 		}
 		await super.recordCheckpointAsync(checkpoint);
 	}
+}
+
+class DropTaskResultBackend extends InMemoryDurableBackend {
+	override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
+			throw new Error("task-result checkpoint failed");
+		}
+		await super.recordCheckpointAsync(checkpoint);
+	}
+}
+
+async function replayAfterDroppedTaskPersist(
+	name: string,
+	taskOptions: { prompt: string; maxOutput?: { lines: number }; worktree?: boolean },
+	prompt: (meta?: { stageOptions?: { cwd?: string } }) => unknown,
+	runOpts?: { cwd?: string },
+): Promise<{
+	readonly firstFailed: boolean;
+	readonly replayed: Awaited<ReturnType<typeof run>>;
+	readonly prompts: number;
+}> {
+	const backend = new DropTaskResultBackend();
+	const runId = `wf-live-${name}`;
+	const def = workflow({
+		name,
+		description: "",
+		inputs: {},
+		outputs: { result: Type.String() },
+		run: async (ctx) => {
+			const review = await ctx.task("review", taskOptions);
+			return {
+				result: JSON.stringify({
+					text: review.text,
+					structured: review.structured,
+					artifacts: review.artifacts,
+				}),
+			};
+		},
+	});
+	const first = await run(
+		def,
+		{},
+		{
+			runId,
+			store: createStore(),
+			durableBackend: backend,
+			...(runOpts?.cwd !== undefined ? { cwd: runOpts.cwd } : {}),
+			adapters: { prompt: { prompt: async (_text, meta) => prompt(meta) as never } },
+		},
+	);
+	let prompts = 0;
+	const replayed = await run(
+		def,
+		{},
+		{
+			runId,
+			store: createStore(),
+			durableBackend: backend,
+			...(runOpts?.cwd !== undefined ? { cwd: runOpts.cwd } : {}),
+			adapters: {
+				prompt: {
+					prompt: async () => {
+						prompts += 1;
+						return "must not rerun";
+					},
+				},
+			},
+		},
+	);
+	return { firstFailed: first.status === "failed", replayed, prompts };
+}
+
+function replayedStringResult(replayed: Awaited<ReturnType<typeof run>>): string {
+	const result = replayed.result?.result;
+	if (typeof result !== "string") throw new TypeError("Expected replayed workflow output to be a string");
+	return result;
 }
 
 const taskThenTool = workflow({
@@ -293,6 +373,65 @@ describe("ctx.task tail liveness", () => {
 		});
 	});
 
+	test("live null structured survives after the task-result persist is dropped", async () => {
+		const { firstFailed, replayed, prompts } = await replayAfterDroppedTaskPersist(
+			"live-null-structured",
+			{ prompt: "review" },
+			() => null,
+		);
+		assert.equal(firstFailed, true);
+		assert.equal(replayed.status, "completed");
+		assert.deepEqual(JSON.parse(replayedStringResult(replayed)), {
+			text: "null",
+			structured: null,
+		});
+		assert.equal(prompts, 0);
+	});
+
+	test("live maxOutput text survives after the task-result persist is dropped", async () => {
+		const { firstFailed, replayed, prompts } = await replayAfterDroppedTaskPersist(
+			"live-max-output",
+			{ prompt: "review", maxOutput: { lines: 1 } },
+			() => "alpha\nbeta\ngamma",
+		);
+		assert.equal(firstFailed, true);
+		assert.equal(replayed.status, "completed");
+		const payload = JSON.parse(replayedStringResult(replayed)) as { text?: string };
+		assert.match(payload.text ?? "", /^alpha\n\n\[workflow output truncated/);
+		assert.equal(prompts, 0);
+	});
+
+	test("live worktree artifacts survive after the task-result persist is dropped", async () => {
+		const repo = mkdtempSync(join(tmpdir(), "atomic-task-artifacts-"));
+		runGitChecked(repo, ["init", "-b", "main"]);
+		runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+		runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+		writeFileSync(join(repo, "tracked.txt"), "base\n");
+		runGitChecked(repo, ["add", "."]);
+		runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+		const { firstFailed, replayed, prompts } = await replayAfterDroppedTaskPersist(
+			"live-worktree-artifacts",
+			{ prompt: "review", worktree: true },
+			(meta) => {
+				const cwd = meta?.stageOptions?.cwd ?? repo;
+				mkdirSync(cwd, { recursive: true });
+				writeFileSync(join(cwd, "changed.txt"), "from-task\n");
+				return "reviewed";
+			},
+			{ cwd: repo },
+		);
+		assert.equal(firstFailed, true);
+		assert.equal(replayed.status, "completed");
+		const payload = JSON.parse(replayedStringResult(replayed)) as {
+			text?: string;
+			artifacts?: readonly { path?: string; kind?: string }[];
+		};
+		assert.equal(payload.text, "reviewed");
+		assert.equal(payload.artifacts?.[0]?.kind, "diff");
+		assert.ok((payload.artifacts?.[0]?.path ?? "").length > 0);
+		assert.equal(prompts, 0);
+	});
+
 	test("quit and interrupt terminate a root awaiting a never-settling task-result checkpoint", async () => {
 		const backend = new DelayedTaskCheckpointBackend();
 		setDurableBackend(backend);
@@ -500,6 +639,28 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(summary.strandedRoot, true);
 		assert.equal(summary.error, IMPOSSIBLE_ROOT_LIVENESS_MESSAGE);
 		assert.equal(summary.status, "running");
+		const store = createStore();
+		store.recordRunStart(runSnapshot);
+		const inspected = inspectRun("stranded", { store, now: 20 });
+		assert.equal(inspected.ok, true);
+		if (inspected.ok) {
+			assert.equal(inspected.detail.strandedRoot, true);
+			assert.equal(inspected.detail.error, IMPOSSIBLE_ROOT_LIVENESS_MESSAGE);
+		}
+		const toolControls = createToolControlRegistry();
+		toolControls.register({
+			runId: "stranded",
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}stage:task:review:1`,
+			name: "review",
+			controller: new AbortController(),
+			settled: new Promise(() => {}),
+		});
+		const liveInspected = inspectRun("stranded", { store, now: 20, toolControlRegistry: toolControls });
+		assert.equal(liveInspected.ok, true);
+		if (liveInspected.ok) {
+			assert.equal(liveInspected.detail.strandedRoot, undefined);
+			assert.equal(liveInspected.detail.error, undefined);
+		}
 	});
 
 	test("stale running handles remain crashed rather than live", () => {
