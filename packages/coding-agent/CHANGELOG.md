@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.3] - 2026-08-23
+
 ### Changed
 
 - Installed builtin extensions (`workflows`, `subagents`, `mcp`, `web-access`, `intercom`) now ship as prebundled ESM entry files. Resource trees (`skills/`, `agents/`, workflow builtins) stay on disk; leftover extension TypeScript is pruned from the npm/binary payload. Source maps stay in the published `dist/`, matching upstream pi.
