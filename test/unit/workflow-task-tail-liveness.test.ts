@@ -20,6 +20,7 @@ import {
 } from "../../packages/workflows/src/engine/run-liveness.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { inspectRun, interruptAllRuns, interruptRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -638,6 +639,106 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(store.runs().find((run) => run.id === "child")?.status, "paused");
 	});
 
+	test("direct nested task-tail quit settles the aggregate root", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: "parent",
+			name: "parent",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: "parent",
+			checkpointId: "task:stage:task:review:1",
+			name: "review",
+			replayKey: "stage:task:review:1",
+			output: { name: "review", stageName: "review", text: "cached review" },
+			completedAt: 2,
+		});
+		const store = createStore();
+		const toolControls = createToolControlRegistry();
+		store.recordRunStart({
+			id: "parent",
+			name: "parent",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "boundary",
+					name: "child-wf",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child" },
+					workflowGraphTarget: { runId: "child", stageId: "review", runName: "child-wf", depth: 1 },
+				} as RunSnapshot["stages"][number],
+			],
+			startedAt: 0,
+		});
+		store.recordRunStart({
+			id: "child",
+			name: "child-wf",
+			inputs: {},
+			status: "running",
+			parentRunId: "parent",
+			parentStageId: "boundary",
+			rootRunId: "parent",
+			stages: [
+				{
+					id: "review",
+					name: "review",
+					status: "completed",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
+			startedAt: 0,
+		});
+		toolControls.register({
+			runId: "child",
+			nodeId: `${TASK_RESULT_CHECKPOINT_CONTROL_PREFIX}stage:task:review:1`,
+			name: "review",
+			controller: new AbortController(),
+			settled: new Promise(() => {}),
+		});
+		const quit = await quitRun("child", { store, toolControlRegistry: toolControls });
+		assert.equal(quit.ok, true);
+		assert.equal(quit.runId, "parent");
+		assert.equal(store.runs().find((run) => run.id === "parent")?.status, "paused");
+		assert.equal(store.runs().find((run) => run.id === "child")?.status, "paused");
+		assert.equal(backend.getWorkflow("parent")?.status, "paused");
+		assert.equal(backend.getWorkflow("parent")?.resumable, true);
+		let prompts = 0;
+		const replayed = await run(
+			workflow({
+				name: "parent",
+				description: "",
+				inputs: {},
+				outputs: { result: Type.String() },
+				run: async (ctx) => ({ result: (await ctx.task("review", { prompt: "ignored" })).text }),
+			}),
+			{},
+			{
+				runId: "parent",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async () => {
+							prompts += 1;
+							return "must not rerun";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(replayed.status, "completed");
+		assert.equal(replayed.result?.result, "cached review");
+		assert.equal(prompts, 0);
+	});
 	test("live null structured survives after the task-result persist is dropped", async () => {
 		const { firstFailed, replayed, prompts } = await replayAfterDroppedTaskPersist(
 			"live-null-structured",
