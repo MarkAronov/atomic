@@ -48,20 +48,21 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
 
-Default paths:
+On macOS or Linux, the default paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer prints a paste-safe `export PATH=...` command if needed.
 
-- macOS/Linux: `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer prints a paste-safe `export PATH=...` command if needed.
-- Windows: `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer updates the User PATH and current process, then asks you to restart the terminal.
+On Windows, the defaults are `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer updates the User PATH and current process, then asks you to restart the terminal.
 
 The installer accepts these environment variables:
 
 #### ATOMIC_VERSION
 
-Pin an exact release tag instead of the latest release, or pass a flag that overrides it:
+Pin an exact release tag instead of the latest release, or pass a flag that overrides it. On macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --ref 0.9.11
 ```
+
+On Windows PowerShell:
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Ref 0.9.11
@@ -98,7 +99,9 @@ atomic
 
 ## Uninstall
 
-For a default archive install on macOS or Linux, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link. On Windows, remove `%LOCALAPPDATA%\atomic`; if you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove the directory from your User PATH.
+On macOS or Linux, for a default archive install, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link.
+
+On Windows, remove `%LOCALAPPDATA%\atomic`. If you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove the directory from your User PATH.
 
 For a package install, remove the global package with the same package manager. With npm:
 
