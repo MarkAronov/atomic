@@ -48,6 +48,7 @@ export async function _preflightPostToolContext(
 
 	const abortController = new AbortController();
 	const completion = createAutoCompactionCompletion();
+	let fromExtension = false;
 	const relayAbort = () => abortController.abort();
 	signal?.addEventListener("abort", relayAbort, { once: true });
 	if (signal?.aborted) abortController.abort();
@@ -69,6 +70,9 @@ export async function _preflightPostToolContext(
 			abortController,
 			backupLabel: "auto-compact",
 			reason: "threshold",
+			onCompactionSource: (value) => {
+				fromExtension = value;
+			},
 			// A mid-turn planner failure must reach the fresh rung so the active
 			// turn can continue. `_applyVerbatimCompaction` still treats a fitting
 			// no-preparation threshold crossing as a safe no-op.
@@ -124,7 +128,7 @@ export async function _preflightPostToolContext(
 			...(aborted ? {} : { errorMessage }),
 			aborted,
 			willRetry: false,
-			fromExtension: false,
+			fromExtension,
 		});
 		throw new Error(errorMessage, { cause: error });
 	} finally {

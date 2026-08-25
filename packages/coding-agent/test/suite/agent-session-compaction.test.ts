@@ -206,4 +206,46 @@ describe("session_compact_failed", () => {
 			},
 		]);
 	});
+
+	it("reports extension-provided text as the post-tool compaction source when persistence fails", async () => {
+		const failed = captureCompactFailedEvents();
+		harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
+				},
+				...failed.extensionFactories,
+			],
+			models: [{ id: "faux-1", contextWindow: 100, maxTokens: 20 }],
+			settings: { compaction: { enabled: true, reserveTokens: 10, preserve_recent: 2 } },
+		});
+		for (let index = 0; index < 10; index++) {
+			harness.sessionManager.appendMessage({
+				role: "user",
+				content: `transcript ${index} ${"x".repeat(100)}`,
+				timestamp: Date.now() + index,
+			});
+		}
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+		vi.spyOn(harness.sessionManager, "writeBackupSnapshot").mockImplementation(() => {
+			throw new Error("backup failed");
+		});
+
+		await expect(
+			harness.session._preflightPostToolContext([
+				{ role: "user", content: "x".repeat(500), timestamp: Date.now() + 100 },
+			]),
+		).rejects.toThrow("Post-tool context compaction failed before the next provider request: backup failed");
+
+		expect(failed.events).toEqual([
+			{
+				type: "session_compact_failed",
+				reason: "threshold",
+				errorMessage: "Post-tool context compaction failed before the next provider request: backup failed",
+				aborted: false,
+				willRetry: false,
+				fromExtension: true,
+			},
+		]);
+	});
 });
