@@ -186,7 +186,7 @@ describe("foreground intercom detach routing", () => {
 			gate.release();
 			for (let i = 0; i < 30 && recovered.length === 0; i++) await sleep(20);
 			assert.equal(recovered.length, 1);
-			assert.equal(recovered[0]?.status, "error");
+			assert.equal(recovered[0]?.status, "interrupted");
 			assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
 		});
 	});
@@ -210,7 +210,7 @@ describe("foreground intercom detach routing", () => {
 			controller.abort();
 			gate.release();
 			const result = await pending;
-			assert.equal(result.status, "error");
+			assert.equal(result.status, "interrupted");
 			assert.equal(result.detached, undefined);
 			assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
 		});

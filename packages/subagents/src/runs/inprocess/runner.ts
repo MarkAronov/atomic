@@ -45,6 +45,11 @@ import {
 	type MaxOutputConfig,
 	truncateOutput,
 } from "../../shared/types.js";
+import {
+	lastNonEmptyAssistantText,
+	PARENT_CANCEL_CAUSE,
+	recoverCancelledChildOutput,
+} from "../shared/cancellation-recovery.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 
@@ -79,6 +84,12 @@ export interface TestSessionOptions {
 	readonly sessionThinkingLevel?: string;
 	/** Test-only session events emitted in order after the initial agent_start event. */
 	readonly events?: readonly AgentSessionEvent[];
+	/** Seed an earlier assistant message so abort recovery can find real text. */
+	readonly seededAssistantText?: string;
+	/** After abort, append a thinking-only aborted message with no text. */
+	readonly thinkingOnlyOnAbort?: boolean;
+	/** Emit the fallback event before the prompt gate so abort can preserve live fallback metadata. */
+	readonly fallbackBeforeGate?: boolean;
 }
 
 export interface ChildSpec {
@@ -105,8 +116,13 @@ export interface ChildSpec {
 	 * candidate-advancement behavior main chat and workflow stages share.
 	 */
 	readonly fallbackModels?: readonly string[];
-	/** Live progress callback for the parent's tool-result rendering. */
 	readonly onProgress?: (progress: AgentProgress) => void;
+	/** Run-scoped progress.md path used to recover partial findings after parent abort. */
+	readonly progressPath?: string;
+	/** Persisted progress.md path to cite after parent cancellation. */
+	readonly progressArtifactPath?: string;
+	/** Persisted output artifact path to cite after parent cancellation. */
+	readonly outputArtifactPath?: string;
 }
 
 export interface ChildPolicy extends ChildModePolicy {
@@ -199,12 +215,14 @@ export type AttemptOutcome = (
 	  }
 	| {
 			readonly status: "interrupted";
+			readonly cause?: string;
 			readonly stats: AttemptStats;
 			readonly path: string;
 			readonly envelope: string;
 			readonly sessionFile?: string;
 			readonly model?: string;
 			readonly thinking?: string;
+			readonly attemptedModels?: readonly string[];
 	  }
 	| {
 			readonly status: "continued";
@@ -364,6 +382,11 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	let lastAssistantText = "";
 	let aborted = false;
 	let settlePromptAbort: (() => void) | undefined;
+	const messages: Array<{
+		role: string;
+		content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }>;
+		stopReason?: string;
+	}> = [];
 	const promptAbort = new Promise<"aborted">((resolve, reject) => {
 		settlePromptAbort = () => {
 			if (testOptions.abortResolvesPrompt) resolve("aborted");
@@ -374,10 +397,35 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	let assistantMessages = 0;
 	const zeroTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 	const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	const appendAssistant = (
+		content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }>,
+		stopReason: "stop" | "aborted",
+	): void => {
+		messages.push({ role: "assistant", content, stopReason });
+		sessionManager.appendMessage({
+			role: "assistant",
+			content,
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5.4",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: zeroCost,
+			},
+			stopReason,
+			timestamp: Date.now(),
+		});
+		assistantMessages += 1;
+	};
 	return {
 		sessionFile: sessionManager.getSessionFile(),
 		model: sessionModel,
 		thinkingLevel: testOptions.sessionThinkingLevel,
+		messages,
 		abort: async () => {
 			aborted = true;
 			settlePromptAbort?.();
@@ -387,22 +435,8 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			return () => listeners.delete(listener);
 		},
 		prompt: async (text: string) => {
-			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
-			if (aborted) throw new Error("aborted");
-			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
-			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-			userMessages += 1;
-			if (testOptions.promptGate) {
-				const gateResult = await Promise.race([
-					testOptions.promptGate.then(() => "released" as const),
-					promptAbort,
-				]);
-				if (gateResult === "aborted") return "";
-			}
-			for (const event of testOptions.events ?? []) {
-				for (const listener of listeners) listener(event);
-			}
-			if (testOptions.fallbackModel) {
+			const emitFallback = (): void => {
+				if (!testOptions.fallbackModel) return;
 				for (const listener of listeners) {
 					listener({
 						type: "model_fallback_start",
@@ -424,29 +458,52 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 						args: {},
 					} as AgentSessionEvent);
 				}
+			};
+			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
+			if (aborted) throw new Error("aborted");
+			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
+			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			userMessages += 1;
+			if (testOptions.seededAssistantText) {
+				lastAssistantText = testOptions.seededAssistantText;
+				appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
 			}
+			if (testOptions.fallbackBeforeGate) emitFallback();
+			if (testOptions.promptGate) {
+				const gateResult = await Promise.race([
+					testOptions.promptGate.then(() => "released" as const),
+					promptAbort,
+				]);
+				if (gateResult === "aborted") {
+					if (testOptions.thinkingOnlyOnAbort) {
+						lastAssistantText = "";
+						appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
+					}
+					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
+					return "";
+				}
+			}
+			for (const event of testOptions.events ?? []) {
+				for (const listener of listeners) listener(event);
+			}
+			if (!testOptions.fallbackBeforeGate) emitFallback();
 			lastAssistantText = testOptions.output ?? "done";
-			sessionManager.appendMessage({
-				role: "assistant",
-				content: [{ type: "text", text: lastAssistantText }],
-				api: "openai-responses",
-				provider: "openai",
-				model: "gpt-5.4",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: zeroCost,
-				},
-				stopReason: "stop",
-				timestamp: Date.now(),
-			});
-			assistantMessages += 1;
+			appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
 			return lastAssistantText;
 		},
-		getLastAssistantText: () => lastAssistantText,
+		getLastAssistantText: () => {
+			const lastAssistant = [...messages].reverse().find((message) => {
+				if (message.role !== "assistant") return false;
+				if (message.stopReason === "aborted" && message.content.length === 0) return false;
+				return true;
+			});
+			if (!lastAssistant) return lastAssistantText || undefined;
+			let text = "";
+			for (const content of lastAssistant.content) {
+				if (content.type === "text") text += content.text ?? "";
+			}
+			return text.trim() || undefined;
+		},
 		getSessionStats: () => ({
 			sessionFile: sessionManager.getSessionFile(),
 			sessionId: sessionManager.getSessionId(),
@@ -496,6 +553,26 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 
 function outputFor(session: AgentSession | undefined): string {
 	return session?.getLastAssistantText() ?? "";
+}
+
+function cancelledEnvelope(session: AgentSession | undefined, spec: ChildSpec, stats: AttemptStats): string {
+	return recoverCancelledChildOutput({
+		progressPath: spec.progressPath,
+		assistantText: lastNonEmptyAssistantText(
+			session?.messages as Parameters<typeof lastNonEmptyAssistantText>[0],
+			outputFor(session),
+		),
+		toolCount: stats.toolCalls,
+		sessionPath: session?.sessionFile ?? spec.sessionFile,
+		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
+		...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
+	}).text;
+}
+
+function attemptStatus(termination: TerminationCauseName | undefined): "ok" | "error" | "interrupted" {
+	if (termination === "interrupt" || termination === PARENT_CANCEL_CAUSE) return "interrupted";
+	if (termination) return "error";
+	return "ok";
 }
 
 function boundedEnvelope(output: string, artifactPath?: string, maxOutput?: MaxOutputConfig): string {
@@ -754,26 +831,31 @@ export class SubagentControlRuntime {
 			const waitResult = await waitForExecutionCapacity(retryDelayMs, signals);
 			if (waitResult !== "retry") {
 				const stats = { ...EMPTY_STATS, sessionId: admitted.identity.path };
-				const status = waitResult === "interrupt" ? "interrupted" : "error";
-				this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
-				return status === "interrupted"
-					? {
-							status,
-							stats,
-							path: admitted.identity.path,
-							envelope: INTERRUPTED_ENVELOPE,
-							...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
-							...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-						}
-					: {
-							status,
-							cause: waitResult,
-							stats,
-							path: admitted.identity.path,
-							envelope: boundedEnvelope(waitResult),
-							...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
-							...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-						};
+				if (waitResult === "interrupt" || waitResult === PARENT_CANCEL_CAUSE) {
+					this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
+					return {
+						status: "interrupted",
+						...(waitResult === PARENT_CANCEL_CAUSE ? { cause: PARENT_CANCEL_CAUSE } : {}),
+						stats,
+						path: admitted.identity.path,
+						envelope:
+							waitResult === PARENT_CANCEL_CAUSE
+								? cancelledEnvelope(undefined, admitted.spec, stats)
+								: INTERRUPTED_ENVELOPE,
+						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+					};
+				}
+				this.native.publishChildStatus(admitted.identity.path, nativeStatus("error"));
+				return {
+					status: "error",
+					cause: waitResult,
+					stats,
+					path: admitted.identity.path,
+					envelope: boundedEnvelope(waitResult),
+					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+				};
 			}
 			retryDelayMs = Math.min(retryDelayMs * 2, CAPACITY_RETRY_MAX_DELAY_MS);
 		}
@@ -959,7 +1041,7 @@ export class SubagentControlRuntime {
 					}
 				}
 				if (emission !== "none") emitProgress(emission === "force");
-				if (event.type === "model_fallback_start") {
+				if (event.type === "model_fallback_start" && !signals.abort.aborted) {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
 					progressState.model = event.to;
@@ -980,18 +1062,32 @@ export class SubagentControlRuntime {
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
 			const output = outputFor(session);
-			const status: "ok" | "error" | "interrupted" =
-				termination === "interrupt" ? "interrupted" : termination ? "error" : "ok";
+			const status = attemptStatus(termination);
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
 			const envelope =
-				status === "interrupted"
-					? INTERRUPTED_ENVELOPE
-					: boundedEnvelope(output || termination || "(no output)", undefined);
+				termination === PARENT_CANCEL_CAUSE
+					? cancelledEnvelope(session, admitted.spec, stats)
+					: status === "interrupted"
+						? INTERRUPTED_ENVELOPE
+						: boundedEnvelope(output || termination || "(no output)", undefined);
 			if (status === "ok")
 				return {
 					status,
 					output,
+					stats,
+					path: admitted.identity.path,
+					envelope,
+					sessionFile,
+					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+					...skillReport,
+				};
+			if (status === "interrupted")
+				return {
+					status,
+					...(termination === PARENT_CANCEL_CAUSE ? { cause: PARENT_CANCEL_CAUSE } : {}),
 					stats,
 					path: admitted.identity.path,
 					envelope,
@@ -1010,42 +1106,47 @@ export class SubagentControlRuntime {
 				sessionFile,
 				...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-				...(status === "error" && attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+				...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 				...skillReport,
 			};
 		} catch (error) {
 			const stats = statsFor(session, admitted.identity.path);
 			const cause = error instanceof Error ? error.message : String(error);
-			const status: "interrupted" | "error" = termination === "interrupt" ? "interrupted" : "error";
+			const status = attemptStatus(termination) === "interrupted" ? "interrupted" : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			try {
 				this.native.finishChildAttempt(token, nativeStatus(status));
 			} catch {
 				// Preserve the original failure when Rust already stamped termination.
 			}
-			return status === "interrupted"
-				? {
-						status,
-						stats,
-						path: admitted.identity.path,
-						envelope: INTERRUPTED_ENVELOPE,
-						sessionFile: session?.sessionFile,
-						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
-						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-						...skillReport,
-					}
-				: {
-						status,
-						cause,
-						stats,
-						path: admitted.identity.path,
-						envelope: boundedEnvelope(cause),
-						sessionFile: session?.sessionFile,
-						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
-						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-						...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
-						...skillReport,
-					};
+			if (status === "interrupted")
+				return {
+					status,
+					...(termination === PARENT_CANCEL_CAUSE ? { cause: PARENT_CANCEL_CAUSE } : {}),
+					stats,
+					path: admitted.identity.path,
+					envelope:
+						termination === PARENT_CANCEL_CAUSE
+							? cancelledEnvelope(session, admitted.spec, stats)
+							: INTERRUPTED_ENVELOPE,
+					sessionFile: session?.sessionFile,
+					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+					...skillReport,
+				};
+			return {
+				status,
+				cause,
+				stats,
+				path: admitted.identity.path,
+				envelope: boundedEnvelope(cause),
+				sessionFile: session?.sessionFile,
+				...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+				...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+				...skillReport,
+			};
 		} finally {
 			signals.abort.removeEventListener("abort", abortListener);
 			signals.interrupt.removeEventListener("abort", interruptListener);
