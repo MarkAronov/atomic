@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "vitest";
-import type { ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
+import type { ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 
 // Observed live (atomic-remote bridge e2e, atomic 0.9.15): a `/workflow <name>`
 // injected right after `/workflow reload` resolved the name against the
