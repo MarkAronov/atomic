@@ -146,7 +146,7 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 				index,
 			})),
 		});
-		assert.equal(payload.status, "interrupted");
+		assert.equal(payload.status, "cancelled");
 		assert.match(payload.summary, /cancelled/);
 		assert.doesNotMatch(payload.summary, /failed/);
 		assert.match(payload.message, /^Status: cancelled$/m);
@@ -243,7 +243,6 @@ test("parallel executor fall-through reports cancelled children instead of inter
 		removeTempDirectory(root);
 	}
 });
-
 test("a mixed interrupt and parent-cancelled parallel set keeps recovered cancelled findings", async () => {
 	const root = makeTempDirectory("atomic-cancel-parallel-mixed-");
 	clearSubagentControls();
@@ -398,14 +397,17 @@ test("parent receipts label cancelled children instead of failed", () => {
 				cause: "abort",
 				summary: "Run cancelled by parent.",
 				index: 0,
-				artifactPath: "/tmp/out.md",
-				sessionPath: "/tmp/session.jsonl",
+				artifactPath: join(makeTempDirectory("atomic-cancel-receipt-"), "out.md"),
+				sessionPath: join(makeTempDirectory("atomic-cancel-receipt-"), "session.jsonl"),
 			},
+			{ agent: "worker", status: "completed", summary: "done", artifactPath: "/no/out", sessionPath: "/no/sess" },
 		],
 	});
 	const receipt = formatSubagentResultReceipt({ mode: "parallel", runId: "cancel-receipt", payload });
-	const labelled = /cancelled/.test(receipt) && !/failed/.test(receipt);
-	assert.ok(labelled && /out\.md/.test(receipt) && /session\.jsonl/.test(receipt));
+	assert.match(receipt, /cancelled/);
+	assert.doesNotMatch(receipt, /failed/);
+	assert.match(receipt, /Artifacts:[\s\S]*worker \[completed\]: \/no\/out[\s\S]*Sessions:/);
+	assert.doesNotMatch(receipt, /analysis \[cancelled\]:/);
 });
 test("a populated shared parallel progress.md is recovered once on the first progress child", async () => {
 	const root = makeTempDirectory("atomic-cancel-parallel-progress-");
@@ -462,7 +464,7 @@ test("a populated shared parallel progress.md is recovered once on the first pro
 test("parallel executor attributes shared progress.md only to the first progress-enabled child", async () => {
 	const root = makeTempDirectory("atomic-cancel-parallel-progress-path-");
 	clearSubagentControls();
-	const progressPaths: Array<string | undefined> = [];
+	const captured: Array<{ path?: string; task: string }> = [];
 	try {
 		const state: SubagentState = {
 			baseCwd: root,
@@ -486,12 +488,12 @@ test("parallel executor attributes shared progress.md only to the first progress
 			discoverAgents: () => ({ agents: [{ ...sampleAgent(), defaultProgress: true }] }),
 			runtime: {
 				runSync: async (_cwd, _agents, agentName, task, options) => {
-					progressPaths.push(options.progressPath);
+					captured.push({ path: options.progressPath, task });
 					return cancelledExecutorResult(agentName, task);
 				},
 			},
 		});
-		await execute.execute(
+		const result = await execute.execute(
 			"cancel-parallel-progress-path",
 			{
 				tasks: [
@@ -504,9 +506,10 @@ test("parallel executor attributes shared progress.md only to the first progress
 			undefined,
 			executorContext(root),
 		);
-		assert.equal(progressPaths.length, 2);
-		assert.equal(progressPaths[0], join(root, "progress.md"));
-		assert.equal(progressPaths[1], undefined);
+		assert.ok(!result.isError && captured.length === 2);
+		assert.equal(captured[0]?.path, undefined);
+		assert.equal(captured[1]?.path, undefined);
+		assert.ok(captured.every((row) => /Update progress at:/.test(row.task)));
 	} finally {
 		clearSubagentControls();
 		removeTempDirectory(root);
@@ -537,13 +540,12 @@ test("artifacts-disabled parallel cancel cites the surviving shared progress.md"
 			expandTilde: (value) => value,
 			discoverAgents: () => ({ agents: [{ ...sampleAgent(), defaultProgress: true }] }),
 			runtime: {
-				runSync: async (_cwd, _agents, agentName, task, options) => {
-					if (options.progressPath) {
-						writeTextSync(options.progressPath, "# Progress\n\n- Shared parallel finding\n");
-					}
+				runSync: async (_cwd, _agents, agentName, task) => {
+					const progressPath = join(_cwd, "progress.md");
+					writeTextSync(progressPath, "# Progress\n\n- Shared parallel finding\n");
 					const recovered = recoverCancelledChildOutput({
-						progressPath: options.progressPath,
-						progressArtifactPath: options.progressArtifactPath,
+						progressPath,
+						progressArtifactPath: progressPath,
 						toolCount: 4,
 					});
 					return {
@@ -586,7 +588,7 @@ test("artifacts-disabled parallel cancel cites the surviving shared progress.md"
 		removeTempDirectory(root);
 	}
 });
-test("parallel cancel does not cite an untouched progress.md template", async () => {
+test("parallel cancel cites a precreated progress.md only because the file exists", async () => {
 	const root = makeTempDirectory("atomic-cancel-parallel-progress-missing-");
 	clearSubagentControls();
 	try {
@@ -611,10 +613,11 @@ test("parallel cancel does not cite an untouched progress.md template", async ()
 			expandTilde: (value) => value,
 			discoverAgents: () => ({ agents: [{ ...sampleAgent(), defaultProgress: true }] }),
 			runtime: {
-				runSync: async (_cwd, _agents, agentName, task, options) => {
+				runSync: async (_cwd, _agents, agentName, task) => {
+					const progressPath = join(_cwd, "progress.md");
 					const recovered = recoverCancelledChildOutput({
-						progressPath: options.progressPath,
-						progressArtifactPath: options.progressArtifactPath,
+						progressPath,
+						progressArtifactPath: progressPath,
 					});
 					return {
 						...cancelledExecutorResult(agentName, task),
@@ -642,7 +645,8 @@ test("parallel cancel does not cite an untouched progress.md template", async ()
 			.map((item) => item.text)
 			.join("\n");
 		assert.match(text, /Run cancelled by parent/);
-		assert.doesNotMatch(text, /Progress: /);
+		assert.match(text, /Progress: /);
+		assert.doesNotMatch(text, /Partial findings from progress\.md/);
 	} finally {
 		clearSubagentControls();
 		removeTempDirectory(root);
