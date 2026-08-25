@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
@@ -16,6 +16,21 @@ import { DEFAULT_ARTIFACT_CONFIG } from "../../packages/subagents/src/shared/typ
 import { compactForegroundDetails } from "../../packages/subagents/src/shared/utils.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.ts";
 import { sleep } from "../helpers/runtime.ts";
+
+function abortSession(root: string, gate: Promise<void>) {
+	return {
+		output: "must not complete",
+		promptGate: gate,
+		abortResolvesPrompt: true as const,
+		promptLogPath: join(root, "prompt.log"),
+	};
+}
+
+async function waitForPrompt(root: string): Promise<void> {
+	const promptLogPath = join(root, "prompt.log");
+	for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
+	assert.equal(existsSync(promptLogPath), true, "child prompt should start before abort");
+}
 
 function sampleAgent(): AgentConfig {
 	return {
@@ -181,9 +196,9 @@ test("parent abort is an interrupted cancellation, not a failed error", async ()
 			runId: "cancel-status-parent",
 			sessionDir: join(root, "sessions"),
 			signal: controller.signal,
-			testSession: { output: "must not complete", promptGate: gate.promise, abortResolvesPrompt: true },
+			testSession: abortSession(root, gate.promise),
 		});
-		await sleep(25);
+		await waitForPrompt(root);
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
@@ -215,9 +230,9 @@ test("ordinary user interrupt still reports progress as failed", async () => {
 			runId: "cancel-user-interrupt",
 			sessionDir: join(root, "sessions"),
 			interruptSignal: controller.signal,
-			testSession: { output: "must not complete", promptGate: gate.promise, abortResolvesPrompt: true },
+			testSession: abortSession(root, gate.promise),
 		});
-		await sleep(25);
+		await waitForPrompt(root);
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
@@ -244,14 +259,12 @@ test("a thinking-only aborted final message recovers earlier assistant text", as
 			sessionDir: join(root, "sessions"),
 			signal: controller.signal,
 			testSession: {
-				output: "must not complete",
-				promptGate: gate.promise,
-				abortResolvesPrompt: true,
+				...abortSession(root, gate.promise),
 				seededAssistantText: "Found the retry loop in runner.ts.",
 				thinkingOnlyOnAbort: true,
 			},
 		});
-		await sleep(25);
+		await waitForPrompt(root);
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
@@ -281,13 +294,11 @@ test("a populated run-scoped progress.md wins over earlier assistant text", asyn
 			signal: controller.signal,
 			progressPath,
 			testSession: {
-				output: "must not complete",
-				promptGate: gate.promise,
-				abortResolvesPrompt: true,
+				...abortSession(root, gate.promise),
 				seededAssistantText: "older assistant note",
 			},
 		});
-		await sleep(25);
+		await waitForPrompt(root);
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
@@ -322,9 +333,7 @@ test("parent abort keeps pre-cancel fallback metadata and does not start another
 					if (update.details?.results[0]?.model === "provider/fallback") sawFallback.resolve();
 				},
 				testSession: {
-					output: "must not complete",
-					promptGate: gate.promise,
-					abortResolvesPrompt: true,
+					...abortSession(root, gate.promise),
 					fallbackModel: "provider/fallback",
 					fallbackBeforeGate: true,
 					sessionModel: "provider/primary",
@@ -377,15 +386,13 @@ test("parent abort before any fallback does not emit a fallback model", async ()
 				sessionDir: join(root, "sessions"),
 				signal: controller.signal,
 				testSession: {
-					output: "must not complete",
-					promptGate: gate.promise,
-					abortResolvesPrompt: true,
+					...abortSession(root, gate.promise),
 					fallbackModel: "provider/fallback",
 					sessionModel: "provider/primary",
 				},
 			},
 		);
-		await sleep(25);
+		await waitForPrompt(root);
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
@@ -417,9 +424,9 @@ test("parent abort without findings cites persisted output and progress artifact
 			progressPath,
 			artifactsDir,
 			artifactConfig: DEFAULT_ARTIFACT_CONFIG,
-			testSession: { output: "must not complete", promptGate: gate.promise, abortResolvesPrompt: true },
+			testSession: abortSession(root, gate.promise),
 		});
-		await sleep(25);
+		await waitForPrompt(root);
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
