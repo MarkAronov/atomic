@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -8,6 +9,7 @@ import {
 	ModelSelectorComponent,
 	resolveModelScopeFromModels,
 	ScopedModelsSelectorComponent,
+	ThinkingSelectorComponent,
 	UserMessageSelectorComponent,
 } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
@@ -134,9 +136,9 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.settingsManager,
 			this.session.modelRuntime,
 			this.session.scopedModels,
-			async (model) => {
+			async (model, persist) => {
 				try {
-					await this.session.setModel(model);
+					await this.session.setModel(model, { persist });
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 					done();
@@ -334,5 +336,49 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 			initialSelectedId,
 		);
 		return { component: selector, focus: selector.getMessageList() };
+	});
+};
+
+InteractiveModeBase.prototype.handleThinkingCommand = function (this: InteractiveModeBase, searchTerm?: string): void {
+	if (!searchTerm) {
+		this.showThinkingSelector();
+		return;
+	}
+	const levels = this.session.getAvailableThinkingLevels();
+	const normalized = searchTerm.trim().toLowerCase();
+	const level = levels.find((candidate) => candidate === normalized);
+	if (!level) {
+		this.showError(`Unknown thinking level "${searchTerm}". Available levels: ${levels.join(", ")}.`);
+		return;
+	}
+	this.selectThinkingLevel(level, false);
+};
+
+InteractiveModeBase.prototype.selectThinkingLevel = function (
+	this: InteractiveModeBase,
+	level: ThinkingLevel,
+	persist: boolean,
+): void {
+	this.session.setThinkingLevel(level, { persist });
+	this.footer.invalidate();
+	this.updateEditorBorderColor();
+	this.showStatus(persist ? `Default thinking level: ${level}` : `Thinking level: ${level}`);
+};
+
+InteractiveModeBase.prototype.showThinkingSelector = function (this: InteractiveModeBase): void {
+	this.showSelector((done) => {
+		const select = (level: ThinkingLevel, persist: boolean) => {
+			this.selectThinkingLevel(level, persist);
+			done();
+		};
+		const selector = new ThinkingSelectorComponent(
+			this.session.thinkingLevel,
+			this.session.getAvailableThinkingLevels(),
+			(level) => select(level, false),
+			() => done(),
+			(level) => select(level, true),
+			this.settingsManager.getDefaultThinkingLevel(),
+		);
+		return { component: selector, focus: selector };
 	});
 };
