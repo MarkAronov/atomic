@@ -112,13 +112,18 @@ export function isReplayTopologyMismatchFailure(
 ): boolean {
 	const message =
 		result?.error ?? (error instanceof Error ? error.message : error === undefined ? undefined : String(error));
-	return typeof message === "string" && message.includes("insufficient_state: replay topology mismatch");
+	return (
+		typeof message === "string" &&
+		(message.includes("insufficient_state: replay topology mismatch") ||
+			message.includes("insufficient_state: replay topology ambiguous"))
+	);
 }
 
 /**
- * A fail-closed mismatch puts the reserved snapshot back so the same session
- * can retry. If restore wins the race with the local kill, the kill is skipped.
- * Other settlements leave the local kill in place. Errors stay inside this callback.
+ * A fail-closed replay topology failure puts the reserved snapshot back so the
+ * same session can retry. If restore wins the race with the local kill, the
+ * kill is skipped. Other settlements leave the local kill in place. Errors stay
+ * inside this callback.
  */
 export function finalizeActiveBlockedSourceAfterContinuation(input: {
 	readonly source: RunSnapshot;

@@ -84,7 +84,7 @@ test("raised-budget continuation replays tool-parented parallel tasks", async ()
 	const completed2Prompted = Promise.withResolvers<void>();
 	const incompleteSourceGate = Promise.withResolvers<void>();
 	const incompleteSourceSettled = Promise.withResolvers<void>();
-	let rejectIncompleteSource: ((reason?: unknown) => void) | undefined;
+	let rejectIncompleteSource: ((reason: Error) => void) | undefined;
 	const taskCalls = new Map<string, number>();
 	let toolCalls = 0;
 	const definition = workflow({
@@ -297,8 +297,9 @@ test("chained continuation replays a topology-less source tool once", async () =
 		name: seeded.name,
 		argsHash: seeded.argsHash,
 		output: seeded.output,
-		completedAt: Date.now(),
+		completedAt: seeded.completedAt + 1,
 	});
+	assert.equal(backend.getToolCheckpoint(live.id, seeded.argsHash)?.checkpointId, "tool:legacy-stripped");
 	const midStore = createStore();
 	const mid = await run(
 		definition,
@@ -316,6 +317,7 @@ test("chained continuation replays a topology-less source tool once", async () =
 	assert.equal(toolCalls, 1);
 	const midSnap = midStore.runs().find((candidate) => candidate.id === mid.runId);
 	assert.ok(midSnap);
+	assert.equal(midSnap.toolNodes?.[0]?.topologyState, "unavailable");
 	const last = await run(
 		definition,
 		{},
