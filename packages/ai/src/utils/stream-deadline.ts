@@ -14,7 +14,7 @@
  * that {@link isRetryableAssistantError} classifies as retryable.
  */
 
-import { combineAbortSignals, type CombinedAbortSignal } from "./abort-signals.ts";
+import { type CombinedAbortSignal, combineAbortSignals } from "./abort-signals.ts";
 
 /**
  * Default idle gap allowed between two provider stream events, in milliseconds.

@@ -21,7 +21,6 @@ import type {
 	Usage,
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
-import { createStreamDeadline, withStreamDeadline, type StreamDeadlineHandle } from "../utils/stream-deadline.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import {
 	appendAssistantMessageDiagnostic,
@@ -33,6 +32,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
@@ -254,7 +254,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			timestamp: Date.now(),
 		};
 
-		let streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
 		try {
 			const apiKey = options?.apiKey;
