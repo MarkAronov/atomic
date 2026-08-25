@@ -12,6 +12,7 @@ import {
 	fs,
 	getChangelogPath,
 	getShareViewerUrl,
+	hyperlink,
 	Markdown,
 	MissingSessionCwdError,
 	normalizeChangelogLinks,
@@ -312,7 +313,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 
 		// Create the preview URL
 		const previewUrl = getShareViewerUrl(gistId);
-		this.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
+		this.showStatus(`Share URL: ${hyperlink(previewUrl, previewUrl)}\nGist: ${hyperlink(gistUrl, gistUrl)}`);
 	} catch (error: unknown) {
 		if (!loader.signal.aborted) {
 			restoreEditor();
