@@ -138,17 +138,31 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	const encodedTag = encodeURIComponent(tag);
 	const sourceRoot = join(workspace, `payload-${encodedTag}-${asset}`);
 	const payload = join(sourceRoot, "atomic");
+	const directories = [
+		sourceRoot,
+		payload,
+		join(payload, "builtin"),
+		join(payload, "node_modules"),
+		join(payload, "node_modules", "fixture"),
+	];
 	mkdirSync(join(payload, "builtin"), { recursive: true });
 	mkdirSync(join(payload, "node_modules", "fixture"), { recursive: true });
+	for (const directory of directories) chmodSync(directory, 0o755);
 	writeExecutable(
 		join(payload, "atomic"),
 		`#!/bin/sh\nversion='${tag}'\nif [ "\${ATOMIC_FIXTURE_FAIL_STAGED_VERSION:-}" = "$version" ]; then exit 17; fi\ncase "$0" in\n  *atomic-install.*) ;;\n  *) if [ "\${ATOMIC_FIXTURE_FAIL_FINAL_VERSION:-}" = "$version" ]; then exit 23; fi ;;\nesac\nif [ "\${1:-}" = --version ]; then printf '%s\\n' "$version"; exit 0; fi\nprintf '%s\\n' "$version:$*"\n`,
 	);
-	writeFileSync(join(payload, "package.json"), JSON.stringify({ name: "@bastani/atomic", version: tag }));
-	writeFileSync(join(payload, "app.js"), `fixture-${tag}`);
-	writeFileSync(join(payload, "builtin", "payload.txt"), `builtin-${tag}`);
-	writeFileSync(join(payload, "node_modules", "fixture", "payload.txt"), `modules-${tag}`);
-	writeFileSync(join(payload, "asset.txt"), asset);
+	const regularFiles = [
+		[join(payload, "package.json"), JSON.stringify({ name: "@bastani/atomic", version: tag })],
+		[join(payload, "app.js"), `fixture-${tag}`],
+		[join(payload, "builtin", "payload.txt"), `builtin-${tag}`],
+		[join(payload, "node_modules", "fixture", "payload.txt"), `modules-${tag}`],
+		[join(payload, "asset.txt"), asset],
+	] as const;
+	for (const [file, content] of regularFiles) {
+		writeFileSync(file, content);
+		chmodSync(file, 0o644);
+	}
 
 	const archive = join(workspace, `${encodedTag}-${asset}`);
 	const result = spawnSyncCollect([resolveExecutable("tar"), "-czf", archive, "-C", sourceRoot, "atomic"]);
@@ -157,6 +171,28 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	rmSync(sourceRoot, { recursive: true, force: true });
 	return { path: archive, checksum };
 }
+
+unixTest("fixture release archives pin payload modes independent of the ambient umask", () => {
+	const workspace = mkdtempSync(join(tmpdir(), "atomic-sh-archive-modes-"));
+	try {
+		const archive = createArchive(workspace, "1.0.0", "atomic-linux-x64.tar.gz");
+		const listing = spawnSyncCollect([resolveExecutable("tar"), "-tvzf", archive.path]);
+		assert.equal(listing.exitCode, 0, listing.stderr.toString());
+		const rows = listing.stdout.toString().split("\n");
+		for (const [member, mode] of [
+			["atomic/", "drwxr-xr-x"],
+			["atomic/builtin/", "drwxr-xr-x"],
+			["atomic/package.json", "-rw-r--r--"],
+			["atomic/atomic", "-rwxr-xr-x"],
+		] as const) {
+			const row = rows.find((candidate) => candidate.trimEnd().endsWith(` ${member}`));
+			assert.ok(row, `missing archive member ${member}`);
+			assert.equal(row.slice(0, 10), mode, member);
+		}
+	} finally {
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
 
 function addRelease(fixture: InstallerFixture, tag: string): FixtureRelease {
 	const assets = new Map<string, string>();
