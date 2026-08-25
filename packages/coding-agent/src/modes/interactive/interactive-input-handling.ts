@@ -298,6 +298,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			}
 			if (text === "/thinking" || text.startsWith("/thinking ")) {
 				this.editor.setText("");
+				await this.ensureDeferredStartupComplete();
 				this.handleThinkingCommand(text.startsWith("/thinking ") ? text.slice(10).trim() : undefined);
 				return;
 			}
