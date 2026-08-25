@@ -338,7 +338,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	};
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
 	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
-	const replayIndex = createContinuationReplayIndex(opts.continuation);
+	const sourceToContinuationNodeIds = new Map<string, string>();
+	const replayIndex = createContinuationReplayIndex(opts.continuation, sourceToContinuationNodeIds);
 	const scheduler = createStageScheduler({
 		runId,
 		runSnapshot,
@@ -363,7 +364,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const checkpointIdGenerator = createCheckpointIdGenerator();
 	const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
 	const completedStageReplayKeys = new Map<string, string>();
-	const sourceToReplayedNodeIds = new Map<string, string>();
 	const durableStageDeps = createDurableStageDeps({
 		backend: durableBackend,
 		run: runSnapshot,
@@ -506,6 +506,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	});
 	const { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation } = createTrackedToolPrimitive({
 		workflowId: runId,
+		...(opts.continuation === undefined ? {} : { checkpointSourceWorkflowId: opts.continuation.source.id }),
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
 		controller: ownController,
@@ -513,7 +514,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		store: activeStore,
 		tracker,
 		run: runSnapshot,
-		sourceToReplayedNodeIds,
+		sourceToContinuationNodeIds,
 		toolControls,
 		toolAdmission,
 		budget,
@@ -579,7 +580,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		backend: durableBackend,
 		rootBackend,
 		completedStageReplayKeys,
-		sourceToReplayedNodeIds,
+		sourceToReplayedNodeIds: sourceToContinuationNodeIds,
 	});
 	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
 	const durableTask = createDurableTaskPrimitive({
