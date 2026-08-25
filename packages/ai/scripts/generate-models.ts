@@ -1665,9 +1665,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		const cloudflareGatewayWorkersAiModelIds = new Set<string>();
+
 		// Process Cloudflare AI Gateway models
 		if (data["cloudflare-ai-gateway"]?.models) {
 			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
+				if (prefixedId.startsWith("workers-ai/")) cloudflareGatewayWorkersAiModelIds.add(prefixedId);
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1717,6 +1720,37 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 					...(compat ? { compat } : {}),
+				});
+				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
+			}
+		}
+
+		// Cloudflare's gateway accepts every Workers AI model through its compatibility endpoint even when
+		// models.dev temporarily omits the corresponding workers-ai/* gateway entries.
+		if (data["cloudflare-workers-ai"]?.models) {
+			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
+				const id = `workers-ai/${modelId}`;
+				if (cloudflareGatewayWorkersAiModelIds.has(id)) continue;
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id,
+					name: m.name || id,
+					api: "openai-completions",
+					provider: "cloudflare-ai-gateway",
+					baseUrl: CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: { sendSessionAffinityHeaders: true },
 				});
 				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
 			}
