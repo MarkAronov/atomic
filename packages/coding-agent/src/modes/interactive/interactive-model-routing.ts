@@ -371,13 +371,19 @@ InteractiveModeBase.prototype.showThinkingSelector = function (this: Interactive
 			this.selectThinkingLevel(level, persist);
 			done();
 		};
+		const model = this.session.model;
+		const modelDefault =
+			model === undefined
+				? this.settingsManager.getDefaultThinkingLevel()
+				: (this.settingsManager.getModelThinkingLevel(model.provider, model.id) ??
+					this.settingsManager.getDefaultThinkingLevel());
 		const selector = new ThinkingSelectorComponent(
 			this.session.thinkingLevel,
 			this.session.getAvailableThinkingLevels(),
 			(level) => select(level, false),
 			() => done(),
 			(level) => select(level, true),
-			this.settingsManager.getDefaultThinkingLevel(),
+			modelDefault,
 		);
 		return { component: selector, focus: selector };
 	});

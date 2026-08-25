@@ -255,6 +255,10 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					: `${Object.keys(config.modelThinkingLevels ?? {}).length} configured`,
 			submenu: (_currentValue, done) => {
 				const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+				const thinkingCountLabel = () => {
+					const count = Object.keys(config.modelThinkingLevels ?? {}).length;
+					return count === 0 ? "none" : `${count} configured`;
+				};
 				const options = (config.availableDefaultModels ?? []).flatMap((model) => {
 					const key = `${model.provider}/${model.id}`;
 					const available = model.reasoning ? levels : (["off"] as ThinkingLevel[]);
@@ -281,13 +285,16 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 						const slash = key.indexOf("/");
 						const provider = key.slice(0, slash);
 						const modelId = key.slice(slash + 1);
-						if (level) callbacks.onModelThinkingLevelChange?.(provider, modelId, level as ThinkingLevel);
-						else callbacks.onModelThinkingLevelRemove?.(provider, modelId);
-						done(
-							Object.keys(config.modelThinkingLevels ?? {}).length === 0
-								? "none"
-								: `${Object.keys(config.modelThinkingLevels ?? {}).length} configured`,
-						);
+						if (level) {
+							callbacks.onModelThinkingLevelChange?.(provider, modelId, level as ThinkingLevel);
+							config.modelThinkingLevels = { ...config.modelThinkingLevels, [key]: level as ThinkingLevel };
+						} else {
+							callbacks.onModelThinkingLevelRemove?.(provider, modelId);
+							const next = { ...config.modelThinkingLevels };
+							delete next[key];
+							config.modelThinkingLevels = next;
+						}
+						done(thinkingCountLabel());
 					},
 					() => done(),
 					undefined,
