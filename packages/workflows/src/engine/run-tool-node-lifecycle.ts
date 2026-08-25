@@ -5,6 +5,7 @@ import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowToolPrimitive } from "../shared/types.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
+import { sameStringSet } from "./replay.js";
 import type { RunBudgetController } from "./run-budget.js";
 import { durableRunTopology } from "./run-durable-topology.js";
 import type { RunTerminalEventArbiter } from "./run-terminal-event.js";
@@ -34,16 +35,35 @@ export function createToolNodeLifecycle(input: {
 	 * abandoned callback may still settle its own private graph tracker.
 	 */
 	const ownsCurrentRun = (): boolean => store.runs().some((candidate) => candidate === run);
+	const replayedToolNodeIds = new Set<string>();
 	return {
 		onNodeStart: (node) => {
 			const inferredParents = tracker.onSpawn(node.id, node.name);
 			const sourceParents =
 				node.replayed === true && node.topologyState !== "unavailable" ? node.parentIds : undefined;
 			const restored = sourceParents?.map((sourceId) => sourceToContinuationNodeIds.get(sourceId));
-			const parentIds = restored?.every((id): id is string => id !== undefined) ? restored : inferredParents;
+			const translated = restored?.every((id): id is string => id !== undefined) ? restored : undefined;
+			if (run.resumedFromRunId !== undefined && sourceParents !== undefined && translated === undefined) {
+				throw new Error(
+					`atomic-workflows: insufficient_state: replay topology mismatch for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
+				);
+			}
+			if (
+				translated !== undefined &&
+				run.resumedFromRunId !== undefined &&
+				!compatibleReplayedToolParents(tracker, translated, inferredParents, (parentId) =>
+					isReplayedContinuationNode(store, run, replayedToolNodeIds, parentId),
+				)
+			) {
+				throw new Error(
+					`atomic-workflows: insufficient_state: replay topology mismatch for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
+				);
+			}
+			const parentIds = translated ?? inferredParents;
 			tracker.replaceParents(node.id, parentIds);
 			(node as ToolNodeSnapshot & { parentIds: readonly string[] }).parentIds = Object.freeze([...parentIds]);
 			sourceToContinuationNodeIds.set(node.id, node.id);
+			if (node.replayed === true) replayedToolNodeIds.add(node.id);
 			if (ownsCurrentRun()) store.recordToolNodeStart(run.id, node);
 		},
 		onNodeRunning: (nodeId, startedAt) => {
@@ -59,9 +79,40 @@ export function createToolNodeLifecycle(input: {
 	};
 }
 
+/**
+ * Fresh-ID replay must not keep stale source parents when the continuation
+ * admitted a different graph. Cache-hit siblings can settle before the next
+ * sibling spawns, so inferred parents may be replayed tools or stages rather
+ * than the restored set. An inserted live node is not a replayed sibling.
+ */
+function isReplayedContinuationNode(
+	store: Store,
+	run: RunSnapshot,
+	replayedToolNodeIds: ReadonlySet<string>,
+	nodeId: string,
+): boolean {
+	if (replayedToolNodeIds.has(nodeId)) return true;
+	const live = store.runs().find((candidate) => candidate === run);
+	return live?.stages.some((stage) => stage.id === nodeId && stage.replayed === true) === true;
+}
+
+function compatibleReplayedToolParents(
+	tracker: GraphFrontierTracker,
+	translated: readonly string[],
+	inferredParents: readonly string[],
+	isReplayedNode: (nodeId: string) => boolean,
+): boolean {
+	if (sameStringSet(translated, inferredParents)) return true;
+	if (translated.length === 0 || inferredParents.length === 0) return false;
+	return inferredParents.every(
+		(parentId) => isReplayedNode(parentId) && sameStringSet(tracker.getParents(parentId), translated),
+	);
+}
+
 /** Wire durable tool execution to terminal-event arbitration and graph state. */
 export function createTrackedToolPrimitive(input: {
 	readonly workflowId: string;
+	readonly checkpointSourceWorkflowId?: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextCheckpointId: () => string;
 	readonly controller: AbortController;
@@ -103,6 +154,9 @@ export function createTrackedToolPrimitive(input: {
 		: undefined;
 	const tool = createToolPrimitive({
 		workflowId: input.workflowId,
+		...(input.checkpointSourceWorkflowId === undefined
+			? {}
+			: { checkpointSourceWorkflowId: input.checkpointSourceWorkflowId }),
 		backend: input.backend,
 		onFailureObserved: admittedTools.observeFailure,
 		nextCheckpointId: input.nextCheckpointId,
