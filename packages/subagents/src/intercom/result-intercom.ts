@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isStaleExtensionContextError } from "@bastani/atomic";
+import { PARENT_CANCEL_CAUSE, presentCancelledStatus } from "../runs/shared/cancellation-recovery.js";
 import {
 	type Details,
 	type IntercomEventBus,
@@ -41,12 +42,26 @@ function countStatuses(children: SubagentResultIntercomChild[]): Record<Subagent
 	return counts;
 }
 
-function formatStatusCounts(counts: Record<SubagentResultStatus, number>): string {
+function formatStatusCounts(children: SubagentResultIntercomChild[]): string {
+	let completed = 0;
+	let failed = 0;
+	let interrupted = 0;
+	let cancelled = 0;
+	let detached = 0;
+	for (const child of children) {
+		const label = presentCancelledStatus(child.status, child.cause);
+		if (label === "cancelled") cancelled += 1;
+		else if (label === "completed") completed += 1;
+		else if (label === "failed") failed += 1;
+		else if (label === "interrupted") interrupted += 1;
+		else if (label === "detached") detached += 1;
+	}
 	const parts = [
-		counts.completed ? `${counts.completed} completed` : undefined,
-		counts.failed ? `${counts.failed} failed` : undefined,
-		counts.interrupted ? `${counts.interrupted} interrupted` : undefined,
-		counts.detached ? `${counts.detached} detached` : undefined,
+		completed ? `${completed} completed` : undefined,
+		failed ? `${failed} failed` : undefined,
+		cancelled ? `${cancelled} cancelled` : undefined,
+		interrupted ? `${interrupted} interrupted` : undefined,
+		detached ? `${detached} detached` : undefined,
 	].filter((part): part is string => Boolean(part));
 	return parts.length ? parts.join(", ") : "0 results";
 }
@@ -67,20 +82,28 @@ export interface GroupedResultIntercomMessageInput {
 	children: SubagentResultIntercomChild[];
 }
 
+function groupedParentCancelCause(children: SubagentResultIntercomChild[]): string | undefined {
+	if (children.length === 0) return undefined;
+	const labels = children.map((child) => presentCancelledStatus(child.status, child.cause));
+	if (labels.some((label) => label === "cancelled") && !labels.some((label) => label === "interrupted")) {
+		return PARENT_CANCEL_CAUSE;
+	}
+	return undefined;
+}
+
 function formatSubagentResultIntercomMessage(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	status: SubagentResultStatus;
 	children: SubagentResultIntercomChild[];
 }): string {
-	const counts = countStatuses(input.children);
 	const lines: string[] = [
 		"subagent results",
 		"",
 		`Run: ${input.runId}`,
 		`Mode: ${input.mode}`,
-		`Status: ${input.status}`,
-		`Children: ${formatStatusCounts(counts)}`,
+		`Status: ${presentCancelledStatus(input.status, groupedParentCancelCause(input.children))}`,
+		`Children: ${formatStatusCounts(input.children)}`,
 	];
 	if (input.children.some((child) => child.intercomTarget)) {
 		lines.push(
@@ -91,7 +114,7 @@ function formatSubagentResultIntercomMessage(input: {
 
 	for (let index = 0; index < input.children.length; index++) {
 		const child = input.children[index]!;
-		lines.push("", `${index + 1}. ${child.agent} — ${child.status}`);
+		lines.push("", `${index + 1}. ${child.agent} — ${presentCancelledStatus(child.status, child.cause)}`);
 		if (child.intercomTarget) lines.push(`Run intercom target: ${child.intercomTarget}`);
 		if (child.artifactPath) lines.push(`Output artifact: ${child.artifactPath}`);
 		if (child.sessionPath) lines.push(`Session: ${child.sessionPath}`);
@@ -109,7 +132,7 @@ export function buildSubagentResultIntercomPayload(
 		summary: child.summary.trim() || "(no output)",
 	}));
 	const status = resolveGroupedStatus(children);
-	const summary = formatStatusCounts(countStatuses(children));
+	const summary = formatStatusCounts(children);
 	const firstChild = children[0];
 	const payload: SubagentResultIntercomPayload = {
 		to: input.to,
@@ -209,19 +232,18 @@ export function formatSubagentResultReceipt(input: {
 	runId: string;
 	payload: SubagentResultIntercomPayload;
 }): string {
-	const counts = countStatuses(input.payload.children);
 	const modeLabel = input.mode === "single" ? "single subagent result" : "parallel subagent results";
 	const lines = [
 		`Delivered ${modeLabel} via intercom.`,
 		`Run: ${input.runId}`,
-		`Children: ${formatStatusCounts(counts)}`,
+		`Children: ${formatStatusCounts(input.payload.children)}`,
 	];
 
 	const artifacts = input.payload.children.filter((child) => typeof child.artifactPath === "string");
 	if (artifacts.length > 0) {
 		lines.push("Artifacts:");
 		for (const child of artifacts) {
-			lines.push(`- ${child.agent} [${child.status}]: ${child.artifactPath}`);
+			lines.push(`- ${child.agent} [${presentCancelledStatus(child.status, child.cause)}]: ${child.artifactPath}`);
 		}
 	}
 
@@ -229,7 +251,7 @@ export function formatSubagentResultReceipt(input: {
 	if (intercomTargets.length > 0) {
 		lines.push("Run intercom targets (may be inactive after completion):");
 		for (const child of intercomTargets) {
-			lines.push(`- ${child.agent} [${child.status}]: ${child.intercomTarget}`);
+			lines.push(`- ${child.agent} [${presentCancelledStatus(child.status, child.cause)}]: ${child.intercomTarget}`);
 		}
 	}
 
@@ -237,7 +259,7 @@ export function formatSubagentResultReceipt(input: {
 	if (sessions.length > 0) {
 		lines.push("Sessions:");
 		for (const child of sessions) {
-			lines.push(`- ${child.agent} [${child.status}]: ${child.sessionPath}`);
+			lines.push(`- ${child.agent} [${presentCancelledStatus(child.status, child.cause)}]: ${child.sessionPath}`);
 		}
 	}
 

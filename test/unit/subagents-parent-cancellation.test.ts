@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
+import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.ts";
+import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import {
 	INITIAL_PROGRESS_CONTENT,
@@ -10,7 +13,7 @@ import {
 	readModifiedProgress,
 	recoverCancelledChildOutput,
 } from "../../packages/subagents/src/runs/shared/cancellation-recovery.ts";
-import { DEFAULT_ARTIFACT_CONFIG } from "../../packages/subagents/src/shared/types.ts";
+import { DEFAULT_ARTIFACT_CONFIG, type SubagentState } from "../../packages/subagents/src/shared/types.ts";
 import { compactForegroundDetails } from "../../packages/subagents/src/shared/utils.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.ts";
 import {
@@ -461,4 +464,99 @@ test("compacted terminal progress keeps the parent-cancel cause", () => {
 	assert.equal(compacted.progress?.[0]?.status, "interrupted");
 	assert.equal(compacted.progress?.[0]?.cause, "abort");
 	assert.deepEqual(compacted.progress?.[0]?.recentTools, []);
+});
+
+test("artifacts-disabled parent cancel still removes run-scoped progress storage", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-cleanup-"));
+	clearSubagentControls();
+	try {
+		const state: SubagentState = {
+			baseCwd: root,
+			currentSessionId: "parent-session",
+			subagentInProgress: false,
+			foregroundControls: new Map(),
+			lastForegroundControlId: null,
+			pendingForegroundControlNotices: new Map(),
+			lastUiContext: null,
+		};
+		const execute = createSubagentExecutor({
+			pi: {
+				events: { on: () => () => {}, emit: () => {} },
+				getSessionName: () => "parent",
+			} as unknown as ExecutorDeps["pi"],
+			state,
+			config: {},
+			tempArtifactsDir: join(root, "artifacts"),
+			getSubagentSessionRoot: () => join(root, "sessions"),
+			expandTilde: (value) => value,
+			discoverAgents: () => ({ agents: [sampleAgent()] }),
+			runtime: {
+				runSync: async (cwd, agents, agentName, task, options) => {
+					const agent = agents.find((candidate) => candidate.name === agentName) ?? sampleAgent();
+					if (options.progressPath) {
+						writeFileSync(options.progressPath, "# Progress\n\n- Recovered scratch finding\n");
+					}
+					const gate = Promise.withResolvers<void>();
+					const childAbort = new AbortController();
+					const pending = runSingleInProcess(cwd, agent, task, {
+						...options,
+						signal: childAbort.signal,
+						testSession: {
+							output: "must not complete",
+							promptGate: gate.promise,
+							abortResolvesPrompt: true,
+						},
+					});
+					await sleep(25);
+					childAbort.abort();
+					try {
+						return await pending;
+					} finally {
+						gate.resolve();
+					}
+				},
+			},
+		});
+		const result = await execute.execute(
+			"cancel-progress-cleanup",
+			{ agent: "analysis", task: "inspect fixture", progress: true, artifacts: false },
+			new AbortController().signal,
+			undefined,
+			{
+				cwd: root,
+				mode: "tui",
+				hasUI: false,
+				ui: {},
+				model: undefined,
+				modelRegistry: { getAvailable: () => [] },
+				sessionManager: {
+					getSessionFile: () => join(root, "parent-session.jsonl"),
+					getSessionId: () => "parent-session",
+					getLeafId: () => null,
+					getEntries: () => [],
+				},
+				isIdle: () => true,
+				isProjectTrusted: () => true,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: () => {},
+				getSystemPrompt: () => "",
+			} as unknown as ExtensionContext,
+		);
+		const runId = result.details?.runId;
+		assert.ok(runId);
+		const text = result.content
+			.filter((item): item is { type: "text"; text: string } => item.type === "text")
+			.map((item) => item.text)
+			.join("\n");
+		assert.match(text, /Partial findings from progress\.md/);
+		assert.match(text, /Recovered scratch finding/);
+		assert.doesNotMatch(text, /Progress: /);
+		assert.equal(existsSync(join(root, "subagent-artifacts", "progress", runId)), false);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
 });
