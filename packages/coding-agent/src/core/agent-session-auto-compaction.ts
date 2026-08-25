@@ -128,6 +128,9 @@ export async function _checkCompaction(
 			// context overflow may now advance to a larger-context fallback; a
 			// recoverable output truncation stops without claiming overflow.
 			if (contextOverflow) this._contextOverflowUnresolved = true;
+			const errorMessage = contextOverflow
+				? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+				: "Response truncation recovery stopped after one retry.";
 			this._emit({
 				type: "compaction_end",
 				reason: "overflow",
@@ -135,9 +138,14 @@ export async function _checkCompaction(
 				aborted: false,
 				willRetry: false,
 				...(contextOverflow ? { unresolvedOverflow: true } : {}),
-				errorMessage: contextOverflow
-					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
-					: "Response truncation recovery stopped after one retry.",
+				errorMessage,
+			});
+			await emitSessionCompactFailed(this, {
+				reason: "overflow",
+				errorMessage,
+				aborted: false,
+				willRetry: false,
+				fromExtension: false,
 			});
 			return;
 		}
@@ -196,14 +204,22 @@ export async function _checkCompaction(
 		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage, desiredMaxOutput, isLiveTurnCompletion);
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
+				const errorMessage =
+					"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 				this._emit({
 					type: "compaction_end",
 					reason: "threshold",
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage:
-						"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage,
+				});
+				await emitSessionCompactFailed(this, {
+					reason: "threshold",
+					errorMessage,
+					aborted: false,
+					willRetry: false,
+					fromExtension: false,
 				});
 				return;
 			}

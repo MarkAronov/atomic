@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
+import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
@@ -117,6 +118,13 @@ export async function _preflightPostToolContext(
 			midTurn: true,
 			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 			...(aborted ? {} : { errorMessage }),
+		});
+		await emitSessionCompactFailed(this, {
+			reason: "threshold",
+			...(aborted ? {} : { errorMessage }),
+			aborted,
+			willRetry: false,
+			fromExtension: false,
 		});
 		throw new Error(errorMessage, { cause: error });
 	} finally {
