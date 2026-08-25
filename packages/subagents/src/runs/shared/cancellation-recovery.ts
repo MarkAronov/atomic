@@ -64,7 +64,7 @@ function artifactLines(input: CancellationRecoveryInput): string[] {
 	if (input.sessionPath) lines.push(`Session: ${input.sessionPath}`);
 	const progressRef = existingPath(input.progressArtifactPath);
 	if (progressRef) lines.push(`Progress: ${progressRef}`);
-	if (input.outputArtifactPath) lines.push(`Output: ${input.outputArtifactPath}`);
+	if (existingPath(input.outputArtifactPath)) lines.push(`Output: ${input.outputArtifactPath}`);
 	return lines;
 }
 

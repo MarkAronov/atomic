@@ -10,6 +10,10 @@ import {
 	recoverCancelledChildOutput,
 } from "../../packages/subagents/src/runs/shared/cancellation-recovery.ts";
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 test("an untouched progress template is not treated as recoverable findings", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-empty-"));
 	try {
@@ -40,7 +44,7 @@ test("a modified progress.md is recovered as bounded labelled partial output", (
 		assert.match(recovered.text, /incomplete and has not been validated/);
 		assert.match(recovered.text, /Session: \/tmp\/session\.jsonl/);
 		assert.doesNotMatch(recovered.text, /Progress: /);
-		assert.match(recovered.text, /Output: \/tmp\/out\.md/);
+		assert.doesNotMatch(recovered.text, /Output: /);
 		assert.doesNotMatch(recovered.text, /\bcompleted\b/i);
 		assert.doesNotMatch(recovered.text, /^abort$/m);
 		assert.doesNotMatch(recovered.text, /full output at /);
@@ -73,27 +77,33 @@ test("without recoverable content, recovery returns a cancellation notice and ar
 	assert.match(recovered.text, /Run cancelled by parent/);
 	assert.doesNotMatch(recovered.text, /after 0 tool calls/);
 	assert.match(recovered.text, /Session: \/tmp\/session\.jsonl/);
-	assert.match(recovered.text, /Output: \/tmp\/out\.md/);
+	assert.doesNotMatch(recovered.text, /Output: /);
 	assert.doesNotMatch(recovered.text, /Progress: /);
 	assert.doesNotMatch(recovered.text, /^abort$/);
 	assert.equal(isParentCancellation("abort"), true);
 	assert.equal(isParentCancellation("interrupt"), false);
 });
 
-test("cancelled envelopes cite a progress artifact only when that file exists", () => {
+test("cancelled envelopes cite progress and output artifacts only when those files exist", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-exists-"));
 	try {
 		const missing = recoverCancelledChildOutput({
 			progressArtifactPath: join(root, "missing.md"),
+			outputArtifactPath: join(root, "missing-out.md"),
 		});
 		assert.doesNotMatch(missing.text, /Progress: /);
+		assert.doesNotMatch(missing.text, /Output: /);
 		const progressArtifactPath = join(root, "progress.md");
+		const outputArtifactPath = join(root, "out.md");
 		writeFileSync(progressArtifactPath, "# Progress\n\n- Kept finding\n");
+		writeFileSync(outputArtifactPath, "kept\n");
 		const present = recoverCancelledChildOutput({
 			progressPath: progressArtifactPath,
 			progressArtifactPath,
+			outputArtifactPath,
 		});
-		assert.match(present.text, new RegExp(`Progress: ${progressArtifactPath.replaceAll("/", "\\/")}`));
+		assert.match(present.text, new RegExp(`Progress: ${escapeRegExp(progressArtifactPath)}`));
+		assert.match(present.text, new RegExp(`Output: ${escapeRegExp(outputArtifactPath)}`));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
