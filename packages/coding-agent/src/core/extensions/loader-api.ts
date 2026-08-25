@@ -36,19 +36,36 @@ export function createExtensionAPI(
 	eventBus: EventBus,
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
-): ExtensionAPI {
+): { api: ExtensionAPI; commit: () => void; discard: () => void } {
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
+	const pendingRuntimeChanges: Array<() => void> = [];
+	const loadingUnsubscribers: Array<() => void> = [];
+	const initialFlagValues = new Map(runtime.flagValues);
+	const initialFlagOwners = new Map(runtime.flagOwners);
+	const initialFlagOwnerOrigins = new Map(runtime.flagOwnerOrigins);
+	let state: "loading" | "active" | "failed" = "loading";
+	const assertActive = () => {
+		if (state === "failed")
+			throw new Error(`Extension "${extension.path}" failed to load and its API is no longer active.`);
+		runtime.assertActive();
+	};
+	const applyRuntimeChange = (change: () => void) => {
+		if (state === "loading") pendingRuntimeChanges.push(change);
+		else change();
+	};
 	// Successive load generations of one session each build a new facade over
 	// the same shared bus; mapping the facade back to that bus lets
 	// session-scoped state re-bind across module re-evaluation.
 	const events: EventBus = {
 		emit(channel, data) {
-			runtime.assertActive();
+			assertActive();
 			eventBus.emit(channel, data);
 		},
 		on(channel, handler) {
-			runtime.assertActive();
-			return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+			assertActive();
+			const unsubscribe = runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+			if (state === "loading") loadingUnsubscribers.push(unsubscribe);
+			return unsubscribe;
 		},
 	};
 	registerCanonicalEventBus(events, eventBus);
@@ -249,19 +266,38 @@ export function createExtensionAPI(
 			runtime.assertActive();
 			if (typeof nameOrProvider === "string") {
 				if (!config) throw new Error("Provider config is required");
-				runtime.registerProvider(nameOrProvider, config, extension.path);
+				applyRuntimeChange(() => runtime.registerProvider(nameOrProvider, config, extension.path));
 			} else {
-				runtime.registerProvider(nameOrProvider, extension.path);
+				applyRuntimeChange(() => runtime.registerProvider(nameOrProvider, extension.path));
 			}
 		},
 
 		unregisterProvider(name: string) {
 			runtime.assertActive();
-			runtime.unregisterProvider(name, extension.path);
+			applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
 		},
 
 		events,
 	} as ExtensionAPI;
 
-	return api;
+	return {
+		api,
+		commit: () => {
+			if (state !== "loading") return;
+			for (const change of pendingRuntimeChanges) change();
+			state = "active";
+			pendingRuntimeChanges.length = 0;
+			loadingUnsubscribers.length = 0;
+		},
+		discard: () => {
+			if (state !== "loading") return;
+			state = "failed";
+			for (const unsubscribe of loadingUnsubscribers) unsubscribe();
+			pendingRuntimeChanges.length = 0;
+			loadingUnsubscribers.length = 0;
+			runtime.flagValues = initialFlagValues;
+			runtime.flagOwners = initialFlagOwners;
+			runtime.flagOwnerOrigins = initialFlagOwnerOrigins;
+		},
+	};
 }
