@@ -505,6 +505,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	});
 	const { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation } = createTrackedToolPrimitive({
 		workflowId: runId,
+		...(opts.continuation === undefined ? {} : { checkpointSourceWorkflowId: opts.continuation.source.id }),
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
 		controller: ownController,
