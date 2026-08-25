@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
@@ -114,8 +114,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		const dir = dirname(path);
 		const tempPath = join(dir, `.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`);
 		try {
+			const existingMode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
 			writeFileSync(tempPath, content, AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(tempPath, 0o600);
+			chmodSync(tempPath, existingMode);
 			renameSync(tempPath, path);
 		} catch (error) {
 			try {

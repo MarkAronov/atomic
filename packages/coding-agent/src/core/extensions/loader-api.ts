@@ -101,6 +101,11 @@ export function createExtensionAPI(
 			},
 		): void {
 			runtime.assertActive();
+			if (options.default !== undefined && typeof options.default !== options.type) {
+				throw new Error(
+					`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`,
+				);
+			}
 			if (runtime.canRegisterResource?.(extension, "flag", name) === false) return;
 			const registration = { name, extensionPath: extension.path, ...options };
 			if (runtime.stageFlagRegistration?.(extension, name, registration, options.default)) return;
