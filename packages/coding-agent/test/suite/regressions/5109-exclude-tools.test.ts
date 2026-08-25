@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { defaultToolNames } from "../../../src/core/tools/index.ts";
+import { getDefaultToolNames } from "../../../src/core/tools/index.ts";
 import type { ExtensionFactory } from "../../../src/index.ts";
 import { createHarness } from "../harness.ts";
 
@@ -13,7 +13,7 @@ function toolNames(tools: Array<{ name: string }>): string[] {
  * resolvable executable. Deriving it keeps this regression about exclusion
  * filtering instead of hard-coding one platform's default tool set.
  */
-const conditionalDefaults = defaultToolNames.includes("powershell") ? ["powershell"] : [];
+const conditionalDefaults = getDefaultToolNames().includes("powershell") ? ["powershell"] : [];
 
 describe("regression #5109: exclude tools", () => {
 	const extensionFactories: ExtensionFactory[] = [

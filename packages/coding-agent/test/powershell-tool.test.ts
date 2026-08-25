@@ -1,11 +1,21 @@
 import { expect, test } from "vitest";
-import { allToolNames, defaultToolNames } from "../src/core/tools/index.ts";
+import { allToolNames, getDefaultToolNames } from "../src/core/tools/index.ts";
 import { createLocalPowerShellOperations } from "../src/core/tools/powershell.ts";
 import { isPowerShellAvailable } from "../src/utils/shell.ts";
 
-test("omits PowerShell from default and registered tools when no executable is available", () => {
-	expect(allToolNames.has("powershell")).toBe(isPowerShellAvailable());
-	expect(defaultToolNames.includes("powershell")).toBe(isPowerShellAvailable());
+test("powershell is always a known tool name, on every platform", () => {
+	// The name universe is platform-independent, so a shared settings.json that
+	// lists `powershell` is never rejected as unknown on a non-Windows host.
+	expect(allToolNames.has("powershell")).toBe(true);
+});
+
+test("powershell is a startup default only when an executable resolves", () => {
+	expect(getDefaultToolNames({ powerShellAvailable: true })).toContain("powershell");
+	expect(getDefaultToolNames({ powerShellAvailable: false })).not.toContain("powershell");
+});
+
+test("the resolved default set follows the host probe", () => {
+	expect(getDefaultToolNames()).toEqual(getDefaultToolNames({ powerShellAvailable: isPowerShellAvailable() }));
 });
 
 test("pre-aborted signals reject without running a command", async () => {

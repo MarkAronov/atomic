@@ -129,10 +129,14 @@ export type ToolName =
 	| "ask_user_question"
 	| "todo";
 export type BuiltinToolMap<T> = Omit<Record<ToolName, T>, "powershell"> & { powershell?: T };
+// The universe of built-in tool names, matching the `ToolName` union exactly.
+// Availability is decided per platform in `getDefaultToolNames()` and
+// `createAllToolDefinitions()`; this set stays static so a name is never
+// "unknown" merely because the host cannot run it.
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
-	...(isPowerShellAvailable() ? (["powershell"] as const satisfies readonly ToolName[]) : []),
+	"powershell",
 	"edit",
 	"write",
 	"find",
@@ -142,17 +146,28 @@ export const allToolNames: Set<ToolName> = new Set([
 	"todo",
 ]);
 
-export const defaultToolNames: readonly ToolName[] = [
-	"read",
-	"bash",
-	...(isPowerShellAvailable() ? (["powershell"] as const satisfies readonly ToolName[]) : []),
-	"edit",
-	"write",
-	"find",
-	"search",
-	"ask_user_question",
-	"todo",
-];
+/**
+ * Built-in tools enabled at startup.
+ *
+ * `powershell` is conditional: it is Windows-only and additionally needs a
+ * resolvable `pwsh.exe`/`powershell.exe`. That probe reads PATH, so it runs per
+ * call rather than at module load, and callers can decide it explicitly through
+ * `powerShellAvailable` instead of depending on the host running the process.
+ */
+export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
+	const powerShell = options?.powerShellAvailable ?? isPowerShellAvailable();
+	return [
+		"read",
+		"bash",
+		...(powerShell ? (["powershell"] as const satisfies readonly ToolName[]) : []),
+		"edit",
+		"write",
+		"find",
+		"search",
+		"ask_user_question",
+		"todo",
+	];
+}
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;

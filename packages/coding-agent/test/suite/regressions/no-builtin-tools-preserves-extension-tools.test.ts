@@ -12,7 +12,7 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
-import { allToolNames } from "../../../src/core/tools/index.ts";
+import { getDefaultToolNames } from "../../../src/core/tools/index.ts";
 
 describe("noTools builtin mode keeps extension tools enabled", () => {
 	let tempDir: string;
@@ -87,7 +87,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				"edit",
 				"find",
 				"ls",
-				...(allToolNames.has("powershell") ? (["powershell"] as const) : []),
+				...(getDefaultToolNames().includes("powershell") ? (["powershell"] as const) : []),
 				"read",
 				"search",
 				"todo",
