@@ -10,7 +10,6 @@ type CloudflareAIGatewayApi = "anthropic-messages" | "openai-completions" | "ope
 
 export function cloudflareAIGatewayProvider(): Provider<CloudflareAIGatewayApi> {
 	return createProvider<CloudflareAIGatewayApi>({
-
 		id: "cloudflare-ai-gateway",
 		name: "Cloudflare AI Gateway",
 		auth: { apiKey: cloudflareAIGatewayAuth() },
