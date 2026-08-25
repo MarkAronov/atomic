@@ -9,6 +9,7 @@
 - Added path-aware, deduplicated settings diagnostics and routed startup diagnostics into the fullscreen transcript so alternate-screen startup cannot hide configuration errors.
 - Added export-only `atomic.share` context records containing the system prompt and tool schemas. Session sharing keeps private-Gist transport and Atomic viewer URLs; no persisted session is mutated and no Radius upload is introduced.
 - Added RPC `clear_queue` to retrieve and remove queued steering and follow-up messages ([#8432](https://github.com/earendil-works/pi/issues/8432)).
+- Exported `detectSupportedImageMimeTypeFromFile` from the public coding-agent API ([#8600](https://github.com/earendil-works/pi/pull/8600)).
 
 ### Changed
 
