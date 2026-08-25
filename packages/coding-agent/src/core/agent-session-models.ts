@@ -217,6 +217,14 @@ export async function _cycleAvailableModel(
  * Saves to session and settings only if the level actually changes.
  */
 
+function persistThinkingLevel(session: AgentSession, level: ThinkingLevel): void {
+	if (session.model) {
+		session.settingsManager.setModelThinkingLevel(session.model.provider, session.model.id, level);
+		return;
+	}
+	session.settingsManager.setDefaultThinkingLevel(level);
+}
+
 export function setThinkingLevel(this: AgentSession, level: ThinkingLevel, options: ModelMutationOptions = {}): void {
 	const availableLevels = this.getAvailableThinkingLevels();
 	const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
@@ -227,7 +235,7 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel, optio
 
 	this.agent.state.thinkingLevel = effectiveLevel;
 
-	if (options.persist) this.settingsManager.setDefaultThinkingLevel(level);
+	if (options.persist) persistThinkingLevel(this, effectiveLevel);
 
 	if (isChanging) {
 		// A reasoning choice is not a model choice, so it leaves the selected
