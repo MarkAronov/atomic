@@ -1,3 +1,4 @@
+import { REPLAY_TOPOLOGY_MISMATCH_MESSAGE } from "../../shared/replay-topology-failure.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { RunContinuationOpts } from "./executor-types.js";
 
@@ -114,8 +115,12 @@ export function createContinuationReplayIndex(
 	const replayablePromptContinuationStageIds = new Set<string>();
 
 	const failTopology = (displayName: string, replayKey: string, reason: "mismatch" | "ambiguous"): never => {
+		const message =
+			reason === "mismatch"
+				? REPLAY_TOPOLOGY_MISMATCH_MESSAGE
+				: "atomic-workflows: insufficient_state: replay topology ambiguous";
 		throw new Error(
-			`atomic-workflows: insufficient_state: replay topology ${reason} for stage "${displayName}" (replayKey "${replayKey}") in source run ${continuation.source.id}`,
+			`${message} for stage "${displayName}" (replayKey "${replayKey}") in source run ${continuation.source.id}`,
 		);
 	};
 
