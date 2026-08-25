@@ -123,6 +123,18 @@ interface ModelsDevProvider {
 
 type ModelsDevCatalog = Record<string, ModelsDevProvider>;
 
+const CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID = "@cf/moonshotai/kimi-k2.6";
+const CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL = {
+	id: CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID,
+	name: "Kimi K2.6",
+	tool_call: true,
+	reasoning: true,
+	reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "medium", "high"] }],
+	modalities: { input: ["text", "image"], output: ["text"] },
+	cost: { input: 0.95, output: 4, cache_read: 0.16 },
+	limit: { context: 262_144, output: 256_000 },
+} satisfies ModelsDevModel;
+
 interface NvidiaNimModelListItem {
 	id: string;
 }
@@ -1637,6 +1649,15 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// This is the built-in default for both Cloudflare providers. Keep its known
+		// Workers AI metadata when models.dev temporarily omits or mis-tags it.
+		const cloudflareWorkersAiProvider = (data["cloudflare-workers-ai"] ??= {});
+		const cloudflareWorkersAiModels = (cloudflareWorkersAiProvider.models ??= {});
+		cloudflareWorkersAiModels[CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID] = {
+			...CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL,
+			...cloudflareWorkersAiModels[CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID],
+			tool_call: true,
+		};
 		// Process Cloudflare Workers AI models
 		if (data["cloudflare-workers-ai"]?.models) {
 			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
@@ -1670,9 +1691,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		// Process Cloudflare AI Gateway models
 		if (data["cloudflare-ai-gateway"]?.models) {
 			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
-				if (prefixedId.startsWith("workers-ai/")) cloudflareGatewayWorkersAiModelIds.add(prefixedId);
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
+				if (prefixedId.startsWith("workers-ai/")) cloudflareGatewayWorkersAiModelIds.add(prefixedId);
 
 				const slashIdx = prefixedId.indexOf("/");
 				if (slashIdx === -1) continue;
