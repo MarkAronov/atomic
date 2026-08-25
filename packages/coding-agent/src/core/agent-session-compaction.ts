@@ -241,7 +241,7 @@ export async function emitSessionCompactFailed(
 	session: AgentSession,
 	event: Omit<SessionCompactFailedEvent, "type">,
 ): Promise<void> {
-	if (session._extensionRunner.hasHandlers("session_compact_failed")) {
+	if (session._extensionRunner?.hasHandlers("session_compact_failed")) {
 		await session._extensionRunner.emit({ type: "session_compact_failed", ...event });
 	}
 }

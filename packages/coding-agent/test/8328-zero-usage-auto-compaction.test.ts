@@ -1,12 +1,11 @@
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
-type SessionInternals = {
-	_checkCompaction(message: AssistantMessage): Promise<void>;
-	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<"failed">;
-};
-
+function sessionInternals(session: Harness["session"]): AgentSessionInternalSurface {
+	return session as AgentSessionInternalSurface;
+}
 function zeroUsageAssistant(harness: Harness): AssistantMessage {
 	const model = harness.getModel();
 	return {
@@ -45,7 +44,7 @@ describe("#8328 zero-usage auto-compaction", () => {
 			{ role: "user", content: "x".repeat(400), timestamp: assistant.timestamp - 1 },
 			assistant,
 		];
-		const internals = harness.session as unknown as SessionInternals;
+		const internals = sessionInternals(harness.session);
 		const run = vi.spyOn(internals, "_runAutoCompaction").mockResolvedValue("failed");
 
 		await internals._checkCompaction(assistant);
