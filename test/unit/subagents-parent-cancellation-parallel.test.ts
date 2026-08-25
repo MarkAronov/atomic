@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -13,6 +13,11 @@ import { clearSubagentControls } from "../../packages/subagents/src/runs/inproce
 import { formatParallelResultContent } from "../../packages/subagents/src/runs/shared/parallel-utils.ts";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.ts";
 import { sleep } from "../helpers/runtime.ts";
+
+async function waitForPrompt(promptLogPath: string): Promise<void> {
+	for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
+	assert.equal(existsSync(promptLogPath), true, "child prompt should start before abort");
+}
 
 function sampleAgent(): AgentConfig {
 	return {
@@ -80,7 +85,12 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 				index: 0,
 				sessionDir: join(root, "sessions", "a"),
 				signal: controller.signal,
-				testSession: { output: "too late a", promptGate: gateA.promise, abortResolvesPrompt: true },
+				testSession: {
+					output: "too late a",
+					promptGate: gateA.promise,
+					abortResolvesPrompt: true,
+					promptLogPath: join(root, "prompt-a.log"),
+				},
 			}),
 			runSingleInProcess(root, sampleAgent(), "inspect fixture b", {
 				cwd: root,
@@ -88,10 +98,16 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 				index: 1,
 				sessionDir: join(root, "sessions", "b"),
 				signal: controller.signal,
-				testSession: { output: "too late b", promptGate: gateB.promise, abortResolvesPrompt: true },
+				testSession: {
+					output: "too late b",
+					promptGate: gateB.promise,
+					abortResolvesPrompt: true,
+					promptLogPath: join(root, "prompt-b.log"),
+				},
 			}),
 		]);
-		await sleep(25);
+		await waitForPrompt(join(root, "prompt-a.log"));
+		await waitForPrompt(join(root, "prompt-b.log"));
 		controller.abort();
 		const results = await pending;
 		assert.deepEqual(

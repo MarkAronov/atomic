@@ -501,13 +501,9 @@ test("artifacts-disabled parent cancel still removes run-scoped progress storage
 					const pending = runSingleInProcess(cwd, agent, task, {
 						...options,
 						signal: childAbort.signal,
-						testSession: {
-							output: "must not complete",
-							promptGate: gate.promise,
-							abortResolvesPrompt: true,
-						},
+						testSession: abortSession(root, gate.promise),
 					});
-					await sleep(25);
+					await waitForPrompt(root);
 					childAbort.abort();
 					try {
 						return await pending;
