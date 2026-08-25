@@ -45,12 +45,12 @@ function lastNonEmptyText(value: string | undefined): string | undefined {
 	return trimmed ? value : undefined;
 }
 
-function existingPath(pathValue: string | undefined): string | undefined {
+export function existingArtifactPath(pathValue: string | undefined): string | undefined {
 	return pathValue && existsSync(pathValue) ? pathValue : undefined;
 }
 
 function boundPartial(text: string, artifactPath?: string): string {
-	return truncateOutput(text, PARTIAL_FINDINGS_MAX, existingPath(artifactPath)).text;
+	return truncateOutput(text, PARTIAL_FINDINGS_MAX, existingArtifactPath(artifactPath)).text;
 }
 
 function afterLabel(toolCount: number | undefined): string {
@@ -61,10 +61,14 @@ function afterLabel(toolCount: number | undefined): string {
 
 function artifactLines(input: CancellationRecoveryInput): string[] {
 	const lines: string[] = [];
-	if (input.sessionPath) lines.push(`Session: ${input.sessionPath}`);
-	const progressRef = existingPath(input.progressArtifactPath);
-	if (progressRef) lines.push(`Progress: ${progressRef}`);
-	if (existingPath(input.outputArtifactPath)) lines.push(`Output: ${input.outputArtifactPath}`);
+	for (const [label, pathValue] of [
+		["Session", input.sessionPath],
+		["Progress", input.progressArtifactPath],
+		["Output", input.outputArtifactPath],
+	] as const) {
+		const existing = existingArtifactPath(pathValue);
+		if (existing) lines.push(`${label}: ${existing}`);
+	}
 	return lines;
 }
 

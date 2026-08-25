@@ -10,10 +10,6 @@ import {
 	recoverCancelledChildOutput,
 } from "../../packages/subagents/src/runs/shared/cancellation-recovery.ts";
 
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 test("an untouched progress template is not treated as recoverable findings", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-empty-"));
 	try {
@@ -34,15 +30,15 @@ test("a modified progress.md is recovered as bounded labelled partial output", (
 			progressPath,
 			assistantText: "later unused assistant text",
 			toolCount: 70,
-			sessionPath: "/tmp/session.jsonl",
-			outputArtifactPath: "/tmp/out.md",
+			sessionPath: join(root, "session.jsonl"),
+			outputArtifactPath: join(root, "out.md"),
 		});
 		assert.equal(recovered.source, "progress.md");
 		assert.match(recovered.text, /Run cancelled by parent after 70 tool calls/);
 		assert.match(recovered.text, /Partial findings from progress\.md/);
 		assert.match(recovered.text, /Found auth middleware/);
 		assert.match(recovered.text, /incomplete and has not been validated/);
-		assert.match(recovered.text, /Session: \/tmp\/session\.jsonl/);
+		assert.doesNotMatch(recovered.text, /Session: /);
 		assert.doesNotMatch(recovered.text, /Progress: /);
 		assert.doesNotMatch(recovered.text, /Output: /);
 		assert.doesNotMatch(recovered.text, /\bcompleted\b/i);
@@ -57,7 +53,7 @@ test("without progress updates, recovery uses the last non-empty assistant text"
 	const recovered = recoverCancelledChildOutput({
 		assistantText: "Verified the login redirect.",
 		toolCount: 23,
-		sessionPath: "/tmp/session.jsonl",
+		sessionPath: join(tmpdir(), "atomic-cancel-absent", "session.jsonl"),
 	});
 	assert.equal(recovered.source, "assistant");
 	assert.match(recovered.text, /Partial findings from assistant history/);
@@ -68,15 +64,15 @@ test("without progress updates, recovery uses the last non-empty assistant text"
 test("without recoverable content, recovery returns a cancellation notice and artifact refs", () => {
 	const recovered = recoverCancelledChildOutput({
 		toolCount: 0,
-		sessionPath: "/tmp/session.jsonl",
-		outputArtifactPath: "/tmp/out.md",
-		progressPath: "/tmp/progress.md",
-		progressArtifactPath: "/tmp/progress.md",
+		sessionPath: join(tmpdir(), "atomic-cancel-absent", "session.jsonl"),
+		outputArtifactPath: join(tmpdir(), "atomic-cancel-absent", "out.md"),
+		progressPath: join(tmpdir(), "atomic-cancel-absent", "progress.md"),
+		progressArtifactPath: join(tmpdir(), "atomic-cancel-absent", "progress.md"),
 	});
 	assert.equal(recovered.source, "none");
 	assert.match(recovered.text, /Run cancelled by parent/);
 	assert.doesNotMatch(recovered.text, /after 0 tool calls/);
-	assert.match(recovered.text, /Session: \/tmp\/session\.jsonl/);
+	assert.doesNotMatch(recovered.text, /Session: /);
 	assert.doesNotMatch(recovered.text, /Output: /);
 	assert.doesNotMatch(recovered.text, /Progress: /);
 	assert.doesNotMatch(recovered.text, /^abort$/);
@@ -84,26 +80,23 @@ test("without recoverable content, recovery returns a cancellation notice and ar
 	assert.equal(isParentCancellation("interrupt"), false);
 });
 
-test("cancelled envelopes cite progress and output artifacts only when those files exist", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-exists-"));
+test("cancelled envelopes cite each artifact path only when that file exists", () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-refs-"));
 	try {
-		const missing = recoverCancelledChildOutput({
-			progressArtifactPath: join(root, "missing.md"),
-			outputArtifactPath: join(root, "missing-out.md"),
-		});
-		assert.doesNotMatch(missing.text, /Progress: /);
-		assert.doesNotMatch(missing.text, /Output: /);
-		const progressArtifactPath = join(root, "progress.md");
-		const outputArtifactPath = join(root, "out.md");
-		writeFileSync(progressArtifactPath, "# Progress\n\n- Kept finding\n");
-		writeFileSync(outputArtifactPath, "kept\n");
-		const present = recoverCancelledChildOutput({
-			progressPath: progressArtifactPath,
-			progressArtifactPath,
-			outputArtifactPath,
-		});
-		assert.match(present.text, new RegExp(`Progress: ${escapeRegExp(progressArtifactPath)}`));
-		assert.match(present.text, new RegExp(`Output: ${escapeRegExp(outputArtifactPath)}`));
+		const rows = [
+			["Session", "sessionPath", join(root, "session.jsonl")],
+			["Progress", "progressArtifactPath", join(root, "progress.md")],
+			["Output", "outputArtifactPath", join(root, "out.md")],
+		] as const;
+		for (const [label, key, pathValue] of rows) {
+			assert.doesNotMatch(recoverCancelledChildOutput({ [key]: pathValue }).text, new RegExp(`${label}: `));
+			writeFileSync(pathValue, "kept\n");
+			const present = recoverCancelledChildOutput({
+				[key]: pathValue,
+				...(key === "progressArtifactPath" ? { progressPath: pathValue } : {}),
+			});
+			assert.ok(present.text.includes(`${label}: ${pathValue}`));
+		}
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -479,6 +479,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 						lastAssistantText = "";
 						appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
 					}
+					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
 					return "";
 				}
 			}
@@ -561,7 +562,7 @@ function cancelledEnvelope(session: AgentSession | undefined, spec: ChildSpec, s
 			session?.messages as Parameters<typeof lastNonEmptyAssistantText>[0],
 			outputFor(session),
 		),
-		toolCount: session === undefined ? undefined : stats.toolCalls,
+		toolCount: stats.toolCalls,
 		sessionPath: session?.sessionFile ?? spec.sessionFile,
 		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
 		...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
@@ -1040,7 +1041,7 @@ export class SubagentControlRuntime {
 					}
 				}
 				if (emission !== "none") emitProgress(emission === "force");
-				if (event.type === "model_fallback_start") {
+				if (event.type === "model_fallback_start" && !signals.abort.aborted) {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
 					progressState.model = event.to;
