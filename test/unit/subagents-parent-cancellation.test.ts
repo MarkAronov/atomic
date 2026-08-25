@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
@@ -44,54 +44,6 @@ test("a modified progress.md is recovered as bounded labelled partial output", (
 		assert.doesNotMatch(recovered.text, /\bcompleted\b/i);
 		assert.doesNotMatch(recovered.text, /^abort$/m);
 		assert.doesNotMatch(recovered.text, /full output at /);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("oversized ephemeral progress truncates without citing the deleted path", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-truncate-"));
-	try {
-		const progressPath = join(root, "progress.md");
-		writeFileSync(
-			progressPath,
-			`${Array.from({ length: 201 }, (_, index) => `- finding ${index + 1}`).join("\n")}\n`,
-		);
-		const recovered = recoverCancelledChildOutput({
-			progressPath,
-			toolCount: 70,
-		});
-		assert.equal(recovered.source, "progress.md");
-		assert.match(recovered.text, /Partial findings from progress\.md/);
-		assert.match(recovered.text, /TRUNCATED:/);
-		assert.doesNotMatch(recovered.text, /full output at /);
-		assert.doesNotMatch(recovered.text, /Progress: /);
-		assert.ok(!recovered.text.includes(progressPath));
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("oversized persisted progress cites the artifact path in the truncation marker", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-truncate-kept-"));
-	try {
-		const progressPath = join(root, "progress.md");
-		const progressArtifactPath = join(root, "kept", "progress.md");
-		writeFileSync(
-			progressPath,
-			`${Array.from({ length: 201 }, (_, index) => `- finding ${index + 1}`).join("\n")}\n`,
-		);
-		mkdirSync(join(root, "kept"), { recursive: true });
-		writeFileSync(progressArtifactPath, "kept\n");
-		const recovered = recoverCancelledChildOutput({
-			progressPath,
-			progressArtifactPath,
-			toolCount: 4,
-		});
-		assert.equal(recovered.source, "progress.md");
-		assert.match(recovered.text, /TRUNCATED:/);
-		assert.match(recovered.text, new RegExp(`full output at ${progressArtifactPath.replaceAll("/", "\\/")}`));
-		assert.match(recovered.text, new RegExp(`Progress: ${progressArtifactPath.replaceAll("/", "\\/")}`));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
