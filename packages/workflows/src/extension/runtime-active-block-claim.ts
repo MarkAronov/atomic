@@ -1,6 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import type { Store } from "../shared/store.js";
+import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../shared/types.js";
 
@@ -14,6 +14,7 @@ import type { WorkflowPersistencePort } from "../shared/types.js";
  * failed/blocked run.
  */
 const inFlightActiveBlockResumes = new Set<string>();
+const restoredAfterMismatch = new Set<string>();
 
 /**
  * Claim the right to resume an active recoverable block in this process. The
@@ -24,6 +25,7 @@ const inFlightActiveBlockResumes = new Set<string>();
 export function claimActiveBlockedResume(_backend: DurableWorkflowBackend, sourceId: string): boolean {
 	if (inFlightActiveBlockResumes.has(sourceId)) return false;
 	inFlightActiveBlockResumes.add(sourceId);
+	restoredAfterMismatch.delete(sourceId);
 	return true;
 }
 
@@ -51,7 +53,8 @@ export async function discardFailedActiveBlockedContinuation(
 }
 /**
  * Mark the resumed source killed locally so the same session will not count it
- * as a second in-flight run. The durable source stays `blocked`/resumable.
+ * as a second in-flight run. The durable source stays `blocked`/resumable, and
+ * this local kill is not written to the session log.
  */
 export function finalizeResumedActiveBlockedSourceRun(
 	source: RunSnapshot,
@@ -59,6 +62,8 @@ export function finalizeResumedActiveBlockedSourceRun(
 	store: Store,
 	persistence?: WorkflowPersistencePort,
 ): void {
+	void persistence;
+	if (restoredAfterMismatch.delete(source.id)) return;
 	const error = source.error ?? source.failureMessage ?? `workflow resumed in new run ${continuationRunId}`;
 	const metadata = {
 		...(source.failureKind !== undefined ? { failureKind: source.failureKind } : {}),
@@ -70,17 +75,21 @@ export function finalizeResumedActiveBlockedSourceRun(
 		resumable: false,
 		...(source.retryAfterMs !== undefined ? { retryAfterMs: source.retryAfterMs } : {}),
 	};
-	const recorded = store.recordRunEnd(source.id, "killed", undefined, error, metadata);
-	if (recorded && persistence !== undefined) {
-		try {
-			appendRunEnd(persistence, { runId: source.id, status: "killed", error, ...metadata, ts: Date.now() });
-		} catch {
-			// Local kill already landed. Persistence must not undo it or escape.
-		}
+	store.recordRunEnd(source.id, "killed", undefined, error, metadata);
+}
+
+function canRestoreActiveBlockedSource(live: RunSnapshot | undefined): boolean {
+	if (live === undefined) return true;
+	if (live.status === "killed" && live.failureDisposition === "terminal_killed") return true;
+	if (live.endedAt === undefined && live.resumable === true && live.failureDisposition === "active_blocked") {
+		return true;
 	}
+	return !isTerminalRunStatus(live.status);
 }
 
 function restoreActiveBlockedSource(source: RunSnapshot, store: Store): void {
+	const live = store.runs().find((candidate) => candidate.id === source.id);
+	if (!canRestoreActiveBlockedSource(live)) return;
 	store.restoreActiveBlockedRun(source, source.error ?? source.failureMessage ?? "workflow is blocked", {
 		failureRecoverability: "recoverable",
 		failureDisposition: "active_blocked",
@@ -94,6 +103,7 @@ function restoreActiveBlockedSource(source: RunSnapshot, store: Store): void {
 		...(source.result !== undefined ? { result: source.result } : {}),
 		...(source.budgetState !== undefined ? { budgetState: source.budgetState } : {}),
 	});
+	restoredAfterMismatch.add(source.id);
 }
 
 export function isReplayTopologyMismatchFailure(
@@ -106,9 +116,9 @@ export function isReplayTopologyMismatchFailure(
 }
 
 /**
- * After admission the local source is already killed. A fail-closed mismatch
- * puts the reserved snapshot back so the same session can retry. Other
- * settlements leave the kill in place. Errors stay inside this callback.
+ * A fail-closed mismatch puts the reserved snapshot back so the same session
+ * can retry. If restore wins the race with the local kill, the kill is skipped.
+ * Other settlements leave the local kill in place. Errors stay inside this callback.
  */
 export function finalizeActiveBlockedSourceAfterContinuation(input: {
 	readonly source: RunSnapshot;

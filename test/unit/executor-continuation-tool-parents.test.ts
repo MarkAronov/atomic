@@ -6,8 +6,14 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import {
+	claimActiveBlockedResume,
+	finalizeActiveBlockedSourceAfterContinuation,
+	finalizeResumedActiveBlockedSourceRun,
+} from "../../packages/workflows/src/extension/runtime-active-block-claim.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createContinuationReplayIndex } from "../../packages/workflows/src/runs/foreground/executor-continuation.js";
+import { type SessionEntry, scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -687,5 +693,101 @@ describe("continuation tool-parent identity map", () => {
 		assert.equal(toolCalls, 1);
 		assert.equal(store.getStagePromptAnswer(source.id, pending.stageId)?.value, true);
 		setDurableBackend(undefined);
+	});
+
+	test("resume kill stays process-local and either settle order leaves a blocked source retryable", () => {
+		const backend = new InMemoryDurableBackend();
+		const store = createStore();
+		const entries: Array<{ type: string; payload: Record<string, unknown> }> = [];
+		const persistence = {
+			appendEntry(type: string, payload: Record<string, unknown>): string {
+				entries.push({ type, payload });
+				return `entry-${entries.length}`;
+			},
+		};
+		const mismatch = { error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" };
+		const blocked = (id: string): RunSnapshot => ({
+			id,
+			name: "retry-order",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+			resumable: true,
+			failureDisposition: "active_blocked",
+			failureRecoverability: "recoverable",
+			error: "blocked",
+		});
+
+		const restoreFirst = blocked("restore-first");
+		store.recordRunStart(restoreFirst);
+		persistence.appendEntry("workflow.run.start", {
+			runId: restoreFirst.id,
+			name: restoreFirst.name,
+			inputs: {},
+			ts: 1,
+		});
+		assert.equal(claimActiveBlockedResume(backend, restoreFirst.id), true);
+		finalizeActiveBlockedSourceAfterContinuation({
+			source: restoreFirst,
+			continuationRunId: "c-restore-first",
+			store,
+			persistence,
+			result: mismatch,
+		});
+		finalizeResumedActiveBlockedSourceRun(restoreFirst, "c-restore-first", store, persistence);
+		const restored = store.runs().find((run) => run.id === restoreFirst.id);
+		assert.equal(restored?.resumable, true);
+		assert.notEqual(restored?.status, "killed");
+		assert.equal(restored?.endedAt, undefined);
+
+		const killFirst = blocked("kill-first");
+		store.recordRunStart(killFirst);
+		persistence.appendEntry("workflow.run.start", { runId: killFirst.id, name: killFirst.name, inputs: {}, ts: 2 });
+		assert.equal(claimActiveBlockedResume(backend, killFirst.id), true);
+		finalizeResumedActiveBlockedSourceRun(killFirst, "c-kill-first", store, persistence);
+		assert.equal(store.runs().find((run) => run.id === killFirst.id)?.status, "killed");
+		finalizeActiveBlockedSourceAfterContinuation({
+			source: killFirst,
+			continuationRunId: "c-kill-first",
+			store,
+			persistence,
+			result: mismatch,
+		});
+		const afterKillFirst = store.runs().find((run) => run.id === killFirst.id);
+		assert.equal(afterKillFirst?.resumable, true);
+		assert.notEqual(afterKillFirst?.status, "killed");
+
+		assert.equal(
+			entries.some((entry) => entry.type === "workflow.run.end" && entry.payload.status === "killed"),
+			false,
+		);
+		const sessionEntries: SessionEntry[] = entries.map((entry, index) => ({
+			id: `entry-${index + 1}`,
+			type: entry.type,
+			payload: {
+				runId: String(entry.payload.runId ?? ""),
+				name: String(entry.payload.name ?? ""),
+				inputs: {},
+				ts: typeof entry.payload.ts === "number" ? entry.payload.ts : 1,
+			},
+		}));
+		assert.deepEqual(
+			scanInFlightRuns(sessionEntries).map((run) => run.runId),
+			["restore-first", "kill-first"],
+		);
+
+		const completed = blocked("already-completed");
+		store.recordRunStart(completed);
+		assert.equal(store.recordRunEnd(completed.id, "completed", {}), true);
+		assert.equal(claimActiveBlockedResume(backend, completed.id), true);
+		finalizeActiveBlockedSourceAfterContinuation({
+			source: completed,
+			continuationRunId: "c-completed",
+			store,
+			persistence,
+			result: mismatch,
+		});
+		assert.equal(store.runs().find((run) => run.id === completed.id)?.status, "completed");
 	});
 });
