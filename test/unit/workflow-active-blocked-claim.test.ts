@@ -371,4 +371,92 @@ describe("active-blocked resume claim", () => {
 			true,
 		);
 	});
+
+	test("restoring a blocked source after ambiguous replay topology keeps prompt answers and notices", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: runId,
+			name: "claim-flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordStageStart(runId, {
+			id: "ask",
+			name: "ask",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		assert.equal(
+			store.recordStagePromptAnswer(
+				runId,
+				"ask",
+				{ id: "p1", kind: "confirm", message: "proceed?", createdAt: 2 },
+				true,
+			),
+			true,
+		);
+		store.recordStageEnd(runId, {
+			id: "ask",
+			name: "ask",
+			status: "completed",
+			parentIds: [],
+			toolEvents: [],
+		});
+		store.recordStageStart(runId, {
+			id: "only",
+			name: "only",
+			status: "failed",
+			parentIds: ["ask"],
+			toolEvents: [],
+			error: "login",
+			failureKind: "auth",
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			failureMessage: "login required",
+		});
+		store.recordRunBlocked(runId, "login", {
+			failedStageId: "only",
+			failureKind: "auth",
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			failureMessage: "login required",
+			resumable: true,
+		});
+		store.recordNotice({
+			id: "blocked-notice",
+			runId,
+			level: "warning",
+			message: "WORKFLOW BLOCKED",
+			createdAt: 3,
+		});
+		const source = store.runs().find((run) => run.id === runId);
+		assert.ok(source);
+		const reserved = {
+			...source,
+			stages: source.stages.map((stage) => ({ ...stage })),
+		};
+		finalizeResumedActiveBlockedSourceRun(source, "continuation", store);
+		assert.equal(store.runs().find((run) => run.id === runId)?.status, "killed");
+		finalizeActiveBlockedSourceAfterContinuation({
+			source: reserved,
+			continuationRunId: "continuation",
+			store,
+			result: {
+				error: 'atomic-workflows: insufficient_state: replay topology ambiguous for stage "t" (replayKey "stage:task:t:1") in source run source',
+			},
+		});
+		const restored = store.runs().find((run) => run.id === runId);
+		assert.ok(restored);
+		assert.notEqual(restored.status, "killed");
+		assert.equal(restored.resumable, true);
+		assert.equal(store.getStagePromptAnswer(runId, "ask")?.value, true);
+		assert.equal(restored.stages.find((stage) => stage.id === "ask")?.promptAnswerState, "available");
+		assert.equal(
+			store.notices().some((notice) => notice.runId === runId && notice.message === "WORKFLOW BLOCKED"),
+			true,
+		);
+	});
 });
