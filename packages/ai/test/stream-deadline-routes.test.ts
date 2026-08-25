@@ -17,9 +17,9 @@ const context: Context = {
 const servers: Server[] = [];
 
 function createCodexToken(accountId: string): string {
-	const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString(
-		"base64",
-	);
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
+	).toString("base64");
 	return `aaa.${payload}.bbb`;
 }
 
