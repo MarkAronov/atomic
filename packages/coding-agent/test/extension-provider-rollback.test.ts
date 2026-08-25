@@ -58,3 +58,35 @@ test("rolls back providers applied before a failed commit", () => {
 		),
 	).toEqual([]);
 });
+
+test("rollback keeps an earlier extension's provider of the same name", () => {
+	const runtime = createExtensionRuntime();
+
+	// An earlier extension owns "shared-provider" and stays committed.
+	const earlier = createExtensionAPI(extension("earlier"), runtime, "/tmp", createEventBus());
+	earlier.api.registerProvider("shared-provider", providerConfig);
+	earlier.commit();
+
+	const originalRegister = runtime.registerProvider.bind(runtime);
+	let calls = 0;
+	runtime.registerProvider = ((nameOrProvider, configOrPath, extensionPath) => {
+		calls += 1;
+		if (calls === 2) throw new Error("later provider failed");
+		originalRegister(nameOrProvider, configOrPath, extensionPath);
+	}) as typeof runtime.registerProvider;
+
+	// A later extension reuses the same provider name, then fails mid-commit.
+	const later = createExtensionAPI(extension("later"), runtime, "/tmp", createEventBus());
+	later.api.registerProvider("shared-provider", { ...providerConfig, baseUrl: "https://later.test/v1" });
+	later.api.registerProvider("later-only", { ...providerConfig, baseUrl: "https://later-two.test/v1" });
+
+	expect(() => later.commit()).toThrow("later provider failed");
+	later.discard();
+
+	// The failing extension's registration is gone; the earlier owner survives.
+	const shared = runtime.pendingProviderRegistrations.filter(
+		(registration) => !("provider" in registration) && registration.name === "shared-provider",
+	);
+	expect(shared).toHaveLength(1);
+	expect(shared[0] && "extensionPath" in shared[0] ? shared[0].extensionPath : undefined).toBe("earlier");
+});

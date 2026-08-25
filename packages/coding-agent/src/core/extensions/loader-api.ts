@@ -287,7 +287,10 @@ export function createExtensionAPI(
 				"provider" in registration ? registration.provider.id === name : registration.name === name,
 			);
 			applyRuntimeChange({
-				apply: () => runtime.unregisterProvider(name, extension.path),
+				// Explicit unregistration stays name-wide: its rollback below
+				// restores every prior registration, so a narrower removal here
+				// would re-register entries that were never taken away.
+				apply: () => runtime.unregisterProvider(name),
 				rollback: () => {
 					for (const registration of prior) {
 						if ("provider" in registration) {
