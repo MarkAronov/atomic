@@ -828,7 +828,7 @@ Behavior guarantees:
 import { isToolCallEventType } from "@bastani/atomic";
 
 pi.on("tool_call", async (event, ctx) => {
-  // event.toolName - "bash", "read", "write", "edit", "find", "search", etc.
+  // event.toolName - "bash", "powershell", "read", "write", "edit", "find", "search", etc.
   // event.toolCallId
   // event.input - tool parameters (mutable)
 
@@ -840,6 +840,11 @@ pi.on("tool_call", async (event, ctx) => {
     if (event.input.command.includes("rm -rf")) {
       return { block: true, reason: "Dangerous command", terminate: true };
     }
+  }
+
+  if (isToolCallEventType("powershell", event)) {
+    // event.input is typed as PowerShellToolInput
+    event.input.command = `$ErrorActionPreference = "Stop"\n${event.input.command}`;
   }
 
   if (isToolCallEventType("read", event)) {
@@ -892,7 +897,7 @@ After all handlers finish, Atomic normalizes image blocks returned by the tool o
 Use `ctx.signal` for nested async work inside the handler. This lets Escape cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
-import { isBashToolResult, isSearchToolResult } from "@bastani/atomic";
+import { isBashToolResult, isPowerShellToolResult, isSearchToolResult } from "@bastani/atomic";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
@@ -900,6 +905,10 @@ pi.on("tool_result", async (event, ctx) => {
 
   if (isBashToolResult(event)) {
     // event.details is typed as BashToolDetails
+  }
+
+  if (isPowerShellToolResult(event)) {
+    // event.details is typed as PowerShellToolDetails | undefined
   }
 
   if (isSearchToolResult(event)) {
@@ -2230,7 +2239,7 @@ pi.registerTool({
 
 ### Overriding Built-in Tools
 
-Extensions can override built-in tools (`read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
+Extensions can override built-in tools (`read`, `bash`, `powershell`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
 
 ```bash
 # Extension's read tool replaces built-in read

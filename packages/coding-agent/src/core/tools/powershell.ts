@@ -1,3 +1,4 @@
+import { APP_NAME } from "../../config.ts";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import {
 	getPowerShellConfig,
@@ -7,18 +8,28 @@ import {
 } from "../../utils/shell.ts";
 import {
 	type BashOperations,
+	type BashSpawnContext,
+	type BashSpawnHook,
 	type BashToolDetails,
 	type BashToolInput,
 	type BashToolOptions,
 	createBashToolDefinition,
+	type ShellToolPresentation,
 } from "./bash.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
+const POWERSHELL_PRESENTATION: ShellToolPresentation = {
+	prompt: "PS>",
+	tempFilePrefix: `${APP_NAME}-powershell`,
+};
+
 const UTF8_OUTPUT_PREFIX = "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n";
-export const powershellToolSystemPromptContribution = {
+export const powershellToolSystemPromptContribution = Object.freeze({
 	snippet: "Execute PowerShell commands.",
-	guidelines: ["You can inspect ATOMIC_* or PI_* environment variables for current model and session details."],
-} as const;
+	guidelines: Object.freeze([
+		"You can inspect ATOMIC_* or PI_* environment variables for current model and session details.",
+	] as const),
+} as const);
 export type PowerShellOperations = BashOperations;
 export type PowerShellToolDetails = BashToolDetails;
 export type PowerShellToolInput = BashToolInput;
@@ -68,21 +79,28 @@ export function createLocalPowerShellOperations(): PowerShellOperations {
 	};
 }
 export function createPowerShellToolDefinition(cwd: string, options: PowerShellToolOptions = {}) {
-	const definition = createBashToolDefinition(cwd, {
-		...options,
-		operations: options.operations ?? createLocalPowerShellOperations(),
-	});
+	const definition = createBashToolDefinition(
+		cwd,
+		{
+			...options,
+			operations: options.operations ?? createLocalPowerShellOperations(),
+		},
+		POWERSHELL_PRESENTATION,
+	);
 	return {
 		...definition,
 		name: "powershell",
 		label: "powershell",
 		description: "Execute a PowerShell command in the session workspace.",
 		promptSnippet: powershellToolSystemPromptContribution.snippet,
-		promptGuidelines: [...powershellToolSystemPromptContribution.guidelines],
+		promptGuidelines:
+			options.exposeSessionEnvironment === false
+				? undefined
+				: [...powershellToolSystemPromptContribution.guidelines],
 	};
 }
 export function createPowerShellTool(cwd: string, options?: PowerShellToolOptions) {
 	return wrapToolDefinition(createPowerShellToolDefinition(cwd, options));
 }
-export type PowerShellSpawnContext = never;
-export type PowerShellSpawnHook = NonNullable<BashToolOptions["spawnHook"]>;
+export type PowerShellSpawnContext = BashSpawnContext;
+export type PowerShellSpawnHook = BashSpawnHook;

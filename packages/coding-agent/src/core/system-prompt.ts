@@ -129,6 +129,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	};
 
 	const hasBash = tools.includes("bash");
+	const hasPowerShell = tools.includes("powershell");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
@@ -139,8 +140,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		!explicitlyExcludedTools.has("ask_user_question");
 
 	// File exploration guidelines
-	if (hasBash && !hasFind && !hasLs) {
-		addGuideline("Use bash for file operations like ls, rg, find");
+	if ((hasBash || hasPowerShell) && !hasFind && !hasLs) {
+		if (hasBash && hasPowerShell) {
+			addGuideline("Use bash or PowerShell for file operations like listing, searching, and finding files");
+		} else if (hasPowerShell) {
+			addGuideline("Use PowerShell for file operations like listing, searching, and finding files");
+		} else {
+			addGuideline("Use bash for file operations like ls, rg, find");
+		}
 	}
 	if (shouldIncludeAskUserFallbackGuidance) {
 		addGuideline("Clarify ambiguous requirements using the ask_user_question tool if available.");

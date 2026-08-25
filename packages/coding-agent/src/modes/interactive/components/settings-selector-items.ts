@@ -6,6 +6,14 @@ import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
 
+/**
+ * Sentinel row shown when no default-model catalog entry exists to configure.
+ * Upstream uses a double-underscore `none` marker; Atomic must not, because
+ * `test/ci/subagents-clean-break-contracts.test.ts` bans that exact literal as
+ * a deleted subagent environment key.
+ */
+const NO_DEFAULT_MODELS_VALUE = "__no-models__";
+
 function insertImageItems(items: SettingItem[], config: SettingsConfig): void {
 	if (!getCapabilities().images) return;
 
@@ -112,7 +120,7 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 	insertAfter(items, "terminal-progress", {
 		id: "cache-miss-notices",
 		label: "Cache miss notices",
-		description: "Show notices when a large prompt cache miss is detected",
+		description: "Show prompt-cache misses and compaction or branch-summary billing",
 		currentValue: config.showCacheMissNotices ? "true" : "false",
 		values: ["true", "false"],
 	});
@@ -275,12 +283,24 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 						});
 					return items;
 				});
+				// An empty catalog must explain itself instead of opening a zero-row
+				// picker; upstream 2ff8ba6223/5133c9284f use a sentinel row for this.
+				if (options.length === 0)
+					options.push({
+						value: NO_DEFAULT_MODELS_VALUE,
+						label: "No models available",
+						description: "Log in to a provider or configure an API key first",
+					});
 				return new SelectSubmenu(
 					"Per-Model Thinking Level",
 					"Select a model and thinking level",
 					options,
 					"",
 					(value) => {
+						if (value === NO_DEFAULT_MODELS_VALUE) {
+							done();
+							return;
+						}
 						const [key, level] = value.split("\0");
 						const slash = key.indexOf("/");
 						const provider = key.slice(0, slash);

@@ -73,6 +73,14 @@ describe("model selector catalog refresh status", () => {
 		expect(refreshed).toContain("Model catalogs refreshed.");
 	});
 
+	it("explains session selection and default persistence", async () => {
+		const selector = createSelector(async () => ({ aborted: false, errors: new Map() }));
+		const rendered = await renderedAfterWork(selector);
+		expect(rendered).toContain("select");
+		expect(rendered).toContain("set as default");
+		expect(rendered).toContain("cancel");
+	});
+
 	it("keeps cached models and identifies a partial provider failure", async () => {
 		const selector = createSelector(async () => ({
 			aborted: false,

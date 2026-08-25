@@ -1,3 +1,4 @@
+import type { Usage } from "@bastani/pi-ai/compat";
 import type {
 	AgentSessionInternalSurface as AgentSession,
 	VerbatimCompactionApplyOptions,
@@ -124,6 +125,7 @@ export async function _applyVerbatimCompaction(
 				rung: CompactionRung;
 				plannerModel?: CompactionPlannerModel;
 				keptTail: boolean;
+				usage?: Usage;
 		  }
 		| undefined;
 
@@ -181,6 +183,7 @@ export async function _applyVerbatimCompaction(
 			stats: run.stats,
 			rung: run.rung,
 			...(run.plannerModel ? { plannerModel: run.plannerModel } : {}),
+			...(run.usage ? { usage: run.usage } : {}),
 			keptTail: run.keptTail,
 		};
 	}
@@ -203,6 +206,7 @@ export async function _applyVerbatimCompaction(
 		firstKeptEntryId,
 		preparation.tokensBefore,
 		details,
+		compacted.usage,
 	);
 	this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 	const result: VerbatimCompactionResult = {
@@ -214,6 +218,7 @@ export async function _applyVerbatimCompaction(
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 		rung: compacted.rung,
 		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
+		...(compacted.usage ? { usage: compacted.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;

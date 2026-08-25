@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { BUILTIN_PACKAGE_DIR_NAMES } from "./core/builtin-install-layout.ts";
+import { stripBom } from "./utils/text.ts";
 
 export const COMPANION_BUILTIN_PACKAGE_NAMES: readonly string[] = BUILTIN_PACKAGE_DIR_NAMES.map(
 	(dirName) => `@bastani/${dirName}`,
@@ -66,7 +67,7 @@ function isJsonObject(value: JsonValue): value is JsonObject {
 
 function readPackageIdentity(packageJsonPath: string): PackageIdentityJson {
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+		const parsed: unknown = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8")));
 		if (!isJsonValue(parsed) || !isJsonObject(parsed)) return {};
 		const name = parsed.name;
 		const atomicConfig = parsed.atomicConfig;
