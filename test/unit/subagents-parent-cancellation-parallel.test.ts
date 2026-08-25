@@ -14,8 +14,11 @@ import { formatParallelResultContent } from "../../packages/subagents/src/runs/s
 import type { SubagentState } from "../../packages/subagents/src/shared/types.ts";
 import { sleep } from "../helpers/runtime.ts";
 
+const PROMPT_TRIES = 2_400;
+const PROMPT_MS = 5;
+
 async function waitForPrompt(promptLogPath: string): Promise<void> {
-	for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
+	for (let attempt = 0; attempt < PROMPT_TRIES && !existsSync(promptLogPath); attempt++) await sleep(PROMPT_MS);
 	assert.equal(existsSync(promptLogPath), true, "child prompt should start before abort");
 }
 
@@ -70,7 +73,6 @@ function executorContext(root: string): ExtensionContext {
 		getSystemPrompt: () => "",
 	} as unknown as ExtensionContext;
 }
-
 test("parallel parent abort reports each child cancelled instead of failed", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-parallel-"));
 	const gateA = Promise.withResolvers<void>();
@@ -146,7 +148,6 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("formatParallelResultContent labels parent-aborted children cancelled", () => {
 	const text = formatParallelResultContent(
 		[

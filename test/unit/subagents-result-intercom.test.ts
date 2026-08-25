@@ -81,12 +81,13 @@ describe("subagent result intercom helpers", () => {
 			runId: "mixed-complete-cancel",
 			mode: "parallel",
 			children: [
-				{ agent: "worker", status: "completed", summary: "done" },
+				{ agent: "worker", status: "completed", summary: "done", artifactPath: "/no/out", sessionPath: "/no/sess" },
 				{ agent: "analysis", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
 			],
 		});
 		assert.match(payload.message, /^Status: cancelled$/m);
 		assert.match(payload.message, /Children: 1 completed, 1 cancelled/);
+		assert.match(payload.message, /Output artifact: \/no\/out[\s\S]*Session: \/no\/sess/);
 		assert.doesNotMatch(payload.message, /^Status: interrupted$/m);
 		assert.doesNotMatch(payload.message, / — interrupted$/m);
 	});

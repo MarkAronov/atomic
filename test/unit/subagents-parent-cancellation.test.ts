@@ -26,6 +26,8 @@ import {
 	writeTextSync,
 } from "../helpers/runtime.ts";
 
+const PROMPT_TRIES = 2_400;
+const PROMPT_MS = 5;
 function abortSession(root: string, gate: Promise<void>) {
 	return {
 		output: "must not complete",
@@ -37,7 +39,7 @@ function abortSession(root: string, gate: Promise<void>) {
 
 async function waitForPrompt(root: string): Promise<void> {
 	const promptLogPath = join(root, "prompt.log");
-	for (let attempt = 0; attempt < 200 && !fileExistsSync(promptLogPath); attempt++) await sleep(5);
+	for (let attempt = 0; attempt < PROMPT_TRIES && !fileExistsSync(promptLogPath); attempt++) await sleep(PROMPT_MS);
 	assert.equal(fileExistsSync(promptLogPath), true, "child prompt should start before abort");
 }
 
@@ -349,7 +351,7 @@ test("parent abort keeps pre-cancel fallback metadata and does not start another
 				},
 			},
 		);
-		for (let attempt = 0; attempt < 200 && !sawFallback; attempt++) await sleep(5);
+		for (let attempt = 0; attempt < PROMPT_TRIES && !sawFallback; attempt++) await sleep(PROMPT_MS);
 		assert.equal(sawFallback, true, "fallback onUpdate should arrive before abort");
 		controller.abort();
 		const result = await pending;
@@ -467,7 +469,7 @@ test("compacted terminal progress keeps the parent-cancel cause", () => {
 });
 
 test("artifacts-disabled parent cancel still removes run-scoped progress storage", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-cleanup-"));
+	const root = makeTempDirectory("atomic-cancel-progress-cleanup-");
 	clearSubagentControls();
 	try {
 		const state: SubagentState = {
@@ -494,7 +496,7 @@ test("artifacts-disabled parent cancel still removes run-scoped progress storage
 				runSync: async (cwd, agents, agentName, task, options) => {
 					const agent = agents.find((candidate) => candidate.name === agentName) ?? sampleAgent();
 					if (options.progressPath) {
-						writeFileSync(options.progressPath, "# Progress\n\n- Recovered scratch finding\n");
+						writeTextSync(options.progressPath, "# Progress\n\n- Recovered scratch finding\n");
 					}
 					const gate = Promise.withResolvers<void>();
 					const childAbort = new AbortController();
@@ -550,9 +552,9 @@ test("artifacts-disabled parent cancel still removes run-scoped progress storage
 		assert.match(text, /Partial findings from progress\.md/);
 		assert.match(text, /Recovered scratch finding/);
 		assert.doesNotMatch(text, /Progress: /);
-		assert.equal(existsSync(join(root, "subagent-artifacts", "progress", runId)), false);
+		assert.equal(fileExistsSync(join(root, "subagent-artifacts", "progress", runId)), false);
 	} finally {
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isStaleExtensionContextError } from "@bastani/atomic";
-import { PARENT_CANCEL_CAUSE, presentCancelledStatus } from "../runs/shared/cancellation-recovery.js";
+import {
+	existingArtifactPath,
+	PARENT_CANCEL_CAUSE,
+	presentCancelledStatus,
+} from "../runs/shared/cancellation-recovery.js";
 import {
 	type Details,
 	type IntercomEventBus,
@@ -75,6 +79,11 @@ function resolveGroupedStatus(children: SubagentResultIntercomChild[]): Subagent
 	return "failed";
 }
 
+function citedChildPath(child: SubagentResultIntercomChild, pathValue: string | undefined): string | undefined {
+	if (presentCancelledStatus(child.status, child.cause) !== "cancelled") return pathValue;
+	return existingArtifactPath(pathValue);
+}
+
 export interface GroupedResultIntercomMessageInput {
 	to: string;
 	runId: string;
@@ -116,8 +125,8 @@ function formatSubagentResultIntercomMessage(input: {
 		const child = input.children[index]!;
 		lines.push("", `${index + 1}. ${child.agent} — ${presentCancelledStatus(child.status, child.cause)}`);
 		if (child.intercomTarget) lines.push(`Run intercom target: ${child.intercomTarget}`);
-		if (child.artifactPath) lines.push(`Output artifact: ${child.artifactPath}`);
-		if (child.sessionPath) lines.push(`Session: ${child.sessionPath}`);
+		if (citedChildPath(child, child.artifactPath)) lines.push(`Output artifact: ${child.artifactPath}`);
+		if (citedChildPath(child, child.sessionPath)) lines.push(`Session: ${child.sessionPath}`);
 		lines.push("Summary:", child.summary);
 	}
 
@@ -138,7 +147,7 @@ export function buildSubagentResultIntercomPayload(
 		to: input.to,
 		runId: input.runId,
 		mode: input.mode,
-		status,
+		status: presentCancelledStatus(status, groupedParentCancelCause(children)) as SubagentResultStatus,
 		summary,
 		children,
 		...(firstChild?.agent ? { agent: firstChild.agent } : {}),
@@ -239,7 +248,7 @@ export function formatSubagentResultReceipt(input: {
 		`Children: ${formatStatusCounts(input.payload.children)}`,
 	];
 
-	const artifacts = input.payload.children.filter((child) => typeof child.artifactPath === "string");
+	const artifacts = input.payload.children.filter((child) => citedChildPath(child, child.artifactPath));
 	if (artifacts.length > 0) {
 		lines.push("Artifacts:");
 		for (const child of artifacts) {
@@ -255,7 +264,7 @@ export function formatSubagentResultReceipt(input: {
 		}
 	}
 
-	const sessions = input.payload.children.filter((child) => typeof child.sessionPath === "string");
+	const sessions = input.payload.children.filter((child) => citedChildPath(child, child.sessionPath));
 	if (sessions.length > 0) {
 		lines.push("Sessions:");
 		for (const child of sessions) {
