@@ -29,6 +29,27 @@ export function resolveThinkingSelectorDefault(
 	return availableLevels.includes("off") ? "off" : availableLevels[0];
 }
 
+/**
+ * The saved level the active session would start from, in the precedence
+ * `findInitialModel` uses: a scoped `--models "id:level"` entry wins over a
+ * persisted per-model override, which wins over the global default. Matching
+ * it keeps the selector badge from advertising a level the session never used.
+ */
+export function resolveSessionThinkingDefault(
+	model: Model<Api> | undefined,
+	scopedModels: ReadonlyArray<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>,
+	settings: {
+		getModelThinkingLevel(provider: string, modelId: string): ThinkingLevel | undefined;
+		getDefaultThinkingLevel(): ThinkingLevel | undefined;
+	},
+): ThinkingLevel | undefined {
+	if (model === undefined) return settings.getDefaultThinkingLevel();
+	const scopedLevel = scopedModels.find(
+		(scoped) => scoped.model.provider === model.provider && scoped.model.id === model.id,
+	)?.thinkingLevel;
+	return scopedLevel ?? settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
+}
+
 InteractiveModeBase.prototype.handleModelCommand = async function (
 	this: InteractiveModeBase,
 	searchTerm?: string,
@@ -387,11 +408,7 @@ InteractiveModeBase.prototype.showThinkingSelector = function (this: Interactive
 		};
 		const model = this.session.model;
 		const availableLevels = this.session.getAvailableThinkingLevels();
-		const rawDefault =
-			model === undefined
-				? this.settingsManager.getDefaultThinkingLevel()
-				: (this.settingsManager.getModelThinkingLevel(model.provider, model.id) ??
-					this.settingsManager.getDefaultThinkingLevel());
+		const rawDefault = resolveSessionThinkingDefault(model, this.session.scopedModels, this.settingsManager);
 		const selector = new ThinkingSelectorComponent(
 			this.session.thinkingLevel,
 			availableLevels,

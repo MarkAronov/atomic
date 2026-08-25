@@ -2,7 +2,10 @@ import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat"
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { beforeAll, expect, test } from "vitest";
 import { ThinkingSelectorComponent } from "../src/modes/interactive/components/thinking-selector.ts";
-import { resolveThinkingSelectorDefault } from "../src/modes/interactive/interactive-model-routing.ts";
+import {
+	resolveSessionThinkingDefault,
+	resolveThinkingSelectorDefault,
+} from "../src/modes/interactive/interactive-model-routing.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 beforeAll(() => {
@@ -70,4 +73,43 @@ test("selector badges the clamped default rather than leaving no item marked", (
 
 	expect(renderedLines(unclamped).some((line) => line.includes("default"))).toBe(false);
 	expect(renderedLines(clamped).some((line) => line.includes("default"))).toBe(true);
+});
+
+function reasoningModel(id = "big"): Model<Api> {
+	return { ...nonReasoningModel(), id, name: id, reasoning: true } as Model<Api>;
+}
+
+const savedLevels = (perModel?: ThinkingLevel, global?: ThinkingLevel) => ({
+	getModelThinkingLevel: () => perModel,
+	getDefaultThinkingLevel: () => global,
+});
+
+test("a scoped model level outranks the global default", () => {
+	const model = reasoningModel();
+	// `--models "big:high"` with a global default of low: startup runs at high.
+	expect(resolveSessionThinkingDefault(model, [{ model, thinkingLevel: "high" }], savedLevels(undefined, "low"))).toBe(
+		"high",
+	);
+});
+
+test("a scoped model level outranks a persisted per-model override", () => {
+	const model = reasoningModel();
+	expect(resolveSessionThinkingDefault(model, [{ model, thinkingLevel: "high" }], savedLevels("medium", "low"))).toBe(
+		"high",
+	);
+});
+
+test("a scoped entry for a different model does not leak its level", () => {
+	const active = reasoningModel("active");
+	const other = reasoningModel("other");
+	expect(
+		resolveSessionThinkingDefault(active, [{ model: other, thinkingLevel: "high" }], savedLevels(undefined, "low")),
+	).toBe("low");
+});
+
+test("falls back to the per-model override, then the global default", () => {
+	const model = reasoningModel();
+	expect(resolveSessionThinkingDefault(model, [], savedLevels("medium", "low"))).toBe("medium");
+	expect(resolveSessionThinkingDefault(model, [], savedLevels(undefined, "low"))).toBe("low");
+	expect(resolveSessionThinkingDefault(model, [{ model }], savedLevels(undefined, "low"))).toBe("low");
 });
