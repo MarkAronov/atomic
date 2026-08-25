@@ -39,6 +39,7 @@
 - Fixed hung authenticated model-catalog attempts consuming the whole request budget without retrying by applying a per-attempt timeout before retrying.
 - Fixed UTF-8 BOMs breaking auth, model, keybinding, frontmatter, package, resource, theme, and CLI text inputs while preserving BOM-aware hashline edits.
 - Fixed atomic managed-state rewrites resetting existing file permissions. Credential files are always rewritten as `0600` so a world-readable `auth.json` cannot leak replacement secrets.
+- Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result; they are now appended after the turn's tool results ([#8537](https://github.com/earendil-works/pi/issues/8537)).
 
 ## [0.9.16-alpha.4] - 2026-08-23
 
