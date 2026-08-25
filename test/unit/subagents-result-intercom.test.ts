@@ -53,6 +53,7 @@ describe("subagent result intercom helpers", () => {
 				{ agent: "reviewer", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
 			],
 		});
+		assert.equal(cancelled.status, "interrupted");
 		assert.match(cancelled.message, /^Status: cancelled$/m);
 		assert.match(cancelled.message, /Children: 2 cancelled/);
 
@@ -85,6 +86,7 @@ describe("subagent result intercom helpers", () => {
 				{ agent: "analysis", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
 			],
 		});
+		assert.equal(payload.status, "interrupted");
 		assert.match(payload.message, /^Status: cancelled$/m);
 		assert.match(payload.message, /Children: 1 completed, 1 cancelled/);
 		assert.match(payload.message, /Output artifact: \/no\/out[\s\S]*Session: \/no\/sess/);

@@ -139,7 +139,7 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 		assert.equal(payload.status, "interrupted");
 		assert.match(payload.summary, /cancelled/);
 		assert.doesNotMatch(payload.summary, /failed/);
-		assert.match(payload.message, /cancelled/);
+		assert.match(payload.message, /^Status: cancelled$/m);
 		assert.doesNotMatch(payload.message, /failed/);
 	} finally {
 		gateA.resolve();

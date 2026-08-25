@@ -147,7 +147,7 @@ export function buildSubagentResultIntercomPayload(
 		to: input.to,
 		runId: input.runId,
 		mode: input.mode,
-		status: presentCancelledStatus(status, groupedParentCancelCause(children)) as SubagentResultStatus,
+		status,
 		summary,
 		children,
 		...(firstChild?.agent ? { agent: firstChild.agent } : {}),
