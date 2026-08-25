@@ -6,10 +6,10 @@ branch: pi-0.84.3/00-port-matrix
 repository: atomic-monorepo
 topic: Pi v0.84.2..upstream-main (v0.84.3 + 4) upstream commit and file port matrix
 tags: [implementation, evidence, pi-0.84.3, port-matrix]
-status: in_progress
+status: completed
 last_updated: 2026-08-25
-last_updated_by: Claude Opus 5
-port_outcome: planned — this matrix is written before the stack lands, so each cell records the *decided* outcome and names the slice (`S1`–`S8`) that will carry it; cells flip to shipped outcomes as each PR merges
+last_updated_by: Claude Fable 5
+port_outcome: shipped on the pi-0.84.3/* stack
 breaking_changes_allowed: false
 compatibility_context: Preserve Atomic public SDK, branding, CLI names and paths, legacy PI_*/.pi aliases, providers, isolated runtime, fullscreen-only renderer, Verbatim Compaction, versionless 0.0.0 manifests, and Atomic's Bun-compiled release/CI pipeline.
 ---
@@ -21,10 +21,10 @@ upstream `main`, four commits past the v0.84.3 tag — against Atomic's tree. **
 `packages/coding-agent`**; the other 28 are upstream-package, script, CI, or governance
 changes.
 
-Atomic resolves `@earendil-works/pi-*` at `^0.84.2` before this migration. Slice **S1** moves
-every range to `^0.84.3` and regenerates `package-lock.json` with npm; `packages/tui`,
-`packages/agent`, `packages/client`, and `packages/protocol` changes in this range arrive
-through that bump and are **never** source-ported.
+Atomic resolves every external `@earendil-works/pi-*` compatibility dependency at `^0.84.3`
+after Slice **S1**. The regenerated lockfile carries `packages/tui`, `packages/agent`,
+`packages/client`, and `packages/protocol` changes from this range; those changes are **never**
+source-ported.
 
 **`packages/ai` is not touched on any branch.** Atomic vendors its own `packages/ai` fork,
 published as `@bastani/pi-ai`, which was independently verified to already carry every
@@ -64,7 +64,7 @@ Slice labels used below map to the stack branches:
 |---:|---|---|---|---|
 | 19 | `d5278eaac3`, `086c32e745`, `d3ab2af969`, `86d001d36b`, `af2c352238`, `10acee6045`, `87205484bf`, `6db110e6fa`, `9117326b4c`, `ad58801ce7`, `e5dde9a76b`, `a6c6f80180`, `59a71b235d`, `55b0db4d3e`, `d57e531f5d`, `3de00332f7`, `87af49dec2`, `4ca636c5e0`, `b7bb00b936` | `packages/ai` provider/transport/auth/catalog work | **skipped-vendored-ai** | Atomic's `packages/ai` fork already carries every behavior; sampled and verified file-by-file in [B0](#b0-vendored-ai-verification). `59a71b235d` reverts `a6c6f80180` and is superseded by `4809c2abca` (listed in [B2](#b2-dependency-carried-anthropic-summarization-shim-3) because it also touches `packages/coding-agent`); the net state is what the fork holds. `4ca636c5e0` and `b7bb00b936` also touch `packages/server`, which Atomic does not ship — its RPC surface is `src/modes/rpc*`, covered by `830a0a59e9` in S6. |
 | 2 | `2509b5c037`, `3a0b9a3eee` | `packages/agent` provider-context construction, added then reverted | **not applicable** | Net zero upstream. Atomic constructs `Agent` from `@earendil-works/pi-agent-core` (`src/core/sdk.ts`); nothing to inherit. |
-| 2 | `f0c5d86d20`, `8f2ae3fadd` | `packages/tui` narrow-width text padding, wrapped-table link colour leaks | **inherited dependency** | Arrives with `@earendil-works/pi-tui@0.84.3` in S1. Atomic vendors no renderer copy. |
+| 2 | `f0c5d86d20`, `8f2ae3fadd` | `packages/tui` narrow-width text padding, wrapped-table link colour leaks | **inherited dependency; shipped** | Arrived with `@earendil-works/pi-tui@0.84.3` in S1. Atomic vendors no renderer copy. |
 | 1 | `5cd93f688a` | `scripts/auto-pi.sh` developer `pi` PATH wrapper defaulting `PI_EXPERIMENTAL=1` | **not applicable** | Developer convenience for the `pi` binary name; Atomic's CLI is `atomic` and copying it would ship wrong branding and paths. |
 | 1 | `39d869f02a` | Publish installer artifacts + advance an R2 installer pointer | **not applicable** | Touches `.github/workflows/build-binaries.yml` and `scripts/publish-release-announcement.mjs`, neither of which exists in Atomic. Atomic publishes through tag-triggered `publish.yml`, GitHub release assets, npm OIDC, and `scripts/cut-release.ts`. |
 | 1 | `bfb004d441` | Extract Windows release ZIPs with PowerShell instead of `tar` in CI | **equivalent** | Atomic's `publish.yml` Windows smoke job already runs on Windows and uses `Expand-Archive`; the archive creator carries a PowerShell fallback. |
@@ -128,18 +128,18 @@ has no analogue. The classifications name the Atomic symbol that was checked.
 
 | Commit | Subject | Outcome | Atomic site |
 |---|---|---|---|
-| `47bf47f11f` | Clarify compaction paths (JSDoc) | **equivalent** | Upstream expands doc comments on `AgentSession.compact()`/`_checkCompaction()`/`_runAutoCompaction()`; Atomic already separates these structurally into `agent-session-compaction.ts` and `agent-session-auto-compaction.ts`. |
-| `58302d34e7` | Support compaction routing sessions | **intentionally rejected** | Upstream reuses an active routing `sessionId` for summary requests. Atomic's `planDeletedLineRanges()`, `generateBranchSummary()`, and `generateSessionSummary()` deliberately issue fresh `uuidv7()` IDs with `cacheRetention: "none"` so planner traffic never joins the user's routed session. |
-| `c7c763f5c4` | Clarify truncated recovery failure | **equivalent** | Atomic's `_checkCompaction()` already tracks `contextOverflow` separately from recoverable-length attempts and emits distinct messages. |
-| `ef8dc7385b` | Centralize compaction summary requests | **equivalent** | Atomic already funnels all default execution through `_applyVerbatimCompaction()` and isolates request construction in `planDeletedLineRanges()`. |
-| `cff1cf52c6` | Cache-friendly compaction primitives | **not applicable** | Reverted by `8dab70281b`; the feature nets to zero upstream, and `CacheFriendlySummaryOptions`/source-context replay have no safe analogue in byte-preserving verbatim deletion. |
-| `8dab70281b` | Revert "cache-friendly compaction primitives" | **not applicable** | Exact revert of a primitive Atomic never adopted. |
-| `a6b1dbceb1` | Emit compaction-failed for extensions (#8241) | **ported (adapted)**, S2 | Atomic has the lifecycle sites (`_applyVerbatimCompaction()`, `emitManualCompactionFailure()`, `_runAutoCompaction()`) but `src/core/extensions/session-events.ts` publishes only `session_before_compact`/`session_compact`. Add a Verbatim-aware `session_compact_failed` event plus API overloads, tests, and `docs/{compaction,extensions}.md`. |
-| `90305d90a0` | Disable tools during summarization | **ported (adapted)**, S2 | Atomic's summary and planner contexts omit tools but never set `toolChoice: "none"` nor reject returned tool calls. Apply to `generateBranchSummary()`, `generateSessionSummary()`, and `planDeletedLineRanges()`, preserving the planner's validated-range airlock. |
-| `4495469a5e` | Compact without provider usage | **ported (adapted)**, S2 | `_checkCompaction()` estimates only on error and returns early when `lastUsageIndex === null`, so an all-zero provider usage still skips compaction. Port the size estimate into Atomic's split auto-compaction module without disturbing stale-boundary handling. |
+| `47bf47f11f` | Clarify compaction paths (JSDoc) | **equivalent — verified S2** | Upstream expands doc comments on `AgentSession.compact()`/`_checkCompaction()`/`_runAutoCompaction()`; Atomic already separates these structurally into `agent-session-compaction.ts` and `agent-session-auto-compaction.ts`. |
+| `58302d34e7` | Support compaction routing sessions | **intentionally rejected — verified S2** | Upstream reuses an active routing `sessionId` for summary requests. Atomic's `planDeletedLineRanges()`, `generateBranchSummary()`, and `generateSessionSummary()` deliberately issue fresh `uuidv7()` IDs with `cacheRetention: "none"` so planner traffic never joins the user's routed session. |
+| `c7c763f5c4` | Clarify truncated recovery failure | **equivalent — verified S2** | Atomic's `_checkCompaction()` already tracks `contextOverflow` separately from recoverable-length attempts and emits distinct messages. |
+| `ef8dc7385b` | Centralize compaction summary requests | **equivalent — verified S2** | Atomic already funnels all default execution through `_applyVerbatimCompaction()` and isolates request construction in `planDeletedLineRanges()`. |
+| `cff1cf52c6` | Cache-friendly compaction primitives | **not applicable — verified S2** | Reverted by `8dab70281b`; the feature nets to zero upstream, and `CacheFriendlySummaryOptions`/source-context replay have no safe analogue in byte-preserving verbatim deletion. |
+| `8dab70281b` | Revert "cache-friendly compaction primitives" | **not applicable — verified S2** | Exact revert of a primitive Atomic never adopted. |
+| `a6b1dbceb1` | Emit compaction-failed for extensions (#8241) | **ported (adapted) — shipped S2** | Added the Verbatim-aware event and failure emissions from `emitManualCompactionFailure()`, `_checkCompaction()` recovery exhaustion, `_runAutoCompaction()`, and `_preflightPostToolContext()`, with public API, tests, and docs. |
+| `90305d90a0` | Disable tools during summarization | **ported (adapted) — shipped S2** | `generateBranchSummary()`, `generateSessionSummary()`, and `planDeletedLineRanges()` now disable tools and reject tool calls while retaining the planner's validated truncated-record recovery airlock. |
+| `4495469a5e` | Compact without provider usage | **ported (adapted) — shipped S2** | `_checkCompaction()` now uses the pure message-size estimate for all-zero usage and keeps the stale usage-boundary guard for usage-backed estimates. |
 | `836aee6d38` | Show compaction usage notices | **ported (adapted)**, S4 | Upstream gates persisted billing notices on `showCacheMissNotices`. Atomic persists `BranchSummaryEntry.usage` but exposes no aggregate for multi-attempt Verbatim planning; add truthful aggregate planner usage, the setting row, and fullscreen transcript notices. Shipped with the settings surface in S4 rather than S2. |
-| `d711bd5f0a` | Preserve branch summary source leaf | **ported**, S2 | `navigateTree()` captures `oldLeafId`, but `branchWithSummary(newLeafId, …)` records the destination as `fromId`. Pass source and destination separately in `src/core/session-manager.ts` and cover both in tree-traversal tests. |
-| `97fa14e39c` | Reject truncated compaction summaries (#7048) | **ported (adapted)**, S2 | `generateBranchSummary()`/`generateSessionSummary()` currently accept `stopReason: "length"` prose. Reject those, while keeping `planDeletedLineRanges()`'s safe recovery of complete validated deletion records from truncated output. |
+| `d711bd5f0a` | Preserve branch summary source leaf | **ported — shipped S2** | `navigateTree()` now passes its pre-navigation `oldLeafId` through so the summary parent remains the destination while `fromId` is the source; tree-traversal tests cover both identities. |
+| `97fa14e39c` | Reject truncated compaction summaries (#7048) | **ported (adapted) — shipped S2** | `generateBranchSummary()` and `generateSessionSummary()` reject `length` prose; `planDeletedLineRanges()` still safely recovers only complete validated deletion records from truncated output. Atomic deliberately checks for tool calls before truncated-range recovery, unlike upstream's ordering: a response that emitted a tool call despite `toolChoice: "none"` is treated as derailed, so its partial ranges are not salvaged. |
 
 ### B4. Model and thinking-level scope (13) — S3 and S4
 
@@ -161,7 +161,7 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `f0a2880f29` | Revert token-estimate removal | **equivalent** | Restores the state Atomic already has. |
 | `496185f6e4` | `/thinking` command | **ported (adapted)** | S4. Atomic has `components/thinking-selector.ts` but no `/thinking` in `core/slash-commands.ts`, no autocomplete entry, and no routing in `interactive-input-handling.ts`. Port the final `/thinking <level>` form; omit the superseded `--default` parser. |
 | `9c8070fbe4` | Ctrl+S persists `/model` | **ported (adapted)** | S4. Atomic's model selector always persists on Enter; split into session-only Enter and persisting Ctrl+S callbacks. |
-| `ee29aa118b` | Searchable default model and thinking level | **ported (adapted)** | S4. Atomic's top-level `SettingsList` search is on, but `SelectSubmenu` is not searchable. Port only the surviving per-model thinking submenu. |
+| `ee29aa118b` | Searchable default model and thinking level | **ported (adapted); shipped S4** | Atomic shipped one searchable combined model/level editor rather than upstream's stepped model-then-level picker, preserving per-model overrides with a simpler Atomic settings surface. |
 | `a669db3c33` | Show `modelid [provider]` like `/model` | **ported (adapted)** | S4. Atomic's `/model` already renders id plus provider badge; the settings-side per-model picker and wider layout are new. |
 | `1d3503fb9b` | Show and search saved defaults (#8399) | **ported (adapted)** | S4. Neither Atomic selector has a default badge or default-aware search. |
 | `768184923a` | Narrow default-model query matching | **ported** | S4. Ships with the selector port; no standalone Atomic analogue. |
@@ -176,15 +176,15 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `8c2529daeb` | Don't load root `.md` files as skills (#8012) | **ported**, S5 | `src/core/skills.ts:264` still routes every root `.md` through `loadSkillFromFile`, and line 279 diagnoses undeclared files. Silently skip non-`SKILL.md` files without frontmatter; keep diagnostics for malformed declared skills. Doc delta in `docs/skills.md`. |
 | `5e11f65865` | Load nested markdown skills (#8255) | **ported**, S5 | `src/core/package-manager-resource-files.ts:140` includes loose Markdown only for `mode === "pi" && dir === root`; nested Agents-format Markdown is dropped. |
 | `080932e53c` | Use `semver.gt` for version comparison (#8239) | **ported**, S5 | `package-manager-operations.ts:199` and `package-manager-npm.ts:256` both compare with `!==`, so a newer installed package can be downgraded. |
-| `f8f03460a0` | Reduce workspace dependency tree | **ported (adapted)**, S5 | Only the coding-agent half: replace the `glob` dependency with deterministic `node:fs` globbing in `package-manager-resource-collector.ts`, drop the direct dependency, regenerate lock/shrinkwrap. The `packages/{ai,agent,evals,telemetry}` manifest hunks are **not applicable** — Atomic must not touch its vendored fork and ships none of the others in upstream's shape. |
-| `a1f955e9f4` | Remove redundant development dependencies | **ported**, S1 | Atomic has no root `jiti` duplicate but still lists `@types/diff` and `@types/ms`; `diff@8` ships its own types and no `ms` import exists. Removed during S1's lock regeneration. |
+| `f8f03460a0` | Reduce workspace dependency tree | **intentionally deferred** | The coding-agent `glob` removal was attempted in S5, but removing the dependency broke ambient type resolution in Atomic's local toolchain. The dependency and existing collector remain; upstream workspace-package manifest hunks remain not applicable to Atomic's vendored/package layout. |
+| `a1f955e9f4` | Remove redundant development dependencies | **ported; shipped**, S1 | Removed coding-agent's redundant `@types/diff` and `@types/ms` during S1's lock regeneration. Atomic had no root `jiti` duplicate. |
 | `955a543b31` | Expose sleeping llama.cpp models (#8235) | **ported (adapted)**, S5 | `src/extensions/llama/provider.ts:64-65` filters sleeping models out even though `index.ts` and the UI already recognize them. |
 | `a1bc0ec790` | llama.cpp guidance as no default (#8236) | **ported (adapted)**, S5 | Atomic's split `interactive-auth-login.ts:36-47` offers no llama-specific guidance; `docs/llama-cpp.md` needs the matching note. |
 | `d3e3bbc011` | Allow network for llama model discovery (#8238) | **ported**, S5 | `src/extensions/llama/index.ts:54-57` refuses catalog refresh under offline mode; a local router is not the network policy's concern. |
 | `dcd461925d` | Show llama presets if autoload enabled (#8558) | **ported (adapted)**, S5 | Atomic's llama client has no `/props` probe, no autoload detection, and no preset selection. Port while preserving Atomic's generation-checked catalog publishing. |
-| `e429d90b80` | Update Z.AI Coding Plan defaults | **equivalent** | Already at `src/core/model-resolver-defaults.ts:22-23` (`glm-5.3` for `zai` and `zai-coding-cn`). |
-| `70e878d4cf` | Route xAI through Responses, default Grok 4.6 (#8124) | **equivalent** (coding-agent) / **skipped-vendored-ai** (`packages/ai`) | `model-resolver-defaults.ts:18` is already `grok-4.6`; routing lives in the fork. |
-| `1c28f3032e` | Update Cloudflare gateway sonnet test id (#8260) | **equivalent** | Atomic's resolver default (`cerebras: gpt-oss-120b`, `model-resolver-defaults.ts:20`) and its Cloudflare compat test already match. |
+| `e429d90b80` | Update Z.AI Coding Plan defaults | **equivalent; verified**, S1 | `src/core/model-resolver-defaults.ts:22-23` already uses `glm-5.3` for `zai` and `zai-coding-cn`. |
+| `70e878d4cf` | Route xAI through Responses, default Grok 4.6 (#8124) | **equivalent; verified** (coding-agent) / **skipped-vendored-ai** (`packages/ai`), S1 | `model-resolver-defaults.ts:18` is already `grok-4.6`; routing lives in the fork. |
+| `1c28f3032e` | Update Cloudflare gateway sonnet test id (#8260) | **equivalent; verified**, S1 | Atomic's resolver default (`cerebras: gpt-oss-120b`, `model-resolver-defaults.ts:20`) and its Cloudflare compat test already match. |
 
 ### B6. Extensions, events, export, and input robustness (12) — S6
 
@@ -197,8 +197,8 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 | `830a0a59e9` | Expose tool metadata at stream start (#7953) | **ported (adapted)**, S6 | `src/modes/json-event.ts:41-49` strips `partial` generically and loses the starting tool call's `id`/`toolName`; the adaptation must keep Atomic's `withEndTurn` (`:52-59`) and cumulative `usage`. Docs in `docs/json.md` + `docs/rpc.md`. |
 | `460191cfcf` | Include context in Radius session shares | **ported (adapted)**, S6 | Only the export half: emit an export-only, Atomic-branded `atomic.share` custom entry carrying system prompt and tool schemas from `agent-session-export.ts`, without mutating the persisted session. The Radius upload half is rejected — see `686f3487f5`. |
 | `f4585b8bec` | Simplify session sharing links | **ported (adapted)**, S6 | Atomic prints plain Gist/pi.dev URLs and runs the `gh auth status` preflight before export. Take the canonical-hyperlink and preflight-ordering cleanup; keep `ATOMIC_SHARE_VIEWER_URL` with its legacy `PI_SHARE_VIEWER_URL` alias. |
-| `686f3487f5` | Share via Radius artifacts under experimental (#8443) | **intentionally rejected** | Uploading session artifacts — including the system prompt and tool schemas — to upstream's hosted Radius service is an upstream product surface. Atomic keeps private-Gist sharing under its own branding and viewer variable. |
-| `77f2d1235e` | Only share via Radius if logged in | **intentionally rejected** | Same boundary: silently routing `/share` to a hosted upstream service whenever a Radius credential happens to exist is exactly the behavior Atomic declines. |
+| `686f3487f5` | Share via Radius artifacts under experimental (#8443) | **intentionally rejected; confirmed S6** | Uploading session artifacts — including the system prompt and tool schemas — to upstream's hosted Radius service remains outside Atomic's product boundary. Atomic ships only an export-time `atomic.share` context record and retains private-Gist sharing. |
+| `77f2d1235e` | Only share via Radius if logged in | **intentionally rejected; confirmed S6** | Atomic does not silently route `/share` to an upstream-hosted service when a Radius credential exists; S6 preserved the existing private-Gist transport and Atomic viewer URL. |
 | `df018b6020` | Retry hung model catalog requests | **ported**, S6 | `src/utils/management-http.ts:9-11` exposes only an overall `timeoutMs` and reuses one combined signal, so a hung attempt can never be retried; `remote-catalog-provider.ts:85` needs the 4 s per-attempt limit. |
 | `1355cd36e0` | Normalize UTF-8 BOMs in text inputs | **ported (adapted)**, S6 | Partly present: `src/utils/json.ts:9-15` already provides `stripJsonBom`/`parseJsonFileContent` for settings and trust, and `test/hashline-tools.test.ts:513` proves hashline edits preserve a file's BOM. Port the remaining readers (auth, models, model config, keybindings, frontmatter, package manager, resource loader, theme, CLI file processor) without disturbing either. |
 | `c49906ec77` | Preserve managed state file permissions | **ported (adapted)**, S6 | `auth-storage-backends.ts:113-119` writes a temp file, chmods `0600`, and renames over the target, so simply dropping the chmod would still replace the inode and its mode. Carry the existing target mode onto the replacement while keeping `0600` as the creation default. |
@@ -226,7 +226,7 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome |
 |---|---|---|
-| `7d4c0e05dd` | Bundle Node runtime (#8474) | **not applicable** — Atomic ships a Bun-compiled executable. `src/config.ts` already exposes `isBunBinary`/`isBundledBuild`/`isBunRuntime`, honours `ATOMIC_PACKAGE_DIR ?? PI_PACKAGE_DIR`, and `loader-virtual-modules.ts` already selects embedded modules for `isBunBinary \|\| isBundledBuild`. |
+| `7d4c0e05dd` | Bundle Node runtime (#8474) | **ported (adapted); dependency compatibility shipped in S1** — Node SEA remains not applicable because Atomic ships a Bun-compiled executable. However, pi-tui 0.84.3 extracted native lookup into `native-module-path.js`; Atomic now stages that required sidecar beside `native-modifiers.js` in both package and release binary builds, with the compiled-launcher boundary test covering execution from an unrelated cwd. |
 | `c061328981` | Load extensions in Node SEA hosts (#8237) | **not applicable** — Node SEA is not an Atomic distribution; `loader-virtual-modules.ts:517` already covers Atomic's compiled artifact. |
 | `c1279a65b3` | Defer jiti until extension loading | **not applicable** — touches only `scripts/build-coding-agent-bundle.mjs`, which Atomic does not have; Atomic's loader imports `jiti/static` under a Bun build that consumes raw TypeScript. |
 | `309b524f4f` | Avoid duplicate clipboard binaries | **equivalent** — Atomic's `scripts/build-binaries.sh`, `stage-clipboard-native-bindings.ts`, and `copy-clipboard-native-bindings.ts` already stage target binaries into `@mariozechner/clipboard` without retaining native leaf packages, and `publish.yml` smoke-tests Linux, Windows, and musl archives. |
@@ -252,8 +252,8 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome |
 |---|---|---|
-| `209bc7b9a8` | Remove unused opentelemetry dependency | **equivalent** — the coding-agent hunk is `npm-shrinkwrap.json`/`install-lock` only, and Atomic's fork already has no direct `@opentelemetry/api` dependency; remaining lock entries are transitive. |
-| `374e56e553` | Avoid duplicate VS Code right-click paste | **inherited dependency** — the fix is in `packages/tui/src/tui-alt-screen.ts`; the coding-agent hunk is a changelog line. Arrives with `@earendil-works/pi-tui@0.84.3` in S1, and Atomic's `AtomicTuiAltScreen extends TuiAltScreen` inherits it directly. |
+| `209bc7b9a8` | Remove unused opentelemetry dependency | **equivalent; verified**, S1 — the regenerated lock and shrinkwrap retain no direct `@opentelemetry/api` dependency; remaining entries are transitive. Atomic's fork already omitted the direct dependency. |
+| `374e56e553` | Avoid duplicate VS Code right-click paste | **inherited dependency; shipped**, S1 — `@earendil-works/pi-tui@0.84.3` carries the renderer fix, which Atomic's `AtomicTuiAltScreen extends TuiAltScreen` inherits directly; Atomic's changelog records the user-visible outcome. |
 | `a470b121bf` | Expose finish reason compatibility override (#8487) | **equivalent** — `src/core/model-config.ts:77` already declares `supportsFinishReason: Type.Optional(Type.Boolean())`, and Atomic's vendored fork consumes the compat field. |
 
 The release and bookkeeping commits `914cf1472e`, `4e58f324fa`, `0e0021fbbe`, and `31d4ed5860`
