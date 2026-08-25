@@ -251,7 +251,6 @@ function parseLegacyEncryptedReasoningDetail(
 		return undefined;
 	}
 }
-
 function fillMissingCommonReasoningDetailFields(
 	target: OpenAIReasoningDetailBase,
 	source: OpenAIReasoningDetail,
@@ -261,15 +260,29 @@ function fillMissingCommonReasoningDetailFields(
 	target.index ??= source.index;
 }
 
+function canMergeOpenAIReasoningDetails(last: OpenAIReasoningDetailBase, next: OpenAIReasoningDetailBase): boolean {
+	if (last.id !== undefined && next.id !== undefined && last.id !== next.id) return false;
+	if (last.index !== undefined && next.index !== undefined && last.index !== next.index) return false;
+	return true;
+}
+
 function appendOpenAIReasoningDetail(details: OpenAIReasoningDetail[], detail: OpenAIReasoningDetail): void {
 	const lastDetail = details[details.length - 1];
-	if (detail.type === "reasoning.text" && lastDetail?.type === "reasoning.text") {
+	if (
+		detail.type === "reasoning.text" &&
+		lastDetail?.type === "reasoning.text" &&
+		canMergeOpenAIReasoningDetails(lastDetail, detail)
+	) {
 		lastDetail.text += detail.text;
 		lastDetail.signature ||= detail.signature;
 		fillMissingCommonReasoningDetailFields(lastDetail, detail);
 		return;
 	}
-	if (detail.type === "reasoning.summary" && lastDetail?.type === "reasoning.summary") {
+	if (
+		detail.type === "reasoning.summary" &&
+		lastDetail?.type === "reasoning.summary" &&
+		canMergeOpenAIReasoningDetails(lastDetail, detail)
+	) {
 		lastDetail.summary += detail.summary;
 		fillMissingCommonReasoningDetailFields(lastDetail, detail);
 		return;

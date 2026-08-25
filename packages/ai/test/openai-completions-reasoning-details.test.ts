@@ -248,4 +248,35 @@ describe("openai-completions reasoning_details streaming", () => {
 
 		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual(expectedReasoningDetails);
 	});
+
+	it("keeps adjacent same-type reasoning details with distinct identities", async () => {
+		const firstText = {
+			type: "reasoning.text",
+			text: "first ",
+			id: "reasoning-text-1",
+			index: 0,
+		};
+		const secondText = {
+			type: "reasoning.text",
+			text: "second",
+			id: "reasoning-text-2",
+			index: 1,
+		};
+		mockState.chunkSets = [
+			[
+				chunk({ reasoning_details: [firstText] }),
+				chunk({ reasoning_details: [secondText] }),
+				chunk({ content: "ok" }),
+				chunk({}, "stop"),
+			],
+		];
+
+		const assistantMessage = await runOpenAICompletionsStream();
+		const thinking = assistantMessage.content.find((block) => block.type === "thinking");
+		expect(thinking).toEqual({
+			type: "thinking",
+			thinking: "",
+			thinkingSignature: JSON.stringify([firstText, secondText]),
+		});
+	});
 });
