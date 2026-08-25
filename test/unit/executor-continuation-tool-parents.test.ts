@@ -4,7 +4,9 @@ import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createToolNodeLifecycle } from "../../packages/workflows/src/engine/run-tool-node-lifecycle.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
 	claimActiveBlockedResume,
@@ -516,6 +518,120 @@ describe("continuation tool-parent identity map", () => {
 		);
 	});
 
+	test("fresh-id continuation keeps cached seedless tool siblings at the root", async () => {
+		const backend = new InMemoryDurableBackend();
+		let toolCalls = 0;
+		let failAfter = true;
+		let insertParent = false;
+		let releaseLeft: (() => void) | undefined;
+		const definition = workflow({
+			name: "seedless-sibling-tool-continuation",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const left = ctx.tool("left", {}, async () => {
+					toolCalls += 1;
+					await new Promise<void>((resolve) => {
+						releaseLeft = resolve;
+					});
+					return "left";
+				});
+				if (failAfter) await Promise.resolve();
+				else await left;
+				if (insertParent) await ctx.stage("inserted").prompt("inserted");
+				const right = ctx.tool("right", {}, async () => {
+					toolCalls += 1;
+					releaseLeft?.();
+					return "right";
+				});
+				await Promise.all([left, right]);
+				await ctx.stage("after").prompt("after");
+				return {};
+			},
+		});
+		const adapters = {
+			prompt: {
+				prompt: async (text: string) => {
+					if (failAfter) throw new Error("source after failed");
+					return text;
+				},
+			},
+		};
+		const sourceStore = createStore();
+		const first = await run(definition, {}, { store: sourceStore, durableBackend: backend, adapters });
+		assert.equal(first.status, "failed");
+		assert.equal(toolCalls, 2);
+		const source = sourceStore.runs().find((candidate) => candidate.id === first.runId);
+		assert.ok(source);
+		failAfter = false;
+		const continued = await run(
+			definition,
+			{},
+			{
+				store: createStore(),
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters,
+			},
+		);
+		assert.equal(continued.status, "completed", continued.error);
+		assert.equal(toolCalls, 2);
+		assert.equal(continued.toolNodes?.length, 2);
+
+		assert.deepEqual(
+			continued.toolNodes?.map((tool) => tool.parentIds),
+			[[], []],
+		);
+		insertParent = true;
+		const changed = await run(
+			definition,
+			{},
+			{
+				store: createStore(),
+				durableBackend: backend,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters,
+			},
+		);
+		assert.equal(changed.status, "failed");
+		assert.match(changed.error ?? "", /insufficient_state: replay topology mismatch/);
+		assert.equal(toolCalls, 2);
+	});
+
+	test("seedless replay rejects a sibling whose replayed parent moved deeper", () => {
+		const store = createStore();
+		const resumed: RunSnapshot = {
+			id: "continued",
+			name: "deeper-replayed-parent",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+			resumedFromRunId: "source",
+		};
+		store.recordRunStart(resumed);
+		const tracker = new GraphFrontierTracker();
+		tracker.onSpawn("seed", "seed");
+		tracker.onSettle("seed");
+		const lifecycle = createToolNodeLifecycle({
+			store,
+			tracker,
+			run: resumed,
+			sourceToContinuationNodeIds: new Map([["source-seed", "seed"]]),
+		});
+		lifecycle.onNodeStart?.({
+			...toolNode("tool:left"),
+			parentIds: ["source-seed"],
+			replayed: true,
+		});
+		lifecycle.onNodeSettle?.("tool:left");
+		assert.throws(
+			() => lifecycle.onNodeStart?.({ ...toolNode("tool:right"), replayed: true }),
+			/insufficient_state: replay topology mismatch/,
+		);
+	});
+
 	test("active-blocked resume stays retryable after a fail-closed tool-graph mismatch", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
@@ -695,8 +811,7 @@ describe("continuation tool-parent identity map", () => {
 		setDurableBackend(undefined);
 	});
 
-	test("resume kill stays process-local and either settle order leaves a blocked source retryable", () => {
-		const backend = new InMemoryDurableBackend();
+	test("settlement ordering persists successes once and keeps mismatches reload-recoverable", () => {
 		const store = createStore();
 		const entries: Array<{ type: string; payload: Record<string, unknown> }> = [];
 		const persistence = {
@@ -705,7 +820,6 @@ describe("continuation tool-parent identity map", () => {
 				return `entry-${entries.length}`;
 			},
 		};
-		const mismatch = { error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" };
 		const blocked = (id: string): RunSnapshot => ({
 			id,
 			name: "retry-order",
@@ -718,50 +832,41 @@ describe("continuation tool-parent identity map", () => {
 			failureRecoverability: "recoverable",
 			error: "blocked",
 		});
+		const exercise = (id: string, settleFirst: boolean, mismatch: boolean): void => {
+			const source = blocked(id);
+			store.recordRunStart(source);
+			persistence.appendEntry("workflow.run.start", { runId: id, name: source.name, inputs: {}, ts: 1 });
+			const claim = claimActiveBlockedResume(store, id);
+			assert.ok(claim);
+			const settle = () =>
+				finalizeActiveBlockedSourceAfterContinuation({
+					claim,
+					source,
+					continuationRunId: `c-${id}`,
+					persistence,
+					...(mismatch
+						? { result: { error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" } }
+						: {}),
+				});
+			if (settleFirst) settle();
+			finalizeResumedActiveBlockedSourceRun(claim, source, `c-${id}`);
+			if (!settleFirst) settle();
+			settle();
+			const live = store.runs().find((run) => run.id === id);
+			const terminalEntries = entries.filter(
+				(entry) => entry.type === "workflow.run.end" && entry.payload.runId === id,
+			);
+			assert.equal(terminalEntries.length, mismatch ? 0 : 1);
+			assert.equal(live?.status, mismatch ? "running" : "killed");
+			assert.equal(live?.resumable, mismatch);
+			if (mismatch) assert.equal(live?.endedAt, undefined);
+		};
 
-		const restoreFirst = blocked("restore-first");
-		store.recordRunStart(restoreFirst);
-		persistence.appendEntry("workflow.run.start", {
-			runId: restoreFirst.id,
-			name: restoreFirst.name,
-			inputs: {},
-			ts: 1,
-		});
-		assert.equal(claimActiveBlockedResume(backend, restoreFirst.id), true);
-		finalizeActiveBlockedSourceAfterContinuation({
-			source: restoreFirst,
-			continuationRunId: "c-restore-first",
-			store,
-			persistence,
-			result: mismatch,
-		});
-		finalizeResumedActiveBlockedSourceRun(restoreFirst, "c-restore-first", store, persistence);
-		const restored = store.runs().find((run) => run.id === restoreFirst.id);
-		assert.equal(restored?.resumable, true);
-		assert.notEqual(restored?.status, "killed");
-		assert.equal(restored?.endedAt, undefined);
+		exercise("success-settle-first", true, false);
+		exercise("success-kill-first", false, false);
+		exercise("mismatch-settle-first", true, true);
+		exercise("mismatch-kill-first", false, true);
 
-		const killFirst = blocked("kill-first");
-		store.recordRunStart(killFirst);
-		persistence.appendEntry("workflow.run.start", { runId: killFirst.id, name: killFirst.name, inputs: {}, ts: 2 });
-		assert.equal(claimActiveBlockedResume(backend, killFirst.id), true);
-		finalizeResumedActiveBlockedSourceRun(killFirst, "c-kill-first", store, persistence);
-		assert.equal(store.runs().find((run) => run.id === killFirst.id)?.status, "killed");
-		finalizeActiveBlockedSourceAfterContinuation({
-			source: killFirst,
-			continuationRunId: "c-kill-first",
-			store,
-			persistence,
-			result: mismatch,
-		});
-		const afterKillFirst = store.runs().find((run) => run.id === killFirst.id);
-		assert.equal(afterKillFirst?.resumable, true);
-		assert.notEqual(afterKillFirst?.status, "killed");
-
-		assert.equal(
-			entries.some((entry) => entry.type === "workflow.run.end" && entry.payload.status === "killed"),
-			false,
-		);
 		const sessionEntries: SessionEntry[] = entries.map((entry, index) => ({
 			id: `entry-${index + 1}`,
 			type: entry.type,
@@ -774,20 +879,31 @@ describe("continuation tool-parent identity map", () => {
 		}));
 		assert.deepEqual(
 			scanInFlightRuns(sessionEntries).map((run) => run.runId),
-			["restore-first", "kill-first"],
+			["mismatch-settle-first", "mismatch-kill-first"],
 		);
 
-		const completed = blocked("already-completed");
-		store.recordRunStart(completed);
-		assert.equal(store.recordRunEnd(completed.id, "completed", {}), true);
-		assert.equal(claimActiveBlockedResume(backend, completed.id), true);
-		finalizeActiveBlockedSourceAfterContinuation({
-			source: completed,
-			continuationRunId: "c-completed",
-			store,
-			persistence,
-			result: mismatch,
-		});
-		assert.equal(store.runs().find((run) => run.id === completed.id)?.status, "completed");
+		for (const status of ["completed", "killed"] as const) {
+			const terminal = blocked(`external-${status}`);
+			store.recordRunStart(terminal);
+			assert.equal(
+				store.recordRunEnd(
+					terminal.id,
+					status,
+					status === "completed" ? {} : undefined,
+					undefined,
+					status === "killed" ? { failureDisposition: "terminal_killed" } : {},
+				),
+				true,
+			);
+			const claim = claimActiveBlockedResume(store, terminal.id);
+			assert.ok(claim);
+			finalizeActiveBlockedSourceAfterContinuation({
+				claim,
+				source: terminal,
+				continuationRunId: `c-${terminal.id}`,
+				result: { error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" },
+			});
+			assert.equal(store.runs().find((run) => run.id === terminal.id)?.status, status);
+		}
 	});
 });

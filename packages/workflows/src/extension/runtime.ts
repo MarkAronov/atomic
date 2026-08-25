@@ -298,7 +298,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			// Durable source stays blocked/resumable. The local snapshot is killed
 			// as soon as the continuation is admitted so this session has one
 			// active entry. A fail-closed mismatch puts the reserved snapshot back.
-			if (!claimActiveBlockedResume(getDurableBackend(), source.id)) {
+			const claim = claimActiveBlockedResume(activeStore, source.id);
+			if (claim === undefined) {
 				return {
 					ok: false,
 					reason: "not_resumable",
@@ -320,9 +321,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 					onRawSettled: (_ok, result, error) => {
 						if (!admitted) return;
 						finalizeActiveBlockedSourceAfterContinuation({
+							claim,
 							source: reservedSource,
 							continuationRunId: result?.runId ?? launch.accepted.runId,
-							store: activeStore,
 							persistence,
 							result,
 							error,
@@ -330,7 +331,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 					},
 				});
 			} catch (error) {
-				releaseActiveBlockedClaim(source.id);
+				releaseActiveBlockedClaim(claim);
 				return {
 					ok: false,
 					reason: "insufficient_state",
@@ -348,14 +349,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				try {
 					await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
 				} catch (error) {
-					releaseActiveBlockedClaim(source.id);
+					releaseActiveBlockedClaim(claim);
 					return {
 						ok: false,
 						reason: "insufficient_state",
 						message: `continuation for run ${source.id} failed to start (${startupError}) and cleanup failed: ${error instanceof Error ? error.message : String(error)}; source left resumable`,
 					};
 				}
-				releaseActiveBlockedClaim(source.id);
+				releaseActiveBlockedClaim(claim);
 				return {
 					ok: false,
 					reason: "insufficient_state",
@@ -363,9 +364,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				};
 			}
 			try {
-				finalizeResumedActiveBlockedSourceRun(source, accepted.runId, activeStore, persistence);
+				finalizeResumedActiveBlockedSourceRun(claim, source, accepted.runId);
 			} catch (error) {
-				releaseActiveBlockedClaim(source.id);
+				releaseActiveBlockedClaim(claim);
 				return {
 					ok: false,
 					reason: "insufficient_state",

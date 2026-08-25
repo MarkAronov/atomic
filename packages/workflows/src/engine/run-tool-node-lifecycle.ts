@@ -1,6 +1,7 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type CreateToolPrimitiveInput, createToolPrimitive } from "../durable/tool-primitive.js";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
+import { REPLAY_TOPOLOGY_MISMATCH_MESSAGE } from "../shared/replay-topology-failure.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowToolPrimitive } from "../shared/types.js";
@@ -45,7 +46,7 @@ export function createToolNodeLifecycle(input: {
 			const translated = restored?.every((id): id is string => id !== undefined) ? restored : undefined;
 			if (run.resumedFromRunId !== undefined && sourceParents !== undefined && translated === undefined) {
 				throw new Error(
-					`atomic-workflows: insufficient_state: replay topology mismatch for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
+					`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
 				);
 			}
 			if (
@@ -56,7 +57,7 @@ export function createToolNodeLifecycle(input: {
 				)
 			) {
 				throw new Error(
-					`atomic-workflows: insufficient_state: replay topology mismatch for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
+					`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
 				);
 			}
 			const parentIds = translated ?? inferredParents;
@@ -103,7 +104,7 @@ function compatibleReplayedToolParents(
 	isReplayedNode: (nodeId: string) => boolean,
 ): boolean {
 	if (sameStringSet(translated, inferredParents)) return true;
-	if (translated.length === 0 || inferredParents.length === 0) return false;
+	if (inferredParents.length === 0) return false;
 	return inferredParents.every(
 		(parentId) => isReplayedNode(parentId) && sameStringSet(tracker.getParents(parentId), translated),
 	);
