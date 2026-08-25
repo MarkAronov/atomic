@@ -11,6 +11,14 @@ describe("built-in slash commands", () => {
 		assert.equal(command.description, `Exit ${APP_NAME}`);
 	});
 
+	test("lists /thinking with its level argument", () => {
+		const command = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "thinking");
+
+		assert.ok(command, "expected /thinking to be listed as a built-in command");
+		assert.equal(command.description, "Set thinking level");
+		assert.equal(command.argumentHint, "<level>");
+	});
+
 	test("removes /context-compact and keeps /compact as the compaction command", () => {
 		const contextCommand = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "context-compact");
 		const compactCommand = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "compact");

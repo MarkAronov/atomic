@@ -315,6 +315,7 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: "Open settings menu" },
 	{ name: "model", description: "Select model (opens selector UI)" },
+	{ name: "thinking", description: "Set thinking level", argumentHint: "<level>" },
 	{ name: "scoped-models", description: "Enable/disable models for ctrl+p cycling" },
 	{ name: "fast", description: "Configure Codex fast mode for chat and workflows" },
 	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)" },
