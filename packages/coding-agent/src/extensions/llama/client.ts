@@ -58,6 +58,12 @@ function isModelInfo(value: unknown): value is LlamaModelInfo {
 	return typeof candidate.id === "string" && typeof candidate.status?.value === "string";
 }
 
+function isLlamaServerProps(value: unknown): value is LlamaServerProps {
+	if (typeof value !== "object" || value === null) return false;
+	const modelsAutoload = (value as LlamaServerProps).models_autoload;
+	return modelsAutoload === undefined || typeof modelsAutoload === "boolean";
+}
+
 function linkSignal(source: AbortSignal | undefined, target: AbortController): () => void {
 	if (!source) return () => {};
 	if (source.aborted) {
@@ -195,9 +201,8 @@ export class LlamaClient {
 
 	async props(options: { signal?: AbortSignal } = {}): Promise<LlamaServerProps> {
 		const payload = await this.request("/props", { signal: options.signal });
-		if (typeof payload !== "object" || payload === null) return {};
-		const { models_autoload: modelsAutoload } = payload as Record<string, unknown>;
-		return typeof modelsAutoload === "boolean" ? { models_autoload: modelsAutoload } : {};
+		if (!isLlamaServerProps(payload)) return {};
+		return typeof payload.models_autoload === "boolean" ? { models_autoload: payload.models_autoload } : {};
 	}
 
 	async load(model: string, signal?: AbortSignal): Promise<void> {
