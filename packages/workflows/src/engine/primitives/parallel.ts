@@ -11,6 +11,7 @@ import {
 import type { ParallelFailFastScope, ParallelFailFastStage } from "../../runs/foreground/executor-types.js";
 import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
+import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
 
@@ -68,6 +69,11 @@ export function createParallelPrimitive(input: {
 				beforeDequeue: input.runtime.exit.throwIfWorkflowExitSelected,
 				beforeMap: input.runtime.exit.throwIfWorkflowExitSelected,
 				isControlSignal: (error) => findWorkflowExitSignal(error, input.runtime.exit.exitScope) !== undefined,
+				selectSettledFailure: (failures) => {
+					if (!failures.every((failure) => failure.error instanceof WorkflowBudgetExceededError)) return undefined;
+					return failures.reduce((selected, failure) => (failure.index < selected.index ? failure : selected))
+						.error;
+				},
 			},
 		);
 	};
