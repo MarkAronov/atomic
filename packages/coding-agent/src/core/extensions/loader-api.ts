@@ -51,7 +51,8 @@ export function createExtensionAPI(
 	};
 	const applyRuntimeChange = (change: () => void) => {
 		if (state === "loading") pendingRuntimeChanges.push(change);
-		else change();
+		else if (state === "active") change();
+		else assertActive();
 	};
 	// Successive load generations of one session each build a new facade over
 	// the same shared bus; mapping the facade back to that bus lets
@@ -71,14 +72,14 @@ export function createExtensionAPI(
 	registerCanonicalEventBus(events, eventBus);
 	const api = {
 		on(event: string, handler: HandlerFn): void {
-			runtime.assertActive();
+			assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
 		},
 
 		registerTool(tool: ToolDefinition): void {
-			runtime.assertActive();
+			assertActive();
 			if (runtime.canRegisterResource?.(extension, "tool", tool.name) === false) return;
 			const registration = { definition: tool, sourceInfo: extension.sourceInfo };
 			if (runtime.stageToolRegistration?.(extension, tool.name, registration)) return;
@@ -88,7 +89,7 @@ export function createExtensionAPI(
 		},
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
-			runtime.assertActive();
+			assertActive();
 			if (runtime.canRegisterResource?.(extension, "command", name) === false) return;
 			const registration = { name, sourceInfo: extension.sourceInfo, ...options };
 			if (runtime.stageCommandRegistration?.(extension, name, registration)) return;
@@ -102,7 +103,7 @@ export function createExtensionAPI(
 				handler: (ctx: ExtensionContext) => Promise<void> | void;
 			},
 		): void {
-			runtime.assertActive();
+			assertActive();
 			if (runtime.canRegisterResource?.(extension, "shortcut", shortcut) === false) return;
 			const registration = { shortcut, extensionPath: extension.path, ...options };
 			if (runtime.stageShortcutRegistration?.(extension, shortcut, registration)) return;
@@ -117,7 +118,7 @@ export function createExtensionAPI(
 				default?: boolean | string;
 			},
 		): void {
-			runtime.assertActive();
+			assertActive();
 			if (options.default !== undefined && typeof options.default !== options.type) {
 				throw new Error(
 					`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`,
@@ -150,120 +151,120 @@ export function createExtensionAPI(
 		},
 
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
-			runtime.assertActive();
+			assertActive();
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
 		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
-			runtime.assertActive();
+			assertActive();
 			extension.markdownTransformer = transformer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
-			runtime.assertActive();
+			assertActive();
 			extension.entryRenderers.set(customType, renderer as EntryRenderer);
 		},
 
 		getFlag(name: string): boolean | string | undefined {
-			runtime.assertActive();
+			assertActive();
 			const pendingDefault = runtime.getPendingFlagDefault?.(extension.path, name);
 			if (!extension.flags.has(name) && pendingDefault === undefined) return undefined;
 			return runtime.flagValues.get(name) ?? pendingDefault;
 		},
 
 		getWorkflowResources() {
-			runtime.assertActive();
+			assertActive();
 			return [...workflowResources.get()];
 		},
 
 		async refreshWorkflowResources() {
-			runtime.assertActive();
+			assertActive();
 			const refreshed = await workflowResources.refresh?.();
 			return [...(refreshed ?? workflowResources.get())];
 		},
 
 		getResourceLoaderInheritanceSnapshot() {
-			runtime.assertActive();
+			assertActive();
 			return resourceLoaderInheritanceSnapshotProvider?.() ?? {};
 		},
 
 		sendMessage(message, options): void | Promise<void> {
-			runtime.assertActive();
+			assertActive();
 			return runtime.sendMessage(message, options);
 		},
 
 		sendMessages(messages, options): void | Promise<void> {
-			runtime.assertActive();
+			assertActive();
 			return runtime.sendMessages(messages, options);
 		},
 
 		sendUserMessage(content, options): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.sendUserMessage(content, options);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.appendEntry(customType, data);
 		},
 
 		setSessionName(name: string): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.setSessionName(name);
 		},
 
 		getSessionName(): string | undefined {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getSessionName();
 		},
 
 		setLabel(entryId: string, label: string | undefined): void {
-			runtime.assertActive();
+			assertActive();
 			runtime.setLabel(entryId, label);
 		},
 
 		exec(command: string, args: string[], options?: ExecOptions) {
-			runtime.assertActive();
+			assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getActiveToolsAfterRegistration?.(extension) ?? runtime.getActiveTools();
 		},
 
 		getAllTools() {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getAllToolsAfterRegistration?.(extension) ?? runtime.getAllTools();
 		},
 
 		setActiveTools(toolNames: string[]): void {
-			runtime.assertActive();
+			assertActive();
 			if (!runtime.setActiveToolsAfterRegistration?.(extension, toolNames)) runtime.setActiveTools(toolNames);
 		},
 
 		getCommands() {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
 		},
 
 		setModel(model) {
-			runtime.assertActive();
+			assertActive();
 			return runtime.setModel(model);
 		},
 
 		getThinkingLevel() {
-			runtime.assertActive();
+			assertActive();
 			return runtime.getThinkingLevel();
 		},
 
 		setThinkingLevel(level) {
-			runtime.assertActive();
+			assertActive();
 			runtime.setThinkingLevel(level);
 		},
 
 		registerProvider(nameOrProvider: string | Provider, config?: ProviderConfig) {
-			runtime.assertActive();
+			assertActive();
 			if (typeof nameOrProvider === "string") {
 				if (!config) throw new Error("Provider config is required");
 				applyRuntimeChange(() => runtime.registerProvider(nameOrProvider, config, extension.path));
@@ -273,7 +274,7 @@ export function createExtensionAPI(
 		},
 
 		unregisterProvider(name: string) {
-			runtime.assertActive();
+			assertActive();
 			applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
 		},
 
