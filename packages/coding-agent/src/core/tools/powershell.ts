@@ -1,4 +1,10 @@
-import { getPowerShellConfig } from "../../utils/shell.ts";
+import { waitForChildProcess } from "../../utils/child-process.ts";
+import {
+	getPowerShellConfig,
+	killProcessTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "../../utils/shell.ts";
 import {
 	type BashOperations,
 	type BashToolDetails,
@@ -25,49 +31,39 @@ export function createLocalPowerShellOperations(): PowerShellOperations {
 			const { shell, args } = getPowerShellConfig();
 			const { spawn } = await import("node:child_process");
 			if (options.signal?.aborted) throw new Error("aborted");
-			return new Promise((resolve, reject) => {
-				const child = spawn(shell, [...args, `${UTF8_OUTPUT_PREFIX}${command}`], {
-					cwd,
-					env: options.env,
-					windowsHide: true,
-				});
-				let timedOut = false;
-				let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-				const onAbort = () => {
-					child.kill();
-				};
+			const child = spawn(shell, [...args, `${UTF8_OUTPUT_PREFIX}${command}`], {
+				cwd,
+				env: options.env,
+				windowsHide: true,
+			});
+			if (child.pid) trackDetachedChildPid(child.pid);
+			let timedOut = false;
+			let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+			const onAbort = () => {
+				if (child.pid) killProcessTree(child.pid);
+			};
+			try {
 				if (options.timeout !== undefined && options.timeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
-						child.kill();
+						if (child.pid) killProcessTree(child.pid);
 					}, options.timeout * 1000);
 				}
-				const finish = (handler: () => void) => {
-					if (timeoutHandle) clearTimeout(timeoutHandle);
-					options.signal?.removeEventListener("abort", onAbort);
-					handler();
-				};
-				child.stdout.on("data", (data: Buffer) => options.onData(data, "stdout"));
-				child.stderr.on("data", (data: Buffer) => options.onData(data, "stderr"));
-				child.once("error", (error) => finish(() => reject(error)));
-				child.once("close", (exitCode) => {
-					finish(() => {
-						if (options.signal?.aborted) {
-							reject(new Error("aborted"));
-							return;
-						}
-						if (timedOut) {
-							reject(new Error(`timeout:${options.timeout}`));
-							return;
-						}
-						resolve({ exitCode });
-					});
-				});
+				child.stdout?.on("data", (data: Buffer) => options.onData(data, "stdout"));
+				child.stderr?.on("data", (data: Buffer) => options.onData(data, "stderr"));
 				if (options.signal) {
 					if (options.signal.aborted) onAbort();
 					else options.signal.addEventListener("abort", onAbort, { once: true });
 				}
-			});
+				const exitCode = await waitForChildProcess(child);
+				if (options.signal?.aborted) throw new Error("aborted");
+				if (timedOut) throw new Error(`timeout:${options.timeout}`);
+				return { exitCode };
+			} finally {
+				if (child.pid) untrackDetachedChildPid(child.pid);
+				if (timeoutHandle) clearTimeout(timeoutHandle);
+				options.signal?.removeEventListener("abort", onAbort);
+			}
 		},
 	};
 }

@@ -134,6 +134,15 @@ export function getPowerShellConfig(): ShellConfig {
 	return { shell, args: [...POWERSHELL_ARGS] };
 }
 
+export function isPowerShellAvailable(): boolean {
+	try {
+		getPowerShellConfig();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function getShellEnv(): NodeJS.ProcessEnv {
 	const binDir = getBinDir();
 	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";

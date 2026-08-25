@@ -216,6 +216,7 @@ describe("defaultTools setting", () => {
 				"edit",
 				"find",
 				"ls",
+				...(allToolNames.has("powershell") ? (["powershell"] as const) : []),
 				"read",
 				"sdk_tool",
 				"search",
