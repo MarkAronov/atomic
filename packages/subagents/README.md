@@ -647,7 +647,7 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications.
+Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications. These notifications use tool blocks with the same background treatment as regular subagent tool blocks: success when the child completed, error when it failed, and pending when it was interrupted. Each block keeps the status glyph, agent name, outcome, duration, result preview, `ctrl+o` expand hint, and session file path.
 
 Foreground runs persist their session and user-facing artifacts beside the parent session:
 

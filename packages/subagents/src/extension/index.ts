@@ -150,7 +150,7 @@ export function renderSubagentNotification(
 	message: { content: unknown; details?: unknown },
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
-): Text {
+): Component {
 	const content = typeof message.content === "string" ? message.content : "";
 	const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
 	if (!details) return new Text(content, 0, 0);
@@ -180,7 +180,15 @@ export function renderSubagentNotification(
 	if (details.sessionLabel && details.sessionValue) {
 		text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
 	}
-	return new Text(text, 0, 0);
+	const container = new Container();
+	container.addChild(new Spacer(1));
+	// Interrupted is the neutral terminal state, so it uses the pending background rather than success or error.
+	const boxTheme =
+		details.status === "completed" ? "toolSuccessBg" : details.status === "failed" ? "toolErrorBg" : "toolPendingBg";
+	const box = new Box(1, 1, (line: string) => theme.bg(boxTheme, line));
+	box.addChild(new Text(text, 0, 0));
+	container.addChild(box);
+	return container;
 }
 class SubagentControlNoticeComponent implements Component {
 	constructor(

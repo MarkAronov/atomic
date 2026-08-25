@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Foreground subagent completion, failure, and interruption notifications now render as status-colored tool blocks while preserving their result preview, expansion hint, duration, and session path.
+
 ## [0.9.16-alpha.2] - 2026-08-23
 
 ### Breaking Changes
