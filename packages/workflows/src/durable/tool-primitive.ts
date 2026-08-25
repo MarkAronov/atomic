@@ -835,8 +835,9 @@ function summarizeToolResult(value: WorkflowSerializableValue): string {
 export async function recordCheckpointDurably(
 	backend: DurableWorkflowBackend,
 	checkpoint: DurableCheckpoint,
+	signal?: AbortSignal,
 ): Promise<void> {
-	await backend.recordCheckpointAsync(checkpoint);
+	await backend.recordCheckpointAsync(checkpoint, signal === undefined ? undefined : { signal });
 }
 
 async function executeWithRetries<T>(

@@ -91,6 +91,7 @@ import { EngineRuntime } from "./runtime.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
 import {
 	findWorkflowGracefulQuit,
+	isWorkflowToolAbortError,
 	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
 	type WorkflowGracefulQuitSignal,
 } from "./workflow-tool-abort.js";
@@ -581,12 +582,32 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		completedStageReplayKeys,
 		sourceToReplayedNodeIds: sourceToContinuationNodeIds,
 	});
+	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
 	const durableTask = createDurableTaskPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		task: taskRunners.task,
 		recordCachedTask: cachedStage.record,
+		signal: ownController.signal,
+		registerTailControl: (registration) => {
+			registration.controller.signal.addEventListener(
+				"abort",
+				() => {
+					const reason: unknown = registration.controller.signal.reason;
+					if (isWorkflowToolAbortError(reason) && reason.scope === "quit") observedTaskTailQuit ??= reason;
+				},
+				{ once: true },
+			);
+			return toolControls.register({
+				runId,
+				nodeId: registration.nodeId,
+				name: registration.name,
+				controller: registration.controller,
+				settled: registration.settled,
+			});
+		},
+		...(budget.enabled ? { afterLiveResult: (name) => budget.stopAtBoundaryAsync(name) } : {}),
 	});
 	const durableWorkflow = createDurableChildWorkflowPrimitive({
 		workflowId: runId,
@@ -685,14 +706,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		selectedAdmittedToolFailure = admittedTools.firstFailure();
 		if (normalTerminalEvent?.kind === "failure") throw normalTerminalEvent.error;
 		// Whole-run quit is authoritative even when author code caught the tool
-		// rejection and returned normally: this executor observed its own call
-		// aborted (or refused) by that quit, so the caught call's later return must
-		// not become a terminal completion over quit's paused record. A catch may
-		// clean up; it is not an opt-out. Targeted node abort (scope "node") never
-		// closes admission, and a quit that only paused stages — which a later
-		// resume legitimately releases — never reaches a tool, so neither suspends
-		// a run here.
-		const quitDuringSuccess = observedQuitCancellation();
+		// or task-tail rejection and returned normally: this executor observed its
+		// own call aborted (or refused) by that quit, so the caught call's later
+		// return must not become a terminal completion over quit's paused record.
+		// A catch may clean up; it is not an opt-out. Targeted node abort (scope
+		// "node") never closes admission, and a quit that only paused stages —
+		// which a later resume legitimately releases — never reaches a tool, so
+		// neither suspends a run here.
+		const quitDuringSuccess = observedQuitCancellation() ?? observedTaskTailQuit;
 		if (quitDuringSuccess !== undefined) return suspendForGracefulQuit(quitDuringSuccess);
 
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
@@ -729,6 +750,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		// that catches the quit error and throws something else cannot erase it.
 		const gracefulQuit =
 			observedQuitCancellation() ??
+			observedTaskTailQuit ??
 			findWorkflowGracefulQuit(err) ??
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
