@@ -44,7 +44,6 @@ function sampleAgent(): AgentConfig {
 		filePath: "/tmp/analysis.md",
 	};
 }
-
 test("an untouched progress template is not treated as recoverable findings", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-empty-"));
 	try {
@@ -55,7 +54,6 @@ test("an untouched progress template is not treated as recoverable findings", ()
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("a modified progress.md is recovered as bounded labelled partial output", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-"));
 	try {
@@ -83,7 +81,6 @@ test("a modified progress.md is recovered as bounded labelled partial output", (
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("oversized ephemeral progress truncates without citing the deleted path", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-truncate-"));
 	try {
@@ -106,7 +103,6 @@ test("oversized ephemeral progress truncates without citing the deleted path", (
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("oversized persisted progress cites the artifact path in the truncation marker", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-truncate-kept-"));
 	try {
@@ -125,18 +121,17 @@ test("oversized persisted progress cites the artifact path in the truncation mar
 		});
 		assert.equal(recovered.source, "progress.md");
 		assert.match(recovered.text, /TRUNCATED:/);
-		assert.match(recovered.text, new RegExp(`full output at ${escapeRegExp(progressArtifactPath)}`));
-		assert.match(recovered.text, new RegExp(`Progress: ${escapeRegExp(progressArtifactPath)}`));
+		assert.ok(recovered.text.includes(`full output at ${progressArtifactPath}`));
+		assert.ok(recovered.text.includes(`Progress: ${progressArtifactPath}`));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("without progress updates, recovery uses the last non-empty assistant text", () => {
 	const recovered = recoverCancelledChildOutput({
 		assistantText: "Verified the login redirect.",
 		toolCount: 23,
-		sessionPath: join(tmpdir(), "atomic-cancel-absent", "session.jsonl"),
+		sessionPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-assistant-")), "session.jsonl"),
 	});
 	assert.equal(recovered.source, "assistant");
 	assert.match(recovered.text, /Partial findings from assistant history/);
@@ -147,10 +142,10 @@ test("without progress updates, recovery uses the last non-empty assistant text"
 test("without recoverable content, recovery returns a cancellation notice and artifact refs", () => {
 	const recovered = recoverCancelledChildOutput({
 		toolCount: 0,
-		sessionPath: join(tmpdir(), "atomic-cancel-absent", "session.jsonl"),
-		outputArtifactPath: join(tmpdir(), "atomic-cancel-absent", "out.md"),
-		progressPath: join(tmpdir(), "atomic-cancel-absent", "progress.md"),
-		progressArtifactPath: join(tmpdir(), "atomic-cancel-absent", "progress.md"),
+		sessionPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "session.jsonl"),
+		outputArtifactPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "out.md"),
+		progressPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "progress.md"),
+		progressArtifactPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "progress.md"),
 	});
 	assert.equal(recovered.source, "none");
 	assert.match(recovered.text, /Run cancelled by parent/);
@@ -218,7 +213,6 @@ test("parent abort is an interrupted cancellation, not a failed error", async ()
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("ordinary user interrupt still reports progress as failed", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-user-interrupt-"));
 	const gate = Promise.withResolvers<void>();
@@ -246,7 +240,6 @@ test("ordinary user interrupt still reports progress as failed", async () => {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("a thinking-only aborted final message recovers earlier assistant text", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-thinking-"));
 	const gate = Promise.withResolvers<void>();
@@ -278,7 +271,6 @@ test("a thinking-only aborted final message recovers earlier assistant text", as
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("a populated run-scoped progress.md wins over earlier assistant text", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-win-"));
 	const progressPath = join(root, "progress.md");
@@ -312,12 +304,11 @@ test("a populated run-scoped progress.md wins over earlier assistant text", asyn
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("parent abort keeps pre-cancel fallback metadata and does not start another fallback", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-no-fallback-"));
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
-	const sawFallback = Promise.withResolvers<void>();
+	let sawFallback = false;
 	clearSubagentControls();
 	try {
 		const pending = runSingleInProcess(
@@ -330,7 +321,7 @@ test("parent abort keeps pre-cancel fallback metadata and does not start another
 				sessionDir: join(root, "sessions"),
 				signal: controller.signal,
 				onUpdate: (update) => {
-					if (update.details?.results[0]?.model === "provider/fallback") sawFallback.resolve();
+					if (update.details?.results[0]?.model === "provider/fallback") sawFallback = true;
 				},
 				testSession: {
 					...abortSession(root, gate.promise),
@@ -349,12 +340,8 @@ test("parent abort keeps pre-cancel fallback metadata and does not start another
 				},
 			},
 		);
-		await Promise.race([
-			sawFallback.promise,
-			sleep(2000).then(() => {
-				throw new Error("fallback model was not observed before abort");
-			}),
-		]);
+		for (let attempt = 0; attempt < 200 && !sawFallback; attempt++) await sleep(5);
+		assert.equal(sawFallback, true, "fallback onUpdate should arrive before abort");
 		controller.abort();
 		const result = await pending;
 		assert.equal(result.status, "interrupted");
@@ -369,7 +356,6 @@ test("parent abort keeps pre-cancel fallback metadata and does not start another
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("parent abort before any fallback does not emit a fallback model", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-no-fallback-start-"));
 	const gate = Promise.withResolvers<void>();
@@ -405,7 +391,6 @@ test("parent abort before any fallback does not emit a fallback model", async ()
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 test("parent abort without findings cites persisted output and progress artifacts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-artifact-refs-"));
 	const artifactsDir = join(root, "artifacts");
@@ -434,9 +419,9 @@ test("parent abort without findings cites persisted output and progress artifact
 		assert.match(result.envelope ?? "", /Run cancelled by parent/);
 		assert.match(result.envelope ?? "", /Session: /);
 		assert.match(result.envelope ?? "", /Progress: /);
-		assert.match(result.envelope ?? "", /Output: /);
+		assert.doesNotMatch(result.envelope ?? "", /Output: /);
 		assert.ok(result.artifactPaths?.outputPath);
-		assert.match(result.envelope ?? "", new RegExp(`Output: ${escapeRegExp(result.artifactPaths.outputPath)}`));
+		assert.ok(!result.envelope?.includes(`Output: ${result.artifactPaths.outputPath}`));
 		const artifactText = readFileSync(result.artifactPaths.outputPath, "utf8");
 		assert.match(artifactText, /Run cancelled by parent/);
 		assert.notEqual(artifactText.trim(), "abort");
