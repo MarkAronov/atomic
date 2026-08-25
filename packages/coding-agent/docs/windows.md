@@ -51,3 +51,7 @@ On Windows, Atomic canonicalizes paths before starting native filesystem watcher
 When self-update starts on Windows, Atomic first cleans any previous `.atomic-native-quarantine` directory under the global package root. If native add-ons from the current install are loaded by the running process, Atomic moves those files into a per-run quarantine directory and copies them back into place before invoking the package manager. This lets the package manager replace native dependency files that Windows would otherwise keep locked.
 
 If Atomic cannot safely self-update the current installation, it exits with a clear message instead of guessing. The message explains that the install is unsupported, unmanaged, or not writable; prints the detected executable path when available; and tells you to update Atomic with the package manager, wrapper, source checkout, or release artifact that originally installed it. Archive installs are not managed by `atomic update`; rerun the PowerShell installer to replace `current` with the requested release. Standalone Bun binaries direct users to the current [Atomic releases](https://github.com/bastani-inc/atomic/releases/latest), never upstream Pi artifacts.
+
+### Optional PowerShell tool
+
+On native Windows, add `powershell` to `defaultTools` to use PowerShell 7 (`pwsh.exe`) or Windows PowerShell (`powershell.exe`). The `bash` tool and `!`/`!!` shortcuts continue to use Bash. Both `ATOMIC_*` and legacy `PI_*` session variables are available.

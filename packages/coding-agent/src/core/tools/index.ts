@@ -40,6 +40,17 @@ export {
 	lsToolSystemPromptContribution,
 } from "./ls.ts";
 export {
+	createLocalPowerShellOperations,
+	createPowerShellTool,
+	createPowerShellToolDefinition,
+	type PowerShellOperations,
+	type PowerShellSpawnContext,
+	type PowerShellSpawnHook,
+	type PowerShellToolDetails,
+	type PowerShellToolInput,
+	type PowerShellToolOptions,
+} from "./powershell.ts";
+export {
 	createReadTool,
 	createReadToolDefinition,
 	type ReadOperations,
@@ -96,6 +107,7 @@ import { createEditTool, createEditToolDefinition, type EditToolOptions } from "
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashline.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createSearchTool, createSearchToolDefinition, type SearchToolOptions } from "./search.ts";
 import { createTodoToolDefinition } from "./todos.ts";
@@ -104,10 +116,21 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<TSchema, unknown>;
 export type ToolDef = ToolDefinition<TSchema, unknown>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "find" | "search" | "ls" | "ask_user_question" | "todo";
+export type ToolName =
+	| "read"
+	| "bash"
+	| "powershell"
+	| "edit"
+	| "write"
+	| "find"
+	| "search"
+	| "ls"
+	| "ask_user_question"
+	| "todo";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
+	"powershell",
 	"edit",
 	"write",
 	"find",
@@ -120,6 +143,7 @@ export const allToolNames: Set<ToolName> = new Set([
 export const defaultToolNames: readonly ToolName[] = [
 	"read",
 	"bash",
+	"powershell",
 	"edit",
 	"write",
 	"find",
@@ -131,6 +155,7 @@ export const defaultToolNames: readonly ToolName[] = [
 export interface ToolsOptions {
 	read?: ReadToolOptions;
 	bash?: BashToolOptions;
+	powershell?: PowerShellToolOptions;
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
 	find?: FindToolOptions;
@@ -148,6 +173,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
+		case "powershell":
+			return createPowerShellToolDefinition(cwd, options?.powershell);
 		case "edit":
 			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore });
 		case "write":
@@ -174,6 +201,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createReadTool(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashTool(cwd, options?.bash);
+		case "powershell":
+			return createPowerShellTool(cwd, options?.powershell);
 		case "edit":
 			return createEditTool(cwd, { ...options?.edit, hashlineStore });
 		case "write":
@@ -220,6 +249,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 	return {
 		read: createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
 		bash: createBashToolDefinition(cwd, options?.bash),
+		powershell: createPowerShellToolDefinition(cwd, options?.powershell),
 		edit: createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
 		write: createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
 		find: createFindToolDefinition(cwd, options?.find),
@@ -257,6 +287,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 	return {
 		read: createReadTool(cwd, { ...options?.read, hashlineStore }),
 		bash: createBashTool(cwd, options?.bash),
+		powershell: createPowerShellTool(cwd, options?.powershell),
 		edit: createEditTool(cwd, { ...options?.edit, hashlineStore }),
 		write: createWriteTool(cwd, { ...options?.write, hashlineStore }),
 		find: createFindTool(cwd, options?.find),
