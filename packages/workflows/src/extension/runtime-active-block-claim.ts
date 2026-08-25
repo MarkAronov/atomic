@@ -1,6 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
-import { isReplayTopologyMismatchMessage } from "../shared/replay-topology-failure.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -131,10 +130,19 @@ export function isReplayTopologyMismatchFailure(
 ): boolean {
 	const message =
 		result?.error ?? (error instanceof Error ? error.message : error === undefined ? undefined : String(error));
-	return typeof message === "string" && isReplayTopologyMismatchMessage(message);
+	return (
+		typeof message === "string" &&
+		(message.includes("insufficient_state: replay topology mismatch") ||
+			message.includes("insufficient_state: replay topology ambiguous"))
+	);
 }
 
-/** Restore on mismatch; otherwise durably retire the superseded source. */
+/**
+ * A fail-closed replay topology failure puts the reserved snapshot back so the
+ * same session can retry. If restore wins the race with the local kill, the
+ * kill is skipped. Other settlements leave the local kill in place. Errors stay
+ * inside this callback.
+ */
 export function finalizeActiveBlockedSourceAfterContinuation(input: {
 	readonly claim: ActiveBlockedResumeClaim;
 	readonly source: RunSnapshot;

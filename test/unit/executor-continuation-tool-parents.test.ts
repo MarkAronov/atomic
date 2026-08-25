@@ -720,6 +720,94 @@ describe("continuation tool-parent identity map", () => {
 		setDurableBackend(undefined);
 	});
 
+	test("active-blocked resume stays retryable after ambiguous duplicate-name replay topology", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		let collapseDuplicates = false;
+		let failAfterDuplicates = true;
+		const definition = workflow({
+			name: "retry-after-ambiguous-topology",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				if (collapseDuplicates) {
+					await ctx.stage("duplicate").prompt("one-of-two-roots");
+				} else {
+					await ctx.parallel(
+						[
+							{ name: "duplicate", prompt: "one" },
+							{ name: "duplicate", prompt: "two" },
+						],
+						{ concurrency: 2, failFast: false },
+					);
+				}
+				await ctx.stage("after-duplicates").prompt("after");
+				return {};
+			},
+		});
+		const store = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							if (failAfterDuplicates && text === "after") throw new Error("HTTP 429 quota exceeded");
+							return text;
+						},
+					},
+				},
+			},
+		);
+		assert.equal(first.status, "running");
+		const source = store.runs().find((candidate) => candidate.id === first.runId);
+		assert.ok(source);
+		assert.equal(source.resumable, true);
+		backend.registerWorkflow({
+			workflowId: source.id,
+			name: definition.name,
+			inputs: {},
+			createdAt: 1,
+			status: "blocked",
+			resumable: true,
+		});
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store,
+			jobs,
+			adapters: { prompt: { prompt: async (text) => text } },
+		});
+		collapseDuplicates = true;
+		const ambiguous = await runtime.resumeFailedRun(source.id);
+		assert.equal(ambiguous.ok, true);
+		if (!ambiguous.ok) return;
+		await jobs.get(ambiguous.runId)?.promise;
+		assert.match(
+			store.runs().find((run) => run.id === ambiguous.runId)?.error ?? "",
+			/insufficient_state: replay topology ambiguous/,
+		);
+		const blocked = store.runs().find((run) => run.id === source.id);
+		assert.ok(blocked);
+		assert.notEqual(blocked.status, "killed");
+		assert.equal(blocked.resumable, true);
+		assert.equal(blocked.endedAt, undefined);
+
+		collapseDuplicates = false;
+		failAfterDuplicates = false;
+		const retried = await runtime.resumeFailedRun(source.id);
+		assert.equal(retried.ok, true, retried.ok ? undefined : retried.message);
+		if (!retried.ok) return;
+		await jobs.get(retried.runId)?.promise;
+		assert.equal(store.runs().find((run) => run.id === retried.runId)?.status, "completed");
+		assert.equal(store.runs().find((run) => run.id === source.id)?.status, "killed");
+		setDurableBackend(undefined);
+	});
+
 	test("retry after fail-closed mismatch does not re-ask a recorded prompt answer", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
