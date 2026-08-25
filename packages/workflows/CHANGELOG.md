@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow name resolution racing past an in-flight `/workflow reload`: a run dispatched immediately after a reload could resolve against the pre-reload registry and execute the old module (observed live as reload generation N applying only after the run had started). Resolution now awaits any in-flight discovery before resolving names; a reload that fails while a registry already exists still surfaces through the reload's own caller, and resolution proceeds on the retained registry instead of throwing.
+
 ## [0.9.16-alpha.2] - 2026-08-23
 
 ### Added
