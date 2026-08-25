@@ -31,6 +31,7 @@ Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers 
 - Fixed Amazon Bedrock Converse Stream and `pi-messages` dropping static custom-model headers; caller headers still override model headers and `null` still suppresses a static header.
 - Fixed stalled OpenAI Completions, OpenAI Responses, Anthropic Messages, `pi-messages`, Mistral, and Codex provider streams by applying idle deadlines that abort the request and surface retryable transport errors. Native Codex WebSocket streams now use `streamDeadlineMs` rather than the HTTP timeout ([#2553](https://github.com/bastani-inc/atomic/issues/2553)).
 - Ported upstream fixes for Copilot throttling, Kimi cache reads, DeepSeek thinking levels, Google thinking maps, Bedrock headers and reasoning, model catalogs, Anthropic fallback pricing, Azure tool choice, Z.AI effort metadata, and OpenAI reasoning replay. Cerebras now defaults to `gpt-oss-120b`, and the unused OpenTelemetry dependency was removed.
+- Fixed OpenRouter reasoning controls by deriving `off` support and available effort levels from model metadata, preventing reasoning-mandatory models from receiving `effort: "none"` ([#8454](https://github.com/earendil-works/pi/issues/8454)).
 
 ## [0.9.15-alpha.1] - 2026-08-21
 
