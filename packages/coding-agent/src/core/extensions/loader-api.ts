@@ -38,7 +38,7 @@ export function createExtensionAPI(
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): { api: ExtensionAPI; commit: () => void; discard: () => void } {
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
-	const pendingRuntimeChanges: Array<() => void> = [];
+	const pendingRuntimeChanges: Array<{ apply: () => void; rollback: () => void }> = [];
 	const loadingUnsubscribers: Array<() => void> = [];
 	const initialFlagValues = new Map(runtime.flagValues);
 	const initialFlagOwners = new Map(runtime.flagOwners);
@@ -49,9 +49,9 @@ export function createExtensionAPI(
 			throw new Error(`Extension "${extension.path}" failed to load and its API is no longer active.`);
 		runtime.assertActive();
 	};
-	const applyRuntimeChange = (change: () => void) => {
+	const applyRuntimeChange = (change: { apply: () => void; rollback: () => void }) => {
 		if (state === "loading") pendingRuntimeChanges.push(change);
-		else if (state === "active") change();
+		else if (state === "active") change.apply();
 		else assertActive();
 	};
 	// Successive load generations of one session each build a new facade over
@@ -267,15 +267,37 @@ export function createExtensionAPI(
 			assertActive();
 			if (typeof nameOrProvider === "string") {
 				if (!config) throw new Error("Provider config is required");
-				applyRuntimeChange(() => runtime.registerProvider(nameOrProvider, config, extension.path));
+				const name = nameOrProvider;
+				applyRuntimeChange({
+					apply: () => runtime.registerProvider(name, config, extension.path),
+					rollback: () => runtime.unregisterProvider(name, extension.path),
+				});
 			} else {
-				applyRuntimeChange(() => runtime.registerProvider(nameOrProvider, extension.path));
+				const provider = nameOrProvider;
+				applyRuntimeChange({
+					apply: () => runtime.registerProvider(provider, extension.path),
+					rollback: () => runtime.unregisterProvider(provider.id, extension.path),
+				});
 			}
 		},
 
 		unregisterProvider(name: string) {
 			assertActive();
-			applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
+			const prior = runtime.pendingProviderRegistrations.filter((registration) =>
+				"provider" in registration ? registration.provider.id === name : registration.name === name,
+			);
+			applyRuntimeChange({
+				apply: () => runtime.unregisterProvider(name, extension.path),
+				rollback: () => {
+					for (const registration of prior) {
+						if ("provider" in registration) {
+							runtime.registerProvider(registration.provider, registration.extensionPath);
+						} else {
+							runtime.registerProvider(registration.name, registration.config, registration.extensionPath);
+						}
+					}
+				},
+			});
 		},
 
 		events,
@@ -285,10 +307,25 @@ export function createExtensionAPI(
 		api,
 		commit: () => {
 			if (state !== "loading") return;
-			for (const change of pendingRuntimeChanges) change();
-			state = "active";
-			pendingRuntimeChanges.length = 0;
-			loadingUnsubscribers.length = 0;
+			const applied: Array<{ apply: () => void; rollback: () => void }> = [];
+			try {
+				for (const change of pendingRuntimeChanges) {
+					change.apply();
+					applied.push(change);
+				}
+				state = "active";
+				pendingRuntimeChanges.length = 0;
+				loadingUnsubscribers.length = 0;
+			} catch (error) {
+				for (const change of applied.reverse()) {
+					try {
+						change.rollback();
+					} catch {
+						// Best-effort undo of provider ops already applied in this commit.
+					}
+				}
+				throw error;
+			}
 		},
 		discard: () => {
 			if (state !== "loading") return;
