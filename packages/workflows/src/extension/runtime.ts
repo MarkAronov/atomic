@@ -13,6 +13,7 @@
 import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
+import type { DetachedRunOpts } from "../runs/background/runner.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import { type RunOpts, resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
@@ -36,6 +37,7 @@ import type { WorkflowToolResult } from "./render-result.js";
 import {
 	claimActiveBlockedResume,
 	discardFailedActiveBlockedContinuation,
+	finalizeActiveBlockedSourceAfterContinuation,
 	finalizeResumedActiveBlockedSourceRun,
 	releaseActiveBlockedClaim,
 } from "./runtime-active-block-claim.js";
@@ -279,7 +281,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		}
 		const stageMessage = (verb: string, runId: string): string =>
 			`${verb} workflow "${def.name}" from run ${source.id}${resolvedStage.stageId === undefined ? " at workflow start" : ` at stage ${resolvedStage.stageId}`} (run ${runId}).`;
-		const launchContinuation = () =>
+		const launchContinuation = (hooks?: Pick<DetachedRunOpts, "onWorkflowStartReady" | "onRawSettled">) =>
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),
 				continuation: {
@@ -289,9 +291,13 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				...(jobs !== undefined ? { jobs } : {}),
 				...(options?.budget === undefined ? {} : { budget: options.budget }),
+				...(hooks?.onWorkflowStartReady === undefined ? {} : { onWorkflowStartReady: hooks.onWorkflowStartReady }),
+				...(hooks?.onRawSettled === undefined ? {} : { onRawSettled: hooks.onRawSettled }),
 			});
 		if (isActiveBlockedResumable) {
-			// Keep the durable blocked source recoverable until fresh-ID startup admission succeeds.
+			// Durable source stays blocked/resumable. The local snapshot is killed
+			// as soon as the continuation is admitted so this session has one
+			// active entry. A fail-closed mismatch puts the reserved snapshot back.
 			if (!claimActiveBlockedResume(getDurableBackend(), source.id)) {
 				return {
 					ok: false,
@@ -299,9 +305,30 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 					message: `run ${source.id} is already being resumed in this session`,
 				};
 			}
+			const reservedSource: RunSnapshot = {
+				...source,
+				stages: source.stages.map((stage) => ({ ...stage })),
+				toolNodes: source.toolNodes?.map((node) => ({ ...node })),
+			};
+			let admitted = false;
 			let launch: ReturnType<typeof launchContinuation>;
 			try {
-				launch = launchContinuation();
+				launch = launchContinuation({
+					onWorkflowStartReady: () => {
+						admitted = true;
+					},
+					onRawSettled: (_ok, result, error) => {
+						if (!admitted) return;
+						finalizeActiveBlockedSourceAfterContinuation({
+							source: reservedSource,
+							continuationRunId: result?.runId ?? launch.accepted.runId,
+							store: activeStore,
+							persistence,
+							result,
+							error,
+						});
+					},
+				});
 			} catch (error) {
 				releaseActiveBlockedClaim(source.id);
 				return {
@@ -342,10 +369,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				return {
 					ok: false,
 					reason: "insufficient_state",
-					message: `failed to finalize resumed source ${source.id}: ${error instanceof Error ? error.message : String(error)}`,
+					message: `insufficient_state: failed to finalize resumed source ${source.id}: ${error instanceof Error ? error.message : String(error)}`,
 				};
 			}
-			releaseActiveBlockedClaim(source.id);
 			return {
 				ok: true,
 				runId: accepted.runId,

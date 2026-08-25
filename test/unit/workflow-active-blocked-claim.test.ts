@@ -4,6 +4,10 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import {
+	finalizeActiveBlockedSourceAfterContinuation,
+	finalizeResumedActiveBlockedSourceRun,
+} from "../../packages/workflows/src/extension/runtime-active-block-claim.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -244,8 +248,7 @@ describe("active-blocked resume claim", () => {
 
 		const first = await runtime.resumeFailedRun(runId);
 		assert.equal(first.ok, true);
-		// A second resume while the source is already killed locally is refused
-		// (it no longer looks like an active-blocked run in this session).
+		// A second resume is refused because the local source is already killed.
 		const second = await runtime.resumeFailedRun(runId);
 		assert.equal(second.ok, false);
 
@@ -253,5 +256,119 @@ describe("active-blocked resume claim", () => {
 		const continuationId = first.ok ? first.runId : "";
 		await jobs.get(continuationId)?.promise;
 		assert.equal(calls, 1);
+	});
+
+	test("a persistence fault after local kill does not leave the source resumable", async () => {
+		const backend = new InMemoryDurableBackend();
+		registerBlockedDurable(backend);
+		setDurableBackend(backend);
+		const store = seedBlockedRun();
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([claimFlow()]),
+			store,
+			jobs,
+			adapters: { prompt: { prompt: async () => "done" } },
+			persistence: {
+				appendEntry(type) {
+					if (type === "workflow.run.end") throw new Error("run.end persistence failed");
+					return "entry";
+				},
+			},
+		});
+		const result = await runtime.resumeFailedRun(runId);
+		assert.equal(result.ok, true);
+		const continuationId = result.ok ? result.runId : "";
+		await jobs.get(continuationId)?.promise;
+		assert.equal(store.runs().find((run) => run.id === runId)?.status, "killed");
+		assert.equal(store.runs().find((run) => run.id === continuationId)?.status, "completed");
+		assert.equal(backend.getWorkflow(runId)?.status, "blocked");
+		assert.equal(backend.getWorkflow(runId)?.resumable, true);
+	});
+
+	test("restoring a blocked source after a topology mismatch keeps prompt answers and notices", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: runId,
+			name: "claim-flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordStageStart(runId, {
+			id: "ask",
+			name: "ask",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		assert.equal(
+			store.recordStagePromptAnswer(
+				runId,
+				"ask",
+				{ id: "p1", kind: "confirm", message: "proceed?", createdAt: 2 },
+				true,
+			),
+			true,
+		);
+		store.recordStageEnd(runId, {
+			id: "ask",
+			name: "ask",
+			status: "completed",
+			parentIds: [],
+			toolEvents: [],
+		});
+		store.recordStageStart(runId, {
+			id: "only",
+			name: "only",
+			status: "failed",
+			parentIds: ["ask"],
+			toolEvents: [],
+			error: "login",
+			failureKind: "auth",
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			failureMessage: "login required",
+		});
+		store.recordRunBlocked(runId, "login", {
+			failedStageId: "only",
+			failureKind: "auth",
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			failureMessage: "login required",
+			resumable: true,
+		});
+		store.recordNotice({
+			id: "blocked-notice",
+			runId,
+			level: "warning",
+			message: "WORKFLOW BLOCKED",
+			createdAt: 3,
+		});
+		const source = store.runs().find((run) => run.id === runId);
+		assert.ok(source);
+		const reserved = {
+			...source,
+			stages: source.stages.map((stage) => ({ ...stage })),
+		};
+		finalizeResumedActiveBlockedSourceRun(source, "continuation", store);
+		assert.equal(store.runs().find((run) => run.id === runId)?.status, "killed");
+		finalizeActiveBlockedSourceAfterContinuation({
+			source: reserved,
+			continuationRunId: "continuation",
+			store,
+			result: { error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" },
+		});
+		const restored = store.runs().find((run) => run.id === runId);
+		assert.ok(restored);
+		assert.notEqual(restored.status, "killed");
+		assert.equal(restored.resumable, true);
+		assert.equal(store.getStagePromptAnswer(runId, "ask")?.value, true);
+		assert.equal(restored.stages.find((stage) => stage.id === "ask")?.promptAnswerState, "available");
+		assert.equal(
+			store.notices().some((notice) => notice.runId === runId && notice.message === "WORKFLOW BLOCKED"),
+			true,
+		);
 	});
 });

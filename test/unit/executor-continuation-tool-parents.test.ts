@@ -3,10 +3,15 @@ import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createContinuationReplayIndex } from "../../packages/workflows/src/runs/foreground/executor-continuation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
 function toolNode(id: string, status: ToolNodeSnapshot["status"] = "completed"): ToolNodeSnapshot {
 	return {
@@ -503,5 +508,184 @@ describe("continuation tool-parent identity map", () => {
 			tools.map((tool) => tool.parentIds),
 			[[seed.id], [seed.id]],
 		);
+	});
+
+	test("active-blocked resume stays retryable after a fail-closed tool-graph mismatch", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		let insertParent = false;
+		let toolCalls = 0;
+		const definition = workflow({
+			name: "retry-after-mismatch",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.stage("a").prompt("a");
+				if (insertParent) await ctx.stage("inserted").prompt("inserted");
+				await ctx.tool("t", { n: 1 }, async () => {
+					toolCalls += 1;
+					return "t";
+				});
+				await ctx.stage("b").prompt("b");
+				return {};
+			},
+		});
+		const store = createStore();
+		const first = await run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							if (text === "b") throw new Error("HTTP 429 quota exceeded");
+							return text;
+						},
+					},
+				},
+			},
+		);
+		assert.equal(first.status, "running");
+		assert.equal(toolCalls, 1);
+		const source = store.runs().find((candidate) => candidate.id === first.runId);
+		assert.ok(source);
+		assert.equal(source.resumable, true);
+		assert.equal(source.endedAt, undefined);
+		assert.equal(source.failureRecoverability, "recoverable");
+		backend.registerWorkflow({
+			workflowId: source.id,
+			name: definition.name,
+			inputs: {},
+			createdAt: 1,
+			status: "blocked",
+			resumable: true,
+		});
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store,
+			jobs,
+			adapters: { prompt: { prompt: async (text) => text } },
+		});
+		insertParent = true;
+		const mismatched = await runtime.resumeFailedRun(source.id);
+		assert.equal(mismatched.ok, true);
+		if (!mismatched.ok) return;
+		assert.equal(
+			store.runs().filter((run) => run.endedAt === undefined).length,
+			1,
+			"claimed source must not stay a second active local entry",
+		);
+		assert.equal(store.runs().find((run) => run.endedAt === undefined)?.id, mismatched.runId);
+		await jobs.get(mismatched.runId)?.promise;
+		assert.match(store.runs().find((run) => run.id === mismatched.runId)?.error ?? "", /replay topology mismatch/);
+		const blocked = store.runs().find((run) => run.id === source.id);
+		assert.ok(blocked);
+		assert.notEqual(blocked.status, "killed");
+		assert.equal(blocked.resumable, true);
+		assert.equal(blocked.endedAt, undefined);
+		insertParent = false;
+		const retried = await runtime.resumeFailedRun(source.id);
+		assert.equal(retried.ok, true, retried.ok ? undefined : retried.message);
+		if (!retried.ok) return;
+		await jobs.get(retried.runId)?.promise;
+		assert.equal(store.runs().find((run) => run.id === retried.runId)?.status, "completed");
+		assert.equal(toolCalls, 1);
+		assert.equal(store.runs().find((run) => run.id === source.id)?.status, "killed");
+		setDurableBackend(undefined);
+	});
+
+	test("retry after fail-closed mismatch does not re-ask a recorded prompt answer", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		let insertParent = false;
+		let toolCalls = 0;
+		const definition = workflow({
+			name: "retry-keeps-prompt-answer",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const ok = await ctx.ui.confirm("proceed?");
+				if (!ok) return {};
+				if (insertParent) await ctx.stage("inserted").prompt("inserted");
+				await ctx.tool("t", { n: 1 }, async () => {
+					toolCalls += 1;
+					return "t";
+				});
+				await ctx.stage("b").prompt("b");
+				return {};
+			},
+		});
+		const store = createStore();
+		const firstPromise = run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				usePromptNodesForUi: true,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							if (text === "b") throw new Error("HTTP 429 quota exceeded");
+							return text;
+						},
+					},
+				},
+			},
+		);
+		const pending = await waitForExecutorStagePendingPrompt(store);
+		assert.equal(store.resolveStagePendingPrompt(pending.runId, pending.stageId, pending.promptId, true), true);
+		const first = await firstPromise;
+		assert.equal(first.status, "running");
+		assert.equal(toolCalls, 1);
+		const source = store.runs().find((candidate) => candidate.id === first.runId);
+		assert.ok(source);
+		assert.equal(store.getStagePromptAnswer(source.id, pending.stageId)?.value, true);
+		store.recordNotice({
+			id: `blocked:${source.id}`,
+			runId: source.id,
+			level: "warning",
+			message: "WORKFLOW BLOCKED",
+			createdAt: Date.now(),
+		});
+		backend.registerWorkflow({
+			workflowId: source.id,
+			name: definition.name,
+			inputs: {},
+			createdAt: 1,
+			status: "blocked",
+			resumable: true,
+		});
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store,
+			jobs,
+			adapters: { prompt: { prompt: async (text) => text } },
+		});
+		insertParent = true;
+		const mismatched = await runtime.resumeFailedRun(source.id);
+		assert.equal(mismatched.ok, true);
+		if (!mismatched.ok) return;
+		await jobs.get(mismatched.runId)?.promise;
+		assert.equal(store.getStagePromptAnswer(source.id, pending.stageId)?.value, true);
+		assert.equal(
+			store.notices().some((notice) => notice.runId === source.id && notice.message === "WORKFLOW BLOCKED"),
+			true,
+		);
+		insertParent = false;
+		const retried = await runtime.resumeFailedRun(source.id);
+		assert.equal(retried.ok, true, retried.ok ? undefined : retried.message);
+		if (!retried.ok) return;
+		await jobs.get(retried.runId)?.promise;
+		assert.equal(store.runs().find((run) => run.id === retried.runId)?.status, "completed");
+		assert.equal(toolCalls, 1);
+		assert.equal(store.getStagePromptAnswer(source.id, pending.stageId)?.value, true);
+		setDurableBackend(undefined);
 	});
 });

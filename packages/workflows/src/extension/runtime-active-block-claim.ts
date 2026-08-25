@@ -6,11 +6,12 @@ import type { WorkflowPersistencePort } from "../shared/types.js";
 
 /**
  * Source ids whose active-block resume is currently in flight in this process.
- * Held across the dispatch+finalize window so a concurrent same-session resume
- * cannot double-dispatch; released once the local source is killed (after
- * which same-session routing refuses it). Cross-process concurrent resume is
- * not guarded here — it is the same recoverable, idempotent-replay edge that
- * exists for any durable failed/blocked run.
+ * Held until the continuation settles so a concurrent same-session resume
+ * cannot double-dispatch. Released after the local source is killed, or after
+ * a fail-closed replay-topology mismatch leaves the source resumable.
+ * Cross-process concurrent resume is not guarded here — it is the same
+ * recoverable, idempotent-replay edge that exists for any durable
+ * failed/blocked run.
  */
 const inFlightActiveBlockResumes = new Set<string>();
 
@@ -49,10 +50,8 @@ export async function discardFailedActiveBlockedContinuation(
 	}
 }
 /**
- * Mark the resumed source killed locally so the same session will not re-resume
- * it. The durable source is intentionally left `blocked`/resumable for
- * cross-session/crash recoverability; killing only the in-session snapshot is
- * safe because same-session resume resolution consults that snapshot.
+ * Mark the resumed source killed locally so the same session will not count it
+ * as a second in-flight run. The durable source stays `blocked`/resumable.
  */
 export function finalizeResumedActiveBlockedSourceRun(
 	source: RunSnapshot,
@@ -73,6 +72,59 @@ export function finalizeResumedActiveBlockedSourceRun(
 	};
 	const recorded = store.recordRunEnd(source.id, "killed", undefined, error, metadata);
 	if (recorded && persistence !== undefined) {
-		appendRunEnd(persistence, { runId: source.id, status: "killed", error, ...metadata, ts: Date.now() });
+		try {
+			appendRunEnd(persistence, { runId: source.id, status: "killed", error, ...metadata, ts: Date.now() });
+		} catch {
+			// Local kill already landed. Persistence must not undo it or escape.
+		}
+	}
+}
+
+function restoreActiveBlockedSource(source: RunSnapshot, store: Store): void {
+	store.restoreActiveBlockedRun(source, source.error ?? source.failureMessage ?? "workflow is blocked", {
+		failureRecoverability: "recoverable",
+		failureDisposition: "active_blocked",
+		resumable: true,
+		...(source.failureKind !== undefined ? { failureKind: source.failureKind } : {}),
+		...(source.failureCode !== undefined ? { failureCode: source.failureCode } : {}),
+		...(source.failureMessage !== undefined ? { failureMessage: source.failureMessage } : {}),
+		...(source.failedStageId !== undefined ? { failedStageId: source.failedStageId } : {}),
+		...(source.retryAfterMs !== undefined ? { retryAfterMs: source.retryAfterMs } : {}),
+		...(source.blockedAt !== undefined ? { blockedAt: source.blockedAt } : {}),
+		...(source.result !== undefined ? { result: source.result } : {}),
+		...(source.budgetState !== undefined ? { budgetState: source.budgetState } : {}),
+	});
+}
+
+export function isReplayTopologyMismatchFailure(
+	result: { readonly error?: string } | undefined,
+	error: unknown,
+): boolean {
+	const message =
+		result?.error ?? (error instanceof Error ? error.message : error === undefined ? undefined : String(error));
+	return typeof message === "string" && message.includes("insufficient_state: replay topology mismatch");
+}
+
+/**
+ * After admission the local source is already killed. A fail-closed mismatch
+ * puts the reserved snapshot back so the same session can retry. Other
+ * settlements leave the kill in place. Errors stay inside this callback.
+ */
+export function finalizeActiveBlockedSourceAfterContinuation(input: {
+	readonly source: RunSnapshot;
+	readonly continuationRunId: string;
+	readonly store: Store;
+	readonly persistence?: WorkflowPersistencePort;
+	readonly result?: { readonly error?: string };
+	readonly error?: unknown;
+}): void {
+	try {
+		if (isReplayTopologyMismatchFailure(input.result, input.error)) {
+			restoreActiveBlockedSource(input.source, input.store);
+		}
+	} catch {
+		// Claim release is required even if restore fails.
+	} finally {
+		releaseActiveBlockedClaim(input.source.id);
 	}
 }
