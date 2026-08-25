@@ -259,9 +259,11 @@ export async function runSingleInProcess(
 	const artifactsDisabled =
 		options.artifactConfig?.enabled === false ||
 		(options.artifactsDir === undefined && options.artifactConfig === undefined);
-	if (artifactsDir && artifactPaths && options.artifactConfig?.includeInput !== false) {
+	if (artifactsDir && artifactPaths) {
 		ensureArtifactsDir(artifactsDir);
-		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
+		if (options.artifactConfig?.includeInput !== false)
+			writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
+		writeArtifact(artifactPaths.outputPath, "");
 	}
 	const testSession =
 		options.testSession ?? (process.env.NODE_TEST_CONTEXT !== undefined || process.env.NODE_ENV === "test");

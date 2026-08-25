@@ -125,8 +125,8 @@ test("oversized persisted progress cites the artifact path in the truncation mar
 		});
 		assert.equal(recovered.source, "progress.md");
 		assert.match(recovered.text, /TRUNCATED:/);
-		assert.match(recovered.text, new RegExp(`full output at ${progressArtifactPath.replaceAll("/", "\\/")}`));
-		assert.match(recovered.text, new RegExp(`Progress: ${progressArtifactPath.replaceAll("/", "\\/")}`));
+		assert.match(recovered.text, new RegExp(`full output at ${escapeRegExp(progressArtifactPath)}`));
+		assert.match(recovered.text, new RegExp(`Progress: ${escapeRegExp(progressArtifactPath)}`));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -436,10 +436,7 @@ test("parent abort without findings cites persisted output and progress artifact
 		assert.match(result.envelope ?? "", /Progress: /);
 		assert.match(result.envelope ?? "", /Output: /);
 		assert.ok(result.artifactPaths?.outputPath);
-		assert.match(
-			result.envelope ?? "",
-			new RegExp(`Output: ${result.artifactPaths.outputPath.replaceAll("/", "\\/")}`),
-		);
+		assert.match(result.envelope ?? "", new RegExp(`Output: ${escapeRegExp(result.artifactPaths.outputPath)}`));
 		const artifactText = readFileSync(result.artifactPaths.outputPath, "utf8");
 		assert.match(artifactText, /Run cancelled by parent/);
 		assert.notEqual(artifactText.trim(), "abort");
