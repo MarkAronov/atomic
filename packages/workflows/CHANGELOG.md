@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the public `workflow` tool request deadline from 30 seconds to two minutes. Timed-out requests still return `WORKFLOW_TIMEOUT` with `timeoutMs: 120000`, abort cancellable work, discard late settlement, and never retry. Mutating actions keep the unknown-outcome warning that tells callers to inspect workflow status before retrying ([#2654](https://github.com/bastani-inc/atomic/issues/2654)).
+
 ### Fixed
 
 - Fixed a completed `ctx.task` leaving the root raw `running` with no active stage or tool and no path to the next budget boundary. The durable task-result checkpoint now fails closed, duration is rechecked after that checkpoint, quit/interrupt can abort a never-settling persist, a checkpoint created after its signal is already aborted settles without an unobserved rejection, an active task-checkpoint control — including one owned by an expanded child run — is not diagnosed as a stranded root, bulk interrupt forwards an injected tool-control registry, cancellation settles the DBOS write queue, and a terminal-only stage checkpoint replays the complete `WorkflowTaskResult` — the exact persisted text including schema-backed `maxOutput` truncation, structured output including `null`, generated worktree artifacts, warnings, session, and model metadata — without rerunning the task. A workflow that catches a task-tail quit rejection and returns outputs still stays paused. Exact-id quit or interrupt of a nested task tail now quits the aggregate root so the parent snapshot and durable handle do not stay raw `running`. Exact `/workflow status <id>` uses the live tool-control registry so a task tail is not reported as stranded. Same-process DBOS hydration rejects unknown checkpoint history instead of replaying around it ([#2650](https://github.com/bastani-inc/atomic/issues/2650)).

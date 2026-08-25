@@ -2997,7 +2997,7 @@ The workflow tool action surface is:
 - messaging on nonterminal root runs and run control: `send`, `pause`, `interrupt`, `quit`, `resume`
 - rediscovery: `reload`
 
-Every registered `workflow` tool call has one hard 30-second wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
+Every registered `workflow` tool call has one hard two-minute wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
 
 ```json
 {
@@ -3005,8 +3005,8 @@ Every registered `workflow` tool call has one hard 30-second wall-clock deadline
   "runId": "339e05a4-2289-408e-9076-d1a348f582ae",
   "status": "failed",
   "code": "WORKFLOW_TIMEOUT",
-  "timeoutMs": 30000,
-  "error": "Workflow run request timed out after 30000ms. The outcome is unknown. Inspect workflow status before retrying."
+  "timeoutMs": 120000,
+  "error": "Workflow run request timed out after 120000ms. The outcome is unknown. Inspect workflow status before retrying."
 }
 ```
 
