@@ -187,11 +187,15 @@ function writeLegacyCommandExtension(home: string): string {
 	writeFileSync(
 		join(extensionDir, "legacy-command.ts"),
 		`
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 export default function(pi) {
   pi.registerCommand("legacy-compatible", {
     description: "legacy compatible command",
-    handler: async () => appendFileSync(process.env.ATOMIC_LEGACY_COMMAND_LOG, "invoked\\n"),
+    handler: async () => {
+      writeFileSync(process.env.ATOMIC_LEGACY_COMMAND_LOG, "");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      appendFileSync(process.env.ATOMIC_LEGACY_COMMAND_LOG, "invoked\\n");
+    },
   });
 }
 `,
@@ -251,8 +255,13 @@ serialTest(
 			await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/legacy-compatible");
 			driver.send({ type: "input", data: "\r" });
 			const deadline = performance.now() + INHERITED_REPORT_TIMEOUT_MS;
-			while (!existsSync(logFile) && performance.now() < deadline) await sleep(20);
-			assert.equal(readFileSync(logFile, "utf8"), "invoked\n");
+			let commandLog = "";
+			while (performance.now() < deadline) {
+				if (existsSync(logFile)) commandLog = readFileSync(logFile, "utf8");
+				if (commandLog === "invoked\n") break;
+				await sleep(20);
+			}
+			assert.equal(commandLog, "invoked\n");
 		} finally {
 			await driver.stop();
 			await removeTempDirectory(temp);
