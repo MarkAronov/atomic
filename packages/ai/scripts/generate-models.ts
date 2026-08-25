@@ -123,6 +123,18 @@ interface ModelsDevProvider {
 
 type ModelsDevCatalog = Record<string, ModelsDevProvider>;
 
+const CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID = "@cf/moonshotai/kimi-k2.6";
+const CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL = {
+	id: CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID,
+	name: "Kimi K2.6",
+	tool_call: true,
+	reasoning: true,
+	reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "medium", "high"] }],
+	modalities: { input: ["text", "image"], output: ["text"] },
+	cost: { input: 0.95, output: 4, cache_read: 0.16 },
+	limit: { context: 262_144, output: 256_000 },
+} satisfies ModelsDevModel;
+
 interface NvidiaNimModelListItem {
 	id: string;
 }
@@ -1637,6 +1649,15 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// This is the built-in default for both Cloudflare providers. Keep its known
+		// Workers AI metadata when models.dev temporarily omits or mis-tags it.
+		const cloudflareWorkersAiProvider = (data["cloudflare-workers-ai"] ??= {});
+		const cloudflareWorkersAiModels = (cloudflareWorkersAiProvider.models ??= {});
+		cloudflareWorkersAiModels[CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID] = {
+			...CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL,
+			...cloudflareWorkersAiModels[CLOUDFLARE_DEFAULT_WORKERS_AI_MODEL_ID],
+			tool_call: true,
+		};
 		// Process Cloudflare Workers AI models
 		if (data["cloudflare-workers-ai"]?.models) {
 			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
@@ -1665,11 +1686,14 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		const cloudflareGatewayWorkersAiModelIds = new Set<string>();
+
 		// Process Cloudflare AI Gateway models
 		if (data["cloudflare-ai-gateway"]?.models) {
 			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
+				if (prefixedId.startsWith("workers-ai/")) cloudflareGatewayWorkersAiModelIds.add(prefixedId);
 
 				const slashIdx = prefixedId.indexOf("/");
 				if (slashIdx === -1) continue;
@@ -1717,6 +1741,37 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 					...(compat ? { compat } : {}),
+				});
+				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
+			}
+		}
+
+		// Cloudflare's gateway accepts every Workers AI model through its compatibility endpoint even when
+		// models.dev temporarily omits the corresponding workers-ai/* gateway entries.
+		if (data["cloudflare-workers-ai"]?.models) {
+			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
+				const id = `workers-ai/${modelId}`;
+				if (cloudflareGatewayWorkersAiModelIds.has(id)) continue;
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id,
+					name: m.name || id,
+					api: "openai-completions",
+					provider: "cloudflare-ai-gateway",
+					baseUrl: CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: { sendSessionAffinityHeaders: true },
 				});
 				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
 			}
