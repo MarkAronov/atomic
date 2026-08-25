@@ -23,6 +23,8 @@
 
 ### Fixed
 
+- Fixed `/thinking` being absent from slash-command autocomplete and added completions for the active model's available thinking levels.
+
 - Fixed the thinking-level selector so a capability-clamped default still receives the default badge when the saved setting is higher than the active model supports.
 - Failed extension loads now roll back provider registrations applied during that load instead of leaving an earlier provider in the runtime.
 - PowerShell cancellation now terminates the Windows process tree and returns without waiting on descendant-held stdout or stderr.
