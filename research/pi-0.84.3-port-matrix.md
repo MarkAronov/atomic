@@ -79,7 +79,7 @@ Not a commit group — the audit that justifies every **skipped-vendored-ai** ce
 
 | Upstream behavior | Upstream commit | Atomic evidence |
 |---|---|---|
-| xAI Responses routing + Grok 4.6 default | `70e878d4cf` | `packages/ai/src/providers/xai.ts:7-23`, `src/api/openai-responses.ts:325,360,366`, `src/providers/data/xai.json` |
+| xAI Responses routing + Grok 4.6 default | `70e878d4cf` | `packages/ai/src/providers/xai.ts:7-23`, `packages/ai/src/api/openai-responses.ts:325,360,366` (xAI catalog JSON is generated at build time into `packages/ai/src/providers/data/`) |
 | Chinese Z.AI Coding Plan catalog | `87205484bf` | `packages/ai/scripts/generate-models.ts:1183-1199`, `src/providers/zai-coding-cn.ts:6-14` |
 | Google thinking-level maps | `af2c352238` | `packages/ai/src/api/google-shared.ts:31-50`, callers at `google-generative-ai.ts:325`, `google-vertex.ts:331` |
 | Bedrock Smithy response headers | `10acee6045` | `packages/ai/src/api/bedrock-converse-stream.ts:476-508` |
