@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
@@ -12,14 +10,14 @@ import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { formatParallelResultContent } from "../../packages/subagents/src/runs/shared/parallel-utils.ts";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.ts";
-import { sleep } from "../helpers/runtime.ts";
+import { fileExistsSync, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.ts";
 
 const PROMPT_TRIES = 2_400;
 const PROMPT_MS = 5;
 
 async function waitForPrompt(promptLogPath: string): Promise<void> {
-	for (let attempt = 0; attempt < PROMPT_TRIES && !existsSync(promptLogPath); attempt++) await sleep(PROMPT_MS);
-	assert.equal(existsSync(promptLogPath), true, "child prompt should start before abort");
+	for (let attempt = 0; attempt < PROMPT_TRIES && !fileExistsSync(promptLogPath); attempt++) await sleep(PROMPT_MS);
+	assert.equal(fileExistsSync(promptLogPath), true, "child prompt should start before abort");
 }
 
 function sampleAgent(): AgentConfig {
@@ -74,7 +72,7 @@ function executorContext(root: string): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 test("parallel parent abort reports each child cancelled instead of failed", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-parallel-"));
+	const root = makeTempDirectory("atomic-cancel-parallel-");
 	const gateA = Promise.withResolvers<void>();
 	const gateB = Promise.withResolvers<void>();
 	const controller = new AbortController();
@@ -145,7 +143,7 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 		gateA.resolve();
 		gateB.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("formatParallelResultContent labels parent-aborted children cancelled", () => {
@@ -172,7 +170,7 @@ test("formatParallelResultContent labels parent-aborted children cancelled", () 
 });
 
 test("parallel executor fall-through reports cancelled children instead of interrupt failure", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-parallel-exec-"));
+	const root = makeTempDirectory("atomic-cancel-parallel-exec-");
 	clearSubagentControls();
 	try {
 		const state: SubagentState = {
@@ -230,6 +228,6 @@ test("parallel executor fall-through reports cancelled children instead of inter
 		assert.notEqual(result.isError, true);
 	} finally {
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
