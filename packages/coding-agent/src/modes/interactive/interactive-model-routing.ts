@@ -1,3 +1,4 @@
+import { clampThinkingLevel } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
@@ -14,6 +15,19 @@ import {
 } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
+
+export function resolveThinkingSelectorDefault(
+	rawDefault: ThinkingLevel | undefined,
+	availableLevels: readonly ThinkingLevel[],
+	model: Model<Api> | undefined,
+): ThinkingLevel | undefined {
+	if (rawDefault === undefined) return undefined;
+	if (availableLevels.includes(rawDefault)) return rawDefault;
+	if (!model) return availableLevels.includes("off") ? "off" : availableLevels[0];
+	const clamped = clampThinkingLevel(model, rawDefault) as ThinkingLevel;
+	if (availableLevels.includes(clamped)) return clamped;
+	return availableLevels.includes("off") ? "off" : availableLevels[0];
+}
 
 InteractiveModeBase.prototype.handleModelCommand = async function (
 	this: InteractiveModeBase,
@@ -372,18 +386,19 @@ InteractiveModeBase.prototype.showThinkingSelector = function (this: Interactive
 			done();
 		};
 		const model = this.session.model;
-		const modelDefault =
+		const availableLevels = this.session.getAvailableThinkingLevels();
+		const rawDefault =
 			model === undefined
 				? this.settingsManager.getDefaultThinkingLevel()
 				: (this.settingsManager.getModelThinkingLevel(model.provider, model.id) ??
 					this.settingsManager.getDefaultThinkingLevel());
 		const selector = new ThinkingSelectorComponent(
 			this.session.thinkingLevel,
-			this.session.getAvailableThinkingLevels(),
+			availableLevels,
 			(level) => select(level, false),
 			() => done(),
 			(level) => select(level, true),
-			modelDefault,
+			resolveThinkingSelectorDefault(rawDefault, availableLevels, model),
 		);
 		return { component: selector, focus: selector };
 	});
