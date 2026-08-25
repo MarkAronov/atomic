@@ -24,17 +24,49 @@ export function createLocalPowerShellOperations(): PowerShellOperations {
 		exec: async (command, cwd, options) => {
 			const { shell, args } = getPowerShellConfig();
 			const { spawn } = await import("node:child_process");
+			if (options.signal?.aborted) throw new Error("aborted");
 			return new Promise((resolve, reject) => {
 				const child = spawn(shell, [...args, `${UTF8_OUTPUT_PREFIX}${command}`], {
 					cwd,
 					env: options.env,
 					windowsHide: true,
 				});
+				let timedOut = false;
+				let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+				const onAbort = () => {
+					child.kill();
+				};
+				if (options.timeout !== undefined && options.timeout > 0) {
+					timeoutHandle = setTimeout(() => {
+						timedOut = true;
+						child.kill();
+					}, options.timeout * 1000);
+				}
+				const finish = (handler: () => void) => {
+					if (timeoutHandle) clearTimeout(timeoutHandle);
+					options.signal?.removeEventListener("abort", onAbort);
+					handler();
+				};
 				child.stdout.on("data", (data: Buffer) => options.onData(data, "stdout"));
 				child.stderr.on("data", (data: Buffer) => options.onData(data, "stderr"));
-				child.once("error", reject);
-				child.once("close", (exitCode) => resolve({ exitCode }));
-				options.signal?.addEventListener("abort", () => child.kill(), { once: true });
+				child.once("error", (error) => finish(() => reject(error)));
+				child.once("close", (exitCode) => {
+					finish(() => {
+						if (options.signal?.aborted) {
+							reject(new Error("aborted"));
+							return;
+						}
+						if (timedOut) {
+							reject(new Error(`timeout:${options.timeout}`));
+							return;
+						}
+						resolve({ exitCode });
+					});
+				});
+				if (options.signal) {
+					if (options.signal.aborted) onAbort();
+					else options.signal.addEventListener("abort", onAbort, { once: true });
+				}
 			});
 		},
 	};

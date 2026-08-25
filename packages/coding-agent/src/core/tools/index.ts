@@ -143,7 +143,7 @@ export const allToolNames: Set<ToolName> = new Set([
 export const defaultToolNames: readonly ToolName[] = [
 	"read",
 	"bash",
-	"powershell",
+	...(process.platform === "win32" ? (["powershell"] as const satisfies readonly ToolName[]) : []),
 	"edit",
 	"write",
 	"find",
