@@ -8,6 +8,8 @@ import {
 	claimActiveBlockedResume,
 	finalizeActiveBlockedSourceAfterContinuation,
 	finalizeResumedActiveBlockedSourceRun,
+	isReplayTopologyMismatchFailure,
+	releaseActiveBlockedClaim,
 } from "../../packages/workflows/src/extension/runtime-active-block-claim.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -77,7 +79,36 @@ function claimFlow() {
 	});
 }
 
+test("recognizes replay-topology mismatch and ambiguity reasons", () => {
+	assert.equal(
+		isReplayTopologyMismatchFailure(
+			{ error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" },
+			undefined,
+		),
+		true,
+	);
+	assert.equal(
+		isReplayTopologyMismatchFailure(
+			{ error: "atomic-workflows: insufficient_state: replay topology ambiguous for stage t" },
+			undefined,
+		),
+		true,
+	);
+});
+
 describe("active-blocked resume claim", () => {
+	test("scopes duplicate claims to one store", () => {
+		const firstStore = createStore();
+		const secondStore = createStore();
+		const first = claimActiveBlockedResume(firstStore, runId);
+		assert.ok(first);
+		assert.equal(claimActiveBlockedResume(firstStore, runId), undefined);
+		const independent = claimActiveBlockedResume(secondStore, runId);
+		assert.ok(independent);
+		releaseActiveBlockedClaim(first);
+		releaseActiveBlockedClaim(independent);
+	});
+
 	test("dispatches a fresh-ID continuation and keeps the durable source blocked/resumable", async () => {
 		const backend = new InMemoryDurableBackend();
 		registerBlockedDurable(backend);
@@ -259,20 +290,24 @@ describe("active-blocked resume claim", () => {
 		assert.equal(calls, 1);
 	});
 
-	test("a persistence fault after local kill does not leave the source resumable", async () => {
+	test("contains a terminal persistence fault after a successful continuation", async () => {
 		const backend = new InMemoryDurableBackend();
 		registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
+		let terminalPersistenceCalls = 0;
 		const runtime = createExtensionRuntime({
 			registry: createRegistry([claimFlow()]),
 			store,
 			jobs,
 			adapters: { prompt: { prompt: async () => "done" } },
 			persistence: {
-				appendEntry(type) {
-					if (type === "workflow.run.end") throw new Error("run.end persistence failed");
+				appendEntry(type, payload) {
+					if (type === "workflow.run.end" && payload.runId === runId) {
+						terminalPersistenceCalls += 1;
+						throw new Error("run.end persistence failed");
+					}
 					return "entry";
 				},
 			},
@@ -283,6 +318,7 @@ describe("active-blocked resume claim", () => {
 		await jobs.get(continuationId)?.promise;
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "killed");
 		assert.equal(store.runs().find((run) => run.id === continuationId)?.status, "completed");
+		assert.equal(terminalPersistenceCalls, 1);
 		assert.equal(backend.getWorkflow(runId)?.status, "blocked");
 		assert.equal(backend.getWorkflow(runId)?.resumable, true);
 	});
@@ -353,13 +389,14 @@ describe("active-blocked resume claim", () => {
 			...source,
 			stages: source.stages.map((stage) => ({ ...stage })),
 		};
-		assert.equal(claimActiveBlockedResume(new InMemoryDurableBackend(), runId), true);
-		finalizeResumedActiveBlockedSourceRun(source, "continuation", store);
+		const claim = claimActiveBlockedResume(store, source.id);
+		assert.ok(claim);
+		finalizeResumedActiveBlockedSourceRun(claim, source, "continuation");
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "killed");
 		finalizeActiveBlockedSourceAfterContinuation({
+			claim,
 			source: reserved,
 			continuationRunId: "continuation",
-			store,
 			result: { error: "atomic-workflows: insufficient_state: replay topology mismatch for tool t" },
 		});
 		const restored = store.runs().find((run) => run.id === runId);
@@ -440,15 +477,14 @@ describe("active-blocked resume claim", () => {
 			...source,
 			stages: source.stages.map((stage) => ({ ...stage })),
 		};
-		// The claim clears a restoredAfterMismatch flag left by the preceding restore,
-		// matching the order runtime.ts uses before every resume.
-		assert.equal(claimActiveBlockedResume(new InMemoryDurableBackend(), runId), true);
-		finalizeResumedActiveBlockedSourceRun(source, "continuation", store);
+		const claim = claimActiveBlockedResume(store, source.id);
+		assert.ok(claim);
+		finalizeResumedActiveBlockedSourceRun(claim, source, "continuation");
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "killed");
 		finalizeActiveBlockedSourceAfterContinuation({
+			claim,
 			source: reserved,
 			continuationRunId: "continuation",
-			store,
 			result: {
 				error: 'atomic-workflows: insufficient_state: replay topology ambiguous for stage "t" (replayKey "stage:task:t:1") in source run source',
 			},
