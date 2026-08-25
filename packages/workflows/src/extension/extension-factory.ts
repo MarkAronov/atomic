@@ -69,6 +69,9 @@ function registerIntercomControl(pi: ExtensionAPI, intercomControlRef: { current
 }
 
 function factory(pi: ExtensionAPI): void {
+	// A child AgentSession is not a workflow owner. Loading this lifecycle there
+	// would rebind process-shared run state away from the parent host session.
+	if (pi.subagentPolicy !== undefined) return;
 	adoptWorkflowSessionRunState(pi.events);
 
 	const adapters = buildRuntimeAdapters(pi);

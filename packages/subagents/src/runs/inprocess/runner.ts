@@ -327,17 +327,19 @@ function workflowMetadataFromContext(
 }
 
 /**
- * In-process children must load the same bundled extensions as the host.
- * Workflow extensions are disabled inside workflow-owned sessions because their
- * startup lifecycle belongs to the parent workflow store.
+ * In-process children keep bundled package resources, but never load the
+ * workflows extension itself. Every subagent child is a separate AgentSession;
+ * letting it adopt the process-shared workflow singletons rebinds the parent
+ * session's store facade and strands the parent's panel and control surfaces.
+ * Workflow-stage children already forbid the workflow tool explicitly, and
+ * ordinary subagent children must not gain an indirect orchestration door either.
  */
 export function inProcessChildBuiltinPackagePaths(
-	context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
+	_context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
 ): PackageSource[] {
-	return getBuiltinPackagePaths().map((source) => {
-		if (context?.kind !== "workflow-stage" || basename(source) !== "workflows") return source;
-		return { source, extensions: [] };
-	});
+	return getBuiltinPackagePaths().map((source) =>
+		basename(source) === "workflows" ? { source, extensions: [] } : source,
+	);
 }
 
 /**
