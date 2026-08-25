@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
@@ -15,7 +13,15 @@ import {
 import { DEFAULT_ARTIFACT_CONFIG } from "../../packages/subagents/src/shared/types.ts";
 import { compactForegroundDetails } from "../../packages/subagents/src/shared/utils.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.ts";
-import { sleep } from "../helpers/runtime.ts";
+import {
+	fileExistsSync,
+	makeDirectorySync,
+	makeTempDirectory,
+	readTextSync,
+	removeTempDirectory,
+	sleep,
+	writeTextSync,
+} from "../helpers/runtime.ts";
 
 function abortSession(root: string, gate: Promise<void>) {
 	return {
@@ -28,8 +34,8 @@ function abortSession(root: string, gate: Promise<void>) {
 
 async function waitForPrompt(root: string): Promise<void> {
 	const promptLogPath = join(root, "prompt.log");
-	for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
-	assert.equal(existsSync(promptLogPath), true, "child prompt should start before abort");
+	for (let attempt = 0; attempt < 200 && !fileExistsSync(promptLogPath); attempt++) await sleep(5);
+	assert.equal(fileExistsSync(promptLogPath), true, "child prompt should start before abort");
 }
 
 function sampleAgent(): AgentConfig {
@@ -45,20 +51,20 @@ function sampleAgent(): AgentConfig {
 	};
 }
 test("an untouched progress template is not treated as recoverable findings", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-empty-"));
+	const root = makeTempDirectory("atomic-cancel-progress-empty-");
 	try {
 		const progressPath = join(root, "progress.md");
-		writeFileSync(progressPath, INITIAL_PROGRESS_CONTENT);
+		writeTextSync(progressPath, INITIAL_PROGRESS_CONTENT);
 		assert.equal(readModifiedProgress(progressPath), undefined);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("a modified progress.md is recovered as bounded labelled partial output", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-"));
+	const root = makeTempDirectory("atomic-cancel-progress-");
 	try {
 		const progressPath = join(root, "progress.md");
-		writeFileSync(progressPath, "# Progress\n\n- Found auth middleware\n- Still unresolved: token refresh\n");
+		writeTextSync(progressPath, "# Progress\n\n- Found auth middleware\n- Still unresolved: token refresh\n");
 		const recovered = recoverCancelledChildOutput({
 			progressPath,
 			assistantText: "later unused assistant text",
@@ -78,14 +84,14 @@ test("a modified progress.md is recovered as bounded labelled partial output", (
 		assert.doesNotMatch(recovered.text, /^abort$/m);
 		assert.doesNotMatch(recovered.text, /full output at /);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("oversized ephemeral progress truncates without citing the deleted path", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-truncate-"));
+	const root = makeTempDirectory("atomic-cancel-progress-truncate-");
 	try {
 		const progressPath = join(root, "progress.md");
-		writeFileSync(
+		writeTextSync(
 			progressPath,
 			`${Array.from({ length: 201 }, (_, index) => `- finding ${index + 1}`).join("\n")}\n`,
 		);
@@ -100,20 +106,20 @@ test("oversized ephemeral progress truncates without citing the deleted path", (
 		assert.doesNotMatch(recovered.text, /Progress: /);
 		assert.ok(!recovered.text.includes(progressPath));
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("oversized persisted progress cites the artifact path in the truncation marker", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-truncate-kept-"));
+	const root = makeTempDirectory("atomic-cancel-progress-truncate-kept-");
 	try {
 		const progressPath = join(root, "progress.md");
 		const progressArtifactPath = join(root, "kept", "progress.md");
-		writeFileSync(
+		writeTextSync(
 			progressPath,
 			`${Array.from({ length: 201 }, (_, index) => `- finding ${index + 1}`).join("\n")}\n`,
 		);
-		mkdirSync(join(root, "kept"), { recursive: true });
-		writeFileSync(progressArtifactPath, "kept\n");
+		makeDirectorySync(join(root, "kept"), { recursive: true });
+		writeTextSync(progressArtifactPath, "kept\n");
 		const recovered = recoverCancelledChildOutput({
 			progressPath,
 			progressArtifactPath,
@@ -124,14 +130,14 @@ test("oversized persisted progress cites the artifact path in the truncation mar
 		assert.ok(recovered.text.includes(`full output at ${progressArtifactPath}`));
 		assert.ok(recovered.text.includes(`Progress: ${progressArtifactPath}`));
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("without progress updates, recovery uses the last non-empty assistant text", () => {
 	const recovered = recoverCancelledChildOutput({
 		assistantText: "Verified the login redirect.",
 		toolCount: 23,
-		sessionPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-assistant-")), "session.jsonl"),
+		sessionPath: join(makeTempDirectory("atomic-cancel-assistant-"), "session.jsonl"),
 	});
 	assert.equal(recovered.source, "assistant");
 	assert.match(recovered.text, /Partial findings from assistant history/);
@@ -142,10 +148,10 @@ test("without progress updates, recovery uses the last non-empty assistant text"
 test("without recoverable content, recovery returns a cancellation notice and artifact refs", () => {
 	const recovered = recoverCancelledChildOutput({
 		toolCount: 0,
-		sessionPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "session.jsonl"),
-		outputArtifactPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "out.md"),
-		progressPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "progress.md"),
-		progressArtifactPath: join(mkdtempSync(join(tmpdir(), "atomic-cancel-empty-")), "progress.md"),
+		sessionPath: join(makeTempDirectory("atomic-cancel-empty-"), "session.jsonl"),
+		outputArtifactPath: join(makeTempDirectory("atomic-cancel-empty-"), "out.md"),
+		progressPath: join(makeTempDirectory("atomic-cancel-empty-"), "progress.md"),
+		progressArtifactPath: join(makeTempDirectory("atomic-cancel-empty-"), "progress.md"),
 	});
 	assert.equal(recovered.source, "none");
 	assert.match(recovered.text, /Run cancelled by parent/);
@@ -159,7 +165,7 @@ test("without recoverable content, recovery returns a cancellation notice and ar
 });
 
 test("cancelled envelopes cite each artifact path only when that file exists", () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-refs-"));
+	const root = makeTempDirectory("atomic-cancel-refs-");
 	try {
 		const rows = [
 			["Session", "sessionPath", join(root, "session.jsonl")],
@@ -168,7 +174,7 @@ test("cancelled envelopes cite each artifact path only when that file exists", (
 		] as const;
 		for (const [label, key, pathValue] of rows) {
 			assert.doesNotMatch(recoverCancelledChildOutput({ [key]: pathValue }).text, new RegExp(`${label}: `));
-			writeFileSync(pathValue, "kept\n");
+			writeTextSync(pathValue, "kept\n");
 			const present = recoverCancelledChildOutput({
 				[key]: pathValue,
 				...(key === "progressArtifactPath" ? { progressPath: pathValue } : {}),
@@ -176,12 +182,12 @@ test("cancelled envelopes cite each artifact path only when that file exists", (
 			assert.ok(present.text.includes(`${label}: ${pathValue}`));
 		}
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 
 test("parent abort is an interrupted cancellation, not a failed error", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-status-"));
+	const root = makeTempDirectory("atomic-cancel-status-");
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	clearSubagentControls();
@@ -210,11 +216,11 @@ test("parent abort is an interrupted cancellation, not a failed error", async ()
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("ordinary user interrupt still reports progress as failed", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-user-interrupt-"));
+	const root = makeTempDirectory("atomic-cancel-user-interrupt-");
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	clearSubagentControls();
@@ -237,11 +243,11 @@ test("ordinary user interrupt still reports progress as failed", async () => {
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("a thinking-only aborted final message recovers earlier assistant text", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-thinking-"));
+	const root = makeTempDirectory("atomic-cancel-thinking-");
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	clearSubagentControls();
@@ -268,13 +274,13 @@ test("a thinking-only aborted final message recovers earlier assistant text", as
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("a populated run-scoped progress.md wins over earlier assistant text", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-progress-win-"));
+	const root = makeTempDirectory("atomic-cancel-progress-win-");
 	const progressPath = join(root, "progress.md");
-	writeFileSync(progressPath, "# Progress\n\n- Verified the abort listener fires.\n");
+	writeTextSync(progressPath, "# Progress\n\n- Verified the abort listener fires.\n");
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	clearSubagentControls();
@@ -301,11 +307,11 @@ test("a populated run-scoped progress.md wins over earlier assistant text", asyn
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("parent abort keeps pre-cancel fallback metadata and does not start another fallback", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-no-fallback-"));
+	const root = makeTempDirectory("atomic-cancel-no-fallback-");
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	let sawFallback = false;
@@ -353,11 +359,11 @@ test("parent abort keeps pre-cancel fallback metadata and does not start another
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("parent abort before any fallback does not emit a fallback model", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-no-fallback-start-"));
+	const root = makeTempDirectory("atomic-cancel-no-fallback-start-");
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	clearSubagentControls();
@@ -388,14 +394,14 @@ test("parent abort before any fallback does not emit a fallback model", async ()
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 test("parent abort without findings cites persisted output and progress artifacts", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-cancel-artifact-refs-"));
+	const root = makeTempDirectory("atomic-cancel-artifact-refs-");
 	const artifactsDir = join(root, "artifacts");
 	const progressPath = join(root, "progress.md");
-	writeFileSync(progressPath, INITIAL_PROGRESS_CONTENT);
+	writeTextSync(progressPath, INITIAL_PROGRESS_CONTENT);
 	const gate = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	clearSubagentControls();
@@ -422,14 +428,14 @@ test("parent abort without findings cites persisted output and progress artifact
 		assert.doesNotMatch(result.envelope ?? "", /Output: /);
 		assert.ok(result.artifactPaths?.outputPath);
 		assert.ok(!result.envelope?.includes(`Output: ${result.artifactPaths.outputPath}`));
-		const artifactText = readFileSync(result.artifactPaths.outputPath, "utf8");
+		const artifactText = readTextSync(result.artifactPaths.outputPath, "utf8");
 		assert.match(artifactText, /Run cancelled by parent/);
 		assert.notEqual(artifactText.trim(), "abort");
 		assert.doesNotMatch(artifactText, /^abort$/);
 	} finally {
 		gate.resolve();
 		clearSubagentControls();
-		rmSync(root, { recursive: true, force: true });
+		removeTempDirectory(root);
 	}
 });
 
