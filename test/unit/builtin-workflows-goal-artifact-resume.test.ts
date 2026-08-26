@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { createGoalLedger } from "../../packages/workflows/builtin/goal-ledger.js";
-import { createGoalArtifactDirectory } from "../../packages/workflows/builtin/goal-runner.js";
+import { createGoalArtifactDirectory, runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
@@ -16,6 +16,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { taskReadInstruction } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 const posix = (value: string): string => value.replaceAll("\\", "/");
 
@@ -165,6 +166,94 @@ test("a fresh-id continuation replays the complete Goal artifact root and reads 
 	} finally {
 		if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
 		else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a replayed Goal turn preserves its ledger without duplicating receipts or reviews", async () => {
+	const root = await mkdtemp(join(tmpdir(), "goal-ledger-replay-"));
+	const artifactDir = join(root, "runs", "source-run", "artifact-fixed");
+	await mkdir(artifactDir, { recursive: true });
+	const reviewerDecision = {
+		findings: [],
+		overall_correctness: "patch is correct" as const,
+		overall_explanation: "all focused checks pass",
+		overall_confidence_score: 0.99,
+		goal_oracle_satisfied: true,
+		requirements_traceability: [{ requirement: "preserve artifacts", status: "proven" as const, evidence: "test" }],
+		receipt_assessment: "receipt verified",
+		verification_remaining: "none",
+		stop_review_loop: true,
+		reviewer_error: null,
+	};
+	const runOnce = async () => {
+		const ctx = makeMockCtx(
+			{
+				objective: "literal objective",
+				acceptance_criteria: "literal criteria",
+				max_turns: 1,
+				base_branch: "origin/main",
+				git_worktree_dir: process.cwd(),
+				create_pr: false,
+			},
+			{
+				runId: "continuation-run",
+				tool: (name) => (name === "artifact-root" ? artifactDir : undefined),
+				task: (name) =>
+					name.includes("reviewer")
+						? { text: JSON.stringify(reviewerDecision), structured: reviewerDecision }
+						: "implementation receipt",
+			},
+		);
+		return runGoalWorkflow(ctx, { createPr: false, workflowStartCwd: process.cwd() });
+	};
+	try {
+		await runOnce();
+		const first = JSON.parse(await readFile(join(artifactDir, "goal-ledger.json"), "utf8")) as {
+			goal_id: string;
+			receipts: readonly object[];
+			reviews: readonly object[];
+		};
+		assert.equal(first.receipts.length, 1);
+		assert.equal(first.reviews.length, 3);
+
+		await runOnce();
+		const replayed = JSON.parse(await readFile(join(artifactDir, "goal-ledger.json"), "utf8")) as typeof first;
+		assert.equal(replayed.goal_id, first.goal_id);
+		assert.equal(replayed.receipts.length, 1);
+		assert.equal(replayed.reviews.length, 3);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createGoalLedger preserves every existing durable ledger collection", async () => {
+	const root = await mkdtemp(join(tmpdir(), "goal-ledger-existing-"));
+	const artifactDir = join(root, "runs", "source-run", "artifact-fixed");
+	await mkdir(artifactDir, { recursive: true });
+	try {
+		const created = await createGoalLedger("literal objective", "literal criteria", artifactDir);
+		const stored = JSON.parse(await readFile(created.ledgerPath, "utf8")) as Record<string, unknown>;
+		stored.goal_id = "ORIGINAL-GOAL-ID";
+		stored.receipts = [{ stage: "orchestrator", artifact_path: "receipt.md", summary: "kept" }];
+		stored.reviews = [{ reviewer: "completion-reviewer", artifact_path: "review.json", parsed: true }];
+		stored.blockers = [{ blocker: "kept", reviewers: ["completion-reviewer"] }];
+		stored.decisions = [{ decision: "continue", reason: "kept" }];
+		stored.reverification = [{ marker: "kept" }];
+		stored.convergence = [{ marker: "kept" }];
+		await writeFile(created.ledgerPath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+
+		const resumed = await createGoalLedger("replacement objective", "replacement criteria", artifactDir);
+		assert.equal(resumed.ledger.goal_id, "ORIGINAL-GOAL-ID");
+		assert.equal(resumed.ledger.objective, "literal objective");
+		assert.equal(resumed.ledger.receipts.length, 1);
+		assert.equal(resumed.ledger.reviews.length, 1);
+		assert.equal(resumed.ledger.blockers.length, 1);
+		assert.equal(resumed.ledger.decisions.length, 1);
+		assert.equal(resumed.ledger.lifecycle.length, 1);
+		assert.equal(resumed.ledger.reverification?.length, 1);
+		assert.equal(resumed.ledger.convergence?.length, 1);
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });

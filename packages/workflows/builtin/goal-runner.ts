@@ -212,13 +212,18 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
 
       previousOrchestratorSessionFile = orchestrator.sessionFile;
       ledger.turns = turn;
-      ledger.receipts.push({
-        turn,
-        stage: orchestrator.name ?? orchestrator.stageName,
-        artifact_path: orchestratorReceiptPath,
-        summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
-      });
-      appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
+      const receiptAlreadyRecorded = ledger.receipts.some(
+        (receipt) => receipt.turn === turn && receipt.artifact_path === orchestratorReceiptPath,
+      );
+      if (!receiptAlreadyRecorded) {
+        ledger.receipts.push({
+          turn,
+          stage: orchestrator.name ?? orchestrator.stageName,
+          artifact_path: orchestratorReceiptPath,
+          summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
+        });
+        appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
+      }
       await writeGoalLedger(ledgerPath, ledger);
 
       const reviewerStep = (
@@ -367,7 +372,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           usage: fold_usage([orchestrator, ...reviewResults, ...reverifyResults]),
         }));
       }
-      ledger.reviews.push(...latestReviews);
+      const newReviews = latestReviews.filter(
+        (review) => !ledger.reviews.some(
+          (recorded) => recorded.turn === review.turn && recorded.reviewer === review.reviewer,
+        ),
+      );
+      ledger.reviews.push(...newReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
       appendLifecycleEvent(

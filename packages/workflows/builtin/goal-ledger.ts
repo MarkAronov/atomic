@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
 
@@ -53,11 +53,51 @@ export function appendLifecycleEvent(
   });
 }
 
+function restoreTurns<T>(values: readonly Omit<T & { readonly turn: number }, "turn">[], turnForIndex: (index: number) => number): T[] {
+  return values.map((value, index) => ({ ...value, turn: turnForIndex(index) }) as T);
+}
+function restoreReviewTurns(values: ModelVisibleGoalLedger["reviews"]): GoalLedger["reviews"] {
+  const reviewerOccurrences = new Map<string, number>();
+  return values.map((value) => {
+    const turn = (reviewerOccurrences.get(value.reviewer) ?? 0) + 1;
+    reviewerOccurrences.set(value.reviewer, turn);
+    return { ...value, turn };
+  });
+}
+
+
+async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | undefined> {
+  let contents: string;
+  try {
+    contents = await readFile(ledgerPath, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const stored = JSON.parse(contents) as ModelVisibleGoalLedger;
+  const turns = stored.receipts.length;
+  return {
+    ...stored,
+    turns,
+    receipts: restoreTurns<GoalLedger["receipts"][number]>(stored.receipts, (index) => index + 1),
+    reviews: restoreReviewTurns(stored.reviews),
+    blockers: restoreTurns<GoalLedger["blockers"][number]>(stored.blockers, (index) => index + 1),
+    decisions: restoreTurns<GoalLedger["decisions"][number]>(stored.decisions, (index) => index + 1),
+    lifecycle: restoreTurns<GoalLedger["lifecycle"][number]>(stored.lifecycle, (index) =>
+      stored.lifecycle[index]?.event === "created" ? 0 : Math.min(index, Math.max(turns, 1)),
+    ),
+  };
+}
+
 export async function createGoalLedger(
   objective: string,
   acceptanceCriteria: string,
   artifactDir: string,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
+  const ledgerPath = join(artifactDir, LEDGER_FILENAME);
+  const existing = await readExistingGoalLedger(ledgerPath);
+  if (existing !== undefined) return { ledger: existing, ledgerPath, artifactDir };
+
   const goalId = randomUUID();
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
@@ -77,7 +117,6 @@ export async function createGoalLedger(
     convergence: [],
   };
   appendLifecycleEvent(ledger, "created", "Goal created.", 0);
-  const ledgerPath = join(artifactDir, LEDGER_FILENAME);
   await writeGoalLedger(ledgerPath, ledger);
   return { ledger, ledgerPath, artifactDir };
 }

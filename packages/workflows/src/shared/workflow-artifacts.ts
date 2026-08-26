@@ -41,36 +41,45 @@ function normalizeSerializedPath(value: string): string {
 	return value.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
 }
 
-/** Extract every configured run-directory owner referenced in a run's result or stages. */
-function workflowRunArtifactOwnerIds(run: Pick<RunSnapshot, "result" | "stages">): readonly string[] {
-	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
-	if (serialized === undefined) return [];
-	// `JSON.stringify` escapes Windows separators, so one replacement can leave
-	// doubled slashes. Normalize both the snapshot and configured root identically;
-	// otherwise Windows references are invisible or unrelated `/runs/` paths match.
-	const normalized = normalizeSerializedPath(serialized);
-	const ownerPrefix = `${normalizeSerializedPath(workflowArtifactRunsRoot())}/`;
+type ArtifactReferenceSnapshot = Pick<RunSnapshot, "id" | "result" | "stages" | "resumedFromRunId">;
+
+/** Return the run identities allowed to own artifacts referenced by this snapshot. */
+function workflowRunArtifactOwnerIds(run: ArtifactReferenceSnapshot): readonly string[] {
+	const localRuns = new Map(store.runs().map((candidate) => [candidate.id, candidate]));
 	const owners = new Set<string>();
-	let searchFrom = 0;
-	while (searchFrom < normalized.length) {
-		const ownerStart = normalized.indexOf(ownerPrefix, searchFrom);
-		if (ownerStart < 0) break;
-		const valueStart = ownerStart + ownerPrefix.length;
-		const ownerEnd = normalized.indexOf("/", valueStart);
-		if (ownerEnd > valueStart) owners.add(normalized.slice(valueStart, ownerEnd));
-		searchFrom = valueStart;
+	const visited = new Set<string>();
+	let cursor: ArtifactReferenceSnapshot | undefined = run;
+	while (cursor !== undefined && !visited.has(cursor.id)) {
+		visited.add(cursor.id);
+		owners.add(safeRunId(cursor.id));
+		const sourceId = cursor.resumedFromRunId;
+		if (sourceId === undefined) break;
+		owners.add(safeRunId(sourceId));
+		cursor = localRuns.get(sourceId);
 	}
 	return [...owners];
 }
 
-/** Detect a run-scoped artifact path anywhere in a run's result or stages. */
-export function workflowRunHasArtifactReference(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean {
-	return workflowRunArtifactOwnerIds(run).length > 0;
+/** Extract identity-scoped owners whose configured artifact paths appear in the snapshot. */
+function workflowRunReferencedArtifactOwnerIds(run: ArtifactReferenceSnapshot): readonly string[] {
+	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
+	if (serialized === undefined) return [];
+	// `JSON.stringify` escapes Windows separators, so one replacement can leave
+	// doubled slashes. Normalize both the snapshot and configured root identically;
+	// otherwise Windows references are invisible.
+	const normalized = normalizeSerializedPath(serialized);
+	const runsRoot = normalizeSerializedPath(workflowArtifactRunsRoot());
+	return workflowRunArtifactOwnerIds(run).filter((ownerId) => normalized.includes(`${runsRoot}/${ownerId}/`));
 }
 
-/** Return artifact integrity only for runs whose snapshot names run-scoped artifacts. */
-export function workflowRunArtifactsIntact(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean | undefined {
-	const ownerIds = workflowRunArtifactOwnerIds(run);
+/** Detect an identity-scoped run artifact path anywhere in a run's result or stages. */
+export function workflowRunHasArtifactReference(run: ArtifactReferenceSnapshot): boolean {
+	return workflowRunReferencedArtifactOwnerIds(run).length > 0;
+}
+
+/** Return integrity only for identity-scoped owners whose artifacts the snapshot names. */
+export function workflowRunArtifactsIntact(run: ArtifactReferenceSnapshot): boolean | undefined {
+	const ownerIds = workflowRunReferencedArtifactOwnerIds(run);
 	if (ownerIds.length === 0) return undefined;
 	return ownerIds.every((ownerId) => existsSync(workflowArtifactRunPath(ownerId)));
 }
@@ -149,7 +158,6 @@ export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunSta
 	const protectedOwners = new Set<string>();
 	for (const run of localRuns.values()) {
 		if (storeRunState(run) !== "protected") continue;
-		for (const ownerId of workflowRunArtifactOwnerIds(run)) protectedOwners.add(ownerId);
 		let cursor: RunSnapshot | undefined = run;
 		const visited = new Set<string>();
 		while (cursor !== undefined && !visited.has(cursor.id)) {
