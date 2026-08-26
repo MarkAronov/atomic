@@ -48,5 +48,11 @@ windows-sys = { version = "0.61", features = [
 	"Win32_System_Threading",
 ] }
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+	"Win32_System_Diagnostics_ToolHelp",
+	"Win32_UI_WindowsAndMessaging",
+] }
+
 [build-dependencies]
 napi-build.workspace = true

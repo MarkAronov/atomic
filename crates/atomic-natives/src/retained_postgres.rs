@@ -147,9 +147,12 @@ fn configure_process(command: &mut Command, uid: Option<u32>, gid: Option<u32>) 
 #[cfg(windows)]
 fn configure_process(command: &mut Command, _uid: Option<u32>, _gid: Option<u32>) {
 	use std::os::windows::process::CommandExt;
-	// DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. The retained Child keeps the
-	// process HANDLE open even though the server has no parent console.
-	command.creation_flags(0x0000_0008 | 0x0000_0200);
+	// CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP. The postmaster runs attached
+	// to an invisible console that its child processes inherit; DETACHED_PROCESS
+	// would leave it consoleless, making every console-subsystem descendant
+	// (checkpointer, walwriter, backends, ...) allocate its own visible console
+	// window. The retained Child keeps the process HANDLE open either way.
+	command.creation_flags(0x0800_0000 | 0x0000_0200);
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -396,7 +399,7 @@ fn open_named_pipe(pipe_name: &[u16], deadline: Instant) -> io::Result<OwnedWind
 	use windows_sys::Win32::{
 		Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
 		Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING},
-		System::Pipes::WaitNamedPipeW,
+		System::Pipes::{PIPE_READMODE_MESSAGE, SetNamedPipeHandleState, WaitNamedPipeW},
 	};
 
 	retry_while_pipe_busy(deadline, |remaining_ms| {
@@ -417,7 +420,14 @@ fn open_named_pipe(pipe_name: &[u16], deadline: Instant) -> io::Result<OwnedWind
 		if pipe == INVALID_HANDLE_VALUE {
 			return Err(io::Error::last_os_error());
 		}
-		Ok(OwnedWindowsHandle(pipe))
+		let pipe = OwnedWindowsHandle(pipe);
+		// TransactNamedPipe requires the client end in message-read mode; the
+		// default byte mode fails the transaction with ERROR_BAD_PIPE.
+		let mode = PIPE_READMODE_MESSAGE;
+		if unsafe { SetNamedPipeHandleState(pipe.0, &mode, ptr::null_mut(), ptr::null_mut()) } == 0 {
+			return Err(io::Error::last_os_error());
+		}
+		Ok(pipe)
 	})
 }
 
@@ -903,8 +913,14 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
 	use std::{
+		collections::{HashMap, HashSet},
+		env,
 		ffi::OsStr,
+		fs,
+		net::TcpStream,
 		os::windows::ffi::OsStrExt,
+		path::PathBuf,
+		process::Command,
 		ptr,
 		sync::mpsc,
 		thread,
@@ -920,7 +936,11 @@ mod windows_tests {
 		},
 	};
 
-	use super::{retry_while_pipe_busy, transact_named_pipe};
+	use super::{
+		RetainedPostgres, interrupt_and_wait, retry_while_pipe_busy, spawn_retained_postgres,
+		transact_named_pipe,
+	};
+	use crate::retained_postgres::RetainedPostgresSpawnOptions;
 
 	#[test]
 	fn accepted_windows_pipe_transaction_is_cancelled_at_the_shared_deadline() {
@@ -1001,5 +1021,289 @@ mod windows_tests {
 			.unwrap_err();
 		assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 		assert_eq!(attempts, 1, "ERROR_PIPE_BUSY does not start a new deadline");
+	}
+
+	/// Locate the npm-distributed Windows Postgres binaries. Requires `npm ci`
+	/// in the repository first; overridable via ATOMIC_EMBEDDED_POSTGRES_BIN_DIR.
+	fn embedded_postgres_bin_dir() -> Option<PathBuf> {
+		if let Some(dir) = env::var_os("ATOMIC_EMBEDDED_POSTGRES_BIN_DIR") {
+			return Some(PathBuf::from(dir));
+		}
+		let mut current = Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+		while let Some(dir) = current {
+			let candidate = dir
+				.join("node_modules")
+				.join("@embedded-postgres")
+				.join(format!(
+					"windows-{}",
+					if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" }
+				))
+				.join("native")
+				.join("bin");
+			if candidate.join("postgres.exe").exists() && candidate.join("initdb.exe").exists() {
+				return Some(candidate);
+			}
+			current = dir.parent().map(PathBuf::from);
+		}
+		None
+	}
+
+	fn descendants_of(root_pid: u32) -> HashSet<u32> {
+		use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+			CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+			TH32CS_SNAPPROCESS,
+		};
+
+		let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+		assert_ne!(snapshot, INVALID_HANDLE_VALUE);
+		let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+		let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+		entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+		if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
+			loop {
+				children.entry(entry.th32ParentProcessID).or_default().push(entry.th32ProcessID);
+				if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+					break;
+				}
+			}
+		}
+		unsafe { CloseHandle(snapshot) };
+		let mut tree = HashSet::from([root_pid]);
+		let mut pending = vec![root_pid];
+		while let Some(pid) = pending.pop() {
+			for &child in children.get(&pid).map(Vec::as_slice).unwrap_or_default() {
+				if tree.insert(child) {
+					pending.push(child);
+				}
+			}
+		}
+		tree
+	}
+
+	fn visible_top_level_window_pids() -> HashSet<u32> {
+		use windows_sys::Win32::UI::WindowsAndMessaging::{
+			EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+		};
+
+		unsafe extern "system" fn collect(
+			window: windows_sys::Win32::Foundation::HWND,
+			state: windows_sys::Win32::Foundation::LPARAM,
+		) -> windows_sys::core::BOOL {
+			unsafe {
+				if IsWindowVisible(window) != 0 {
+					let mut pid = 0_u32;
+					GetWindowThreadProcessId(window, &mut pid);
+					if pid != 0 {
+						(*(state as *mut HashSet<u32>)).insert(pid);
+					}
+				}
+			}
+			1
+		}
+
+		let mut pids = HashSet::new();
+		unsafe {
+			EnumWindows(Some(collect), ptr::from_mut(&mut pids) as isize);
+		}
+		pids
+	}
+
+	/// Postgres refuses to run for an effective member of Administrators
+	/// (its `pgwin32_is_admin` check), so the end-to-end test only runs where
+	/// a real launch is possible (regular user or a restricted token, as on
+	/// any supported install).
+	fn token_is_admin() -> bool {
+		use windows_sys::Win32::Security::{
+			AllocateAndInitializeSid, CheckTokenMembership, FreeSid, SECURITY_NT_AUTHORITY,
+		};
+
+		const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x20;
+		const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x220;
+		let authority = SECURITY_NT_AUTHORITY;
+		let mut admins_sid = ptr::null_mut();
+		if unsafe {
+			AllocateAndInitializeSid(
+				&authority,
+				2,
+				SECURITY_BUILTIN_DOMAIN_RID,
+				DOMAIN_ALIAS_RID_ADMINS,
+				0,
+				0,
+				0,
+				0,
+				0,
+				0,
+				&mut admins_sid,
+			)
+		} == 0
+		{
+			return false;
+		}
+		let mut is_member = 0;
+		let ok = unsafe { CheckTokenMembership(ptr::null_mut(), admins_sid, &mut is_member) };
+		unsafe { FreeSid(admins_sid) };
+		ok != 0 && is_member != 0
+	}
+
+	fn free_tcp_port() -> u16 {
+		std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+	}
+
+	/// Removes the temporary cluster directory even when the test panics.
+	struct DirGuard(PathBuf);
+
+	impl Drop for DirGuard {
+		fn drop(&mut self) {
+			fs::remove_dir_all(&self.0).ok();
+		}
+	}
+
+	/// Shuts the retained postmaster down even when the test panics, since
+	/// dropping the lease alone intentionally leaves the process running.
+	struct LeaseGuard(Option<RetainedPostgres>);
+
+	impl LeaseGuard {
+		fn shutdown(mut self) -> bool {
+			let state = &self.0.as_ref().unwrap().state;
+			let exited = interrupt_and_wait(state, Duration::from_secs(60)).unwrap().exited;
+			if exited {
+				self.0.take();
+			}
+			exited
+		}
+	}
+
+	impl Drop for LeaseGuard {
+		fn drop(&mut self) {
+			if let Some(lease) = self.0.take() {
+				interrupt_and_wait(&lease.state, Duration::from_secs(60)).ok();
+			}
+		}
+	}
+
+	/// End-to-end regression test for visible console windows (issue #2670):
+	/// initialize a real embedded Postgres cluster, start the postmaster through
+	/// `spawnRetainedPostgres`, wait for readiness, then assert that neither the
+	/// postmaster nor any descendant owns a visible top-level window.
+	#[test]
+	fn retained_postgres_tree_owns_no_visible_windows() {
+		let Some(bin_dir) = embedded_postgres_bin_dir() else {
+			eprintln!(
+				"skipping retained_postgres_tree_owns_no_visible_windows: run `npm ci` first or set ATOMIC_EMBEDDED_POSTGRES_BIN_DIR"
+			);
+			return;
+		};
+		if token_is_admin() {
+			eprintln!(
+				"skipping retained_postgres_tree_owns_no_visible_windows: Postgres does not run for an Administrators member"
+			);
+			return;
+		}
+		let root = env::temp_dir().join(format!(
+			"atomic-retained-postgres-windows-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+		));
+		let _root_guard = DirGuard(root.clone());
+		let data_dir = root.join("data");
+		fs::create_dir_all(&data_dir).unwrap();
+		let password_file = root.join("pw");
+		fs::write(&password_file, "atomic\n").unwrap();
+		let initdb = Command::new(bin_dir.join("initdb.exe"))
+			.args([
+				"-D",
+				data_dir.to_str().unwrap(),
+				"-U",
+				"postgres",
+				"-A",
+				"password",
+				&format!("--pwfile={}", password_file.display()),
+				"-E",
+				"UTF8",
+				"--no-locale",
+			])
+			.output()
+			.unwrap();
+		assert!(
+			initdb.status.success(),
+			"initdb failed: {}",
+			String::from_utf8_lossy(&initdb.stderr)
+		);
+
+		// The port is picked by binding an ephemeral listener and releasing it,
+		// so another process can occasionally claim it before Postgres binds;
+		// retry with a fresh port when Postgres reports a bind failure.
+		let log_file = root.join("postgres.log");
+		let mut attempt = 0;
+		let guard = loop {
+			attempt += 1;
+			fs::remove_file(&log_file).ok();
+			let port = free_tcp_port();
+			let lease = spawn_retained_postgres(RetainedPostgresSpawnOptions {
+				executable: bin_dir.join("postgres.exe").to_str().unwrap().to_owned(),
+				args: vec![
+					"-D".to_owned(),
+					data_dir.to_str().unwrap().to_owned(),
+					"-p".to_owned(),
+					port.to_string(),
+					"-c".to_owned(),
+					"listen_addresses=127.0.0.1".to_owned(),
+				],
+				cwd: data_dir.to_str().unwrap().to_owned(),
+				log_file: log_file.to_str().unwrap().to_owned(),
+				env: None,
+				uid: None,
+				gid: None,
+			})
+			.unwrap();
+			let guard = LeaseGuard(Some(lease));
+
+			let deadline = Instant::now() + Duration::from_secs(60);
+			let mut ready = false;
+			while Instant::now() < deadline {
+				if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+					ready = true;
+					break;
+				}
+				if fs::read_to_string(&log_file)
+					.unwrap_or_default()
+					.contains("could not create any TCP/IP sockets")
+				{
+					break;
+				}
+				thread::sleep(Duration::from_millis(100));
+			}
+			if ready {
+				break guard;
+			}
+			let log = fs::read_to_string(&log_file).unwrap_or_default();
+			assert!(
+				log.contains("could not create any TCP/IP sockets") && attempt < 5,
+				"embedded Postgres never accepted connections (attempt {attempt}); log: {log}",
+			);
+		};
+		let postmaster_pid = guard.0.as_ref().unwrap().pid().unwrap();
+
+		// Sample repeatedly: postmaster children (checkpointer, walwriter, ...)
+		// keep spawning shortly after readiness, and each visible console would
+		// persist rather than flash.
+		let mut offenders = HashSet::new();
+		let mut tree = HashSet::new();
+		for _sample in 0..10 {
+			tree = descendants_of(postmaster_pid);
+			offenders.extend(visible_top_level_window_pids().intersection(&tree).copied());
+			thread::sleep(Duration::from_millis(300));
+		}
+		assert!(
+			tree.len() > 1,
+			"expected the postmaster to have descendant processes; tree: {tree:?}",
+		);
+
+		assert!(guard.shutdown());
+
+		assert!(
+			offenders.is_empty(),
+			"PostgreSQL processes own visible top-level windows: {offenders:?}",
+		);
 	}
 }
