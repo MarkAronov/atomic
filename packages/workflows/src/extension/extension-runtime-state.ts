@@ -501,17 +501,23 @@ export function createWorkflowExtensionRuntimeState(
 	});
 
 	async function ensureWorkflowResourcesLoaded(): Promise<void> {
-		if (pi.disableAsyncDiscovery) return;
 		// Await an in-flight reload as well as a missing first discovery: name
 		// resolution issued right after `/workflow reload` must see the
 		// post-reload registry, not the one that reload is about to replace
 		// (observed live: reload → run executed the pre-reload module → the
 		// reload applied only after the run had started).
+		//
+		// `disableAsyncDiscovery` only suppresses *starting* discovery from this
+		// resolution path. An explicit reload still publishes a pending promise
+		// through `reloadWorkflowResources`, so returning early on that setting
+		// would reintroduce the same race for hosts that disable warmup.
 		for (;;) {
 			const discoveryGeneration = workflowDiscoveryGeneration;
 			const pending =
 				lazyDiscoveryPromise ??
-				(discoveryRef.current === null ? trackLazyDiscovery(reloadCoordinator.request(discoveryGeneration)) : null);
+				(discoveryRef.current === null && !pi.disableAsyncDiscovery
+					? trackLazyDiscovery(reloadCoordinator.request(discoveryGeneration))
+					: null);
 			if (pending === null) return;
 			const report = await pending;
 			// A failed reload while a registry already exists surfaces through the

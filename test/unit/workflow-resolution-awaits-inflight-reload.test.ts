@@ -167,4 +167,79 @@ describe("workflow name resolution vs in-flight reload", () => {
 		// the retained registry instead of throwing at an unrelated caller.
 		await assert.doesNotReject(async () => ensure);
 	});
+
+	test.sequential("an explicit reload is awaited even when async discovery is disabled", async () => {
+		const project = await makeIsolatedProject("workflow-inflight-disabled-discovery");
+		const gates: Array<() => void> = [];
+		const starts: Array<() => void> = [];
+		let refreshCalls = 0;
+		const firstStarted = new Promise<void>((resolve) => {
+			starts[0] = resolve;
+		});
+		const secondStarted = new Promise<void>((resolve) => {
+			starts[1] = resolve;
+		});
+		// `disableAsyncDiscovery` suppresses background warmup, but `/workflow
+		// reload` still publishes an in-flight discovery that name resolution
+		// must observe before it reads the registry.
+		const pi = {
+			disableAsyncDiscovery: true,
+			refreshWorkflowResources: async () => {
+				const index = refreshCalls++;
+				starts[index]?.();
+				await new Promise<void>((resolve) => {
+					gates[index] = resolve;
+				});
+				return [];
+			},
+		} as ExtensionAPI;
+		const state = createWorkflowExtensionRuntimeState(pi, {} as never);
+
+		const initial = state.reloadWorkflowResources();
+		await firstStarted;
+		gates[0]?.();
+		assert.equal((await initial).outcome, "applied");
+		assert.ok(!state.runtimeProxy.registry.names().includes("disabled-discovery-probe"));
+
+		await writeProbeWorkflow(
+			join(project, ".atomic/workflows/disabled-discovery-probe.ts"),
+			"disabled-discovery-probe",
+		);
+		const reload = state.reloadWorkflowResources();
+		await secondStarted;
+
+		let ensureSettled = false;
+		const ensure = Promise.resolve(state.ensureWorkflowResourcesLoaded()).finally(() => {
+			ensureSettled = true;
+		});
+		await drainScheduledWork();
+		assert.equal(ensureSettled, false, "disabled discovery must still await an explicit in-flight reload");
+
+		gates[1]?.();
+		assert.equal((await reload).outcome, "applied");
+		await ensure;
+		assert.ok(
+			state.runtimeProxy.registry.names().includes("disabled-discovery-probe"),
+			"after ensure resolves, the registry must be the post-reload one",
+		);
+	});
+
+	test.sequential("disabled async discovery still never starts discovery of its own", async () => {
+		await makeIsolatedProject("workflow-disabled-discovery-no-start");
+		let refreshCalls = 0;
+		const pi = {
+			disableAsyncDiscovery: true,
+			refreshWorkflowResources: async () => {
+				refreshCalls += 1;
+				return [];
+			},
+		} as ExtensionAPI;
+		const state = createWorkflowExtensionRuntimeState(pi, {} as never);
+
+		// No registry and no reload in flight: resolution must return without
+		// discovering, exactly as it did before in-flight reloads were awaited.
+		await state.ensureWorkflowResourcesLoaded();
+		await drainScheduledWork();
+		assert.equal(refreshCalls, 0, "resolution must not start discovery when it is disabled");
+	});
 });
