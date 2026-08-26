@@ -252,6 +252,7 @@ export class SessionManager {
 		firstKeptEntryId: string | null,
 		tokensBefore: number,
 		details: VerbatimCompactionDetails,
+		usage?: Usage,
 	): string {
 		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
 			throw new Error(`Entry ${firstKeptEntryId} not found`);
@@ -260,6 +261,7 @@ export class SessionManager {
 			firstKeptEntryId,
 			tokensBefore,
 			details,
+			usage,
 			this.byId,
 			this.leafId,
 		);

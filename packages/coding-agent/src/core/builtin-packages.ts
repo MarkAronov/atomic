@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getPackageDir } from "../config.ts";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
+import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
 
 interface BuiltinPackageDescriptor {
@@ -45,7 +46,7 @@ const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS
 
 function readPackageName(packageJsonPath: string): string | undefined {
 	try {
-		const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { name?: string };
+		const pkg = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { name?: string };
 		return pkg.name;
 	} catch {
 		return undefined;

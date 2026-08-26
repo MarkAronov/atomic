@@ -178,7 +178,7 @@ const REQUIRED_BUNDLED_TOOLS = ["subagent", "web_search", "fetch_content", "inte
 
 describe("in-process child session resources", () => {
 	test(
-		"a child session registers every required bundled tool",
+		"a child session registers every required bundled tool without the parent workflow extension",
 		async () => {
 			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-tools-cwd-");
 			const { session } = await createChildSession({ cwd, agentDir });
@@ -190,6 +190,11 @@ describe("in-process child session resources", () => {
 						`expected the bundled '${bundled}' tool, got: ${toolNames.join(", ")}`,
 					);
 				}
+				assert.equal(
+					toolNames.includes("workflow"),
+					false,
+					"a subagent child must not adopt the parent workflow store",
+				);
 				assert.equal(toolNames.includes("contact_supervisor"), false);
 				assert.equal(session.getActiveToolNames().includes("contact_supervisor"), false);
 			} finally {

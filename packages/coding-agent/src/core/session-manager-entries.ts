@@ -107,6 +107,7 @@ export function createCompactionEntry(
 	firstKeptEntryId: string | null,
 	tokensBefore: number,
 	details: VerbatimCompactionDetails,
+	usage: Usage | undefined,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
 ): CompactionEntry<VerbatimCompactionDetails> {
@@ -117,6 +118,7 @@ export function createCompactionEntry(
 		firstKeptEntryId,
 		tokensBefore,
 		details,
+		usage,
 		fromHook: details.rung === "extension" || undefined,
 	};
 }

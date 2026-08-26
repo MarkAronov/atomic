@@ -19,7 +19,9 @@ import {
 	isImpossibleRootLiveness,
 } from "../../packages/workflows/src/engine/run-liveness.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { inspectRun, interruptAllRuns, interruptRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -29,14 +31,33 @@ import { resolve_budget } from "../../packages/workflows/src/shared/budget.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
+import { structuredOutputMockSession } from "./executor-shared.js";
+import { assistantMessageWithUsage } from "./stage-runner-helpers.js";
 
 afterEach(() => {
 	vi.useRealTimers();
 	setDurableBackend(undefined);
 });
 
-function budgetOutcome(value: object | undefined): { readonly status?: string } | undefined {
-	return value as { readonly status?: string } | undefined;
+function budgetOutcome(value: object | undefined):
+	| {
+			readonly status?: string;
+			readonly dimension?: string;
+			readonly reading?: number;
+			readonly ceiling?: number;
+			readonly frontierStage?: string;
+	  }
+	| undefined {
+	return value as
+		| {
+				readonly status?: string;
+				readonly dimension?: string;
+				readonly reading?: number;
+				readonly ceiling?: number;
+				readonly frontierStage?: string;
+		  }
+		| undefined;
 }
 
 class Gate {
@@ -57,6 +78,25 @@ class DelayedTaskCheckpointBackend extends InMemoryDurableBackend {
 			if (this.failTaskCheckpoint) throw new Error("task-result checkpoint failed");
 		}
 		await super.recordCheckpointAsync(checkpoint);
+	}
+}
+
+class PostTaskUsageCheckpointBackend extends InMemoryDurableBackend {
+	readonly gate = new Gate();
+	readonly taskResults: Extract<DurableCheckpoint, { readonly kind: "stage" }>[] = [];
+	onAllTaskResultsPersisted: () => void = () => {};
+	override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		await super.recordCheckpointAsync(checkpoint);
+		if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith("task:")) return;
+		this.taskResults.push(checkpoint);
+		if (this.taskResults.length === 2) {
+			try {
+				this.onAllTaskResultsPersisted();
+			} finally {
+				this.gate.release();
+			}
+		}
+		await this.gate.barrier;
 	}
 }
 
@@ -184,6 +224,398 @@ describe("ctx.task tail liveness", () => {
 			(snapshot?.toolNodes ?? []).some((tool) => tool.name === "verify"),
 			false,
 		);
+	});
+
+	test("parallel post-task budget stops remain structured, deterministic, and resumable", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new DelayedTaskCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const jobs = createJobTracker();
+		let taskExecutions = 0;
+		let reducerExecutions = 0;
+		const Report = Type.Object(
+			{ approved: Type.Boolean(), reviewer: Type.String() },
+			{ additionalProperties: false },
+		);
+		const definition = workflow({
+			name: "parallel-post-task-budget",
+			description: "",
+			inputs: {},
+			outputs: { count: Type.Number() },
+			run: async (ctx) => {
+				const reviews = await ctx.parallel(
+					[
+						{ name: "review-a", prompt: "review A", schema: Report },
+						{ name: "review-b", prompt: "review B", schema: Report },
+					],
+					{ failFast: false },
+				);
+				reducerExecutions += 1;
+				return { count: reviews.length };
+			},
+		});
+		const adapters = {
+			agentSession: {
+				create(options: Parameters<typeof structuredOutputMockSession>[0]) {
+					taskExecutions += 1;
+					const reviewer = taskExecutions === 1 ? "a" : "b";
+					return Promise.resolve(structuredOutputMockSession(options, { approved: true, reviewer }));
+				},
+			},
+		};
+
+		const pending = run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				adapters,
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(backend.taskCheckpoints, 2);
+		await vi.advanceTimersByTimeAsync(20);
+		backend.gate.release();
+
+		const first = await pending;
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const taskCheckpoints = backend
+			.listCheckpoints(first.runId)
+			.filter(
+				(checkpoint): checkpoint is Extract<DurableCheckpoint, { readonly kind: "stage" }> =>
+					checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:"),
+			);
+		const persistedResults = taskCheckpoints.map((checkpoint) => checkpoint.output as Partial<WorkflowTaskResult>);
+
+		assert.equal(taskCheckpoints.length, 2);
+		assert.deepEqual(
+			persistedResults
+				.map((result) => ({ name: result.name, stageName: result.stageName, structured: result.structured }))
+				.sort((left, right) => String(left.name).localeCompare(String(right.name))),
+			[
+				{ name: "review-a", stageName: "review-a", structured: { approved: true, reviewer: "a" } },
+				{ name: "review-b", stageName: "review-b", structured: { approved: true, reviewer: "b" } },
+			],
+		);
+		const budgetResult = budgetOutcome(first.result);
+		assert.equal(budgetResult?.status, "budget_exceeded");
+		assert.equal(budgetResult?.dimension, "duration");
+		assert.equal(budgetResult?.reading, 20);
+		assert.equal(budgetResult?.ceiling, 10);
+		assert.equal(budgetResult?.frontierStage, "review-a");
+		assert.equal(source.failureDisposition, "active_blocked");
+		assert.equal(source.failureRecoverability, "recoverable");
+		assert.equal(source.budgetState?.systemOwnedStop, true);
+		assert.equal(source.budgetState?.duration?.reading, 20);
+		assert.equal(source.budgetState?.duration?.ceiling, 10);
+		assert.equal(source.budgetState?.wrapUpDelivered, undefined);
+		assert.equal(source.budgetState?.wrapUpCompleted, undefined);
+		assert.deepEqual(
+			source.stages.map((stage) => stage.status),
+			["completed", "completed"],
+		);
+		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "review-a");
+		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.status, "completed");
+		vi.useRealTimers();
+		assert.equal(reducerExecutions, 0);
+
+		const executionsBeforeReplay = taskExecutions;
+		const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, adapters });
+		const resumed = await runtime.resumeFailedRun(first.runId, undefined, { budget: { maxDurationMs: 100 } });
+		assert.equal(resumed.ok, true, resumed.ok ? undefined : resumed.message);
+		if (!resumed.ok) return;
+		await jobs.get(resumed.runId)?.promise;
+		const continuation = store.runs().find((candidate) => candidate.id === resumed.runId);
+		assert.equal(continuation?.status, "completed", continuation?.error);
+		assert.deepEqual(continuation?.result, { count: 2 });
+		assert.equal(taskExecutions, executionsBeforeReplay, "completed tasks must replay without another adapter call");
+		assert.equal(reducerExecutions, 1, "the downstream reducer must run exactly once after replay");
+	});
+
+	test("parallel budget selection requires every authored step to complete", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new DelayedTaskCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const jobs = createJobTracker();
+		let taskExecutions = 0;
+		let reducerExecutions = 0;
+		const Report = Type.Object({ approved: Type.Boolean() }, { additionalProperties: false });
+		const definition = workflow({
+			name: "partial-parallel-post-task-budget",
+			description: "",
+			inputs: {},
+			outputs: { count: Type.Number() },
+			run: async (ctx) => {
+				const reviews = await ctx.parallel(
+					[
+						{ name: "review-a", prompt: "review A", schema: Report },
+						{ name: "review-b", prompt: "review B", schema: Report },
+						{ name: "review-c", prompt: "review C", schema: Report },
+					],
+					{ failFast: false, concurrency: 2 },
+				);
+				reducerExecutions += 1;
+				return { count: reviews.length };
+			},
+		});
+		const adapters = {
+			agentSession: {
+				create(options: Parameters<typeof structuredOutputMockSession>[0]) {
+					taskExecutions += 1;
+					return Promise.resolve(structuredOutputMockSession(options, { approved: true }));
+				},
+			},
+		};
+
+		const pending = run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				adapters,
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(backend.taskCheckpoints, 2);
+		await vi.advanceTimersByTimeAsync(20);
+		backend.gate.release();
+
+		const first = await pending;
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const taskCheckpoints = backend
+			.listCheckpoints(first.runId)
+			.filter((checkpoint) => checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:"));
+		assert.equal(taskCheckpoints.length, 2);
+		assert.equal(taskExecutions, 2);
+		assert.equal(reducerExecutions, 0);
+		assert.equal(first.status, "failed");
+		assert.equal(budgetOutcome(first.result)?.status, undefined);
+		assert.match(first.error ?? "", /atomic-workflows: 3 parallel steps failed/);
+		assert.equal(source.failureDisposition, "terminal_failed");
+		assert.notEqual(source.status, "killed");
+		assert.notEqual(source.resumable, false);
+
+		vi.useRealTimers();
+		const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, adapters });
+		const resumed = await runtime.resumeFailedRun(first.runId, undefined, { budget: { maxDurationMs: 10_000 } });
+		assert.equal(resumed.ok, false);
+		if (resumed.ok) return;
+		assert.equal(resumed.reason, "insufficient_state");
+		assert.match(resumed.message, /does not identify a failed stage/);
+		assert.equal(source.status, "failed");
+		assert.notEqual(source.resumable, false);
+	});
+
+	test("parallel post-task token budget stops replay completed structured results", async () => {
+		const backend = new PostTaskUsageCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const jobs = createJobTracker();
+		let taskExecutions = 0;
+		let reducerExecutions = 0;
+		// Keep both stage-boundary readings below the ceiling, then make the
+		// production-shaped late usage visible only after both complete task
+		// checkpoints are durable. This isolates the post-task budget boundary.
+		backend.onAllTaskResultsPersisted = () => {
+			const source = store.runs().find((candidate) => candidate.name === "parallel-post-task-token-budget");
+			assert.ok(source);
+			for (const stage of source.stages) {
+				const [attempt, ...remainingAttempts] = stage.modelAttempts ?? [];
+				assert.ok(attempt);
+				stage.modelAttempts = [
+					{
+						...attempt,
+						usage: { ...attempt.usage, output: (attempt.usage?.output ?? 0) + 1 },
+					},
+					...remainingAttempts,
+				];
+			}
+		};
+		const Report = Type.Object(
+			{ approved: Type.Boolean(), reviewer: Type.String() },
+			{ additionalProperties: false },
+		);
+		const definition = workflow({
+			name: "parallel-post-task-token-budget",
+			description: "",
+			inputs: {},
+			outputs: { count: Type.Number() },
+			run: async (ctx) => {
+				const reviews = await ctx.parallel(
+					[
+						{ name: "token-review-a", prompt: "review A", schema: Report },
+						{ name: "token-review-b", prompt: "review B", schema: Report },
+					],
+					{ failFast: false },
+				);
+				reducerExecutions += 1;
+				return { count: reviews.length };
+			},
+		});
+		const adapters = {
+			agentSession: {
+				create(options: Parameters<typeof structuredOutputMockSession>[0]) {
+					taskExecutions += 1;
+					const reviewer = taskExecutions === 1 ? "a" : "b";
+					const session = structuredOutputMockSession(options, { approved: true, reviewer });
+					const prompt = session.prompt.bind(session);
+					return Promise.resolve({
+						...session,
+						async prompt(...args: Parameters<typeof session.prompt>) {
+							await prompt(...args);
+							session.messages.push(
+								assistantMessageWithUsage("", {
+									input: 2,
+									output: 3,
+									cacheRead: 0,
+									cacheWrite: 0,
+									cost: 0.25,
+								}),
+							);
+							return undefined;
+						},
+					});
+				},
+			},
+		};
+
+		const first = await run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				budget: { maxTokens: 11 },
+				adapters,
+			},
+		);
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const taskCheckpoints = backend
+			.listCheckpoints(first.runId)
+			.filter(
+				(checkpoint): checkpoint is Extract<DurableCheckpoint, { readonly kind: "stage" }> =>
+					checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:"),
+			);
+
+		assert.equal(taskCheckpoints.length, 2);
+		assert.deepEqual(
+			taskCheckpoints
+				.map((checkpoint) => checkpoint.output as Partial<WorkflowTaskResult>)
+				.map((result) => ({ name: result.name, stageName: result.stageName, structured: result.structured }))
+				.sort((left, right) => String(left.name).localeCompare(String(right.name))),
+			[
+				{
+					name: "token-review-a",
+					stageName: "token-review-a",
+					structured: { approved: true, reviewer: "a" },
+				},
+				{
+					name: "token-review-b",
+					stageName: "token-review-b",
+					structured: { approved: true, reviewer: "b" },
+				},
+			],
+		);
+		const budgetResult = budgetOutcome(first.result);
+		assert.equal(budgetResult?.status, "budget_exceeded");
+		assert.equal(budgetResult?.dimension, "tokens");
+		assert.equal(budgetResult?.reading, 12);
+		assert.equal(budgetResult?.ceiling, 11);
+		assert.equal(budgetResult?.frontierStage, "token-review-a");
+		assert.equal(source.failureDisposition, "active_blocked");
+		assert.equal(source.failureRecoverability, "recoverable");
+		assert.equal(source.budgetState?.systemOwnedStop, true);
+		assert.equal(source.budgetState?.tokens?.reading, 12);
+		assert.equal(source.budgetState?.tokens?.ceiling, 11);
+		assert.deepEqual(
+			source.stages.map((stage) => stage.status),
+			["completed", "completed"],
+		);
+		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "token-review-a");
+		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.status, "completed");
+		assert.equal(reducerExecutions, 0);
+
+		const executionsBeforeReplay = taskExecutions;
+		const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, adapters });
+		const resumed = await runtime.resumeFailedRun(first.runId, undefined, { budget: { maxTokens: 100 } });
+		assert.equal(resumed.ok, true, resumed.ok ? undefined : resumed.message);
+		if (!resumed.ok) return;
+		await jobs.get(resumed.runId)?.promise;
+		const continuation = store.runs().find((candidate) => candidate.id === resumed.runId);
+		assert.equal(continuation?.status, "completed", continuation?.error);
+		assert.deepEqual(continuation?.result, { count: 2 });
+		assert.equal(taskExecutions, executionsBeforeReplay, "completed tasks must replay without another adapter call");
+		assert.equal(reducerExecutions, 1, "the downstream reducer must run exactly once after replay");
+	});
+	test("an ordinary failure still wins over a concurrent post-task budget stop", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new DelayedTaskCheckpointBackend();
+		const store = createStore();
+		let taskExecutions = 0;
+		const Report = Type.Object({ approved: Type.Boolean() }, { additionalProperties: false });
+		const definition = workflow({
+			name: "parallel-mixed-post-task-budget",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.parallel(
+					[
+						{ name: "review-a", prompt: "review A", schema: Report },
+						{ name: "review-b", prompt: "review B", schema: Report },
+					],
+					{ failFast: false },
+				);
+				return {};
+			},
+		});
+		const pending = run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				adapters: {
+					agentSession: {
+						create(options: Parameters<typeof structuredOutputMockSession>[0]) {
+							taskExecutions += 1;
+							const session = structuredOutputMockSession(options, { approved: true });
+							if (taskExecutions === 1) return Promise.resolve(session);
+							return Promise.resolve({
+								...session,
+								async prompt() {
+									throw new Error("ordinary verifier failure");
+								},
+							});
+						},
+					},
+				},
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(backend.taskCheckpoints, 1);
+		await vi.advanceTimersByTimeAsync(20);
+		backend.gate.release();
+
+		const result = await pending;
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId)!;
+		assert.equal(result.status, "failed");
+		assert.equal(result.result, undefined);
+		assert.match(result.error ?? "", /atomic-workflows: 2 parallel steps failed/);
+		assert.equal(snapshot.failureDisposition, "terminal_failed");
+		assert.equal(snapshot.budgetState?.systemOwnedStop, true);
+		assert.equal(snapshot.stages.find((stage) => stage.name === "review-a")?.status, "completed");
+		assert.equal(snapshot.stages.find((stage) => stage.name === "review-b")?.status, "failed");
 	});
 
 	test("task-result checkpoint failure rejects the root instead of leaving it pending", async () => {

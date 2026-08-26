@@ -890,9 +890,9 @@ test("every run-scoped singleton key carries an explicit version suffix", async 
 		assert.match(await readText(path), keyPattern, `${name} must declare a versioned session key`);
 	}
 	const factorySource = await readText(join(workflowsSrc, "extension/extension-factory.ts"));
-	assert.match(
-		factorySource,
-		/function factory\(pi: ExtensionAPI\): void \{\n\tadoptWorkflowSessionRunState\(pi\.events\);/,
-		"factory must adopt session run state before building adapters",
-	);
+	const childGuard = factorySource.indexOf("if (pi.subagentPolicy !== undefined) return;");
+	const adoption = factorySource.indexOf("adoptWorkflowSessionRunState(pi.events);");
+	const adapters = factorySource.indexOf("const adapters = buildRuntimeAdapters(pi);");
+	assert.ok(childGuard >= 0 && childGuard < adoption, "factory must reject child sessions before adopting run state");
+	assert.ok(adoption < adapters, "factory must adopt host run state before building adapters");
 });
