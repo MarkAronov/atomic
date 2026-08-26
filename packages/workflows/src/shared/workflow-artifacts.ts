@@ -38,26 +38,31 @@ export function workflowArtifactRunPath(runId: string): string {
 	return join(workflowArtifactRunsRoot(), safeRunId(runId));
 }
 
-/**
- * Detect a run-scoped artifact path anywhere in a run's result or stages.
- *
- * `JSON.stringify` escapes each Windows separator, so `…\runs\<id>\…` serializes
- * as `…\\runs\\<id>\\…` and a single backslash-to-slash pass leaves `//runs//`.
- * Collapsing repeated separators after that pass makes the probe behave the same
- * on both platforms; without it every Windows artifact reference was invisible,
- * so no run was ever reported as having lost its artifacts.
- */
-export function workflowRunHasArtifactReference(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean {
+/** Extract every run-directory owner referenced anywhere in a run's result or stages. */
+function workflowRunArtifactOwnerIds(run: Pick<RunSnapshot, "result" | "stages">): readonly string[] {
 	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
-	if (serialized === undefined) return false;
+	if (serialized === undefined) return [];
+	// `JSON.stringify` escapes Windows separators, so one replacement can leave
+	// doubled slashes. Collapse them before matching to keep both path styles visible.
 	const normalized = serialized.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
-	return normalized.includes(`/runs/${safeRunId(run.id)}/`);
+	const owners = new Set<string>();
+	for (const match of normalized.matchAll(/\/runs\/([^/"\\]+)\//gu)) {
+		const owner = match[1];
+		if (owner !== undefined && owner.length > 0) owners.add(owner);
+	}
+	return [...owners];
 }
 
-/** Return artifact integrity only for runs whose snapshot names a run-scoped artifact. */
+/** Detect a run-scoped artifact path anywhere in a run's result or stages. */
+export function workflowRunHasArtifactReference(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean {
+	return workflowRunArtifactOwnerIds(run).length > 0;
+}
+
+/** Return artifact integrity only for runs whose snapshot names run-scoped artifacts. */
 export function workflowRunArtifactsIntact(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean | undefined {
-	if (!workflowRunHasArtifactReference(run)) return undefined;
-	return existsSync(workflowArtifactRunPath(run.id));
+	const ownerIds = workflowRunArtifactOwnerIds(run);
+	if (ownerIds.length === 0) return undefined;
+	return ownerIds.every((ownerId) => existsSync(workflowArtifactRunPath(ownerId)));
 }
 
 /** Build the one resume candidate shape used by all live-run resume surfaces. */
@@ -129,6 +134,23 @@ function durableRunState(backend: DurableWorkflowBackend, runId: string): Workfl
  */
 export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunStateResolver {
 	const localRuns = new Map(store.runs().map((run) => [run.id, run]));
+	const findLocalRun = (runId: string): RunSnapshot | undefined =>
+		localRuns.get(runId) ?? [...localRuns.values()].find((run) => safeRunId(run.id) === runId);
+	const protectedOwners = new Set<string>();
+	for (const run of localRuns.values()) {
+		if (storeRunState(run) !== "protected") continue;
+		for (const ownerId of workflowRunArtifactOwnerIds(run)) protectedOwners.add(ownerId);
+		let cursor: RunSnapshot | undefined = run;
+		const visited = new Set<string>();
+		while (cursor !== undefined && !visited.has(cursor.id)) {
+			visited.add(cursor.id);
+			protectedOwners.add(safeRunId(cursor.id));
+			const sourceId = cursor.resumedFromRunId;
+			if (sourceId === undefined) break;
+			protectedOwners.add(safeRunId(sourceId));
+			cursor = findLocalRun(sourceId);
+		}
+	}
 	let backend: DurableWorkflowBackend | undefined;
 	let backendReady = true;
 	try {
@@ -137,7 +159,8 @@ export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunSta
 		backendReady = false;
 	}
 	return (runId: string): WorkflowArtifactRunState | undefined => {
-		const local = localRuns.get(runId) ?? [...localRuns.values()].find((run) => safeRunId(run.id) === runId);
+		if (protectedOwners.has(runId)) return "protected";
+		const local = findLocalRun(runId);
 		const localState = local === undefined ? undefined : storeRunState(local);
 		if (!backendReady) {
 			// An unavailable durable backend cannot prove that even a terminal-looking
@@ -249,11 +272,20 @@ export async function ensureWorkflowArtifactRunDirectory(runId: string): Promise
 	return directory;
 }
 
+/** Allocate the complete path for one unique artifact directory without performing side effects. */
+export function workflowArtifactDirectoryPath(runId?: string): string {
+	const effectiveRunId = runId ?? randomUUID();
+	return join(workflowArtifactRunPath(effectiveRunId), `artifact-${randomUUID()}`);
+}
+
+/** Ensure a previously allocated artifact directory exists and perform bounded state-aware GC. */
+export async function ensureWorkflowArtifactDirectory(directory: string): Promise<string> {
+	await pruneArtifactRootIfDue(workflowArtifactRunsRoot(), Date.now());
+	await mkdir(directory, { recursive: true });
+	return directory;
+}
+
 /** Create a unique durable artifact directory beneath the owning run and prune expired siblings. */
 export async function createWorkflowArtifactDirectory(runId?: string): Promise<string> {
-	const effectiveRunId = runId ?? randomUUID();
-	const runDirectory = await ensureWorkflowArtifactRunDirectory(effectiveRunId);
-	const artifactDirectory = join(runDirectory, `artifact-${randomUUID()}`);
-	await mkdir(artifactDirectory, { recursive: true });
-	return artifactDirectory;
+	return ensureWorkflowArtifactDirectory(workflowArtifactDirectoryPath(runId));
 }
