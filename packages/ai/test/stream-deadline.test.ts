@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
 import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
 import {
-	DEFAULT_STREAM_DEADLINE_MS,
 	createStreamDeadline,
+	DEFAULT_STREAM_DEADLINE_MS,
 	resolveStreamDeadlineMs,
 	StreamDeadlineError,
 	withStreamDeadline,
@@ -105,10 +105,14 @@ describe("stream deadline (#2553)", () => {
 		async function* providerRead(): AsyncGenerator<string, void, undefined> {
 			try {
 				await new Promise<void>((_resolve, reject) => {
-					deadline.signal?.addEventListener("abort", () => {
-						abortObserved = true;
-						reject(deadline.signal?.reason);
-					}, { once: true });
+					deadline.signal?.addEventListener(
+						"abort",
+						() => {
+							abortObserved = true;
+							reject(deadline.signal?.reason);
+						},
+						{ once: true },
+					);
 				});
 			} finally {
 				cleanupObserved = true;
@@ -153,9 +157,9 @@ describe("stream deadline (#2553)", () => {
 		expect(error).toBeInstanceOf(StreamDeadlineError);
 		const message = (error as StreamDeadlineError).message;
 		expect(message).toContain("stream deadline exceeded");
-		expect(
-			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: message })),
-		).toBe(true);
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: message }))).toBe(
+			true,
+		);
 	});
 
 	it("closes the source iterator when the deadline fires so the underlying request is torn down", async () => {

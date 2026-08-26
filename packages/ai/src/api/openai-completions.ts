@@ -251,6 +251,44 @@ function parseLegacyEncryptedReasoningDetail(
 		return undefined;
 	}
 }
+function fillMissingCommonReasoningDetailFields(
+	target: OpenAIReasoningDetailBase,
+	source: OpenAIReasoningDetail,
+): void {
+	target.id ??= source.id;
+	target.format ||= source.format;
+	target.index ??= source.index;
+}
+
+function canMergeOpenAIReasoningDetails(last: OpenAIReasoningDetailBase, next: OpenAIReasoningDetailBase): boolean {
+	if (last.id !== undefined && next.id !== undefined && last.id !== next.id) return false;
+	if (last.index !== undefined && next.index !== undefined && last.index !== next.index) return false;
+	return true;
+}
+
+function appendOpenAIReasoningDetail(details: OpenAIReasoningDetail[], detail: OpenAIReasoningDetail): void {
+	const lastDetail = details[details.length - 1];
+	if (
+		detail.type === "reasoning.text" &&
+		lastDetail?.type === "reasoning.text" &&
+		canMergeOpenAIReasoningDetails(lastDetail, detail)
+	) {
+		lastDetail.text += detail.text;
+		lastDetail.signature ||= detail.signature;
+		fillMissingCommonReasoningDetailFields(lastDetail, detail);
+		return;
+	}
+	if (
+		detail.type === "reasoning.summary" &&
+		lastDetail?.type === "reasoning.summary" &&
+		canMergeOpenAIReasoningDetails(lastDetail, detail)
+	) {
+		lastDetail.summary += detail.summary;
+		fillMissingCommonReasoningDetailFields(lastDetail, detail);
+		return;
+	}
+	details.push({ ...detail });
+}
 
 const OPENAI_COMPLETIONS_REASONING_FIELDS = ["reasoning", "reasoning_content", "reasoning_text"] as const;
 
@@ -639,9 +677,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							if (!isOpenAIReasoningDetail(detail)) continue;
 							const block = ensureThinkingBlock("");
 							const preservedDetails = parseOpenAIReasoningDetails(block.thinkingSignature) ?? [];
-							preservedDetails.push(detail);
-							// Keep provider replay data in the existing signature slot. OpenRouter
-							// requires the complete reasoning_details sequence in its original order.
+							appendOpenAIReasoningDetail(preservedDetails, detail);
+							// Keep provider replay data in the existing signature slot. OpenRouter streams
+							// reasoning_details as deltas: consecutive text/summary deltas are merged into
+							// logical entries, while encrypted entries remain opaque and discrete.
 							block.thinkingSignature = JSON.stringify(preservedDetails);
 						}
 					}
@@ -832,7 +871,7 @@ function buildParams(
 		applyAnthropicCacheControl(messages, params.tools, cacheControl);
 	}
 
-	if (options?.toolChoice) {
+	if (options?.toolChoice && params.tools?.length) {
 		params.tool_choice = options.toolChoice;
 	}
 

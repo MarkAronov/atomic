@@ -8,7 +8,7 @@ import { stageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs } from "../../shared/timing.js";
-import type { StageOptions } from "../../shared/types.js";
+import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
@@ -62,6 +62,7 @@ export function createWorkflowStageFactory(input: {
 	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
+	readonly takeTerminalArtifacts?: (replayKey: string) => readonly WorkflowArtifact[] | undefined;
 }): (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) => StageContextWithMeta {
 	return (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope): StageContextWithMeta => {
 		input.exit.throwIfWorkflowExitSelected();
@@ -152,6 +153,10 @@ export function createWorkflowStageFactory(input: {
 			}
 			if (meta.attemptedModels !== undefined) stageSnapshot.attemptedModels = meta.attemptedModels;
 			if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
+			if (meta.warnings !== undefined) {
+				if (meta.warnings.length > 0) stageSnapshot.warnings = meta.warnings;
+				else delete stageSnapshot.warnings;
+			}
 		};
 
 		let runtime!: LiveStageRuntime;
@@ -324,6 +329,8 @@ export function createWorkflowStageFactory(input: {
 			stageSnapshot.endedAt = Date.now();
 			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 			applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
+			const artifacts = input.takeTerminalArtifacts?.(replayKey);
+			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
 			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 			stageUiBroker.cancelStagePrompt(
 				input.runId,

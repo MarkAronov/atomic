@@ -539,7 +539,7 @@ subagent({ action: "status", id: "<run-id>" })
 subagent({ action: "interrupt", id: "<run-id>" })
 ```
 
-Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work.
+Completed, interrupted, and parent-question children are terminal for continuation. A prior run ID cannot revive a child or parallel sibling set. Start a fresh subagent call with an explicit context handoff for follow-up work. Parent cancellation of a still-running foreground child uses that same interrupted/abort state: receipts, Intercom summaries, and progress present it as cancelled rather than failed, persisted metadata keeps interrupted/abort, pre-cancel fallback metadata is preserved, and bounded partial findings are recovered from `progress.md` or earlier assistant text when they exist.
 
 ## Worktree isolation
 
@@ -647,7 +647,7 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications.
+Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications. These notifications use tool blocks with the same background treatment as regular subagent tool blocks: success when the child completed, error when it failed, and pending when it was interrupted. Each block keeps the status glyph, agent name, outcome, duration, result preview, `ctrl+o` expand hint, and session file path.
 
 Foreground runs persist their session and user-facing artifacts beside the parent session:
 
@@ -695,7 +695,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Delegation boundary
 
-Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, and `status` stay available to a child.
+Delegation is exactly one level deep, and nothing configures it. A top-level session — main chat or a workflow stage — may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and `interrupt` it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, and `status` stay available to a child. Child sessions retain bundled workflow definitions as resources but do not load the workflows extension or expose its `workflow` tool; orchestration stays owned by the parent session.
 
 There is no configuration option, agent frontmatter field, or tool parameter for the delegation level. The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state and is not inherited through an environment variable.
 

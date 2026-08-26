@@ -36,7 +36,7 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; the active model must support the selected level |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
-| `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and their attributed wasted tokens |
+| `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and billed compaction or branch-summary usage |
 | `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns and, since compaction fallback rungs, borrowed for compaction planner requests |
 
 `defaultProvider` and `defaultModel` form one exact saved selection when both are present. Atomic waits for built-in, configured, and extension provider registration before classifying that provider. If it remains unsupported, Atomic does not silently switch providers: interactive mode stays live with a generic configuration warning; print and JSON modes write the warning to stderr and exit nonzero before prompting (with JSON stdout remaining JSONL-clean); and RPC rejects `prompt` until a successful explicit `set_model` selects an available model or an explicit model cycle returns a different available model. A null or unchanged cycle does not clear the condition. If the provider is supported but its saved model is unknown or lacks configured authentication, normal automatic selection of an available authenticated model remains enabled; the same is true when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
@@ -327,11 +327,19 @@ On Windows, JSON paths must use forward slashes or escaped backslashes:
 |---------|------|---------|-------------|
 | `defaultTools` | string[] | - | Built-in tools enabled at startup. When omitted, Atomic uses its standard defaults |
 
-`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools stay enabled regardless:
+`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools stay enabled regardless. Available built-ins are `read`, `bash`, `powershell`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, and `ls`:
 
 ```json
 {
   "defaultTools": ["bash", "edit", "write"]
+}
+```
+
+On Windows, select `powershell` instead of `bash`, or include both:
+
+```json
+{
+  "defaultTools": ["read", "powershell", "edit", "write"]
 }
 ```
 
@@ -374,7 +382,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 
 Mermaid code blocks render as themed Unicode diagrams in interactive transcripts when they fit the available width. `"off"` keeps the Markdown fence, `"final"` renders only finalized responses, and `"streaming"` also renders partial assistant responses. Invalid or too-wide diagrams remain as code, and rendering is display-only: stored messages and model context keep the original Markdown. LaTeX rendering is also display-only and converts supported expressions to terminal-friendly Unicode math; set `markdown.latex` to `false` to keep the source form.
 
-The installed pi-tui 0.84.2 LaTeX renderer also handles whitespace and matrix layouts correctly.
+The installed pi-tui 0.84.3 LaTeX renderer also handles whitespace and matrix layouts correctly.
 
 ### Resources
 

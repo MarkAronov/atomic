@@ -26,8 +26,8 @@ import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } fr
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;

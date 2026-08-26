@@ -60,7 +60,8 @@ afterEach(() => {
 });
 
 describe("public workflow tool request deadline", () => {
-	test("times out every public action once at 30 seconds, cancels supported work, and ignores late settlement", async () => {
+	test("times out every public action once at two minutes, cancels supported work, and ignores late settlement", async () => {
+		assert.equal(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS, 120_000);
 		vi.useFakeTimers();
 		let invocationCount = 0;
 		let active:
@@ -93,7 +94,7 @@ describe("public workflow tool request deadline", () => {
 			assert.equal(invocationCount, index + 1);
 
 			await vi.advanceTimersByTimeAsync(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS - 1);
-			assert.equal(settled, false, `${action} must remain pending at 29,999ms`);
+			assert.equal(settled, false, `${action} must remain pending at ${WORKFLOW_TOOL_REQUEST_TIMEOUT_MS - 1}ms`);
 			await vi.advanceTimersByTimeAsync(1);
 			const result = await pending;
 			assert.equal(settled, true);

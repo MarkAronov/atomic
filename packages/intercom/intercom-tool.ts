@@ -27,19 +27,13 @@ interface IntercomToolDeps {
   setJoinedGroup(group: string): void;
   clearJoinedGroup(): void;
   confirmSend: boolean;
-  /**
-   * Atomically reserve the single reply-waiter slot. Returns a structured
-   * refusal when another blocking ask already holds it, so concurrent calls
-   * never observe a rejected promise.
-   */
+  /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
   replyTracker: ReplyTracker | (() => ReplyTracker);
-  /** Advisory fast-path check; beginReplyWait is the authoritative reservation. */
-  hasReplyWaiter(): boolean;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
+  const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
   const getMetadata = typeof childOrchestratorMetadata === "function"
     ? childOrchestratorMetadata
@@ -62,7 +56,7 @@ Usage:
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
-  intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
+  intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status and your group
 
@@ -89,7 +83,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         language: Type.Optional(Type.String()),
       }))),
       replyTo: Type.Optional(Type.String({
-        description: "Message ID to reply to (for threading or responding to an 'ask')",
+        description: "Exact pending-ask message ID; disambiguates concurrent asks, including asks from one sender",
       })),
       group: Type.Optional(Type.String({
         description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group.",
@@ -396,18 +390,14 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
                 details: { error: true },
               };
             }
-            if (hasReplyWaiter()) {
-              return {
-                content: [{ type: "text", text: "Already waiting for a reply" }],
-                isError: true,
-                details: { error: true },
-              };
-            }
             const questionId = randomUUID();
             const admission = beginReplyWait(sendTo, questionId, _signal);
             if (!admission.ok) {
+              const text = admission.reason === "busy"
+                ? `Too many pending asks (${admission.limit}); reply-wait slots are full`
+                : "Cancelled";
               return {
-                content: [{ type: "text", text: admission.reason === "busy" ? "Already waiting for a reply" : "Cancelled" }],
+                content: [{ type: "text", text }],
                 isError: true,
                 details: { error: true },
               };
@@ -481,7 +471,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
           }
 
           try {
-            const target = activeReplyTracker().resolveReplyTarget({ to });
+			const target = activeReplyTracker().resolveReplyTarget({ to, replyTo });
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],

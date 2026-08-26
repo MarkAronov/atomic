@@ -1,3 +1,5 @@
+import type { Usage } from "@bastani/pi-ai/compat";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
@@ -253,6 +255,7 @@ declare module "./interactive-mode-base.ts" {
 		chatMessageRenderOptions(): ChatMessageRenderOptions;
 		addRenderedChatEntry(entry: ChatMessageEntry): Component;
 		addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
+		addCompactionCostNotice(kind: "compaction" | "branch_summary", usage: Usage): void;
 		addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 		addCustomEntryToChat(entry: CustomEntry): void;
 		renderSessionContext(
@@ -325,6 +328,9 @@ declare module "./interactive-mode-base.ts" {
 		showFastModeSelector(): void;
 		showSettingsSelector(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
+		handleThinkingCommand(searchTerm?: string): void;
+		selectThinkingLevel(level: ThinkingLevel, persist: boolean): void;
+		showThinkingSelector(): void;
 		findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined>;
 		getModelCandidates(): Promise<Model<Api>[]>;
 		updateAvailableProviderCount(): Promise<void>;

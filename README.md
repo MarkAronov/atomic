@@ -277,7 +277,9 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` to a package install command if you want to disable dependency lifecycle scripts.
 
-Alternatively, install the self-contained release archive, which needs no Node.js or package manager. On macOS or Linux:
+Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
+
+On macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
@@ -289,7 +291,13 @@ On Windows, run this in PowerShell:
 irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
-The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows, printing PATH guidance when needed. Set `ATOMIC_VERSION` to pin an exact release tag, `ATOMIC_INSTALL_DIR` or `ATOMIC_BIN_DIR` to change locations, and `GITHUB_TOKEN` or `GH_TOKEN` if shared GitHub API limits are a concern. On macOS/Linux, relative install and bin directories resolve against the physical directory where the installer starts. The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step; Android and Termux remain unsupported. See the [Quickstart](https://docs.bastani.ai/quickstart) for path-resolution and Windows `PATHEXT` details.
+The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows, printing PATH guidance when needed. It accepts a few environment variables:
+
+- `ATOMIC_VERSION` — pin an exact release tag.
+- `ATOMIC_INSTALL_DIR` / `ATOMIC_BIN_DIR` — change the install and launcher locations. On macOS/Linux, relative directories resolve against the physical directory where the installer starts.
+- `GITHUB_TOKEN` / `GH_TOKEN` — optional; raises GitHub API limits on shared networks.
+
+The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step; Android and Termux remain unsupported. See the [Quickstart](https://docs.bastani.ai/quickstart) for path-resolution and Windows `PATHEXT` details.
 
 ### Authenticate and run
 
