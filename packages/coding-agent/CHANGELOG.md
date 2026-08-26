@@ -5,8 +5,9 @@
 ### Added
 
 - Added `/thinking [level]` plus searchable model and per-model thinking selectors. Selectors show saved defaults, search by model/provider/default state, order the current and default models first, and use `Ctrl+S` to persist a startup default while Enter changes only the current session ([#8399](https://github.com/earendil-works/pi/issues/8399)).
-- Added a Windows PowerShell tool that prefers PowerShell 7 and falls back to Windows PowerShell when `pwsh.exe` or `powershell.exe` is on `PATH`. The tool is omitted when neither executable is available. Bash remains the shell for `!`/`!!`, plus Windows/WSL-friendly default keybindings ([#8512](https://github.com/earendil-works/pi/issues/8512)).
+- Added a Windows PowerShell tool that prefers PowerShell 7 and falls back to Windows PowerShell when `pwsh.exe` or `powershell.exe` is on `PATH`. The tool is omitted when neither executable is available and is exposed through the SDK with typed extension events and result guards. Bash remains the shell for `!`/`!!`, plus Windows/WSL-friendly default keybindings ([#8512](https://github.com/earendil-works/pi/issues/8512)).
 - Added path-aware, deduplicated settings diagnostics and routed startup diagnostics into the fullscreen transcript so alternate-screen startup cannot hide configuration errors.
+- Added transcript billing notices for compaction and branch summaries when cache-miss notices are enabled. Verbatim Compaction aggregates usage from every completed planner response, including retries, into the persisted boundary, session statistics, footer totals, and cost breakdowns.
 - Added export-only `atomic.share` context records containing the system prompt and tool schemas. Session sharing keeps private-Gist transport and Atomic viewer URLs; no persisted session is mutated and no Radius upload is introduced.
 - Added RPC `clear_queue` to retrieve and remove queued steering and follow-up messages ([#8432](https://github.com/earendil-works/pi/issues/8432)).
 - Exported `detectSupportedImageMimeTypeFromFile` from the public coding-agent API ([#8600](https://github.com/earendil-works/pi/pull/8600)).
@@ -28,6 +29,9 @@
 - Fixed the thinking-level selector so a capability-clamped default still receives the default badge when the saved setting is higher than the active model supports.
 - Failed extension loads now roll back provider registrations applied during that load instead of leaving an earlier provider in the runtime.
 - PowerShell cancellation now terminates the Windows process tree and returns without waiting on descendant-held stdout or stderr.
+- Fixed `/tree` ranking below `/thinking` in slash-command autocomplete, so typing `/t` again offers branch navigation before the thinking-level command.
+- Fixed PowerShell tool calls rendering with the Bash `$` transcript prompt. PowerShell calls now render as `PS> <command>`, and truncated PowerShell output is saved under its own temp-file prefix.
+- Fixed the per-model thinking-level settings row opening an empty, unexplained picker when no models are available; it now states that a provider login or API key is required.
 - Fixed Windows compiled binaries crashing with `ERR_INVALID_FILE_URL_PATH` when Return reached native modifier detection, including from the `/model` selector. Release app bundles keep only `pi-tui`'s native modifier loader runtime-relative, avoiding both the Linux build host's frozen module URL and Bun's inability to resolve a fully external `pi-tui` from a compiled split launcher, while retaining the staged Windows native helper for Shift+Enter handling.
 - Fixed `bundle:dev` and `start:fast` omitting the statically registered OAuth adapters. Development bundles now use the Bun entrypoint shared with compiled builds, so OpenAI Codex and xAI OAuth derivation and refresh no longer fail on unresolved runtime imports.
 - Fixed duplicate fullscreen right-click paste in VS Code-based terminals on Windows ([#8186](https://github.com/earendil-works/pi/issues/8186)).
@@ -41,8 +45,8 @@
 - Fixed package updates comparing versions for inequality and potentially downgrading a newer installed package; upgrades now use semantic-version ordering ([#8239](https://github.com/earendil-works/pi/issues/8239)).
 - Fixed extension flags accepting runtime defaults whose value did not match the declared boolean/string type, and failed extension factories leaking partially registered commands, tools, flags, and inherited resources into later loads ([#8123](https://github.com/earendil-works/pi/issues/8123), [#8424](https://github.com/earendil-works/pi/issues/8424)).
 - Fixed hung authenticated model-catalog attempts consuming the whole request budget without retrying by applying a per-attempt timeout before retrying.
-- Fixed UTF-8 BOMs breaking auth, model, keybinding, frontmatter, package, resource, theme, and CLI text inputs while preserving BOM-aware hashline edits.
-- Fixed atomic managed-state rewrites resetting existing file permissions. Credential files are always rewritten as `0600` so a world-readable `auth.json` cannot leak replacement secrets.
+- Fixed UTF-8 BOMs breaking auth, model, keybinding, frontmatter, package, resource, theme, CLI, and external-editor text inputs while preserving BOM-aware hashline edits.
+- Fixed atomic managed-state rewrites resetting existing file permissions. `auth.json` and `models-store.json` are created owner-only (`0600`) but keep an administrator-managed mode across later rewrites instead of having it reset by the atomic replacement.
 - Fixed explicitly persisted default models disappearing from non-empty model scopes; persisted defaults are now added to both the active and saved scope.
 - Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result; they are now appended after the turn's tool results ([#8537](https://github.com/earendil-works/pi/issues/8537)).
 

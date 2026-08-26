@@ -127,6 +127,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.addChild(this.listContainer);
 
 		this.addChild(new Spacer(1));
+		this.addChild(
+			new Text(
+				`${keyHint("tui.select.confirm", "select")} ${theme.fg("muted", "·")} ${keyHint("app.models.save", "set as default")} ${theme.fg("muted", "·")} ${keyHint("tui.select.cancel", "cancel")}`,
+				1,
+				0,
+			),
+		);
+		this.addChild(new Spacer(1));
 
 		// Add bottom border
 		this.addChild(new DynamicBorder());

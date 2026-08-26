@@ -41,6 +41,36 @@ delta describes user-facing behavior, the delta is reflected in Atomic's own
 - Range summary: [`upstream-v0.84.2-v0.84.3-log-stat.txt`](upstream-v0.84.2-v0.84.3-log-stat.txt)
 - Full coding-agent patch (11002 lines): [`upstream-v0.84.2-v0.84.3-coding-agent.diff`](upstream-v0.84.2-v0.84.3-coding-agent.diff)
 
+### Exact-tag post-merge audit
+
+After the stacked PRs reached `main`, the port was re-audited directly against the fetched upstream tags rather than trusting this planning matrix. The exact range is `v0.84.2` (`914cf1472e715297caa30db4b9535d534a9eb718`) through `v0.84.3` (`4e58f324fae8ebfa98a3d45181fb248072a2afac`): **105 commits**, of which **78** touch `packages/coding-agent`, across **146** coding-agent files. Every one of those 78 commit IDs is present in this matrix. This matrix's larger 110-row inventory additionally includes the v0.84.2 baseline and four post-tag upstream commits, as stated above.
+
+The exact-tag audit found eleven incomplete cross-file ports that the original commit-level classification failed to catch:
+
+1. `/thinking` routing existed, but its `BUILTIN_SLASH_COMMANDS` registration and dynamic level completions were absent; `/model` also lacked upstream's `<provider/model>` argument hint.
+2. The PowerShell implementation existed, but the package-root SDK factories/types, `getPowerShellConfig()`, typed extension call/result events, result guard, and tool-call narrowing overload were absent.
+3. The llama.cpp docs described post-login `/llama` guidance, but the interactive login runtime still emitted generic `/model` guidance.
+4. PowerShell was listed as a tool, but the shell-only system-prompt fallback still handled only Bash and omitted upstream's PowerShell file-operation guidance.
+5. `showCacheMissNotices` existed, but persisted branch-summary billing notices and truthful aggregate usage for multi-attempt Verbatim Compaction were not rendered or counted.
+6. UTF-8 BOM normalization covered configuration/resource readers but missed prompts returned from the external editor.
+7. Managed-state atomic replacement still reset existing file modes despite the matrix claiming the permission-preservation fix had shipped.
+8. `/model` honored Ctrl+S persistence but omitted the selector hint explaining session-only Enter versus saved-default Ctrl+S.
+
+A second verification pass over the same tags — comparing every upstream-added exported
+declaration and every long added user-visible literal, rather than re-reading this matrix —
+found three more, all of which had already been claimed as shipped:
+
+9. `a2f369d63a` ("order tree above thinking") was recorded as ported, but `BUILTIN_SLASH_COMMANDS` still listed `/thinking` second and `/tree` nineteenth — the exact ordering upstream fixed. `/tree` now precedes `/thinking`, and `test/unit/slash-commands.test.ts` asserts the relative order.
+10. `80e62761f7` parameterizes each shell tool's transcript prompt and overflow temp-file prefix (`powershellToolConfig.prompt = "PS>"`, `tempFilePrefix: "pi-powershell"`). Atomic's `createPowerShellToolDefinition()` spread the bash definition and inherited the hardcoded `$` prompt and `atomic-bash` prefix, so PowerShell calls rendered as Bash. `bash.ts` now takes a `ShellToolPresentation`, and `test/powershell-tool.test.ts` renders both tools to prove the prompts differ.
+11. `2ff8ba6223`/`5133c9284f` added a sentinel empty-state row explaining that a login or API key is required when no default-model catalog entry exists. Atomic's combined per-model thinking editor opened a zero-row picker instead; the sentinel row and an inert selection guard are covered by `test/settings-per-model-thinking.test.ts`.
+
+One duplicate-billing guard shipped in repair 5 without coverage: the live `compaction_end`
+path both rebuilds from a boundary that now persists its own usage and re-announces that
+boundary, so `renderSessionEntries()` suppresses the persisted notice. `test/interactive-mode-compaction.test.ts`
+now pins that to exactly one notice.
+
+The repair includes compile-time root-export checks, slash-command metadata and ordering tests, Bash/PowerShell system-prompt matrix and transcript-prompt tests, llama.cpp guidance tests, aggregate planner-retry usage tests, compaction notice ordering/gating/de-duplication tests, BOM regression coverage across Atomic's split reader doors, managed-mode persistence tests, model-selector persistence-hint rendering, settings empty-state tests, user-facing SDK/extension/Windows/environment/settings documentation, and direct comparison of upstream's added public declarations and long user-visible literals. The remaining upstream-added declarations absent by name are intentional Atomic adaptations already classified below: combined settings selectors, private-Gist sharing, Bun rather than Node SEA, the existing package collector rather than Node glob expansion, hashline edit input, and Atomic's installer/update architecture. Three further absences are name-only, with verified Atomic equivalents: upstream's `THINKING_LEVEL_OPTIONS` is Atomic's `THINKING_LEVELS` plus `getAvailableThinkingLevels()`; upstream's `createLocalShellOperations`/`createShellToolDefinition`/`ShellToolConfig` split is Atomic's `createBashToolDefinition` plus `ShellToolPresentation`; and upstream's `normalizeSessionName()` test seam is the identical inline trim at `src/main.ts:438-441`.
+
 Classification vocabulary extends the 0.84.2 matrix: **ported**, **ported (adapted)**,
 **inherited dependency**, **equivalent**, **not applicable**, **intentionally rejected**, plus
 **skipped-vendored-ai** for `packages/ai` code changes Atomic's fork already carries.
@@ -137,7 +167,7 @@ has no analogue. The classifications name the Atomic symbol that was checked.
 | `a6b1dbceb1` | Emit compaction-failed for extensions (#8241) | **ported (adapted) — shipped S2** | Added the Verbatim-aware event and failure emissions from `emitManualCompactionFailure()`, `_checkCompaction()` recovery exhaustion, `_runAutoCompaction()`, and `_preflightPostToolContext()`, with public API, tests, and docs. |
 | `90305d90a0` | Disable tools during summarization | **ported (adapted) — shipped S2** | `generateBranchSummary()`, `generateSessionSummary()`, and `planDeletedLineRanges()` now disable tools and reject tool calls while retaining the planner's validated truncated-record recovery airlock. |
 | `4495469a5e` | Compact without provider usage | **ported (adapted) — shipped S2** | `_checkCompaction()` now uses the pure message-size estimate for all-zero usage and keeps the stale usage-boundary guard for usage-backed estimates. |
-| `836aee6d38` | Show compaction usage notices | **ported (adapted)**, S4 | Upstream gates persisted billing notices on `showCacheMissNotices`. Atomic persists `BranchSummaryEntry.usage` but exposes no aggregate for multi-attempt Verbatim planning; add truthful aggregate planner usage, the setting row, and fullscreen transcript notices. Shipped with the settings surface in S4 rather than S2. |
+| `836aee6d38` | Show compaction usage notices | **ported (adapted); post-merge audit repaired** | `showCacheMissNotices` now gates chronological billing notices for persisted branch summaries and completed Verbatim Compaction. Atomic aggregates every planner response across retries, overflow trimming, and fallback rungs; persists that usage on the compaction boundary; and includes it in session statistics, footer totals, and cost breakdowns. Focused tests cover retry aggregation, live notice ordering, and disabled-notice behavior. |
 | `d711bd5f0a` | Preserve branch summary source leaf | **ported — shipped S2** | `navigateTree()` now passes its pre-navigation `oldLeafId` through so the summary parent remains the destination while `fromId` is the source; tree-traversal tests cover both identities. |
 | `97fa14e39c` | Reject truncated compaction summaries (#7048) | **ported (adapted) — shipped S2** | `generateBranchSummary()` and `generateSessionSummary()` reject `length` prose; `planDeletedLineRanges()` still safely recovers only complete validated deletion records from truncated output. Atomic deliberately checks for tool calls before truncated-range recovery, unlike upstream's ordering: a response that emitted a tool call despite `toolChoice: "none"` is treated as derailed, so its partial ranges are not salvaged. |
 
@@ -155,33 +185,33 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome | Slice / Atomic note |
 |---|---|---|---|
-| `2ff8ba6223` | Keep model and thinking level changes session scoped (#8356) | **ported (adapted)** | S3. Atomic's `agent-session-models.ts` persists every `setModel`/cycle/thinking change and has no per-model lookup. Add `ModelMutationOptions`, per-model thinking storage in `settings-types.ts` + accessors, and startup precedence in `model-resolver-initial.ts`/`sdk.ts`. Atomic's `packages/tui` `SettingsList` hunk is **inherited dependency** via S1. |
+| `2ff8ba6223` | Keep model and thinking level changes session scoped (#8356) | **ported (adapted); verified** | `ModelMutationOptions.persist` makes model/cycle/thinking changes session-only by default, `modelThinkingLevels` stores per-model startup overrides, and `model-resolver-initial.ts` applies scoped → per-model → global precedence. The `SettingsList` hunk is inherited through pi-tui 0.84.3. |
 | `5133c9284f` | Drop `--default` and the global model row | **ported (adapted)** | S3. Atomic has no flag parser or default-model settings row, so the deletions are already equivalent; the session/default fallback semantics and the Ctrl+S-only persistence contract are the portable part. |
 | `98767a25d2` | Remove token estimates | **equivalent** (net-neutral) | Fully reverted by `f0a2880f29`; Atomic already renders the estimates. |
 | `f0a2880f29` | Revert token-estimate removal | **equivalent** | Restores the state Atomic already has. |
-| `496185f6e4` | `/thinking` command | **ported (adapted)** | S4. Atomic has `components/thinking-selector.ts` but no `/thinking` in `core/slash-commands.ts`, no autocomplete entry, and no routing in `interactive-input-handling.ts`. Port the final `/thinking <level>` form; omit the superseded `--default` parser. |
-| `9c8070fbe4` | Ctrl+S persists `/model` | **ported (adapted)** | S4. Atomic's model selector always persists on Enter; split into session-only Enter and persisting Ctrl+S callbacks. |
-| `ee29aa118b` | Searchable default model and thinking level | **ported (adapted); shipped S4** | Atomic shipped one searchable combined model/level editor rather than upstream's stepped model-then-level picker, preserving per-model overrides with a simpler Atomic settings surface. |
+| `496185f6e4` | `/thinking` command | **ported (adapted); post-merge audit repaired** | S4 plus the exact-tag repair. Atomic now has the final `/thinking <level>` routing, `BUILTIN_SLASH_COMMANDS` registration, active-model level completions, and tests; the superseded `--default` parser remains omitted. |
+| `9c8070fbe4` | Ctrl+S persists `/model` | **ported (adapted); post-merge audit repaired** | Enter selects only for the current session; Ctrl+S passes `persist: true` and saves the startup default. The exact-tag repair added the missing remapping-aware footer that exposes both actions plus cancel. |
+| `ee29aa118b` | Searchable default model and thinking level | **ported (adapted); shipped S4, empty state repaired** | Atomic shipped one searchable combined model/level editor rather than upstream's stepped model-then-level picker, preserving per-model overrides with a simpler Atomic settings surface. Upstream's empty-catalog sentinel row is now carried too, with an inert selection guard. |
 | `a669db3c33` | Show `modelid [provider]` like `/model` | **ported (adapted)** | S4. Atomic's `/model` already renders id plus provider badge; the settings-side per-model picker and wider layout are new. |
-| `1d3503fb9b` | Show and search saved defaults (#8399) | **ported (adapted)** | S4. Neither Atomic selector has a default badge or default-aware search. |
-| `768184923a` | Narrow default-model query matching | **ported** | S4. Ships with the selector port; no standalone Atomic analogue. |
-| `cffe4d776c` | Order current first, default second | **ported** | S4. Atomic sorts current-first by provider only. |
-| `5b3caaf4cb` | Drop the global default-thinking settings row | **ported (adapted)** | S4. Atomic still exposes `Thinking level` in `settings-selector-items.ts`; replace it with the per-model override row. |
-| `a2f369d63a` | Order `/tree` above `/thinking` | **ported (adapted)** | S4. Insert `/thinking` immediately after Atomic's existing `/tree`, preserving every Atomic-only command. |
+| `1d3503fb9b` | Show and search saved defaults (#8399) | **ported (adapted); verified** | Model and thinking selectors expose saved defaults in labels/search and order current/default choices first. |
+| `768184923a` | Narrow default-model query matching | **ported; verified** | The selector's default-aware search is scoped to the explicit default marker instead of broad incidental text matches. |
+| `cffe4d776c` | Order current first, default second | **ported; verified** | Selector ordering pins the active model first and the saved default second before ordinary matches. |
+| `5b3caaf4cb` | Drop the global default-thinking settings row | **ported (adapted); verified** | Atomic's settings surface now exposes `Default thinking level per model`, backed by `modelThinkingLevels`, instead of the old global row. |
+| `a2f369d63a` | Order `/tree` above `/thinking` | **ported (adapted); post-merge audit repaired** | `/thinking` is registered immediately after `/tree`, preserving Atomic-only commands around the upstream order. |
 
 ### B5. Skills, packages, and llama.cpp (12) — S5
 
 | Commit | Subject | Outcome | Atomic site |
 |---|---|---|---|
-| `8c2529daeb` | Don't load root `.md` files as skills (#8012) | **ported**, S5 | `src/core/skills.ts:264` still routes every root `.md` through `loadSkillFromFile`, and line 279 diagnoses undeclared files. Silently skip non-`SKILL.md` files without frontmatter; keep diagnostics for malformed declared skills. Doc delta in `docs/skills.md`. |
-| `5e11f65865` | Load nested markdown skills (#8255) | **ported**, S5 | `src/core/package-manager-resource-files.ts:140` includes loose Markdown only for `mode === "pi" && dir === root`; nested Agents-format Markdown is dropped. |
-| `080932e53c` | Use `semver.gt` for version comparison (#8239) | **ported**, S5 | `package-manager-operations.ts:199` and `package-manager-npm.ts:256` both compare with `!==`, so a newer installed package can be downgraded. |
+| `8c2529daeb` | Don't load root `.md` files as skills (#8012) | **ported; verified** | Ordinary root Markdown without skill frontmatter is silently skipped; malformed declared skills still produce diagnostics. |
+| `5e11f65865` | Load nested markdown skills (#8255) | **ported; verified** | Package discovery recurses for nested `SKILL.md` entries instead of limiting loose Markdown handling to the package root. |
+| `080932e53c` | Use `semver.gt` for version comparison (#8239) | **ported; verified** | Package update checks use semantic version ordering, preventing an older registry version from being treated as an upgrade. |
 | `f8f03460a0` | Reduce workspace dependency tree | **intentionally deferred** | The coding-agent `glob` removal was attempted in S5, but removing the dependency broke ambient type resolution in Atomic's local toolchain. The dependency and existing collector remain; upstream workspace-package manifest hunks remain not applicable to Atomic's vendored/package layout. |
 | `a1f955e9f4` | Remove redundant development dependencies | **ported; shipped**, S1 | Removed coding-agent's redundant `@types/diff` and `@types/ms` during S1's lock regeneration. Atomic had no root `jiti` duplicate. |
-| `955a543b31` | Expose sleeping llama.cpp models (#8235) | **ported (adapted)**, S5 | `src/extensions/llama/provider.ts:64-65` filters sleeping models out even though `index.ts` and the UI already recognize them. |
-| `a1bc0ec790` | llama.cpp guidance as no default (#8236) | **ported (adapted)**, S5 | Atomic's split `interactive-auth-login.ts:36-47` offers no llama-specific guidance; `docs/llama-cpp.md` needs the matching note. |
-| `d3e3bbc011` | Allow network for llama model discovery (#8238) | **ported**, S5 | `src/extensions/llama/index.ts:54-57` refuses catalog refresh under offline mode; a local router is not the network policy's concern. |
-| `dcd461925d` | Show llama presets if autoload enabled (#8558) | **ported (adapted)**, S5 | Atomic's llama client has no `/props` probe, no autoload detection, and no preset selection. Port while preserving Atomic's generation-checked catalog publishing. |
+| `955a543b31` | Expose sleeping llama.cpp models (#8235) | **ported (adapted); verified** | `provider.ts` publishes both loaded and sleeping router models as selectable. |
+| `a1bc0ec790` | llama.cpp guidance as no default (#8236) | **ported (adapted); post-merge audit repaired** | Login guidance sends users with no loaded models to `/llama` before `/model`; focused tests cover loaded and empty catalogs. |
+| `d3e3bbc011` | Allow network for llama model discovery (#8238) | **ported; verified** | Local-router discovery is no longer blocked by the general offline catalog policy. |
+| `dcd461925d` | Show llama presets if autoload enabled (#8558) | **ported (adapted); verified** | `LlamaClient.props()` probes `/props`; preset models are published only when `models_autoload` is enabled, while generation-checked catalog updates remain intact. |
 | `e429d90b80` | Update Z.AI Coding Plan defaults | **equivalent; verified**, S1 | `src/core/model-resolver-defaults.ts:22-23` already uses `glm-5.3` for `zai` and `zai-coding-cn`. |
 | `70e878d4cf` | Route xAI through Responses, default Grok 4.6 (#8124) | **equivalent; verified** (coding-agent) / **skipped-vendored-ai** (`packages/ai`), S1 | `model-resolver-defaults.ts:18` is already `grok-4.6`; routing lives in the fork. |
 | `1c28f3032e` | Update Cloudflare gateway sonnet test id (#8260) | **equivalent; verified**, S1 | Atomic's resolver default (`cerebras: gpt-oss-120b`, `model-resolver-defaults.ts:20`) and its Cloudflare compat test already match. |
@@ -190,28 +220,28 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome | Atomic site |
 |---|---|---|---|
-| `f47faf459f` | Register flag type mismatch (#8123) | **ported**, S6 | `src/core/extensions/api-types.ts:156` and `loader-api.ts:95` still take `{ type: "boolean" \| "string"; default?: boolean \| string }` with no runtime type check. |
-| `a69bef789b` | Discard failed extension factory state (#8424) | **ported (adapted)**, S6 | `loader-core.ts:67` builds the API and awaits the factory with no success/discard transaction, and `loader-runtime.ts:11` commits staged inherited resources from a `finally` even when `run()` throws. Adapt the transaction to Atomic's resource-ownership batching and builtin extension packages. |
-| `81152d88bb` | Clarify custom footer usage APIs (#8482) | **ported**, S6 | `src/core/extensions/ui-types.ts:260-262`, `footer-data-provider.ts:104-106`, and `examples/extensions/custom-footer.ts:8` all repeat the stale token/context guidance. |
-| `1d08508ef6` | Use `agent_settled` instead of `end` (#8242) | **ported**, S6 | Atomic emits `agent_settled` (`agent-session-prompt.ts:257-259`) but `examples/extensions/{border-status-editor,git-checkpoint,notify,titlebar-spinner}.ts`, `examples/rpc-extension-ui.ts`, and `examples/sdk/README.md:142` still treat `agent_end` as final. Examples whose intent is genuinely per-turn stay unchanged. |
-| `830a0a59e9` | Expose tool metadata at stream start (#7953) | **ported (adapted)**, S6 | `src/modes/json-event.ts:41-49` strips `partial` generically and loses the starting tool call's `id`/`toolName`; the adaptation must keep Atomic's `withEndTurn` (`:52-59`) and cumulative `usage`. Docs in `docs/json.md` + `docs/rpc.md`. |
-| `460191cfcf` | Include context in Radius session shares | **ported (adapted)**, S6 | Only the export half: emit an export-only, Atomic-branded `atomic.share` custom entry carrying system prompt and tool schemas from `agent-session-export.ts`, without mutating the persisted session. The Radius upload half is rejected — see `686f3487f5`. |
-| `f4585b8bec` | Simplify session sharing links | **ported (adapted)**, S6 | Atomic prints plain Gist/pi.dev URLs and runs the `gh auth status` preflight before export. Take the canonical-hyperlink and preflight-ordering cleanup; keep `ATOMIC_SHARE_VIEWER_URL` with its legacy `PI_SHARE_VIEWER_URL` alias. |
+| `f47faf459f` | Register flag type mismatch (#8123) | **ported; verified** | `registerFlag()` rejects a runtime default whose JavaScript type does not match its declared boolean/string type. |
+| `a69bef789b` | Discard failed extension factory state (#8424) | **ported (adapted); verified** | Extension API creation is transactional: successful factories commit staged resources; failures discard flags, handlers, providers, and inherited registrations, including rollback of partially applied provider changes. |
+| `81152d88bb` | Clarify custom footer usage APIs (#8482) | **ported; verified** | Public footer guidance consistently distinguishes context-window usage from cumulative token/cost totals. |
+| `1d08508ef6` | Use `agent_settled` instead of `end` (#8242) | **ported; verified** | Long-lived extension/RPC/SDK examples now stop working indicators and clear checkpoints on `agent_settled`; genuinely per-turn examples retain their event. |
+| `830a0a59e9` | Expose tool metadata at stream start (#7953) | **ported (adapted); verified** | JSON/RPC `toolcall_start` strips the cumulative snapshot but retains `id` and `toolName`, while Atomic keeps cumulative usage and optional `endTurn`. |
+| `460191cfcf` | Include context in Radius session shares | **ported (adapted); verified** | Atomic emits an export-only `atomic.share` record with the system prompt and active tool schemas without mutating persisted sessions; Radius upload remains rejected. |
+| `f4585b8bec` | Simplify session sharing links | **ported (adapted); verified** | Private-Gist sharing prints the canonical clickable viewer URL and runs authentication preflight before export, retaining Atomic's viewer environment aliases. |
 | `686f3487f5` | Share via Radius artifacts under experimental (#8443) | **intentionally rejected; confirmed S6** | Uploading session artifacts — including the system prompt and tool schemas — to upstream's hosted Radius service remains outside Atomic's product boundary. Atomic ships only an export-time `atomic.share` context record and retains private-Gist sharing. |
 | `77f2d1235e` | Only share via Radius if logged in | **intentionally rejected; confirmed S6** | Atomic does not silently route `/share` to an upstream-hosted service when a Radius credential exists; S6 preserved the existing private-Gist transport and Atomic viewer URL. |
-| `df018b6020` | Retry hung model catalog requests | **ported**, S6 | `src/utils/management-http.ts:9-11` exposes only an overall `timeoutMs` and reuses one combined signal, so a hung attempt can never be retried; `remote-catalog-provider.ts:85` needs the 4 s per-attempt limit. |
-| `1355cd36e0` | Normalize UTF-8 BOMs in text inputs | **ported (adapted)**, S6 | Partly present: `src/utils/json.ts:9-15` already provides `stripJsonBom`/`parseJsonFileContent` for settings and trust, and `test/hashline-tools.test.ts:513` proves hashline edits preserve a file's BOM. Port the remaining readers (auth, models, model config, keybindings, frontmatter, package manager, resource loader, theme, CLI file processor) without disturbing either. |
-| `c49906ec77` | Preserve managed state file permissions | **ported (adapted)**, S6 | `auth-storage-backends.ts:113-119` writes a temp file, chmods `0600`, and renames over the target, so simply dropping the chmod would still replace the inode and its mode. Carry the existing target mode onto the replacement while keeping `0600` as the creation default. |
+| `df018b6020` | Retry hung model catalog requests | **ported; verified** | Management requests support a retryable per-attempt timeout, and remote catalog refreshes apply the upstream 4-second attempt bound inside the overall deadline. |
+| `1355cd36e0` | Normalize UTF-8 BOMs in text inputs | **ported (adapted); post-merge audit repaired** | Atomic preserves BOM-aware hashline edits and strips one leading BOM across auth backends, models/configuration, keybindings/migrations, frontmatter, package identity/manifests, resources/context, themes, CLI input, and external-editor text. Focused tests cover Atomic's split reader doors. |
+| `c49906ec77` | Preserve managed state file permissions | **ported (adapted); post-merge audit repaired** | Atomic keeps atomic temp-file replacement for lock-free readers, copies an existing POSIX mode onto the replacement inode, and uses owner-only `0600` for newly created auth/model state. Focused tests cover both creation and managed-mode preservation. |
 
 ### B7. Startup diagnostics and Windows surface (7) — S7
 
 | Commit | Subject | Outcome | Atomic site |
 |---|---|---|---|
-| `1e1a6e27be` | Include paths in settings errors | **ported**, S7 | `src/core/settings-types.ts:176-179` carries only `{scope,error}` and `settings-manager-core.ts:328` records no path. Atomic must report layered primary `.atomic` and legacy `.pi` paths rather than one path per scope. |
-| `913bcf3391` | Report settings diagnostic paths | **ported**, S7 | `src/core/settings-diagnostics.ts` does not exist; `main.ts:704` calls `reportDiagnostics(runtime.diagnostics)` with no path-aware formatting or deduplication. Builds on `1e1a6e27be`. |
-| `678f0af30d` | Show startup diagnostics in TUI | **ported**, S7 | `main.ts:704` writes diagnostics before the renderer starts, so a fullscreen-only Atomic loses them to the alternate-screen switch. Route them into the transcript instead. |
-| `80e62761f7` | Add optional PowerShell tool (#8512) | **ported (adapted)**, S7 | Atomic has no `src/core/tools/powershell.ts`, no `getPowerShellConfig`, and `src/utils/shell.ts` only resolves Bash; `docs/windows.md` still states Atomic requires a bash shell. Port opt-in and Windows-only, preferring `pwsh.exe` then `powershell.exe`, keeping `!`/`!!` on Bash, Atomic's `ToolName` union (`search`, `ask_user_question`, `todo`), and dual `ATOMIC_*`/`PI_*` variables. |
-| `27b7a626de` | Use Windows-friendly keybinding defaults | **ported (adapted)**, S7 | Atomic has no `useWindowsKeybindings()` or WSL detection and only special-cases native Windows for suspend and image paste. Adopt the Windows/WSL substitutions and doc updates, but **do not** restore upstream's transcript-search bindings: Atomic deliberately keeps `tui.altScreen.search*` at `defaultKeys: []`. The `packages/tui` half is **inherited dependency** via S1. |
+| `1e1a6e27be` | Include paths in settings errors | **ported; verified** | `SettingsError.path` carries the exact layered `.atomic`/legacy `.pi` source path through settings loading. |
+| `913bcf3391` | Report settings diagnostic paths | **ported; verified** | Startup settings diagnostics format source paths and deduplicate repeated messages while preserving first-observed order. |
+| `678f0af30d` | Show startup diagnostics in TUI | **ported; verified** | Interactive startup passes diagnostics into the initialized transcript; non-interactive modes continue reporting them on stderr. |
+| `80e62761f7` | Add optional PowerShell tool (#8512) | **ported (adapted); post-merge audit repaired** | Atomic enables PowerShell by default only on native Windows with a resolvable executable, while `!`/`!!` remain Bash. The exact-tag repair completed package-root SDK factories/types, shell configuration export, typed extension events/guards, PowerShell-only system-prompt guidance, the shell-specific `PS>` transcript prompt and `atomic-powershell` overflow prefix, compile-time export tests, and user-facing docs. |
+| `27b7a626de` | Use Windows-friendly keybinding defaults | **ported (adapted); verified** | `useWindowsKeybindings()` covers native Windows and WSL substitutions for undo, prompt navigation, model cycling, queueing, and image paste. Atomic intentionally keeps transcript-search bindings disabled; the TUI half is inherited through pi-tui 0.84.3. |
 | `74786a748f` | Support `--` end-of-options (#7269) | **equivalent** | `src/cli/args.ts` already breaks on `--` and pushes every later token into `messages`; Atomic is deliberately stricter than upstream, which still expands `@file` afterwards. `insertForcedOptionsBeforeTerminator()` protects forced RPC options. |
 | `bcad846f93` | Update end-of-options CLI test | **equivalent** | `test/experimental-cli-command.test.ts` already asserts the corrected split. |
 
@@ -219,8 +249,8 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome | Atomic site |
 |---|---|---|---|
-| `cec3a91c02` | Defer uncommon syntax grammars | **ported (adapted)**, S5 | `src/utils/syntax-highlight.ts` imports all of `highlight.js` eagerly. Register the ~20 common grammars up front and load the rest after first render, wiring the deferral into Atomic's split startup module rather than upstream's monolithic `interactive-mode.ts`. |
-| `faecac2ca8` | Reduce bundled startup work | **ported (adapted)**, S5 | Only the `syntax-highlight.ts` dynamic-import simplification. The `scripts/build-coding-agent-bundle.mjs` hunk is **not applicable**: Atomic has no Node esbuild bundle. |
+| `cec3a91c02` | Defer uncommon syntax grammars | **ported (adapted); verified** | Atomic eagerly registers the common grammar set and defers the remaining language imports until after initial interactive startup. |
+| `faecac2ca8` | Reduce bundled startup work | **ported (adapted); verified** | Atomic carries the syntax-highlighter dynamic-import reduction; upstream's Node esbuild bundle hunk is not applicable to the Bun-compiled distribution. |
 
 ### B9. Upstream Node-runtime and installer architecture (5)
 
@@ -236,7 +266,7 @@ default-thinking settings rows are replaced by a searchable per-model thinking o
 
 | Commit | Subject | Outcome |
 |---|---|---|
-| `62bcbf6be0` | Document `--` end-of-options delimiter | **ported (adapted)**, S8 — `docs/usage.md` already explains the literal-message semantics, but `README.md` and `printHelp()` still omit `[--]` and its option row. |
+| `62bcbf6be0` | Document `--` end-of-options delimiter | **ported (adapted); verified** — CLI help, README, and usage docs show `[--]` and explain Atomic's stricter literal-message behavior after the terminator. |
 | `b237412699` | Generalize thinking token budget fields (#8275) — docs half | **equivalent** — `docs/{custom-provider,models,settings}.md` already document `thinkingTokenBudgetField`, `supportsThinkingTokenBudget`, the vLLM alias, the 1024-token answer reserve, and the DashScope/Qwen caveat. The `packages/ai` half is **skipped-vendored-ai**. |
 
 ### B11. Upstream test hygiene (4)
