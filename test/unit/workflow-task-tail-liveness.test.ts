@@ -33,6 +33,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
 import { structuredOutputMockSession } from "./executor-shared.js";
+import { assistantMessageWithUsage } from "./stage-runner-helpers.js";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -77,6 +78,25 @@ class DelayedTaskCheckpointBackend extends InMemoryDurableBackend {
 			if (this.failTaskCheckpoint) throw new Error("task-result checkpoint failed");
 		}
 		await super.recordCheckpointAsync(checkpoint);
+	}
+}
+
+class PostTaskUsageCheckpointBackend extends InMemoryDurableBackend {
+	readonly gate = new Gate();
+	readonly taskResults: Extract<DurableCheckpoint, { readonly kind: "stage" }>[] = [];
+	onAllTaskResultsPersisted: () => void = () => {};
+	override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		await super.recordCheckpointAsync(checkpoint);
+		if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith("task:")) return;
+		this.taskResults.push(checkpoint);
+		if (this.taskResults.length === 2) {
+			try {
+				this.onAllTaskResultsPersisted();
+			} finally {
+				this.gate.release();
+			}
+		}
+		await this.gate.barrier;
 	}
 }
 
@@ -316,6 +336,147 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(reducerExecutions, 1, "the downstream reducer must run exactly once after replay");
 	});
 
+	test("parallel post-task token budget stops replay completed structured results", async () => {
+		const backend = new PostTaskUsageCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const jobs = createJobTracker();
+		let taskExecutions = 0;
+		let reducerExecutions = 0;
+		// Keep both stage-boundary readings below the ceiling, then make the
+		// production-shaped late usage visible only after both complete task
+		// checkpoints are durable. This isolates the post-task budget boundary.
+		backend.onAllTaskResultsPersisted = () => {
+			const source = store.runs().find((candidate) => candidate.name === "parallel-post-task-token-budget");
+			assert.ok(source);
+			for (const stage of source.stages) {
+				const [attempt, ...remainingAttempts] = stage.modelAttempts ?? [];
+				assert.ok(attempt);
+				stage.modelAttempts = [
+					{
+						...attempt,
+						usage: { ...attempt.usage, output: (attempt.usage?.output ?? 0) + 1 },
+					},
+					...remainingAttempts,
+				];
+			}
+		};
+		const Report = Type.Object(
+			{ approved: Type.Boolean(), reviewer: Type.String() },
+			{ additionalProperties: false },
+		);
+		const definition = workflow({
+			name: "parallel-post-task-token-budget",
+			description: "",
+			inputs: {},
+			outputs: { count: Type.Number() },
+			run: async (ctx) => {
+				const reviews = await ctx.parallel(
+					[
+						{ name: "token-review-a", prompt: "review A", schema: Report },
+						{ name: "token-review-b", prompt: "review B", schema: Report },
+					],
+					{ failFast: false },
+				);
+				reducerExecutions += 1;
+				return { count: reviews.length };
+			},
+		});
+		const adapters = {
+			agentSession: {
+				create(options: Parameters<typeof structuredOutputMockSession>[0]) {
+					taskExecutions += 1;
+					const reviewer = taskExecutions === 1 ? "a" : "b";
+					const session = structuredOutputMockSession(options, { approved: true, reviewer });
+					const prompt = session.prompt.bind(session);
+					return Promise.resolve({
+						...session,
+						async prompt(...args: Parameters<typeof session.prompt>) {
+							await prompt(...args);
+							session.messages.push(
+								assistantMessageWithUsage("", {
+									input: 2,
+									output: 3,
+									cacheRead: 0,
+									cacheWrite: 0,
+									cost: 0.25,
+								}),
+							);
+							return undefined;
+						},
+					});
+				},
+			},
+		};
+
+		const first = await run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				budget: { maxTokens: 11 },
+				adapters,
+			},
+		);
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const taskCheckpoints = backend
+			.listCheckpoints(first.runId)
+			.filter(
+				(checkpoint): checkpoint is Extract<DurableCheckpoint, { readonly kind: "stage" }> =>
+					checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:"),
+			);
+
+		assert.equal(taskCheckpoints.length, 2);
+		assert.deepEqual(
+			taskCheckpoints
+				.map((checkpoint) => checkpoint.output as Partial<WorkflowTaskResult>)
+				.map((result) => ({ name: result.name, stageName: result.stageName, structured: result.structured }))
+				.sort((left, right) => String(left.name).localeCompare(String(right.name))),
+			[
+				{
+					name: "token-review-a",
+					stageName: "token-review-a",
+					structured: { approved: true, reviewer: "a" },
+				},
+				{
+					name: "token-review-b",
+					stageName: "token-review-b",
+					structured: { approved: true, reviewer: "b" },
+				},
+			],
+		);
+		const budgetResult = budgetOutcome(first.result);
+		assert.equal(budgetResult?.status, "budget_exceeded");
+		assert.equal(budgetResult?.dimension, "tokens");
+		assert.equal(budgetResult?.reading, 12);
+		assert.equal(budgetResult?.ceiling, 11);
+		assert.equal(budgetResult?.frontierStage, "token-review-a");
+		assert.equal(source.failureDisposition, "active_blocked");
+		assert.equal(source.failureRecoverability, "recoverable");
+		assert.equal(source.budgetState?.systemOwnedStop, true);
+		assert.equal(source.budgetState?.tokens?.reading, 12);
+		assert.equal(source.budgetState?.tokens?.ceiling, 11);
+		assert.deepEqual(
+			source.stages.map((stage) => stage.status),
+			["completed", "completed"],
+		);
+		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "token-review-a");
+		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.status, "completed");
+		assert.equal(reducerExecutions, 0);
+
+		const executionsBeforeReplay = taskExecutions;
+		const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, adapters });
+		const resumed = await runtime.resumeFailedRun(first.runId, undefined, { budget: { maxTokens: 100 } });
+		assert.equal(resumed.ok, true, resumed.ok ? undefined : resumed.message);
+		if (!resumed.ok) return;
+		await jobs.get(resumed.runId)?.promise;
+		const continuation = store.runs().find((candidate) => candidate.id === resumed.runId);
+		assert.equal(continuation?.status, "completed", continuation?.error);
+		assert.deepEqual(continuation?.result, { count: 2 });
+		assert.equal(taskExecutions, executionsBeforeReplay, "completed tasks must replay without another adapter call");
+		assert.equal(reducerExecutions, 1, "the downstream reducer must run exactly once after replay");
+	});
 	test("an ordinary failure still wins over a concurrent post-task budget stop", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
