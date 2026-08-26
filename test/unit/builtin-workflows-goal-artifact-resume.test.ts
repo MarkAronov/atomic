@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -493,7 +493,11 @@ test("Goal ledger contents and artifact paths stay inside the supplied fresh-run
 		assert.equal(ledger.acceptance_criteria, "literal criteria");
 		assert.deepEqual(ledger.receipts, []);
 		const visibleContents = await readFile(ledgerPath, "utf8");
-		const stored = JSON.parse(visibleContents) as Record<string, unknown>;
+		const stored = JSON.parse(visibleContents) as {
+			objective: string;
+			acceptance_criteria: string;
+			turns?: never;
+		};
 		assert.equal(stored.objective, "literal objective");
 		assert.equal(stored.acceptance_criteria, "literal criteria");
 		assert.equal("turns" in stored, false);
@@ -520,6 +524,40 @@ test("Goal ledger contents and artifact paths stay inside the supplied fresh-run
 				2,
 			)}\n`,
 		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("an interrupted authoritative ledger write cannot strand a continuation", async () => {
+	const root = await mkdtemp(join(tmpdir(), "goal-ledger-torn-"));
+	try {
+		const artifactDir = join(root, "artifacts");
+		await mkdir(artifactDir, { recursive: true });
+		const created = await createGoalLedger("literal objective", "literal criteria", artifactDir);
+		created.ledger.turns = 7;
+		await writeGoalLedger(created.ledgerPath, created.ledger);
+
+		const statePath = `${created.ledgerPath.replace(/\.json$/u, "")}-state.json`;
+		const authoritative = await readFile(statePath, "utf8");
+		assert.equal((JSON.parse(authoritative) as GoalLedger).turns, 7);
+
+		// The publish path renames a fully written file into place, so a partial
+		// authoritative file can only predate that guarantee. It must degrade to a
+		// fresh ledger rather than aborting the continuation in JSON.parse.
+		await writeFile(statePath, authoritative.slice(0, 31), { encoding: "utf8" });
+		const continued = await createGoalLedger("literal objective", "literal criteria", artifactDir);
+		assert.equal(continued.ledger.turns, 0);
+		assert.equal(continued.ledger.objective, "literal objective");
+
+		// Writing again republishes a complete, parseable authoritative file.
+		continued.ledger.turns = 2;
+		await writeGoalLedger(continued.ledgerPath, continued.ledger);
+		assert.equal((JSON.parse(await readFile(statePath, "utf8")) as GoalLedger).turns, 2);
+
+		// No temporary publish files are left behind in the artifact directory.
+		const leftovers = (await readdir(artifactDir)).filter((entry) => entry.endsWith(".tmp"));
+		assert.deepEqual(leftovers, []);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

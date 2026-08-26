@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
 
@@ -62,6 +62,12 @@ export function appendLifecycleEvent(
 /**
  * Restore only lossless authoritative state. A model-visible legacy ledger has
  * no turn fields, so treating it as fresh is safer than fabricating reducer state.
+ *
+ * A sidecar that cannot be parsed is treated as absent for the same reason: the
+ * authoritative file is published by atomic rename below, so unparsable content
+ * means a torn write from before that guarantee (or a foreign file). Starting
+ * fresh loses recorded turns; throwing here would instead make the whole
+ * continuation unable to start.
  */
 async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | undefined> {
   let contents: string;
@@ -71,7 +77,11 @@ async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | 
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
     throw error;
   }
-  return JSON.parse(contents) as GoalLedger;
+  try {
+    return JSON.parse(contents) as GoalLedger;
+  } catch {
+    return undefined;
+  }
 }
 export async function createGoalLedger(
   objective: string,
@@ -112,8 +122,18 @@ export async function writeGoalLedger(
   ledger.updated_at = new Date().toISOString();
   const visibleContents = `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`;
   const stateContents = `${JSON.stringify(ledger, null, 2)}\n`;
-  await Promise.all([
-    writeFile(ledgerPath, visibleContents, { encoding: "utf8" }),
-    writeFile(goalLedgerStatePath(ledgerPath), stateContents, { encoding: "utf8" }),
-  ]);
+  const statePath = goalLedgerStatePath(ledgerPath);
+  // The sidecar is the authoritative resume state, so it is published by a
+  // complete same-directory write followed by an atomic rename. Overwriting it
+  // in place leaves a partial file readable when a write is interrupted, and
+  // the next continuation would then start from nothing.
+  const pendingStatePath = `${statePath}.${randomUUID()}.tmp`;
+  await writeFile(pendingStatePath, stateContents, { encoding: "utf8" });
+  try {
+    await rename(pendingStatePath, statePath);
+  } catch (error) {
+    await rm(pendingStatePath, { force: true });
+    throw error;
+  }
+  await writeFile(ledgerPath, visibleContents, { encoding: "utf8" });
 }
