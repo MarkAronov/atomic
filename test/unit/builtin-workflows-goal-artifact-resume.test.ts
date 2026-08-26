@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { test } from "vitest";
-import { createGoalLedger } from "../../packages/workflows/builtin/goal-ledger.js";
+import { createGoalLedger, writeGoalLedger } from "../../packages/workflows/builtin/goal-ledger.js";
+import { consecutiveBlockerTurns, reduceGoalDecision } from "../../packages/workflows/builtin/goal-reducer.js";
 import { createGoalArtifactDirectory, runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
+import type { GoalLedger, ReviewRecord } from "../../packages/workflows/builtin/goal-types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
@@ -19,6 +21,41 @@ import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/w
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 const posix = (value: string): string => value.replaceAll("\\", "/");
+
+function blockingReview(turn: number): ReviewRecord {
+	return {
+		findings: [],
+		overall_correctness: "patch is incorrect",
+		overall_explanation: "blocked",
+		overall_confidence_score: 0.9,
+		goal_oracle_satisfied: false,
+		requirements_traceability: [],
+		receipt_assessment: "receipt inspected",
+		verification_remaining: "blocked",
+		stop_review_loop: false,
+		reviewer_error: null,
+		decision: "continue",
+		evidence: [],
+		gaps: [],
+		blocker: "X",
+		confidence_score: 0.9,
+		explanation: "blocked",
+		turn,
+		reviewer: "completion-reviewer",
+		artifact_path: "/tmp/review.json",
+		parsed: true,
+		approved: false,
+		parse_diagnostics: [],
+		convergence_decision: {
+			parsed: true,
+			approved: false,
+			stopReviewLoop: false,
+			nextAction: "implementation",
+			finalActionRemaining: false,
+			diagnostics: [],
+		},
+	};
+}
 
 test("a fresh-id workflow continuation reads a replayed producer artifact without rerunning the producer", async () => {
 	const root = await mkdtemp(join(tmpdir(), "goal-artifact-workflow-resume-"));
@@ -233,31 +270,218 @@ test("createGoalLedger preserves every existing durable ledger collection", asyn
 	await mkdir(artifactDir, { recursive: true });
 	try {
 		const created = await createGoalLedger("literal objective", "literal criteria", artifactDir);
-		const stored = JSON.parse(await readFile(created.ledgerPath, "utf8")) as Record<string, unknown>;
-		stored.goal_id = "ORIGINAL-GOAL-ID";
-		stored.receipts = [{ stage: "orchestrator", artifact_path: "receipt.md", summary: "kept" }];
-		stored.reviews = [{ reviewer: "completion-reviewer", artifact_path: "review.json", parsed: true }];
-		stored.blockers = [{ blocker: "kept", reviewers: ["completion-reviewer"] }];
-		stored.decisions = [{ decision: "continue", reason: "kept" }];
-		stored.reverification = [{ marker: "kept" }];
-		stored.convergence = [{ marker: "kept" }];
-		await writeFile(created.ledgerPath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+		const review = blockingReview(4);
+		const seeded: GoalLedger = {
+			...created.ledger,
+			goal_id: "ORIGINAL-GOAL-ID",
+			turns: 4,
+			receipts: [{ turn: 2, stage: "orchestrator", artifact_path: "receipt.md", summary: "kept" }],
+			reviews: [review],
+			blockers: [{ turn: 3, blocker: "kept", reviewers: [review.reviewer] }],
+			decisions: [
+				{
+					...review.convergence_decision,
+					turn: 4,
+					decision: "continue",
+					reason: "kept",
+					complete_votes: 0,
+					review_quorum: 2,
+				},
+			],
+			lifecycle: [
+				...created.ledger.lifecycle,
+				{
+					turn: 4,
+					event: "status_decided",
+					status: "active",
+					at: "2026-08-26T00:00:00.000Z",
+					summary: "kept",
+				},
+			],
+			reverification: [
+				{
+					finding: {
+						finding: {
+							title: "[P2] kept",
+							body: "kept",
+							confidence_score: 0.6,
+							objective_alignment: "required_by_objective",
+							priority: 2,
+							code_location: { absolute_file_path: "/repo/file.ts", line_range: { start: 1, end: 1 } },
+						},
+						reviewers: [review.reviewer],
+						blocking: true,
+					},
+					verdict: "confirmed",
+					meanScore: 8,
+					perRepeat: [8, 8, 8],
+					evidence: ["kept"],
+				},
+			],
+			convergence: [
+				{
+					unresolvedBlockingCount: 1,
+					meanFindingConfidence: 0.6,
+					fractionProven: 0.5,
+					demotions: 0,
+					usage: {
+						calls: 1,
+						input: 2,
+						output: 3,
+						cacheRead: 4,
+						cacheWrite: 5,
+						cost: 0.01,
+						turns: 1,
+						cacheHitRate: 0.5,
+					},
+				},
+			],
+		};
+		await writeGoalLedger(created.ledgerPath, seeded);
 
 		const resumed = await createGoalLedger("replacement objective", "replacement criteria", artifactDir);
 		assert.equal(resumed.ledger.goal_id, "ORIGINAL-GOAL-ID");
 		assert.equal(resumed.ledger.objective, "literal objective");
-		assert.equal(resumed.ledger.receipts.length, 1);
-		assert.equal(resumed.ledger.reviews.length, 1);
-		assert.equal(resumed.ledger.blockers.length, 1);
-		assert.equal(resumed.ledger.decisions.length, 1);
-		assert.equal(resumed.ledger.lifecycle.length, 1);
-		assert.equal(resumed.ledger.reverification?.length, 1);
-		assert.equal(resumed.ledger.convergence?.length, 1);
+		assert.deepEqual(resumed.ledger.receipts, seeded.receipts);
+		assert.deepEqual(resumed.ledger.reviews, seeded.reviews);
+		assert.deepEqual(resumed.ledger.blockers, seeded.blockers);
+		assert.deepEqual(resumed.ledger.decisions, seeded.decisions);
+		assert.deepEqual(resumed.ledger.lifecycle, seeded.lifecycle);
+		assert.deepEqual(resumed.ledger.reverification, seeded.reverification);
+		assert.deepEqual(resumed.ledger.convergence, seeded.convergence);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });
 
+test("Goal ledger reload preserves non-consecutive blocker turns without an early blocked decision", async () => {
+	const root = await mkdtemp(join(tmpdir(), "goal-ledger-blocker-turns-"));
+	try {
+		const created = await createGoalLedger("literal objective", "literal criteria", root);
+		created.ledger.turns = 5;
+		created.ledger.blockers.push(
+			{ turn: 2, blocker: "X", reviewers: ["completion-reviewer"] },
+			{ turn: 5, blocker: "X", reviewers: ["completion-reviewer"] },
+		);
+		await writeGoalLedger(created.ledgerPath, created.ledger);
+
+		const resumed = await createGoalLedger("replacement objective", "replacement criteria", root);
+		assert.equal(resumed.ledger.goal_id, created.ledger.goal_id);
+		assert.deepEqual(
+			resumed.ledger.blockers.map((blocker) => blocker.turn),
+			[2, 5],
+		);
+		assert.equal(
+			consecutiveBlockerTurns(
+				[...resumed.ledger.blockers, { turn: 2, blocker: "X", reviewers: ["completion-reviewer"] }],
+				"X",
+				2,
+			),
+			1,
+		);
+		const outcome = reduceGoalDecision(resumed.ledger, [blockingReview(2)], {
+			turn: 2,
+			maxTurns: 5,
+			reviewQuorum: 2,
+			blockerThreshold: 3,
+			nextActionOnComplete: "finish",
+		});
+		assert.equal(outcome.status, "active");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("Goal ledger write and reload preserves every non-dense turn exactly", async () => {
+	const root = await mkdtemp(join(tmpdir(), "goal-ledger-round-trip-"));
+	try {
+		const created = await createGoalLedger("literal objective", "literal criteria", root);
+		const review = blockingReview(7);
+		created.ledger.turns = 11;
+		created.ledger.receipts.push({ turn: 3, stage: "orchestrator", artifact_path: "receipt.md", summary: "kept" });
+		created.ledger.reviews.push(review);
+		created.ledger.blockers.push({ turn: 5, blocker: "X", reviewers: [review.reviewer] });
+		created.ledger.decisions.push({
+			...review.convergence_decision,
+			turn: 9,
+			decision: "continue",
+			reason: "kept",
+			complete_votes: 0,
+			review_quorum: 2,
+		});
+		created.ledger.lifecycle.push({
+			turn: 11,
+			event: "status_decided",
+			status: "active",
+			at: "2026-08-26T00:00:00.000Z",
+			summary: "kept",
+		});
+		await writeGoalLedger(created.ledgerPath, created.ledger);
+
+		const resumed = await createGoalLedger("replacement objective", "replacement criteria", root);
+		assert.equal(resumed.ledger.turns, 11);
+		assert.deepEqual(
+			resumed.ledger.receipts.map((value) => value.turn),
+			[3],
+		);
+		assert.deepEqual(
+			resumed.ledger.reviews.map((value) => value.turn),
+			[7],
+		);
+		assert.deepEqual(
+			resumed.ledger.blockers.map((value) => value.turn),
+			[5],
+		);
+		assert.deepEqual(
+			resumed.ledger.decisions.map((value) => value.turn),
+			[9],
+		);
+		assert.deepEqual(
+			resumed.ledger.lifecycle.map((value) => value.turn),
+			[0, 11],
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a legacy model-visible ledger without authoritative state starts a fresh ledger", async () => {
+	const root = await mkdtemp(join(tmpdir(), "goal-ledger-legacy-"));
+	try {
+		const ledgerPath = join(root, "goal-ledger.json");
+		await writeFile(
+			ledgerPath,
+			`${JSON.stringify(
+				{
+					goal_id: "LEGACY",
+					objective: "legacy",
+					acceptance_criteria: "legacy",
+					status: "active",
+					created_at: "legacy",
+					updated_at: "legacy",
+					receipts: [{ stage: "orchestrator", artifact_path: "receipt.md", summary: "legacy" }],
+					reviews: [],
+					blockers: [{ blocker: "X", reviewers: ["completion-reviewer"] }],
+					decisions: [],
+					lifecycle: [],
+					reverification: [],
+					convergence: [],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const created = await createGoalLedger("fresh objective", "fresh criteria", root);
+		assert.notEqual(created.ledger.goal_id, "LEGACY");
+		assert.equal(created.ledger.objective, "fresh objective");
+		assert.deepEqual(created.ledger.receipts, []);
+		assert.deepEqual(created.ledger.blockers, []);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 test("Goal ledger contents and artifact paths stay inside the supplied fresh-run directory", async () => {
 	const root = await mkdtemp(join(tmpdir(), "goal-ledger-directory-"));
 	try {
@@ -268,10 +492,34 @@ test("Goal ledger contents and artifact paths stay inside the supplied fresh-run
 		assert.equal(ledger.objective, "literal objective");
 		assert.equal(ledger.acceptance_criteria, "literal criteria");
 		assert.deepEqual(ledger.receipts, []);
-		const stored = JSON.parse(await readFile(ledgerPath, "utf8")) as Record<string, unknown>;
+		const visibleContents = await readFile(ledgerPath, "utf8");
+		const stored = JSON.parse(visibleContents) as Record<string, unknown>;
 		assert.equal(stored.objective, "literal objective");
 		assert.equal(stored.acceptance_criteria, "literal criteria");
 		assert.equal("turns" in stored, false);
+		assert.doesNotMatch(visibleContents, /"turn":/u);
+		assert.equal(
+			visibleContents,
+			`${JSON.stringify(
+				{
+					goal_id: ledger.goal_id,
+					objective: ledger.objective,
+					acceptance_criteria: ledger.acceptance_criteria,
+					status: ledger.status,
+					created_at: ledger.created_at,
+					updated_at: ledger.updated_at,
+					receipts: [],
+					reviews: [],
+					blockers: [],
+					decisions: [],
+					lifecycle: ledger.lifecycle.map(({ turn: _turn, ...event }) => event),
+					reverification: [],
+					convergence: [],
+				},
+				null,
+				2,
+			)}\n`,
+		);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
