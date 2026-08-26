@@ -13,6 +13,7 @@ import {
 	resolveWorkflowArtifactRunState,
 	WORKFLOW_ARTIFACT_RETENTION_MS,
 	workflowArtifactRunsRoot,
+	workflowRunArtifactsIntact,
 	workflowRunHasArtifactReference,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 
@@ -293,6 +294,94 @@ test("state-aware pruning never leaves a resumable durable entry without its art
 		assert.notEqual(backend.getLoadableWorkflow(runId), undefined);
 	} finally {
 		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a live continuation transitively protects the original artifact owner", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-continuation-retention-"));
+	const now = Date.now();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const originId = "origin-failed";
+	const middleId = "middle-failed";
+	const continuationId = "continuation-running";
+	try {
+		for (const [id, status] of [
+			[originId, "failed"],
+			[middleId, "failed"],
+			[continuationId, "running"],
+		] as const) {
+			backend.registerWorkflow({ workflowId: id, name: "goal", inputs: {}, createdAt: 1, status, resumable: true });
+		}
+		store.recordRunStart({
+			id: originId,
+			name: "goal",
+			inputs: {},
+			status: "failed",
+			stages: [],
+			startedAt: 1,
+			resumable: true,
+		});
+		store.recordRunStart({
+			id: middleId,
+			name: "goal",
+			inputs: {},
+			status: "failed",
+			stages: [],
+			startedAt: 2,
+			resumable: true,
+			resumedFromRunId: originId,
+		});
+		store.recordRunStart({
+			id: continuationId,
+			name: "goal",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumable: true,
+			resumedFromRunId: middleId,
+		});
+		const originDirectory = join(root, originId);
+		await mkdir(originDirectory, { recursive: true });
+		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+		await utimes(originDirectory, staleTime, staleTime);
+
+		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
+
+		await stat(originDirectory);
+		assert.notEqual(backend.getLoadableWorkflow(originId), undefined);
+	} finally {
+		store.removeRun(originId);
+		store.removeRun(middleId);
+		store.removeRun(continuationId);
+		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("continuations check every referenced artifact owner instead of assuming their own run id", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-reference-owner-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			const originId = "origin-owner";
+			const continuation: { id: string; result: Record<string, string>; stages: never[] } = {
+				id: "continuation-id",
+				result: { receipt: join(root, "runs", originId, "artifact-1", "receipt.md") },
+				stages: [],
+			};
+			assert.equal(workflowRunHasArtifactReference(continuation), true);
+			assert.equal(workflowRunArtifactsIntact(continuation), false);
+			await mkdir(join(root, "runs", originId), { recursive: true });
+			assert.equal(workflowRunArtifactsIntact(continuation), true);
+			continuation.result = {
+				receipt: join(root, "runs", originId, "artifact-1", "receipt.md"),
+				missing: join(root, "runs", "other-owner", "artifact-2", "review.json"),
+			};
+			assert.equal(workflowRunArtifactsIntact(continuation), false);
+		});
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });
