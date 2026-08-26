@@ -19,8 +19,10 @@ const RPC_OUTPUT_WAIT_TIMEOUT_MS = 10_000,
  * this bound is never waited out on the success path; it only has to exceed the
  * scheduling delay between `waitForOutput` returning and the abort landing. At
  * one second a loaded runner could let the tail through and fail spuriously.
- * Kept below the 30 s per-test budget so a genuinely broken abort fails on the
- * output assertion rather than by timing the test out.
+ * Kept below the 30 s per-test budget so a genuinely broken abort fails on an
+ * assertion rather than by timing the test out: the shell runs to completion,
+ * so the awaited result fails `cancelled: true` first, and the no-tail output
+ * assertion would fail after it.
  */
 const RPC_BASH_CANCEL_HEADROOM_SECONDS = 10;
 
