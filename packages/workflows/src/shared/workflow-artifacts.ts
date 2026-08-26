@@ -37,18 +37,28 @@ function safeRunId(runId: string): string {
 export function workflowArtifactRunPath(runId: string): string {
 	return join(workflowArtifactRunsRoot(), safeRunId(runId));
 }
+function normalizeSerializedPath(value: string): string {
+	return value.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
+}
 
-/** Extract every run-directory owner referenced anywhere in a run's result or stages. */
+/** Extract every configured run-directory owner referenced in a run's result or stages. */
 function workflowRunArtifactOwnerIds(run: Pick<RunSnapshot, "result" | "stages">): readonly string[] {
 	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
 	if (serialized === undefined) return [];
 	// `JSON.stringify` escapes Windows separators, so one replacement can leave
-	// doubled slashes. Collapse them before matching to keep both path styles visible.
-	const normalized = serialized.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
+	// doubled slashes. Normalize both the snapshot and configured root identically;
+	// otherwise Windows references are invisible or unrelated `/runs/` paths match.
+	const normalized = normalizeSerializedPath(serialized);
+	const ownerPrefix = `${normalizeSerializedPath(workflowArtifactRunsRoot())}/`;
 	const owners = new Set<string>();
-	for (const match of normalized.matchAll(/\/runs\/([^/"\\]+)\//gu)) {
-		const owner = match[1];
-		if (owner !== undefined && owner.length > 0) owners.add(owner);
+	let searchFrom = 0;
+	while (searchFrom < normalized.length) {
+		const ownerStart = normalized.indexOf(ownerPrefix, searchFrom);
+		if (ownerStart < 0) break;
+		const valueStart = ownerStart + ownerPrefix.length;
+		const ownerEnd = normalized.indexOf("/", valueStart);
+		if (ownerEnd > valueStart) owners.add(normalized.slice(valueStart, ownerEnd));
+		searchFrom = valueStart;
 	}
 	return [...owners];
 }

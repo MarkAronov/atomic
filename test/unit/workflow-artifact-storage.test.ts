@@ -361,6 +361,24 @@ test("a live continuation transitively protects the original artifact owner", as
 	}
 });
 
+test("unrelated runs paths are not treated as workflow artifact references", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-unrelated-runs-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			for (const text of [
+				"https://github.com/o/r/actions/runs/12345/job/9",
+				"see packages/foo/runs/nightly/report.txt",
+			]) {
+				const run = { id: "healthy-run", result: { text }, stages: [] };
+				assert.equal(workflowRunHasArtifactReference(run), false);
+				assert.equal(workflowRunArtifactsIntact(run), undefined);
+			}
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("continuations check every referenced artifact owner instead of assuming their own run id", async () => {
 	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-reference-owner-"));
 	try {
@@ -386,30 +404,30 @@ test("continuations check every referenced artifact owner instead of assuming th
 	}
 });
 
-// Regression: this ran green on macOS and failed every Windows job. `JSON.stringify`
-// escapes each separator, so a Windows artifact path serialises as `…\\runs\\<id>\\…`
-// and a single backslash-to-slash pass leaves `//runs//<id>//`, which the probe never
-// matched. Every Windows artifact reference was therefore invisible and no run was
-// ever reported as having lost its artifacts. Both separator styles are asserted here
-// so the platform that runs the suite cannot hide the other one's behaviour.
-test("artifact references are detected with either path separator", () => {
-	const runId = "sep-run";
-	for (const separator of ["/", "\\"] as const) {
-		const artifact = ["C:", "Users", "x", "workflows", "runs", runId, "artifact-1", "report.md"].join(separator);
-		assert.equal(
-			workflowRunHasArtifactReference({
-				id: runId,
-				result: { research_path: artifact },
-				stages: [],
-			}),
-			true,
-			`a ${separator === "/" ? "posix" : "windows"} artifact path must be recognised`,
-		);
-	}
+// Regression: `JSON.stringify` escapes each Windows separator, so a single
+// backslash-to-slash pass can leave doubled slashes. Normalize both the configured
+// root and serialized snapshot identically, or Windows artifact references disappear.
+test("configured-root artifact references are detected with either path separator", async () => {
+	const configuredRoot = "C:\\Users\\x\\atomic-workflow-artifacts";
+	await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: configuredRoot }, async () => {
+		const runId = "sep-run";
+		for (const separator of ["/", "\\"] as const) {
+			const artifact = [configuredRoot, "runs", runId, "artifact-1", "report.md"].join(separator);
+			assert.equal(
+				workflowRunHasArtifactReference({
+					id: runId,
+					result: { research_path: artifact },
+					stages: [],
+				}),
+				true,
+				`a ${separator === "/" ? "posix" : "windows"} artifact path must be recognised`,
+			);
+		}
 
-	assert.equal(
-		workflowRunHasArtifactReference({ id: runId, result: { note: "no artifact here" }, stages: [] }),
-		false,
-		"unrelated content must not be read as an artifact reference",
-	);
+		assert.equal(
+			workflowRunHasArtifactReference({ id: runId, result: { note: "no artifact here" }, stages: [] }),
+			false,
+			"unrelated content must not be read as an artifact reference",
+		);
+	});
 });
