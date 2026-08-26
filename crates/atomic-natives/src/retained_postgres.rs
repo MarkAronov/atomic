@@ -1164,8 +1164,12 @@ mod windows_tests {
 
 	impl LeaseGuard {
 		fn shutdown(mut self) -> bool {
-			let lease = self.0.take().unwrap();
-			interrupt_and_wait(&lease.state, Duration::from_secs(60)).unwrap().exited
+			let state = &self.0.as_ref().unwrap().state;
+			let exited = interrupt_and_wait(state, Duration::from_secs(60)).unwrap().exited;
+			if exited {
+				self.0.take();
+			}
+			exited
 		}
 	}
 
