@@ -67,9 +67,17 @@ function workflowRunReferencedArtifactOwnerIds(run: ArtifactReferenceSnapshot): 
 	// `JSON.stringify` escapes Windows separators, so one replacement can leave
 	// doubled slashes. Normalize both the snapshot and configured root identically;
 	// otherwise Windows references are invisible.
+	//
+	// Match the configured absolute root and the bare `/runs/<id>/` marker: a
+	// snapshot can record a root-relative reference, and requiring the absolute
+	// root would silently report those runs as owning no artifacts at all.
+	// Only already-trusted owner ids are probed, so the looser form still cannot
+	// match an unrelated run.
 	const normalized = normalizeSerializedPath(serialized);
 	const runsRoot = normalizeSerializedPath(workflowArtifactRunsRoot());
-	return workflowRunArtifactOwnerIds(run).filter((ownerId) => normalized.includes(`${runsRoot}/${ownerId}/`));
+	return workflowRunArtifactOwnerIds(run).filter(
+		(ownerId) => normalized.includes(`${runsRoot}/${ownerId}/`) || normalized.includes(`/runs/${ownerId}/`),
+	);
 }
 
 /** Detect an identity-scoped run artifact path anywhere in a run's result or stages. */
