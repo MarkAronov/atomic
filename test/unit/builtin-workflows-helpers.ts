@@ -74,8 +74,6 @@ export type MockTaskResponse =
 interface MockResponders {
 	/** Sets `ctx.cwd`, which builtins use to resolve project-local scripts. */
 	cwd?: string;
-	/** Sets `ctx.runId`, which builtins use for run-scoped durable artifacts. */
-	runId?: string;
 	task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => MockTaskResponse | undefined;
 	sessionFile?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
 	modelAttempts?: (
@@ -206,7 +204,6 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 	const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
 		inputs,
 		calls,
-		...(responders.runId === undefined ? {} : { runId: responders.runId }),
 		...(responders.cwd === undefined ? {} : { cwd: responders.cwd }),
 		exit: () => {
 			throw new Error("ctx.exit should not be used by builtin workflow mocks");

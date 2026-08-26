@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
-
-const LEDGER_STATE_FILENAME = "goal-ledger-state.json";
 
 type ModelVisibleGoalLedger = Omit<
   GoalLedger,
@@ -40,10 +39,6 @@ function modelVisibleLedger(ledger: GoalLedger): ModelVisibleGoalLedger {
   };
 }
 
-function goalLedgerStatePath(ledgerPath: string): string {
-  return join(dirname(ledgerPath), LEDGER_STATE_FILENAME);
-}
-
 export function appendLifecycleEvent(
   ledger: GoalLedger,
   event: GoalLifecycleEvent["event"],
@@ -59,30 +54,13 @@ export function appendLifecycleEvent(
   });
 }
 
-/**
- * Restore only lossless authoritative state. A model-visible legacy ledger has
- * no turn fields, so treating it as fresh is safer than fabricating reducer state.
- */
-async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | undefined> {
-  let contents: string;
-  try {
-    contents = await readFile(goalLedgerStatePath(ledgerPath), "utf8");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-    throw error;
-  }
-  return JSON.parse(contents) as GoalLedger;
-}
 export async function createGoalLedger(
   objective: string,
-  acceptanceCriteria: string,
-  artifactDir: string,
+  acceptanceCriteria = objective,
+  runId?: string,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
-  const ledgerPath = join(artifactDir, LEDGER_FILENAME);
-  const existing = await readExistingGoalLedger(ledgerPath);
-  if (existing !== undefined) return { ledger: existing, ledgerPath, artifactDir };
-
   const goalId = randomUUID();
+  const artifactDir = await createWorkflowArtifactDirectory(runId);
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
     goal_id: goalId,
@@ -101,6 +79,7 @@ export async function createGoalLedger(
     convergence: [],
   };
   appendLifecycleEvent(ledger, "created", "Goal created.", 0);
+  const ledgerPath = join(artifactDir, LEDGER_FILENAME);
   await writeGoalLedger(ledgerPath, ledger);
   return { ledger, ledgerPath, artifactDir };
 }
@@ -110,10 +89,7 @@ export async function writeGoalLedger(
   ledger: GoalLedger,
 ): Promise<void> {
   ledger.updated_at = new Date().toISOString();
-  const visibleContents = `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`;
-  const stateContents = `${JSON.stringify(ledger, null, 2)}\n`;
-  await Promise.all([
-    writeFile(ledgerPath, visibleContents, { encoding: "utf8" }),
-    writeFile(goalLedgerStatePath(ledgerPath), stateContents, { encoding: "utf8" }),
-  ]);
+  await writeFile(ledgerPath, `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`, {
+    encoding: "utf8",
+  });
 }

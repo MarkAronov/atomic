@@ -1,15 +1,5 @@
 import { join } from "node:path";
-import type {
-  WorkflowParallelOptions,
-  WorkflowTaskOptions,
-  WorkflowTaskResult,
-  WorkflowTaskStep,
-  WorkflowToolPrimitive,
-} from "../src/shared/types.js";
-import {
-  ensureWorkflowArtifactDirectory,
-  workflowArtifactDirectoryPath,
-} from "../src/shared/workflow-artifacts.js";
+import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { fold_usage } from "./verification-usage.js";
 import {
   convergence_escalation_evidence,
@@ -36,7 +26,6 @@ import { formatReviewReport, renderFinalReport } from "./goal-reports.js";
 import {
   parsedReviewDecisionFromResult,
   reviewDecisionToRecord,
-  reviewerErrorDecision,
 } from "./goal-review.js";
 import { reviewerFailureText } from "./review-convergence.js";
 import { consolidateFindingsBatch } from "./review-convergence.js";
@@ -84,21 +73,9 @@ function normalizeBranchInput(
 type GoalRunnerContext = {
   readonly inputs: GoalWorkflowInputs;
   readonly runId?: string;
-  readonly tool: WorkflowToolPrimitive;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
 };
-
-type GoalArtifactContext = Pick<GoalRunnerContext, "runId" | "tool">;
-
-export async function createGoalArtifactDirectory(ctx: GoalArtifactContext): Promise<string> {
-  const artifactDir = await ctx.tool(
-    "artifact-root",
-    { workflow: "goal" },
-    async () => workflowArtifactDirectoryPath(ctx.runId),
-  );
-  return ensureWorkflowArtifactDirectory(artifactDir);
-}
 
 type GoalWorkflowOptions = {
   readonly createPr: boolean;
@@ -143,8 +120,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
     const blockerThreshold = Math.min(DEFAULT_BLOCKER_THRESHOLD, maxTurns);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
-    const artifactDir = await createGoalArtifactDirectory(ctx);
-    const { ledger, ledgerPath } = await createGoalLedger(objective, acceptanceCriteria, artifactDir);
+    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, acceptanceCriteria, ctx.runId);
 
     let latestReviews: ReviewRecord[] = [];
     let latestReviewArtifactPaths: string[] = [];
@@ -212,18 +188,13 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
 
       previousOrchestratorSessionFile = orchestrator.sessionFile;
       ledger.turns = turn;
-      const receiptAlreadyRecorded = ledger.receipts.some(
-        (receipt) => receipt.turn === turn && receipt.artifact_path === orchestratorReceiptPath,
-      );
-      if (!receiptAlreadyRecorded) {
-        ledger.receipts.push({
-          turn,
-          stage: orchestrator.name ?? orchestrator.stageName,
-          artifact_path: orchestratorReceiptPath,
-          summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
-        });
-        appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
-      }
+      ledger.receipts.push({
+        turn,
+        stage: orchestrator.name ?? orchestrator.stageName,
+        artifact_path: orchestratorReceiptPath,
+        summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
+      });
+      appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
       await writeGoalLedger(ledgerPath, ledger);
 
       const reviewerStep = (
@@ -267,7 +238,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
 
       let reviewResults: WorkflowTaskResult[];
       let reviewerBatchFailed = false;
-      let reviewerExecutionDiagnostic: string | undefined;
       try {
         reviewResults = await ctx.parallel(reviewerSteps, {
           task: objective,
@@ -276,15 +246,11 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         });
       } catch (err) {
         reviewerBatchFailed = true;
-        const failure = reviewerFailureText(err);
-        reviewerExecutionDiagnostic = failure.includes("referenced artifact does not exist")
-          ? `Reviewer execution failed while resolving its reads contract: ${failure}`
-          : `Reviewer execution failed before producing a decision: ${failure}`;
         reviewResults = [
           {
             name: "reviewer-error",
             stageName: "reviewer-error",
-            text: failure,
+            text: reviewerFailureText(err),
           },
         ];
       }
@@ -292,13 +258,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       latestReviews = await Promise.all(reviewResults.map(async (result) => {
         const reviewerName = result.name ?? result.stageName;
         const normalizedReviewerName = reviewerName.replace(/-\d+$/u, "");
-        const parsed = reviewerBatchFailed
-          ? {
-              decision: reviewerErrorDecision(reviewerExecutionDiagnostic ?? "Reviewer execution failed."),
-              parsed: false,
-              diagnostics: [reviewerExecutionDiagnostic ?? "Reviewer execution failed."],
-            }
-          : parsedReviewDecisionFromResult(result, reviewerName);
+        const parsed = parsedReviewDecisionFromResult(result, reviewerName);
         const reviewArtifactPath = join(
           artifactDir,
           `review-${artifactSafeName(normalizedReviewerName)}.json`,
@@ -372,12 +332,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           usage: fold_usage([orchestrator, ...reviewResults, ...reverifyResults]),
         }));
       }
-      const newReviews = latestReviews.filter(
-        (review) => !ledger.reviews.some(
-          (recorded) => recorded.turn === review.turn && recorded.reviewer === review.reviewer,
-        ),
-      );
-      ledger.reviews.push(...newReviews);
+      ledger.reviews.push(...latestReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
       appendLifecycleEvent(
