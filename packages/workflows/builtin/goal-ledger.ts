@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
+
+const LEDGER_STATE_FILENAME = "goal-ledger-state.json";
 
 type ModelVisibleGoalLedger = Omit<
   GoalLedger,
@@ -38,6 +40,10 @@ function modelVisibleLedger(ledger: GoalLedger): ModelVisibleGoalLedger {
   };
 }
 
+function goalLedgerStatePath(ledgerPath: string): string {
+  return join(dirname(ledgerPath), LEDGER_STATE_FILENAME);
+}
+
 export function appendLifecycleEvent(
   ledger: GoalLedger,
   event: GoalLifecycleEvent["event"],
@@ -53,42 +59,20 @@ export function appendLifecycleEvent(
   });
 }
 
-function restoreTurns<T>(values: readonly Omit<T & { readonly turn: number }, "turn">[], turnForIndex: (index: number) => number): T[] {
-  return values.map((value, index) => ({ ...value, turn: turnForIndex(index) }) as T);
-}
-function restoreReviewTurns(values: ModelVisibleGoalLedger["reviews"]): GoalLedger["reviews"] {
-  const reviewerOccurrences = new Map<string, number>();
-  return values.map((value) => {
-    const turn = (reviewerOccurrences.get(value.reviewer) ?? 0) + 1;
-    reviewerOccurrences.set(value.reviewer, turn);
-    return { ...value, turn };
-  });
-}
-
-
+/**
+ * Restore only lossless authoritative state. A model-visible legacy ledger has
+ * no turn fields, so treating it as fresh is safer than fabricating reducer state.
+ */
 async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | undefined> {
   let contents: string;
   try {
-    contents = await readFile(ledgerPath, "utf8");
+    contents = await readFile(goalLedgerStatePath(ledgerPath), "utf8");
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
     throw error;
   }
-  const stored = JSON.parse(contents) as ModelVisibleGoalLedger;
-  const turns = stored.receipts.length;
-  return {
-    ...stored,
-    turns,
-    receipts: restoreTurns<GoalLedger["receipts"][number]>(stored.receipts, (index) => index + 1),
-    reviews: restoreReviewTurns(stored.reviews),
-    blockers: restoreTurns<GoalLedger["blockers"][number]>(stored.blockers, (index) => index + 1),
-    decisions: restoreTurns<GoalLedger["decisions"][number]>(stored.decisions, (index) => index + 1),
-    lifecycle: restoreTurns<GoalLedger["lifecycle"][number]>(stored.lifecycle, (index) =>
-      stored.lifecycle[index]?.event === "created" ? 0 : Math.min(index, Math.max(turns, 1)),
-    ),
-  };
+  return JSON.parse(contents) as GoalLedger;
 }
-
 export async function createGoalLedger(
   objective: string,
   acceptanceCriteria: string,
@@ -126,7 +110,10 @@ export async function writeGoalLedger(
   ledger: GoalLedger,
 ): Promise<void> {
   ledger.updated_at = new Date().toISOString();
-  await writeFile(ledgerPath, `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`, {
-    encoding: "utf8",
-  });
+  const visibleContents = `${JSON.stringify(modelVisibleLedger(ledger), null, 2)}\n`;
+  const stateContents = `${JSON.stringify(ledger, null, 2)}\n`;
+  await Promise.all([
+    writeFile(ledgerPath, visibleContents, { encoding: "utf8" }),
+    writeFile(goalLedgerStatePath(ledgerPath), stateContents, { encoding: "utf8" }),
+  ]);
 }
