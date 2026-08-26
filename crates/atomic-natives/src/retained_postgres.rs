@@ -937,7 +937,8 @@ mod windows_tests {
 	};
 
 	use super::{
-		interrupt_and_wait, retry_while_pipe_busy, spawn_retained_postgres, transact_named_pipe,
+		RetainedPostgres, interrupt_and_wait, retry_while_pipe_busy, spawn_retained_postgres,
+		transact_named_pipe,
 	};
 	use crate::retained_postgres::RetainedPostgresSpawnOptions;
 
@@ -1148,6 +1149,34 @@ mod windows_tests {
 		std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 	}
 
+	/// Removes the temporary cluster directory even when the test panics.
+	struct DirGuard(PathBuf);
+
+	impl Drop for DirGuard {
+		fn drop(&mut self) {
+			fs::remove_dir_all(&self.0).ok();
+		}
+	}
+
+	/// Shuts the retained postmaster down even when the test panics, since
+	/// dropping the lease alone intentionally leaves the process running.
+	struct LeaseGuard(Option<RetainedPostgres>);
+
+	impl LeaseGuard {
+		fn shutdown(mut self) -> bool {
+			let lease = self.0.take().unwrap();
+			interrupt_and_wait(&lease.state, Duration::from_secs(60)).unwrap().exited
+		}
+	}
+
+	impl Drop for LeaseGuard {
+		fn drop(&mut self) {
+			if let Some(lease) = self.0.take() {
+				interrupt_and_wait(&lease.state, Duration::from_secs(60)).ok();
+			}
+		}
+	}
+
 	/// End-to-end regression test for visible console windows (issue #2670):
 	/// initialize a real embedded Postgres cluster, start the postmaster through
 	/// `spawnRetainedPostgres`, wait for readiness, then assert that neither the
@@ -1171,6 +1200,7 @@ mod windows_tests {
 			std::process::id(),
 			std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
 		));
+		let _root_guard = DirGuard(root.clone());
 		let data_dir = root.join("data");
 		fs::create_dir_all(&data_dir).unwrap();
 		let password_file = root.join("pw");
@@ -1196,39 +1226,59 @@ mod windows_tests {
 			String::from_utf8_lossy(&initdb.stderr)
 		);
 
-		let port = free_tcp_port();
+		// The port is picked by binding an ephemeral listener and releasing it,
+		// so another process can occasionally claim it before Postgres binds;
+		// retry with a fresh port when Postgres reports a bind failure.
 		let log_file = root.join("postgres.log");
-		let lease = spawn_retained_postgres(RetainedPostgresSpawnOptions {
-			executable: bin_dir.join("postgres.exe").to_str().unwrap().to_owned(),
-			args: vec![
-				"-D".to_owned(),
-				data_dir.to_str().unwrap().to_owned(),
-				"-p".to_owned(),
-				port.to_string(),
-				"-c".to_owned(),
-				"listen_addresses=127.0.0.1".to_owned(),
-			],
-			cwd: data_dir.to_str().unwrap().to_owned(),
-			log_file: log_file.to_str().unwrap().to_owned(),
-			env: None,
-			uid: None,
-			gid: None,
-		})
-		.unwrap();
-		let postmaster_pid = lease.pid().unwrap();
+		let mut attempt = 0;
+		let guard = loop {
+			attempt += 1;
+			fs::remove_file(&log_file).ok();
+			let port = free_tcp_port();
+			let lease = spawn_retained_postgres(RetainedPostgresSpawnOptions {
+				executable: bin_dir.join("postgres.exe").to_str().unwrap().to_owned(),
+				args: vec![
+					"-D".to_owned(),
+					data_dir.to_str().unwrap().to_owned(),
+					"-p".to_owned(),
+					port.to_string(),
+					"-c".to_owned(),
+					"listen_addresses=127.0.0.1".to_owned(),
+				],
+				cwd: data_dir.to_str().unwrap().to_owned(),
+				log_file: log_file.to_str().unwrap().to_owned(),
+				env: None,
+				uid: None,
+				gid: None,
+			})
+			.unwrap();
+			let guard = LeaseGuard(Some(lease));
 
-		let deadline = Instant::now() + Duration::from_secs(60);
-		loop {
-			if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-				break;
+			let deadline = Instant::now() + Duration::from_secs(60);
+			let mut ready = false;
+			while Instant::now() < deadline {
+				if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+					ready = true;
+					break;
+				}
+				if fs::read_to_string(&log_file)
+					.unwrap_or_default()
+					.contains("could not create any TCP/IP sockets")
+				{
+					break;
+				}
+				thread::sleep(Duration::from_millis(100));
 			}
+			if ready {
+				break guard;
+			}
+			let log = fs::read_to_string(&log_file).unwrap_or_default();
 			assert!(
-				Instant::now() < deadline,
-				"embedded Postgres never accepted connections; log: {}",
-				fs::read_to_string(&log_file).unwrap_or_default(),
+				log.contains("could not create any TCP/IP sockets") && attempt < 5,
+				"embedded Postgres never accepted connections (attempt {attempt}); log: {log}",
 			);
-			thread::sleep(Duration::from_millis(100));
-		}
+		};
+		let postmaster_pid = guard.0.as_ref().unwrap().pid().unwrap();
 
 		// Sample repeatedly: postmaster children (checkpointer, walwriter, ...)
 		// keep spawning shortly after readiness, and each visible console would
@@ -1245,9 +1295,7 @@ mod windows_tests {
 			"expected the postmaster to have descendant processes; tree: {tree:?}",
 		);
 
-		let result = interrupt_and_wait(&lease.state, Duration::from_secs(60)).unwrap();
-		assert!(result.exited);
-		fs::remove_dir_all(&root).ok();
+		assert!(guard.shutdown());
 
 		assert!(
 			offenders.is_empty(),
