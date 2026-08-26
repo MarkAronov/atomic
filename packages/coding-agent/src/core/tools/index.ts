@@ -1,5 +1,6 @@
 export { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 export {
+	BASH_SHELL_PRESENTATION,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -10,6 +11,7 @@ export {
 	createBashTool,
 	createBashToolDefinition,
 	createLocalBashOperations,
+	type ShellToolPresentation,
 } from "./bash.ts";
 export {
 	createEditTool,

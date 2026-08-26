@@ -1,5 +1,5 @@
 import { type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
 import { isContextOverflow } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
@@ -54,6 +54,8 @@ export interface RangePlannerOptions {
 	sessionFilePath?: string;
 	retry?: RetryPolicy;
 	callbacks?: RetryCallbacks;
+	/** Observe each completed provider attempt, including retries and overflow responses. */
+	onUsage?: (usage: Usage) => void;
 }
 
 /**
@@ -284,7 +286,11 @@ export async function planDeletedLineRanges(
 	let response: AssistantMessage;
 	try {
 		response = await retryAssistantCall(
-			async () => (await options.streamFn(model, context, request)).result(),
+			async () => {
+				const attemptResponse = await (await options.streamFn(model, context, request)).result();
+				options.onUsage?.(attemptResponse.usage);
+				return attemptResponse;
+			},
 			options.retry,
 			signal,
 			retry.callbacks,

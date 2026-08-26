@@ -83,7 +83,7 @@ test("a run's parent depth reaches admission and the door refuses the level past
 	}
 });
 
-test("in-process child loading includes bundled subagent resources", () => {
+test("in-process child loading keeps bundled resources but disables the workflow extension", () => {
 	const packagePath = (source: string | { source: string }): string =>
 		typeof source === "string" ? source : source.source;
 	const builtinPaths = inProcessChildBuiltinPackagePaths(undefined);
@@ -92,6 +92,7 @@ test("in-process child loading includes bundled subagent resources", () => {
 
 	assert.ok(subagentsPath, "in-process children must load the bundled subagents package");
 	assert.ok(workflowsPath, "source checkout must expose the bundled workflows package");
+	assert.deepEqual(workflowsPath, { source: packagePath(workflowsPath), extensions: [] });
 
 	const stagePaths = inProcessChildBuiltinPackagePaths({
 		kind: "workflow-stage",
@@ -102,6 +103,10 @@ test("in-process child loading includes bundled subagent resources", () => {
 	});
 	const stageWorkflowsPath = stagePaths.find((source) => basename(packagePath(source)) === "workflows");
 	assert.deepEqual(stageWorkflowsPath, { source: packagePath(workflowsPath), extensions: [] });
+
+	const otherPaths = inProcessChildBuiltinPackagePaths({ kind: "future-child-context" } as never);
+	const otherWorkflowsPath = otherPaths.find((source) => basename(packagePath(source)) === "workflows");
+	assert.deepEqual(otherWorkflowsPath, { source: packagePath(workflowsPath), extensions: [] });
 });
 
 test(

@@ -55,6 +55,33 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("shell-only file operations", () => {
+		test.each([
+			{
+				tools: ["bash"],
+				expected: "Use bash for file operations like ls, rg, find",
+			},
+			{
+				tools: ["powershell"],
+				expected: "Use PowerShell for file operations like listing, searching, and finding files",
+			},
+			{
+				tools: ["bash", "powershell"],
+				expected: "Use bash or PowerShell for file operations like listing, searching, and finding files",
+			},
+		])("adds guidance for $tools", ({ tools, expected }) => {
+			const prompt = buildSystemPrompt({
+				selectedTools: tools,
+				toolSnippets: { bash: "Execute bash commands", powershell: "Execute PowerShell commands" },
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain(expected);
+		});
+	});
+
 	describe("custom tool snippets", () => {
 		test("includes custom tools in available tools section when promptSnippet is provided", () => {
 			const prompt = buildSystemPrompt({

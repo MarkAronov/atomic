@@ -2,6 +2,7 @@ import { access, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import ignore from "ignore";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { stripBom } from "../utils/text.ts";
 import { getManifestFromPackageJson } from "./package-manager-manifest.ts";
 import { toPosixPath } from "./package-manager-resource-patterns.ts";
 import { FILE_PATTERNS, type ResourceType } from "./package-manager-types.ts";
@@ -215,7 +216,7 @@ export async function resolveExtensionEntries(dir: string): Promise<string[] | n
 	const packageJsonPath = join(dir, "package.json");
 	if (await exists(packageJsonPath)) {
 		try {
-			const manifest = getManifestFromPackageJson(JSON.parse(await readFile(packageJsonPath, "utf-8")));
+			const manifest = getManifestFromPackageJson(JSON.parse(stripBom(await readFile(packageJsonPath, "utf-8"))));
 			if (manifest?.extensions?.length) {
 				const entries: string[] = [];
 				for (const extPath of manifest.extensions) {

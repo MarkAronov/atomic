@@ -20,7 +20,10 @@ export function getSessionStats(this: AgentSession): SessionStats {
 	let toolCalls = 0;
 	const totals = createUsageTotals();
 	for (const entry of this.sessionManager.getEntries()) {
-		if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
+		if (
+			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
+			entry.usage
+		) {
 			addUsageToTotals(totals, entry.usage);
 		}
 		if (entry.type !== "message") continue;

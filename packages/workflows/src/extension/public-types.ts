@@ -136,6 +136,8 @@ type StageLateMessageRouter = NonNullable<
 >;
 
 export interface ExtensionAPI {
+	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
+	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
 	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
 	registerCommand?: (name: string, options: PiCommandOptions) => void;
 	registerMessageRenderer?: (event: string, renderer: PiMessageRenderer) => void;

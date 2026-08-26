@@ -1,3 +1,4 @@
+import type { Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
@@ -254,6 +255,7 @@ declare module "./interactive-mode-base.ts" {
 		chatMessageRenderOptions(): ChatMessageRenderOptions;
 		addRenderedChatEntry(entry: ChatMessageEntry): Component;
 		addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
+		addCompactionCostNotice(kind: "compaction" | "branch_summary", usage: Usage): void;
 		addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 		addCustomEntryToChat(entry: CustomEntry): void;
 		renderSessionContext(
