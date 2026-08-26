@@ -336,6 +336,84 @@ describe("ctx.task tail liveness", () => {
 		assert.equal(reducerExecutions, 1, "the downstream reducer must run exactly once after replay");
 	});
 
+	test("parallel budget selection requires every authored step to complete", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const backend = new DelayedTaskCheckpointBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const jobs = createJobTracker();
+		let taskExecutions = 0;
+		let reducerExecutions = 0;
+		const Report = Type.Object({ approved: Type.Boolean() }, { additionalProperties: false });
+		const definition = workflow({
+			name: "partial-parallel-post-task-budget",
+			description: "",
+			inputs: {},
+			outputs: { count: Type.Number() },
+			run: async (ctx) => {
+				const reviews = await ctx.parallel(
+					[
+						{ name: "review-a", prompt: "review A", schema: Report },
+						{ name: "review-b", prompt: "review B", schema: Report },
+						{ name: "review-c", prompt: "review C", schema: Report },
+					],
+					{ failFast: false, concurrency: 2 },
+				);
+				reducerExecutions += 1;
+				return { count: reviews.length };
+			},
+		});
+		const adapters = {
+			agentSession: {
+				create(options: Parameters<typeof structuredOutputMockSession>[0]) {
+					taskExecutions += 1;
+					return Promise.resolve(structuredOutputMockSession(options, { approved: true }));
+				},
+			},
+		};
+
+		const pending = run(
+			definition,
+			{},
+			{
+				store,
+				durableBackend: backend,
+				budget: { maxDurationMs: 10 },
+				adapters,
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(backend.taskCheckpoints, 2);
+		await vi.advanceTimersByTimeAsync(20);
+		backend.gate.release();
+
+		const first = await pending;
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const taskCheckpoints = backend
+			.listCheckpoints(first.runId)
+			.filter((checkpoint) => checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:"));
+		assert.equal(taskCheckpoints.length, 2);
+		assert.equal(taskExecutions, 2);
+		assert.equal(reducerExecutions, 0);
+		assert.equal(first.status, "failed");
+		assert.equal(budgetOutcome(first.result)?.status, undefined);
+		assert.match(first.error ?? "", /atomic-workflows: 3 parallel steps failed/);
+		assert.equal(source.failureDisposition, "terminal_failed");
+		assert.notEqual(source.status, "killed");
+		assert.notEqual(source.resumable, false);
+
+		vi.useRealTimers();
+		const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, adapters });
+		const resumed = await runtime.resumeFailedRun(first.runId, undefined, { budget: { maxDurationMs: 10_000 } });
+		assert.equal(resumed.ok, false);
+		if (resumed.ok) return;
+		assert.equal(resumed.reason, "insufficient_state");
+		assert.match(resumed.message, /does not identify a failed stage/);
+		assert.equal(source.status, "failed");
+		assert.notEqual(source.resumable, false);
+	});
+
 	test("parallel post-task token budget stops replay completed structured results", async () => {
 		const backend = new PostTaskUsageCheckpointBackend();
 		setDurableBackend(backend);

@@ -38,11 +38,36 @@ export function createParallelPrimitive(input: {
 		const resolvedSteps = normalizedSteps.map(resolveAutoGroup);
 		const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
 		const failFastEnabled = resolvedOptions.failFast !== false;
+		const parallelParentIds = Object.freeze(input.runtime.tracker.currentParents());
 		const parallelScope: ParallelFailFastScope = {
 			failed: false,
 			activeStages: new Map<string, ParallelFailFastStage>(),
-			parentIds: Object.freeze(input.runtime.tracker.currentParents()),
+			parentIds: parallelParentIds,
 		};
+		const stageIdsBeforeParallel = new Set(
+			input.runtime.activeStore
+				.runs()
+				.find((run) => run.id === input.runtime.runId)
+				?.stages.map((stage) => stage.id) ?? [],
+		);
+		const everyStepCompleted = (): boolean => {
+			const run = input.runtime.activeStore.runs().find((candidate) => candidate.id === input.runtime.runId);
+			if (run === undefined) return false;
+			const completed = run.stages.filter(
+				(stage) =>
+					stage.status === "completed" &&
+					!stageIdsBeforeParallel.has(stage.id) &&
+					stage.parentIds.length === parallelParentIds.length &&
+					stage.parentIds.every((parentId, index) => parentId === parallelParentIds[index]),
+			);
+			return resolvedSteps.every((step) => {
+				const index = completed.findIndex((stage) => stage.name === step.name);
+				if (index < 0) return false;
+				completed.splice(index, 1);
+				return true;
+			});
+		};
+
 		return mapParallelSteps(
 			resolvedSteps,
 			resolvedOptions.concurrency,
@@ -70,7 +95,11 @@ export function createParallelPrimitive(input: {
 				beforeMap: input.runtime.exit.throwIfWorkflowExitSelected,
 				isControlSignal: (error) => findWorkflowExitSignal(error, input.runtime.exit.exitScope) !== undefined,
 				selectSettledFailure: (failures) => {
-					if (!failures.every((failure) => failure.error instanceof WorkflowBudgetExceededError)) return undefined;
+					if (
+						!everyStepCompleted() ||
+						!failures.every((failure) => failure.error instanceof WorkflowBudgetExceededError)
+					)
+						return undefined;
 					return failures.reduce((selected, failure) => (failure.index < selected.index ? failure : selected))
 						.error;
 				},
