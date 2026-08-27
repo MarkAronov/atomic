@@ -226,6 +226,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		status: "running" as const,
 		stages: [],
 		toolNodes: [],
+		stageInbox: [...(durableBackend.getWorkflow(runId)?.stageInbox ?? [])],
 		startedAt: Date.now(),
 		...(opts.parentRun !== undefined
 			? {

@@ -1,3 +1,10 @@
+export type {
+	StageInboxDeposit,
+	StageInboxDepositResult,
+	StageInboxEntry,
+	StageInboxSender,
+} from "./stage-inbox.js";
+export { STAGE_INBOX_MAX_ENTRIES } from "./stage-inbox.js";
 /**
  * Plain mutable singleton store public API.
  * cross-ref: spec §5.5

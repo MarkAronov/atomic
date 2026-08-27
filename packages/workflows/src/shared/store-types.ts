@@ -196,6 +196,75 @@ export interface WorkflowChildReplaySnapshot {
 	readonly exitReason?: string;
 }
 
+/** Serializable attachment retained verbatim from an ordinary intercom message. */
+export interface StageInboxAttachment {
+	readonly type: "file" | "snippet" | "context";
+	readonly name: string;
+	readonly content: string;
+	readonly language?: string;
+}
+
+/** The ordinary intercom message wire shape persisted by workflows. */
+export interface StageInboxMessage {
+	readonly id: string;
+	readonly timestamp: number;
+	readonly replyTo?: string;
+	readonly expectsReply?: boolean;
+	readonly replyError?: string;
+	readonly source?: {
+		readonly subagentRunId: string;
+		readonly subagentAgent?: string;
+		readonly subagentIndex?: number;
+	};
+	readonly content: {
+		readonly text: string;
+		readonly attachments?: readonly StageInboxAttachment[];
+	};
+}
+
+export interface StageInboxSender {
+	readonly id: string;
+	readonly name?: string;
+	readonly group?: string;
+}
+
+export interface StageInboxEntry {
+	readonly id: string;
+	readonly runId: string;
+	readonly stageKey: string;
+	readonly from: StageInboxSender;
+	readonly message: StageInboxMessage;
+	readonly depositedAt: string;
+	readonly status: "queued" | "delivered" | "undeliverable";
+	readonly deliveredAt?: string;
+	readonly undeliverableReason?: string;
+}
+
+export type StageInboxDeposit = Omit<StageInboxEntry, "id" | "status" | "deliveredAt" | "undeliverableReason">;
+
+export type StageInboxDepositResult =
+	| {
+			readonly ok: true;
+			readonly inbox: readonly StageInboxEntry[];
+			readonly entry: StageInboxEntry;
+			/** One-based insertion position within this exact run/stage bucket. */
+			readonly position: number;
+			readonly deduplicated: boolean;
+	  }
+	| {
+			readonly ok: false;
+			readonly reason: "group_mismatch";
+			readonly runId: string;
+			readonly stageKey: string;
+	  }
+	| {
+			readonly ok: false;
+			readonly reason: "capacity";
+			readonly limit: number;
+			readonly runId: string;
+			readonly stageKey: string;
+	  };
+
 export interface StageSnapshot {
 	readonly id: string;
 	readonly name: string;
@@ -410,6 +479,8 @@ export interface RunSnapshot {
 	 * straight to pi.ui dialogs).
 	 */
 	pendingPrompt?: PendingPrompt;
+	/** Durable messages queued for workflow stages that have not started yet. */
+	stageInbox?: StageInboxEntry[];
 }
 
 export interface StoreSnapshot {

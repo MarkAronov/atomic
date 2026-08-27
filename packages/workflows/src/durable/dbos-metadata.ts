@@ -1,4 +1,4 @@
-import type { WorkflowActor } from "../shared/store-types.js";
+import type { StageInboxEntry, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	isWorkflowFailureCode,
@@ -53,6 +53,7 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			completedCheckpoints: metadata.completedCheckpoints,
 			pendingPrompts: metadata.pendingPrompts,
 			promptReservationEpoch: metadata.promptReservationEpoch,
+			...(metadata.stageInbox !== undefined ? { stageInbox: serializeStageInbox(metadata.stageInbox) } : {}),
 			...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
 			...(metadata.transitionClaimId !== undefined ? { transitionClaimId: metadata.transitionClaimId } : {}),
 			...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
@@ -137,6 +138,9 @@ function parseDurableWorkflowMetadata(
 	workflowId: string,
 ): DurableWorkflowMetadata | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const serialized = value as Record<string, WorkflowSerializableValue | undefined>;
+	const stageInbox = parseStageInbox(serialized.stageInbox);
+	if (stageInbox === null) return undefined;
 	const metadata = value as Partial<DurableWorkflowMetadata>;
 	if (
 		metadata.workflowId !== workflowId ||
@@ -176,8 +180,108 @@ function parseDurableWorkflowMetadata(
 	const { origin, ...metadataWithoutOrigin } = metadata;
 	return {
 		...metadataWithoutOrigin,
+		stageInbox,
 		...(isWorkflowActor(origin) ? { origin } : {}),
 	} as DurableWorkflowMetadata;
+}
+
+function serializeStageInbox(inbox: readonly StageInboxEntry[]): WorkflowSerializableValue {
+	return inbox.map((entry) => ({
+		id: entry.id,
+		runId: entry.runId,
+		stageKey: entry.stageKey,
+		from: {
+			id: entry.from.id,
+			...(entry.from.name !== undefined ? { name: entry.from.name } : {}),
+			...(entry.from.group !== undefined ? { group: entry.from.group } : {}),
+		},
+		message: {
+			id: entry.message.id,
+			timestamp: entry.message.timestamp,
+			...(entry.message.replyTo !== undefined ? { replyTo: entry.message.replyTo } : {}),
+			...(entry.message.expectsReply !== undefined ? { expectsReply: entry.message.expectsReply } : {}),
+			...(entry.message.replyError !== undefined ? { replyError: entry.message.replyError } : {}),
+			...(entry.message.source !== undefined ? { source: { ...entry.message.source } } : {}),
+			content: {
+				text: entry.message.content.text,
+				...(entry.message.content.attachments !== undefined
+					? { attachments: entry.message.content.attachments.map((attachment) => ({ ...attachment })) }
+					: {}),
+			},
+		},
+		depositedAt: entry.depositedAt,
+		status: entry.status,
+		...(entry.deliveredAt !== undefined ? { deliveredAt: entry.deliveredAt } : {}),
+		...(entry.undeliverableReason !== undefined ? { undeliverableReason: entry.undeliverableReason } : {}),
+	}));
+}
+
+function parseStageInbox(value: WorkflowSerializableValue | undefined): readonly StageInboxEntry[] | null {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || !value.every(isStageInboxEntry)) return null;
+	return value as readonly StageInboxEntry[];
+}
+
+function isStageInboxEntry(value: WorkflowSerializableValue): boolean {
+	if (!isSerializableObject(value)) return false;
+	return (
+		typeof value.id === "string" &&
+		typeof value.runId === "string" &&
+		typeof value.stageKey === "string" &&
+		typeof value.depositedAt === "string" &&
+		(value.status === "queued" || value.status === "delivered" || value.status === "undeliverable") &&
+		(value.deliveredAt === undefined || typeof value.deliveredAt === "string") &&
+		(value.undeliverableReason === undefined || typeof value.undeliverableReason === "string") &&
+		isStageInboxSender(value.from) &&
+		isStageInboxMessage(value.message)
+	);
+}
+
+function isStageInboxSender(value: WorkflowSerializableValue | undefined): boolean {
+	return (
+		isSerializableObject(value) &&
+		typeof value.id === "string" &&
+		(value.name === undefined || typeof value.name === "string") &&
+		(value.group === undefined || typeof value.group === "string")
+	);
+}
+
+function isStageInboxMessage(value: WorkflowSerializableValue | undefined): boolean {
+	if (!isSerializableObject(value) || typeof value.id !== "string" || typeof value.timestamp !== "number")
+		return false;
+	if (value.replyTo !== undefined && typeof value.replyTo !== "string") return false;
+	if (value.expectsReply !== undefined && typeof value.expectsReply !== "boolean") return false;
+	if (value.replyError !== undefined && typeof value.replyError !== "string") return false;
+	if (!isSerializableObject(value.content) || typeof value.content.text !== "string") return false;
+	const attachments = value.content.attachments;
+	if (attachments !== undefined && (!Array.isArray(attachments) || !attachments.every(isStageInboxAttachment)))
+		return false;
+	return value.source === undefined || isStageInboxSource(value.source);
+}
+
+function isStageInboxAttachment(value: WorkflowSerializableValue): boolean {
+	return (
+		isSerializableObject(value) &&
+		(value.type === "file" || value.type === "snippet" || value.type === "context") &&
+		typeof value.name === "string" &&
+		typeof value.content === "string" &&
+		(value.language === undefined || typeof value.language === "string")
+	);
+}
+
+function isStageInboxSource(value: WorkflowSerializableValue): boolean {
+	return (
+		isSerializableObject(value) &&
+		typeof value.subagentRunId === "string" &&
+		(value.subagentAgent === undefined || typeof value.subagentAgent === "string") &&
+		(value.subagentIndex === undefined || typeof value.subagentIndex === "number")
+	);
+}
+
+function isSerializableObject(
+	value: WorkflowSerializableValue | undefined,
+): value is Record<string, WorkflowSerializableValue | undefined> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isWorkflowActor(value: WorkflowSerializableValue | undefined): value is WorkflowActor {

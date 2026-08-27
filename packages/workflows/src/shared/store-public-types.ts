@@ -1,3 +1,4 @@
+import type { StageInboxDeposit, StageInboxDepositResult, StageInboxEntry } from "./stage-inbox.js";
 import type {
 	PendingPrompt,
 	PromptKind,
@@ -101,6 +102,16 @@ export interface Store {
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
+	/** Queue an ordinary intercom message for an exact future-stage key. */
+	depositStageInboxEntry(
+		deposit: StageInboxDeposit,
+		depositingGroup: string | undefined,
+		runGroup: string | undefined,
+	): StageInboxDepositResult | undefined;
+	/** Read queued entries for an exact run/stage key in FIFO order. */
+	peekStageInbox(runId: string, stageKey: string): readonly StageInboxEntry[];
+	markStageInboxEntryDelivered(runId: string, stageKey: string, messageId: string, deliveredAt: string): boolean;
+	markStageInboxEntryUndeliverable(runId: string, stageKey: string, messageId: string, reason: string): boolean;
 	/** Compare-and-swap a cached child run's owning boundary during durable replay. */
 	reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean;
 	recordStageStart(runId: string, stage: StageSnapshot): void;
