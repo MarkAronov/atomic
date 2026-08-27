@@ -34,7 +34,8 @@ Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messa
 - [How Connection Works](#how-connection-works)
 - [The intercom Tool](#the-intercom-tool)
   - [Actions](#actions)
-  - [Targeting Sessions](#targeting-sessions)
+  - [Targeting Sessions and Pending Workflow Stages](#targeting-sessions-and-pending-workflow-stages)
+  - [Pending-stage inbox lifecycle](#pending-stage-inbox-lifecycle)
   - [send vs ask vs reply](#send-vs-ask-vs-reply)
   - [Attachments](#attachments)
 - [Coordination Patterns](#coordination-patterns)
@@ -138,7 +139,7 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name or exact full session ID (for send/ask, or targeted reply) |
+| `to` | string | Exact session name/full session ID, or `<runId>:<stageKey>` for `send` to a not-yet-started workflow stage (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
@@ -151,8 +152,8 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 | `join` | Moves the session into a trimmed named group and creates it if needed. The action waits for broker acknowledgement before changing local inheritance state. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
 | `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
 | `list` | Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed full session ID is a valid target. |
-| `send` | Fire-and-forget delivery. Requires `to` and `message`; returns delivery confirmation or the delivery-failure reason. Cannot message the current session. |
-| `ask` | Sends a message and blocks until the recipient replies (10-minute timeout). A recipient disconnect after delivery fails the wait promptly; the timeout remains the backstop for a connected but unresponsive recipient. From a foreground child to its resolved launching parent, it instead ends the child and returns a fresh-subagent handoff through the parent `subagent` call. |
+| `send` | Fire-and-forget delivery to a live session, or durable queueing to a not-yet-started workflow stage addressed as `<runId>:<stageKey>`. A live delivery returns `delivered`; an inbox deposit returns the distinct `queued` result with its FIFO position. Requires `to` and `message`; cannot message the current session. |
+| `ask` | Sends a message and blocks until a live recipient replies (10-minute timeout). An ask to an unstarted workflow stage is refused with `stage_inbox_ask_unsupported` and recommends `send`; holding a waiter until a stage eventually starts would be unbounded. A live recipient disconnect fails promptly. From a foreground child to its launching parent, the existing fresh-subagent handoff path remains unchanged. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. |
 | `status` | Shows connection status, session ID, current group, and the count of active sessions in that group. A `group` filter remains a read-only peek. |
@@ -167,9 +168,15 @@ The broker updates presence in place and sends a `session_left` event to the old
 
 Sent and received messages are recorded in session history as `intercom_sent` / `intercom_received` entries.
 
-### Targeting Sessions
+### Targeting Sessions and Pending Workflow Stages
 
-Target lookup accepts only an exact full session ID or an exact case-insensitive session name. Targeting is also **group-scoped** — see [Groups](#groups) below.
+Live-session lookup accepts only an exact full session ID or an exact case-insensitive session name. When live lookup fails, `send` also accepts an exact pending workflow-stage address in the form `<runId>:<stageKey>`; the run ID is the full UUID, and the authored stage key is case-sensitive and preserved verbatim. Targeting is **group-scoped** — see [Groups](#groups) below.
+
+### Pending-stage inbox lifecycle
+
+An inbox deposit returns `queued`, including its FIFO position, rather than claiming the message was `delivered`. Atomic persists up to **50 queued messages per exact run/stage key** with workflow state. When that stage's session starts, it receives the FIFO entries through the ordinary Intercom inbound path before its first model turn, under the heading **Messages received before you started**, with sender provenance and timestamps retained separately from the task prompt. Resume/replay and broker restart do not turn the broker into a second store.
+
+Only a session in the workflow run's Intercom group can deposit; a cross-group attempt is refused with `Target workflow run is in a different intercom group`. The 51st queued message is refused with `Workflow stage inbox is full (limit 50)` rather than evicting an earlier entry. If the destination is skipped or the run is cancelled/completes before it materializes, the entry is marked undeliverable; a sender whose message requested acknowledgment receives the correlated failure notification. Blocking `ask` is deliberately unsupported before startup: use `send`, because a stage may start much later or never start.
 
 ### Groups
 

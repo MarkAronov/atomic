@@ -124,6 +124,29 @@ Workflow run identifiers are shown in full everywhere they are presented to user
 
 Stage targeting is exact but not UUID-bound, because stage identifiers are not all bare UUIDs. A `stageId` resolves by exact stage id — a bare UUID at the root, the full `runId:stageId` composite for a stage inside a nested workflow, or `tool:<argsHash>` for a `ctx.tool` node — or by exact stage or tool name. Partial names no longer match, so `build` will not select `build-check`. Two stages that share an exact name are still reported as ambiguous, listing the full matching identifiers.
 
+#### Pending-stage inboxes
+
+A stage that has not started does not yet have a live session, but it is addressable by the workflow run's full UUID and its exact authored stage key. From a sibling session in the same workflow Intercom group, use `intercom({ action: "send", to: "<runId>:<stageKey>", message: "..." })`. A successful deposit returns `queued` with a FIFO position, which is deliberately distinct from live-session `delivered`. Blocking `ask` is refused with a structured recommendation to use `send`: an unstarted stage may begin much later or never begin, so Atomic does not pin a reply waiter to it.
+
+The workflows extension, not the broker, persists the inbox with run state across resume/replay and broker restart. Each exact run/stage key accepts 50 queued messages; the next deposit is refused without eviction. Only sessions in the run's Intercom group may deposit. When the stage session starts, Atomic drains its entries FIFO as ordinary inbound Intercom messages **before the first model turn**. The transcript labels them **Messages received before you started**, preserves sender provenance and timestamps, and keeps them separate from the stage task prompt. Duplicate logical message IDs and stage-attempt restarts do not redeliver an entry.
+
+If the destination is skipped, the run is cancelled, or the stage never materializes before terminal run completion, Atomic marks the queued entries undeliverable rather than dropping them. Senders whose messages requested acknowledgment receive a correlated failure notification. Running and completed stages continue through their existing live, late, and post-mortem routes; the inbox covers only the pre-start window.
+
+The `workflow` tool offers the same mechanism while the root is nonterminal:
+
+```ts
+workflow({
+  action: "send",
+  runId: "<full-run-uuid>",
+  stageId: "reviewer",
+  text: "Scope changed: raw amendment text is now part of the oracle.",
+  delivery: "inbox"
+})
+```
+
+Explicit `delivery: "inbox"` queues for an unstarted stage. `delivery: "auto"` also falls back to the inbox when the exact stage name has not materialized or the resolved stage is still pending; otherwise its existing pending-prompt, paused, streaming, and live-idle priorities remain unchanged. Use this path to distribute material scope changes, contract changes, and invalidated assumptions to every affected downstream stage, explicitly including reviewers, verifiers, and reporters that have not run yet.
+
+
 At 80 columns and wider, each `BACKGROUND` card uses two rows so the id is not squeezed beside the workflow name: the first row contains the status glyph and full UUID, and the second contains the workflow name followed by its mode, progress, live-tool total when more than one is active, pending/running `ctx.tool` node names and statuses as space permits, and elapsed/status metadata. Tool nodes are read-only durable graph nodes, not attachable stage chats. The panel renders every qualifying top-level run, so each card is two rows high (plus the existing spacing between cards). Below 80 columns, the panel keeps its collapsed form, omits ids and tool names, and includes a live-tool count when one or more tool nodes are pending or running.
 
 For chat surfaces such as workflow status, run detail, dispatch confirmation, and the run picker, a full id wraps onto continuation rows when the card is narrower than the id. The renderer never ellipsizes the id and keeps the card border closed at its minimum layout width, while terminals below that floor — including sub-30-column terminals — can hard-clip the box. An awaiting-input attribution banner is titled `AWAITING INPUT` and contains the same two identity rows — `？` plus the full run id, then the workflow name and optional metadata — while the existing prompt question and options remain below it in the normal prompt UI.

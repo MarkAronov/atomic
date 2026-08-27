@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Added `<runId>:<stageKey>` targeting for `send` to not-yet-started workflow stages, with a distinct `queued` acknowledgment, same-group enforcement, bounded inbox capacity, structured pre-start `ask` refusal, and ordinary Intercom delivery when the stage starts. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Added

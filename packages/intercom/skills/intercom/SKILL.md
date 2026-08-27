@@ -75,7 +75,22 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Intercom accepts only an exact full session ID or an exact case-insensitive session name. Use the full ID printed by `list` or the session's exact name.
+Live sessions accept an exact full session ID or exact case-insensitive name. A `send` to a not-yet-started workflow stage instead uses the exact `<runId>:<stageKey>` inbox address.
+
+### Pending workflow-stage inboxes
+
+When a scope change, contract change, or invalidated assumption affects a reviewer, verifier, reporter, or other stage that has not run yet, send it to that stage's durable inbox:
+
+```typescript
+intercom({
+  action: "send",
+  to: "<runId>:reviewer",
+  message: "Scope changed: preserve raw amendment text in the verification oracle."
+})
+// → queued (distinct from delivered), with the FIFO inbox position
+```
+
+The stage receives the ordinary inbound Intercom message before its first model turn under **Messages received before you started**. Only same-workflow-group sessions can deposit. Each exact run/stage key holds at most 50 queued entries; the next send is refused rather than evicting one. If the stage is skipped, cancelled, or never materializes, the entry becomes undeliverable and acknowledgment-requesting senders receive a correlated failure. Do not use `ask`: an unstarted stage may never begin, so Atomic returns `stage_inbox_ask_unsupported` and recommends `send` instead of holding an unbounded waiter.
 
 ### Runtime named groups
 
@@ -230,8 +245,8 @@ In Atomic workflows, each invocation has its own Intercom group, and parallel st
 |--------|----------|----------|
 | `join` | Joins or creates a named group in place | Two plain chat sessions need a private group |
 | `leave` | Returns to the resolved home group | Restore the session's startup group |
-| `send` | Fire-and-forget | You don't need a response |
-| `ask` | Blocks until reply (10 min timeout) | You need an answer to continue |
+| `send` | Fire-and-forget to a live session, or durable `queued` delivery to `<runId>:<stageKey>` before a workflow stage starts | You don't need a response |
+| `ask` | Blocks until a live recipient replies (10 min timeout); refused for an unstarted stage | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask; `to` accepts an exact full session ID or exact session name | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
 | `list` | Returns all sessions in the current group with full session IDs and live status | You need to discover targets or choose an idle peer |

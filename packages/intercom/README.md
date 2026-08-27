@@ -334,7 +334,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name or exact full session ID (for send/ask, or targeted reply) |
+| `to` | string | Exact session name/full session ID, or `<runId>:<stageKey>` for `send` to a not-yet-started workflow stage (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
@@ -364,11 +364,11 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`list`** — Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status. Every displayed full session ID can be passed directly to `send`, `ask`, or targeted `reply`.
 
-Target lookup accepts only an exact full session ID or an exact case-insensitive session name. Targeting is also **group-scoped** — see [Groups](#groups) below.
+Live target lookup accepts only an exact full session ID or an exact case-insensitive session name. When no live session resolves, `send` also accepts `<runId>:<stageKey>` for a not-yet-started workflow stage; the run ID is a full UUID and the case-sensitive stage key is retained verbatim. All targeting remains **group-scoped** — see [Groups](#groups) below.
 
-**`send`** — Sends a message to the specified session. By default it sends immediately, including in interactive sessions. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation. Returns delivery confirmation.
+**`send`** — Sends to a live session or queues durably for an unstarted workflow stage. Live delivery returns `delivered`; an inbox deposit returns the distinct `queued` result and FIFO position. An exact run/stage inbox retains at most 50 queued messages, and the next deposit is refused rather than evicting an older entry. Only sessions in the run's Intercom group may deposit. When the stage starts, ordinary inbound Intercom messages appear before its first model turn under **Messages received before you started**, with sender provenance and timestamps separate from the task prompt. Skipped, cancelled, and never-materialized destinations mark entries undeliverable; senders whose messages requested acknowledgment receive correlated failure notifications. Live sends remain immediate by default; `confirmSend: true` still enables confirmation for non-reply sends.
 
-**`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). A recipient disconnect after delivery fails only that peer's exact wait promptly; the timeout remains the backstop while the recipient stays connected. Up to `maxPendingAsks` blocking asks (default: 6) may run concurrently, including same-target and mixed-target fan-out. Replies resolve by exact sender and message ID, so out-of-order replies cannot cross-settle another call. When capacity is full, new asks receive a structured refusal. Use this when the agent needs the answer to continue working.
+**`ask`** — Sends a message and waits for a live recipient to reply (10-minute timeout). An ask to an unstarted workflow stage is refused with `stage_inbox_ask_unsupported` and recommends `send`, because holding a reply waiter until a stage eventually starts would be unbounded. A recipient disconnect after live delivery fails only that peer's exact wait promptly; the timeout remains the backstop while the recipient stays connected. Up to `maxPendingAsks` blocking asks (default: 6) may run concurrently, including same-target and mixed-target fan-out. Replies resolve by exact sender and message ID, so out-of-order replies cannot cross-settle another call. When capacity is full, new asks receive a structured refusal.
 
 **`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name/full session ID in `to`, or the listed message ID in `replyTo`; use `pending` to inspect them first. `replyTo` also disambiguates multiple asks from the same sender. Under the hood this is still a normal `send` with the exact `replyTo` value.
 

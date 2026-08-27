@@ -16,6 +16,11 @@ export { keepContext };
  * still score the launch contract and mark the added work as unrequested scope.
  * Each stage therefore restates the amendments it received in its own handoff.
  */
+export const STAGE_INBOX_PROPAGATION_GUIDANCE = [
+  "Distribute material scope changes, contract changes, or invalidated assumptions to every affected stage, not only the current handoff.",
+  "Explicitly include reviewers, verifiers, and reporters that have not run yet: use `intercom send` to the pending stage's inbox at `<runId>:<stageKey>` so the message arrives before its first model turn.",
+].join("\n");
+
 export const STEERING_PROPAGATION_CONTRACT = [
   "Steering propagation contract:",
   "- Mid-run user messages (steering, follow-ups, resume text) are authoritative and may amend this run's objective or acceptance criteria. Adopt an amendment as required behavior from the moment you receive it.",
@@ -23,6 +28,7 @@ export const STEERING_PROPAGATION_CONTRACT = [
   "- Keep user-authored amendments visibly separate from your own observations, so later stages can tell a required clause from an agent proposal.",
   "- Treat amendments inherited from an upstream stage as contract clauses. Cover them in acceptance and traceability work; never classify inherited user amendments as beyond_objective, unrequested scope, or speculative expansion.",
   "- If an amendment is ambiguous, or conflicts with the launch contract or another amendment, resolve it before implementing: ask through `intercom` when a supervisor or originating stage is reachable, otherwise state the conflict in your report and implement the narrowest reading consistent with the launch contract.",
+  `- ${STAGE_INBOX_PROPAGATION_GUIDANCE.replace("\n", "\n- ")}`,
   "- Propagate nothing else this way. Guidance about how to work, tool preferences, and your own improvement ideas are not amendments; those follow the scope discipline contract.",
 ].join("\n");
 

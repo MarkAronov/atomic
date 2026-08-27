@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added durable per-stage inboxes for not-yet-started workflow stages, including FIFO delivery before the first model turn, resume/replay persistence, explicit and automatic `workflow send` inbox routing, lifecycle failure notifications, and guidance for propagating material scope changes to downstream reviewers and verifiers. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
+
 ## [0.9.16-alpha.7] - 2026-08-26
 
 ### Changed

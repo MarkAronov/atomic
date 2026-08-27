@@ -978,6 +978,10 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		assert.equal(reviewer.injectedOptions[pendingMessageIndex]?.deliverAs, undefined);
 		assert.equal(reviewer.injectedMessages[pendingMessageIndex]?.customType, "intercom_message");
 		assert.match(reviewer.injectedMessages[pendingMessageIndex]?.content ?? "", /^\*\*📨 From stage-a\*\*/);
+		assert.match(
+			reviewer.injectedMessages[pendingMessageIndex]?.content ?? "",
+			/Messages received before you started/,
+		);
 		assert.equal(
 			reviewer.injectedMessages.filter(({ content }) => content?.includes("Scope changed: preserve raw amendments."))
 				.length,
@@ -991,7 +995,14 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		);
 		assert.equal(reviewer.injectedMessages[pendingMessageIndex]?.details?.from?.name, "stage-a");
 		assert.equal(Boolean(reviewer.injectedMessages[pendingMessageIndex]?.details?.from?.id), true);
-		assert.equal(typeof reviewer.injectedMessages[pendingMessageIndex]?.details?.message?.timestamp, "number");
+		const sentAt = reviewer.injectedMessages[pendingMessageIndex]?.details?.message?.timestamp;
+		assert.ok(typeof sentAt === "number");
+		assert.equal(
+			(reviewer.injectedMessages[pendingMessageIndex]?.content ?? "").includes(
+				`Sent: ${new Date(sentAt).toISOString()}`,
+			),
+			true,
+		);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 1);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
 

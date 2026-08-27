@@ -22,7 +22,11 @@ import { routeIncomingReply } from "./reply-routing.js";
 import { routePeerDisconnect, type PeerDisconnectNotice } from "./peer-disconnect-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
 import { readSubagentMessageSource } from "./source-ownership.js";
-import { buildIncomingCustomMessage, createIncomingMessageSender } from "./incoming-message-delivery.js";
+import {
+  buildIncomingCustomMessage,
+  createIncomingMessageSender,
+  framePreStartInboxEntry,
+} from "./incoming-message-delivery.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
@@ -324,7 +328,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const replyCommand = config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
-    const entry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
+    const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
+    const entry = receivedBeforeStageStart ? framePreStartInboxEntry(rawEntry) : rawEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
     }
