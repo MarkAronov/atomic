@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added a dedicated `workflow answer` action for responding to pending primitive and structured human-in-the-loop prompts without exposing stage-message delivery semantics.
 - Added durable pending-stage message state for ordinary Intercom delivery, including FIFO delivery before the first model turn, resume/replay persistence, exactly-once stage-attempt handling, lifecycle failure notifications, and guidance for propagating material updates to known workflow stages that have not started. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
 
+### Changed
+
+- Periodic workflow heartbeat prompts now guide supervising agents to use ordinary Intercom when steering or communication is useful, match an update's reach to the expanded workflow topology, send shared scope or acceptance changes consistently across every relevant live and known unstarted worker/reviewer stage, account for immediate and queued pre-first-turn delivery, and use workflow pause, resume, interrupt, or quit for run control.
+
 ### Removed
 
 - Removed the public `workflow send` action and its stage-chat delivery modes. Use `workflow answer` for pending human-input prompts, `workflow resume` for paused control, and ordinary Intercom for live or deferred workflow-stage communication.
