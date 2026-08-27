@@ -68,7 +68,7 @@ interface TestContext {
 			isOpen(): boolean;
 		};
 	};
-	sessionManager: { getSessionId(): string };
+	sessionManager: { getSessionId(): string; getBranch(): [] };
 	ui: {
 		confirm(): Promise<boolean>;
 		notify(): void;
@@ -160,7 +160,7 @@ function extensionFixture(
 						pendingStageDelivery,
 					}
 				: { intercomGroup }),
-		sessionManager: { getSessionId: () => sessionId },
+		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
 		ui: {
 			confirm: async () => true,
 			notify() {},
