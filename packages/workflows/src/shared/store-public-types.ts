@@ -1,4 +1,8 @@
-import type { StageInboxDeposit, StageInboxDepositResult, StageInboxEntry } from "./stage-inbox.js";
+import type {
+	PendingStageMessage,
+	PendingStageMessageInput,
+	PendingStageQueueResult,
+} from "./pending-stage-delivery.js";
 import type {
 	PendingPrompt,
 	PromptKind,
@@ -103,15 +107,15 @@ export interface Store {
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
 	/** Queue an ordinary intercom message for an exact future-stage key. */
-	depositStageInboxEntry(
-		deposit: StageInboxDeposit,
-		depositingGroup: string | undefined,
+	queueStageMessage(
+		input: PendingStageMessageInput,
+		senderGroup: string | undefined,
 		runGroup: string | undefined,
-	): StageInboxDepositResult | undefined;
+	): PendingStageQueueResult | undefined;
 	/** Read queued entries for an exact run/stage key in FIFO order. */
-	peekStageInbox(runId: string, stageKey: string): readonly StageInboxEntry[];
-	markStageInboxEntryDelivered(runId: string, stageKey: string, messageId: string, deliveredAt: string): boolean;
-	markStageInboxEntryUndeliverable(runId: string, stageKey: string, messageId: string, reason: string): boolean;
+	pendingStageMessagesFor(runId: string, stageKey: string): readonly PendingStageMessage[];
+	markPendingStageMessageDelivered(runId: string, stageKey: string, messageId: string, deliveredAt: string): boolean;
+	markPendingStageMessageUndeliverable(runId: string, stageKey: string, messageId: string, reason: string): boolean;
 	/** Compare-and-swap a cached child run's owning boundary during durable replay. */
 	reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean;
 	recordStageStart(runId: string, stage: StageSnapshot): void;

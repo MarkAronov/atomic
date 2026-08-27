@@ -197,7 +197,7 @@ export interface WorkflowChildReplaySnapshot {
 }
 
 /** Serializable attachment retained verbatim from an ordinary intercom message. */
-export interface StageInboxAttachment {
+export interface PendingStageAttachment {
 	readonly type: "file" | "snippet" | "context";
 	readonly name: string;
 	readonly content: string;
@@ -205,7 +205,7 @@ export interface StageInboxAttachment {
 }
 
 /** The ordinary intercom message wire shape persisted by workflows. */
-export interface StageInboxMessage {
+export interface PendingStageIntercomMessage {
 	readonly id: string;
 	readonly timestamp: number;
 	readonly replyTo?: string;
@@ -218,35 +218,38 @@ export interface StageInboxMessage {
 	};
 	readonly content: {
 		readonly text: string;
-		readonly attachments?: readonly StageInboxAttachment[];
+		readonly attachments?: readonly PendingStageAttachment[];
 	};
 }
 
-export interface StageInboxSender {
+export interface PendingStageSender {
 	readonly id: string;
 	readonly name?: string;
 	readonly group?: string;
 }
 
-export interface StageInboxEntry {
+export interface PendingStageMessage {
 	readonly id: string;
 	readonly runId: string;
 	readonly stageKey: string;
-	readonly from: StageInboxSender;
-	readonly message: StageInboxMessage;
-	readonly depositedAt: string;
+	readonly from: PendingStageSender;
+	readonly message: PendingStageIntercomMessage;
+	readonly queuedAt: string;
 	readonly status: "queued" | "delivered" | "undeliverable";
 	readonly deliveredAt?: string;
 	readonly undeliverableReason?: string;
 }
 
-export type StageInboxDeposit = Omit<StageInboxEntry, "id" | "status" | "deliveredAt" | "undeliverableReason">;
+export type PendingStageMessageInput = Omit<
+	PendingStageMessage,
+	"id" | "status" | "deliveredAt" | "undeliverableReason"
+>;
 
-export type StageInboxDepositResult =
+export type PendingStageQueueResult =
 	| {
 			readonly ok: true;
-			readonly inbox: readonly StageInboxEntry[];
-			readonly entry: StageInboxEntry;
+			readonly messages: readonly PendingStageMessage[];
+			readonly entry: PendingStageMessage;
 			/** One-based insertion position within this exact run/stage bucket. */
 			readonly position: number;
 			readonly deduplicated: boolean;
@@ -480,7 +483,7 @@ export interface RunSnapshot {
 	 */
 	pendingPrompt?: PendingPrompt;
 	/** Durable messages queued for workflow stages that have not started yet. */
-	stageInbox?: StageInboxEntry[];
+	pendingStageMessages?: PendingStageMessage[];
 }
 
 export interface StoreSnapshot {

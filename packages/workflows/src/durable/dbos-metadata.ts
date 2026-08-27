@@ -1,4 +1,4 @@
-import type { StageInboxEntry, WorkflowActor } from "../shared/store-types.js";
+import type { PendingStageMessage, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	isWorkflowFailureCode,
@@ -53,7 +53,9 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			completedCheckpoints: metadata.completedCheckpoints,
 			pendingPrompts: metadata.pendingPrompts,
 			promptReservationEpoch: metadata.promptReservationEpoch,
-			...(metadata.stageInbox !== undefined ? { stageInbox: serializeStageInbox(metadata.stageInbox) } : {}),
+			...(metadata.pendingStageMessages !== undefined
+				? { pendingStageMessages: serializePendingStageMessages(metadata.pendingStageMessages) }
+				: {}),
 			...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
 			...(metadata.transitionClaimId !== undefined ? { transitionClaimId: metadata.transitionClaimId } : {}),
 			...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
@@ -139,8 +141,8 @@ function parseDurableWorkflowMetadata(
 ): DurableWorkflowMetadata | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const serialized = value as Record<string, WorkflowSerializableValue | undefined>;
-	const stageInbox = parseStageInbox(serialized.stageInbox);
-	if (stageInbox === null) return undefined;
+	const pendingStageMessages = parsePendingStageMessages(serialized.pendingStageMessages);
+	if (pendingStageMessages === null) return undefined;
 	const metadata = value as Partial<DurableWorkflowMetadata>;
 	if (
 		metadata.workflowId !== workflowId ||
@@ -180,13 +182,13 @@ function parseDurableWorkflowMetadata(
 	const { origin, ...metadataWithoutOrigin } = metadata;
 	return {
 		...metadataWithoutOrigin,
-		stageInbox,
+		pendingStageMessages,
 		...(isWorkflowActor(origin) ? { origin } : {}),
 	} as DurableWorkflowMetadata;
 }
 
-function serializeStageInbox(inbox: readonly StageInboxEntry[]): WorkflowSerializableValue {
-	return inbox.map((entry) => ({
+function serializePendingStageMessages(messages: readonly PendingStageMessage[]): WorkflowSerializableValue {
+	return messages.map((entry) => ({
 		id: entry.id,
 		runId: entry.runId,
 		stageKey: entry.stageKey,
@@ -209,35 +211,37 @@ function serializeStageInbox(inbox: readonly StageInboxEntry[]): WorkflowSeriali
 					: {}),
 			},
 		},
-		depositedAt: entry.depositedAt,
+		queuedAt: entry.queuedAt,
 		status: entry.status,
 		...(entry.deliveredAt !== undefined ? { deliveredAt: entry.deliveredAt } : {}),
 		...(entry.undeliverableReason !== undefined ? { undeliverableReason: entry.undeliverableReason } : {}),
 	}));
 }
 
-function parseStageInbox(value: WorkflowSerializableValue | undefined): readonly StageInboxEntry[] | null {
+function parsePendingStageMessages(
+	value: WorkflowSerializableValue | undefined,
+): readonly PendingStageMessage[] | null {
 	if (value === undefined) return [];
-	if (!Array.isArray(value) || !value.every(isStageInboxEntry)) return null;
-	return value as readonly StageInboxEntry[];
+	if (!Array.isArray(value) || !value.every(isPendingStageMessage)) return null;
+	return value as readonly PendingStageMessage[];
 }
 
-function isStageInboxEntry(value: WorkflowSerializableValue): boolean {
+function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
 	if (!isSerializableObject(value)) return false;
 	return (
 		typeof value.id === "string" &&
 		typeof value.runId === "string" &&
 		typeof value.stageKey === "string" &&
-		typeof value.depositedAt === "string" &&
+		typeof value.queuedAt === "string" &&
 		(value.status === "queued" || value.status === "delivered" || value.status === "undeliverable") &&
 		(value.deliveredAt === undefined || typeof value.deliveredAt === "string") &&
 		(value.undeliverableReason === undefined || typeof value.undeliverableReason === "string") &&
-		isStageInboxSender(value.from) &&
-		isStageInboxMessage(value.message)
+		isPendingStageSender(value.from) &&
+		isPendingStageIntercomMessage(value.message)
 	);
 }
 
-function isStageInboxSender(value: WorkflowSerializableValue | undefined): boolean {
+function isPendingStageSender(value: WorkflowSerializableValue | undefined): boolean {
 	return (
 		isSerializableObject(value) &&
 		typeof value.id === "string" &&
@@ -246,7 +250,7 @@ function isStageInboxSender(value: WorkflowSerializableValue | undefined): boole
 	);
 }
 
-function isStageInboxMessage(value: WorkflowSerializableValue | undefined): boolean {
+function isPendingStageIntercomMessage(value: WorkflowSerializableValue | undefined): boolean {
 	if (!isSerializableObject(value) || typeof value.id !== "string" || typeof value.timestamp !== "number")
 		return false;
 	if (value.replyTo !== undefined && typeof value.replyTo !== "string") return false;
@@ -254,12 +258,12 @@ function isStageInboxMessage(value: WorkflowSerializableValue | undefined): bool
 	if (value.replyError !== undefined && typeof value.replyError !== "string") return false;
 	if (!isSerializableObject(value.content) || typeof value.content.text !== "string") return false;
 	const attachments = value.content.attachments;
-	if (attachments !== undefined && (!Array.isArray(attachments) || !attachments.every(isStageInboxAttachment)))
+	if (attachments !== undefined && (!Array.isArray(attachments) || !attachments.every(isPendingStageAttachment)))
 		return false;
-	return value.source === undefined || isStageInboxSource(value.source);
+	return value.source === undefined || isPendingStageSource(value.source);
 }
 
-function isStageInboxAttachment(value: WorkflowSerializableValue): boolean {
+function isPendingStageAttachment(value: WorkflowSerializableValue): boolean {
 	return (
 		isSerializableObject(value) &&
 		(value.type === "file" || value.type === "snippet" || value.type === "context") &&
@@ -269,7 +273,7 @@ function isStageInboxAttachment(value: WorkflowSerializableValue): boolean {
 	);
 }
 
-function isStageInboxSource(value: WorkflowSerializableValue): boolean {
+function isPendingStageSource(value: WorkflowSerializableValue): boolean {
 	return (
 		isSerializableObject(value) &&
 		typeof value.subagentRunId === "string" &&
