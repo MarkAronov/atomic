@@ -11,6 +11,7 @@ import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import {
   handleBrokerSend,
   pendingStageAskRefusal,
+  parsePendingStageTarget,
   type BrokerConnectedSession,
   type PendingStageRoute,
 } from "./send-handler.js";
@@ -38,6 +39,15 @@ interface PendingStageAcknowledgment {
   readonly runId: string;
   readonly stageKey: string;
   readonly timeout: NodeJS.Timeout;
+}
+
+interface LiveWorkflowStageRouteRegistration {
+  readonly sessionId: string;
+}
+
+interface LiveWorkflowStageRouteActivation {
+  readonly sessionId: string;
+  readonly pendingRequestIds: Set<string>;
 }
 
 type ConnectedSession = BrokerConnectedSession;
@@ -86,6 +96,8 @@ class IntercomBroker {
   private pendingQuestions = new PendingQuestionIndex();
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
+  private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
+  private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
@@ -144,6 +156,49 @@ class IntercomBroker {
       }
     }, 5000);
   }
+  private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
+    const registration = this.liveWorkflowStageRoutes.get(target);
+    if (registration === undefined) return undefined;
+    const session = this.sessions.get(registration.sessionId);
+    if (session !== undefined) return session;
+    this.liveWorkflowStageRoutes.delete(target);
+    return undefined;
+  };
+
+  private acknowledgeLiveWorkflowStageRoute(requestId: string): void {
+    const activation = this.liveWorkflowStageRouteActivations.get(requestId);
+    if (activation === undefined || activation.pendingRequestIds.size > 0) return;
+    this.liveWorkflowStageRouteActivations.delete(requestId);
+    const stage = this.sessions.get(activation.sessionId);
+    if (stage !== undefined) writeMessage(stage.socket, { type: "live_workflow_stage_route_registered", requestId });
+  }
+
+  private releasePendingStageAcknowledgment(requestId: string): void {
+    for (const [activationId, activation] of this.liveWorkflowStageRouteActivations) {
+      if (!activation.pendingRequestIds.delete(requestId)) continue;
+      this.acknowledgeLiveWorkflowStageRoute(activationId);
+    }
+  }
+
+  private registerLiveWorkflowStageRoute(
+    currentId: string,
+    requestId: string,
+    runId: string,
+    stageKeys: readonly string[],
+  ): void {
+    const uniqueStageKeys = [...new Set(stageKeys)];
+    for (const stageKey of uniqueStageKeys) {
+      this.liveWorkflowStageRoutes.set(`${runId}:${stageKey}`, { sessionId: currentId });
+    }
+    const pendingRequestIds = new Set(
+      [...this.pendingStageAcknowledgments]
+        .filter(([, pending]) => pending.runId === runId && uniqueStageKeys.includes(pending.stageKey))
+        .map(([pendingRequestId]) => pendingRequestId),
+    );
+    this.liveWorkflowStageRouteActivations.set(requestId, { sessionId: currentId, pendingRequestIds });
+    this.acknowledgeLiveWorkflowStageRoute(requestId);
+  }
+
   private routePendingStage = (route: PendingStageRoute): boolean => {
     const ownerRegistration = this.pendingStageRoutes.get(route.runId);
     if (ownerRegistration === undefined) return false;
@@ -176,6 +231,7 @@ class IntercomBroker {
       const pending = this.pendingStageAcknowledgments.get(requestId);
       if (pending === undefined) return;
       this.pendingStageAcknowledgments.delete(requestId);
+      this.releasePendingStageAcknowledgment(requestId);
       writeMessage(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
@@ -214,6 +270,7 @@ class IntercomBroker {
     if (pending === undefined || pending.ownerSessionId !== currentId) return;
     clearTimeout(pending.timeout);
     this.pendingStageAcknowledgments.delete(requestId);
+    this.releasePendingStageAcknowledgment(requestId);
     if (outcome === "queued" && typeof position === "number" && position > 0) {
       writeMessage(pending.senderSocket, {
         type: "queued",
@@ -367,6 +424,31 @@ class IntercomBroker {
         break;
       }
 
+      case "register_live_workflow_stage_route": {
+        if (
+          typeof clientMessage.requestId !== "string" ||
+          typeof clientMessage.runId !== "string" ||
+          !Array.isArray(clientMessage.stageKeys) ||
+          clientMessage.stageKeys.length < 1 ||
+          clientMessage.stageKeys.length > 2 ||
+          !clientMessage.stageKeys.every(
+            (stageKey) =>
+              typeof stageKey === "string" &&
+              stageKey.length > 0 &&
+              parsePendingStageTarget(`${clientMessage.runId}:${stageKey}`) !== undefined,
+          )
+        ) {
+          throw new Error("Invalid live workflow-stage route registration");
+        }
+        this.registerLiveWorkflowStageRoute(
+          currentId,
+          clientMessage.requestId,
+          clientMessage.runId,
+          clientMessage.stageKeys,
+        );
+        break;
+      }
+
       case "pending_stage_message_result": {
         if (
           typeof clientMessage.requestId !== "string" ||
@@ -398,6 +480,7 @@ class IntercomBroker {
           this.supervisorChannel,
           this.pendingQuestions,
           this.routePendingStage,
+          this.resolveLiveWorkflowStage,
         );
         break;
       }
@@ -441,12 +524,19 @@ class IntercomBroker {
       if (pending.ownerSessionId !== sessionId) continue;
       clearTimeout(pending.timeout);
       this.pendingStageAcknowledgments.delete(requestId);
+      this.releasePendingStageAcknowledgment(requestId);
       writeMessage(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
         reason: "Pending-stage route disconnected before acknowledging the message",
       });
+    }
+    for (const [target, registration] of this.liveWorkflowStageRoutes) {
+      if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
+    }
+    for (const [requestId, activation] of this.liveWorkflowStageRouteActivations) {
+      if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
     }
     this.sessions.delete(sessionId);
     this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
@@ -469,6 +559,10 @@ class IntercomBroker {
       session.socket.end();
     }
     this.sessions.clear();
+    this.pendingStageRoutes.clear();
+    this.pendingStageAcknowledgments.clear();
+    this.liveWorkflowStageRoutes.clear();
+    this.liveWorkflowStageRouteActivations.clear();
     if (process.platform !== "win32") {
       try {
         unlinkSync(SOCKET_PATH);

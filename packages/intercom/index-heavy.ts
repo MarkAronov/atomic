@@ -484,6 +484,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         );
         await supervisorAuthorizations.restore(nextClient);
         for (const [runId, group] of pendingStageRoutes) nextClient.registerPendingStageRoute(runId, group);
+        const orchestration = contextAtStart.orchestrationContext;
+        if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
+          await nextClient.registerLiveWorkflowStageRoute(orchestration.workflowRunId, [
+            orchestration.workflowStageId,
+            orchestration.workflowStageName,
+          ]);
+        }
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
           throw new Error("Intercom runtime no longer active");

@@ -68,6 +68,7 @@ export class IntercomClient extends EventEmitter {
   private pendingSends = new PendingSendRegistry();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private pendingPresence = new Map<string, { resolve: (group: string) => void; reject: (error: Error) => void }>();
+  private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
 
   private pendingSupervisorAuthorizations = new Map<string, {
     resolve: (authorization: SupervisorAuthorization) => void;
@@ -81,9 +82,11 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingLists.values()) pending.reject(error);
     for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
     for (const pending of this.pendingPresence.values()) pending.reject(error);
+    for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
     this.pendingLists.clear();
     this.pendingSupervisorAuthorizations.clear();
     this.pendingPresence.clear();
+    this.pendingLiveWorkflowStageRoutes.clear();
   }
 
 
@@ -334,6 +337,15 @@ export class IntercomClient extends EventEmitter {
         this.emit("pending_stage_message", { requestId, from, runId, stageKey, message } satisfies PendingStageMessageRequest);
         break;
       }
+      case "live_workflow_stage_route_registered": {
+        const { requestId } = brokerMessage;
+        if (typeof requestId !== "string") throw new Error("Invalid live workflow-stage route registration");
+        const pending = this.pendingLiveWorkflowStageRoutes.get(requestId);
+        if (!pending) return;
+        this.pendingLiveWorkflowStageRoutes.delete(requestId);
+        pending.resolve();
+        break;
+      }
       case "queued": {
         const { messageId, attemptId, runId, stageKey, position } = brokerMessage;
         if (
@@ -539,6 +551,30 @@ export class IntercomClient extends EventEmitter {
   }
   registerPendingStageRoute(runId: string, group: string): void {
     writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group });
+  }
+
+  registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[]): Promise<void> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      this.pendingLiveWorkflowStageRoutes.set(requestId, { resolve, reject });
+      try {
+        writeMessage(socket, {
+          type: "register_live_workflow_stage_route",
+          requestId,
+          runId,
+          stageKeys: [...stageKeys],
+        });
+      } catch (error) {
+        this.pendingLiveWorkflowStageRoutes.delete(requestId);
+        reject(toError(error));
+      }
+    });
   }
 
   respondPendingStageMessage(requestId: string, result: PendingStageMessageResult): void {

@@ -49,6 +49,7 @@ export type ClientMessage =
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
   | { type: "register_pending_stage_route"; runId: string; group: string }
+  | { type: "register_live_workflow_stage_route"; requestId: string; runId: string; stageKeys: string[] }
   | {
       type: "pending_stage_message_result";
       requestId: string;
@@ -65,6 +66,7 @@ export type BrokerMessage =
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
   | { type: "pending_stage_message"; requestId: string; from: SessionInfo; runId: string; stageKey: string; message: Message }
+  | { type: "live_workflow_stage_route_registered"; requestId: string }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }

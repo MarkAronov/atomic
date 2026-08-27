@@ -28,6 +28,8 @@ export interface PendingStageRoute {
 
 export type PendingStageRouter = (route: PendingStageRoute) => boolean;
 
+export type LiveWorkflowStageResolver = (target: string) => BrokerConnectedSession | undefined;
+
 const WORKFLOW_RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function parsePendingStageTarget(target: string): { runId: string; stageKey: string } | undefined {
@@ -79,6 +81,7 @@ export function handleBrokerSend(
   supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
   pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
   routePendingStage?: PendingStageRouter,
+  resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
 ): void {
   const message = clientMessage.message;
   const messageId = isMessage(message) ? message.id : "unknown";
@@ -137,7 +140,7 @@ export function handleBrokerSend(
   // Exact-id targeting always resolves against the full pool so a cross-group id
   // is caught by the defense-in-depth group check below. Only a broker-authorized
   // supervisor frame or an exact recorded reply may resolve across groups.
-  const exactIdTarget = sessions.get(trimmedTo);
+  const exactIdTarget = sessions.get(trimmedTo) ?? resolveLiveWorkflowStage?.(trimmedTo);
   const senderGroup = normalizeGroup(fromSession.info.group);
   const reachableAcrossGroups = supervisorSend || Boolean(message.replyTo);
   const candidates = reachableAcrossGroups

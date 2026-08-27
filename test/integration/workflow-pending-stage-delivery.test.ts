@@ -39,6 +39,9 @@ interface TestContext {
 	orchestrationContext: {
 		intercomGroup: string;
 		kind?: "workflow-stage";
+		workflowRunId?: string;
+		workflowStageId?: string;
+		workflowStageName?: string;
 		pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>;
 	};
 	sessionManager: { getSessionId(): string };
@@ -67,7 +70,7 @@ interface InjectedMessage {
 	content?: string;
 	details?: {
 		from?: { id?: string; name?: string };
-		message?: { timestamp?: number };
+		message?: { id?: string; timestamp?: number };
 	};
 }
 
@@ -101,6 +104,15 @@ function extensionFixture(
 	const tools = new Map<string, CapturedTool>();
 	const injectedMessages: InjectedMessage[] = [];
 	const injectedOptions: Array<InjectedMessageOptions | undefined> = [];
+	const injectedWaiters: Array<{ count: number; resolve(): void }> = [];
+	const resolveInjectedWaiters = (): void => {
+		for (let index = injectedWaiters.length - 1; index >= 0; index -= 1) {
+			const waiter = injectedWaiters[index]!;
+			if (injectedMessages.length < waiter.count) continue;
+			injectedWaiters.splice(index, 1);
+			waiter.resolve();
+		}
+	};
 	let sessionName = initialName;
 	let activeTools: string[] = [];
 	const context: TestContext = {
@@ -109,7 +121,14 @@ function extensionFixture(
 		isIdle: () => true,
 		model: { id: "test-model" },
 		orchestrationContext: pendingStageDelivery
-			? { intercomGroup: GROUP, kind: "workflow-stage", pendingStageDelivery }
+			? {
+					intercomGroup: GROUP,
+					kind: "workflow-stage",
+					workflowRunId: RUN_ID,
+					workflowStageId: "reviewer-id",
+					workflowStageName: "reviewer",
+					pendingStageDelivery,
+				}
 			: { intercomGroup: GROUP },
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
@@ -133,10 +152,12 @@ function extensionFixture(
 		async sendMessage(message: InjectedMessage, options?: InjectedMessageOptions) {
 			injectedMessages.push(message);
 			injectedOptions.push(options);
+			resolveInjectedWaiters();
 		},
 		async sendMessages(messages: InjectedMessage[], options?: InjectedMessageOptions) {
 			injectedMessages.push(...messages);
 			injectedOptions.push(...messages.map(() => options));
+			resolveInjectedWaiters();
 		},
 		getSessionName: () => sessionName,
 		setSessionName(name: string) {
@@ -171,6 +192,10 @@ function extensionFixture(
 		injectedMessages,
 		injectedOptions,
 		tools,
+		waitForInjectedCount(count: number): Promise<void> {
+			if (injectedMessages.length >= count) return Promise.resolve();
+			return new Promise((resolveWaiter) => injectedWaiters.push({ count, resolve: resolveWaiter }));
+		},
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
 	};
@@ -222,7 +247,7 @@ afterAll(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-test("a pending-stage send crosses the real broker and reaches the stage before its first turn", async () => {
+test("one composite workflow-stage target transitions atomically from durable queueing to live delivery", async () => {
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
 	setDurableBackend(backend);
@@ -289,21 +314,86 @@ test("a pending-stage send crosses the real broker and reaches the stage before 
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer")[0]?.id, result.details.messageId);
 
-		reviewer = extensionFixture(
-			"reviewer-runtime-session",
-			"reviewer",
-			createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer"),
-		);
+		const pendingStageDelivery = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer");
+		let signalDrainEntered!: () => void;
+		let releaseDrain!: () => void;
+		const drainEntered = new Promise<void>((resolveEntered) => {
+			signalDrainEntered = resolveEntered;
+		});
+		const drainRelease = new Promise<void>((resolveRelease) => {
+			releaseDrain = resolveRelease;
+		});
+		const heldPendingStageDelivery: ReturnType<typeof createWorkflowPendingStageDelivery> = {
+			async deliverPending(deliver) {
+				signalDrainEntered();
+				await drainRelease;
+				await pendingStageDelivery.deliverPending(deliver);
+			},
+			ready: () => pendingStageDelivery.ready(),
+		};
+		reviewer = extensionFixture("reviewer-runtime-session", "reviewer", heldPendingStageDelivery);
 		intercom(reviewer.pi as never);
-		await reviewer.start();
+		const reviewerStart = reviewer.start();
+		await drainEntered;
 
-		assert.equal(reviewer.injectedMessages.length, 1);
-		assert.equal(reviewer.injectedOptions[0]?.triggerTurn, undefined);
-		assert.equal(reviewer.injectedOptions[0]?.deliverAs, undefined);
-		assert.match(reviewer.injectedMessages[0]?.content ?? "", /Scope changed: preserve raw amendments\./);
-		assert.equal(reviewer.injectedMessages[0]?.details?.from?.name, "stage-a");
-		assert.equal(typeof reviewer.injectedMessages[0]?.details?.message?.timestamp, "number");
+		const transition = await executeIntercom(sender, {
+			action: "send",
+			to: TARGET,
+			message: "Transition message while pending delivery is draining.",
+		});
+		releaseDrain();
+		await reviewerStart;
+		assert.equal(transition.isError, false);
+		assert.equal(transition.details.delivered, true);
+		assert.equal(transition.details.queued, undefined);
+
+		assert.equal(reviewer.injectedMessages.length, 2);
+		const pendingMessageIndex = reviewer.injectedMessages.findIndex(({ content }) =>
+			content?.includes("Scope changed: preserve raw amendments."),
+		);
+		assert.notEqual(pendingMessageIndex, -1);
+		assert.equal(reviewer.injectedOptions[pendingMessageIndex]?.triggerTurn, undefined);
+		assert.equal(reviewer.injectedOptions[pendingMessageIndex]?.deliverAs, undefined);
+		assert.equal(
+			reviewer.injectedMessages.filter(({ content }) => content?.includes("Scope changed: preserve raw amendments."))
+				.length,
+			1,
+		);
+		assert.equal(
+			reviewer.injectedMessages.filter(({ content }) =>
+				content?.includes("Transition message while pending delivery is draining."),
+			).length,
+			1,
+		);
+		assert.equal(reviewer.injectedMessages[pendingMessageIndex]?.details?.from?.name, "stage-a");
+		assert.equal(typeof reviewer.injectedMessages[pendingMessageIndex]?.details?.message?.timestamp, "number");
+		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 1);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
+
+		const live = await executeIntercom(sender, {
+			action: "send",
+			to: TARGET,
+			message: "Live message after initialization.",
+		});
+		assert.equal(live.isError, false);
+		assert.equal(live.details.delivered, true);
+		assert.equal(live.details.queued, undefined);
+		await reviewer.waitForInjectedCount(3);
+		assert.equal(
+			reviewer.injectedMessages.filter(({ content }) => content?.includes("Live message after initialization."))
+				.length,
+			1,
+		);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 1);
+
+		const unknownAfterInitialization = await executeIntercom(sender, {
+			action: "send",
+			to: `${RUN_ID}:unknown-stage`,
+			message: "This target still does not exist.",
+		});
+		assert.match(unknownAfterInitialization.content[0]?.text ?? "", /Session not found/);
+		assert.equal(unknownAfterInitialization.details.delivered, false);
+		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
 	} finally {
 		if (reviewer !== undefined) await reviewer.shutdown();
 		disposeBridge();
