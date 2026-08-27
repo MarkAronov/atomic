@@ -43,6 +43,7 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
+const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 
 interface PendingStageRouteRegistrationEvent {
   readonly runId: string;
@@ -64,6 +65,25 @@ interface PendingStageRouteClientState {
 interface PendingStageMessageEvent extends PendingStageMessageRequest {
   handled: boolean;
   completion?: Promise<PendingStageMessageResult>;
+}
+
+interface PendingStageUndeliverableEvent {
+  handled: boolean;
+  completion?: Promise<boolean>;
+  readonly senderId: string;
+  readonly messageId: string;
+  readonly reason: string;
+}
+
+function isPendingStageUndeliverableEvent(value: unknown): value is PendingStageUndeliverableEvent {
+  if (typeof value !== "object" || value === null) return false;
+  const event = value as Partial<PendingStageUndeliverableEvent>;
+  return (
+    typeof event.handled === "boolean" &&
+    typeof event.senderId === "string" &&
+    typeof event.messageId === "string" &&
+    typeof event.reason === "string"
+  );
 }
 
 function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingStageRouteRegistrationEvent {
@@ -702,6 +722,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     );
     payload.completion = completion;
     void completion.catch(() => {});
+  });
+  pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
+    if (!isPendingStageUndeliverableEvent(payload) || payload.handled) return;
+    payload.handled = true;
+    const actionable = `Pending workflow stage could not receive intercom message: ${payload.reason}`;
+    payload.completion = ensureConnected("background")
+      .then((activeClient) =>
+        activeClient.send(payload.senderId, {
+          text: actionable,
+          replyTo: payload.messageId,
+          replyError: actionable,
+        }),
+      )
+      .then((result) => result.delivered)
+      .catch(() => false);
   });
 
   registerSubagentRelay(pi, {

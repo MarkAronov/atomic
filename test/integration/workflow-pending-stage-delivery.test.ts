@@ -43,6 +43,7 @@ const { registerPendingStageIntercomBridge } = await import(
 	"../../packages/workflows/src/extension/pending-stage-intercom.js"
 );
 const { workflow } = await import("../../packages/workflows/src/authoring/workflow.js");
+const { buildRuntimeAdapters } = await import("../../packages/workflows/src/extension/wiring.js");
 const { run } = await import("../../packages/workflows/src/runs/foreground/executor.js");
 const { createWorkflowPendingStageDelivery } = await import(
 	"../../packages/workflows/src/runs/foreground/pending-stage-delivery.js"
@@ -877,9 +878,42 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			},
 			ready: () => pendingStageDelivery.ready(),
 		};
-		reviewer = extensionFixture("reviewer-runtime-session", "reviewer", heldPendingStageDelivery);
-		intercom(reviewer.pi as never);
-		const reviewerStart = reviewer.start();
+		let forwardedPendingStageDelivery: ReturnType<typeof createWorkflowPendingStageDelivery> | undefined;
+		const stageAdapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					forwardedPendingStageDelivery = options?.orchestrationContext?.pendingStageDelivery;
+					reviewer = extensionFixture("reviewer-runtime-session", "reviewer", heldPendingStageDelivery);
+					intercom(reviewer.pi as never);
+					return {
+						session: {
+							bindExtensions: () => reviewer?.start(),
+						} as never,
+					};
+				},
+			},
+		);
+		const reviewerStart = stageAdapters.agentSession?.create(
+			{
+				orchestrationContext: {
+					kind: "workflow-stage",
+					workflowRunId: RUN_ID,
+					workflowStageId: "reviewer-id",
+					workflowStageName: "reviewer",
+					constraints: { disableWorkflowTool: true },
+					intercomGroup: GROUP,
+					pendingStageDelivery,
+				},
+			} as never,
+			{
+				runId: RUN_ID,
+				stageId: "reviewer-id",
+				stageName: "reviewer",
+				executionMode: "non_interactive",
+			},
+		);
+		assert.ok(reviewerStart);
 		await drainEntered;
 
 		const transition = await executeIntercom(sender, {
@@ -889,6 +923,8 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		});
 		releaseDrain();
 		await reviewerStart;
+		assert.equal(forwardedPendingStageDelivery, pendingStageDelivery);
+		assert.ok(reviewer);
 		assert.equal(transition.isError, false);
 		assert.equal(transition.details.delivered, true);
 		assert.equal(transition.details.queued, undefined);
@@ -900,6 +936,8 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		assert.notEqual(pendingMessageIndex, -1);
 		assert.equal(reviewer.injectedOptions[pendingMessageIndex]?.triggerTurn, undefined);
 		assert.equal(reviewer.injectedOptions[pendingMessageIndex]?.deliverAs, undefined);
+		assert.equal(reviewer.injectedMessages[pendingMessageIndex]?.customType, "intercom_message");
+		assert.match(reviewer.injectedMessages[pendingMessageIndex]?.content ?? "", /^\*\*📨 From stage-a\*\*/);
 		assert.equal(
 			reviewer.injectedMessages.filter(({ content }) => content?.includes("Scope changed: preserve raw amendments."))
 				.length,
@@ -912,6 +950,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			1,
 		);
 		assert.equal(reviewer.injectedMessages[pendingMessageIndex]?.details?.from?.name, "stage-a");
+		assert.equal(Boolean(reviewer.injectedMessages[pendingMessageIndex]?.details?.from?.id), true);
 		assert.equal(typeof reviewer.injectedMessages[pendingMessageIndex]?.details?.message?.timestamp, "number");
 		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 1);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
