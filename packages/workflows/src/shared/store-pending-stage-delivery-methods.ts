@@ -2,6 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import {
 	markPendingStageMessageDelivered,
 	markPendingStageMessageUndeliverable,
+	type PendingStageIdentity,
 	type PendingStageMessage,
 	type PendingStageMessageInput,
 	type PendingStageQueueResult,
@@ -45,7 +46,14 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(input.runId, async () => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
-				const result = queueStageMessage(run.pendingStageMessages ?? [], input, senderGroup, runGroup);
+				const stageIdentity = resolvePendingStageIdentity(run, input.stageKey);
+				const result = queueStageMessage(
+					run.pendingStageMessages ?? [],
+					input,
+					senderGroup,
+					runGroup,
+					stageIdentity,
+				);
 				if (result.ok && !result.deduplicated) {
 					await persistTransition(backend, input.runId, result.messages);
 					run.pendingStageMessages = [...result.messages];
@@ -57,7 +65,12 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 
 		pendingStageMessagesFor(runId: string, stageKey: string): readonly PendingStageMessage[] {
 			const run = context.findRun(runId);
-			return pendingStageMessagesFor(run?.pendingStageMessages ?? [], runId, stageKey);
+			return pendingStageMessagesFor(
+				run?.pendingStageMessages ?? [],
+				runId,
+				stageKey,
+				run === undefined ? undefined : resolvePendingStageIdentity(run, stageKey),
+			);
 		},
 
 		async markPendingStageMessageDelivered(
@@ -71,7 +84,14 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
 				const current = run.pendingStageMessages ?? [];
-				const next = markPendingStageMessageDelivered(current, runId, stageKey, messageId, deliveredAt);
+				const next = markPendingStageMessageDelivered(
+					current,
+					runId,
+					stageKey,
+					messageId,
+					deliveredAt,
+					resolvePendingStageIdentity(run, stageKey),
+				);
 				if (next === current) return false;
 				await persistTransition(backend, runId, next);
 				run.pendingStageMessages = [...next];
@@ -91,7 +111,14 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
 				const current = run.pendingStageMessages ?? [];
-				const next = markPendingStageMessageUndeliverable(current, runId, stageKey, messageId, reason);
+				const next = markPendingStageMessageUndeliverable(
+					current,
+					runId,
+					stageKey,
+					messageId,
+					reason,
+					resolvePendingStageIdentity(run, stageKey),
+				);
 				if (next === current) return false;
 				await persistTransition(backend, runId, next);
 				run.pendingStageMessages = [...next];
@@ -100,6 +127,17 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			});
 		},
 	};
+}
+
+function resolvePendingStageIdentity(
+	run: { readonly stages: readonly { readonly id: string; readonly name: string }[] },
+	stageKey: string,
+): PendingStageIdentity | undefined {
+	const exactIds = run.stages.filter((stage) => stage.id === stageKey);
+	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
+	if (candidates.length !== 1) return undefined;
+	const stage = candidates[0]!;
+	return { id: stage.id, aliases: stage.id === stage.name ? [stage.id] : [stage.id, stage.name] };
 }
 
 async function persistTransition(

@@ -192,6 +192,7 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 		id: entry.id,
 		runId: entry.runId,
 		stageKey: entry.stageKey,
+		...(entry.stageId !== undefined ? { stageId: entry.stageId } : {}),
 		from: {
 			id: entry.from.id,
 			...(entry.from.name !== undefined ? { name: entry.from.name } : {}),
@@ -212,6 +213,7 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 			},
 		},
 		queuedAt: entry.queuedAt,
+		...(entry.admissionOrder !== undefined ? { admissionOrder: entry.admissionOrder } : {}),
 		status: entry.status,
 		...(entry.deliveredAt !== undefined ? { deliveredAt: entry.deliveredAt } : {}),
 		...(entry.undeliverableReason !== undefined ? { undeliverableReason: entry.undeliverableReason } : {}),
@@ -232,7 +234,12 @@ function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
 		typeof value.id === "string" &&
 		typeof value.runId === "string" &&
 		typeof value.stageKey === "string" &&
+		(value.stageId === undefined || typeof value.stageId === "string") &&
 		typeof value.queuedAt === "string" &&
+		(value.admissionOrder === undefined ||
+			(typeof value.admissionOrder === "number" &&
+				Number.isSafeInteger(value.admissionOrder) &&
+				value.admissionOrder > 0)) &&
 		(value.status === "queued" || value.status === "delivered" || value.status === "undeliverable") &&
 		(value.deliveredAt === undefined || typeof value.deliveredAt === "string") &&
 		(value.undeliverableReason === undefined || typeof value.undeliverableReason === "string") &&

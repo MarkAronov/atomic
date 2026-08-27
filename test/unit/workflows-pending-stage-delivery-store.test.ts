@@ -43,9 +43,15 @@ function pendingMessage(id: string, overrides: Partial<PendingStageMessageInput>
 }
 
 describe("workflow stage messages store", () => {
-	test("preserves FIFO order and verbatim message provenance", () => {
-		const first = pendingMessage("1", { message: message("1", "scope changed") });
-		const second = pendingMessage("2");
+	test("assigns durable FIFO admission order independently of sender timestamps", () => {
+		const first = pendingMessage("1", {
+			message: { ...message("1", "scope changed"), timestamp: 200 },
+			queuedAt: "2026-08-26T00:00:02.000Z",
+		});
+		const second = pendingMessage("2", {
+			message: { ...message("2"), timestamp: 100 },
+			queuedAt: "2026-08-26T00:00:01.000Z",
+		});
 		const firstResult = queueStageMessage([], first, RUN_GROUP, RUN_GROUP);
 		assert.equal(firstResult.ok, true);
 		if (!firstResult.ok) return;
@@ -55,8 +61,11 @@ describe("workflow stage messages store", () => {
 
 		const queued = pendingStageMessagesFor(secondResult.messages, RUN_ID, STAGE_KEY);
 		assert.deepEqual(
-			queued.map((entry) => entry.id),
-			["1", "2"],
+			queued.map((entry) => ({ id: entry.id, admissionOrder: entry.admissionOrder })),
+			[
+				{ id: "1", admissionOrder: 1 },
+				{ id: "2", admissionOrder: 2 },
+			],
 		);
 		assert.strictEqual(queued[0]?.message, first.message);
 		assert.strictEqual(queued[0]?.from, first.from);
@@ -81,6 +90,26 @@ describe("workflow stage messages store", () => {
 		assert.strictEqual(duplicate.messages, first.messages);
 		assert.strictEqual(duplicate.entry, first.entry);
 		assert.equal(duplicate.entry.queuedAt, first.entry.queuedAt);
+	});
+
+	test("rejects conflicting reuse of a durable message id", () => {
+		const first = queueStageMessage([], pendingMessage("same"), RUN_GROUP, RUN_GROUP);
+		assert.equal(first.ok, true);
+		if (!first.ok) return;
+		const conflict = queueStageMessage(
+			first.messages,
+			pendingMessage("same", { message: message("same", "different payload") }),
+			RUN_GROUP,
+			RUN_GROUP,
+		);
+		assert.deepEqual(conflict, {
+			ok: false,
+			reason: "message_id_conflict",
+			runId: RUN_ID,
+			stageKey: STAGE_KEY,
+			messageId: "same",
+		});
+		assert.equal(first.messages.length, 1);
 	});
 
 	test("enforces the exact queued cap and delivered entries free capacity", () => {
@@ -117,6 +146,65 @@ describe("workflow stage messages store", () => {
 			runId: RUN_ID,
 			stageKey: STAGE_KEY,
 		});
+	});
+
+	test("shares identity, dedupe, positions, and the exact cap across a stage id and unique name", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [{ id: "review-stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+			startedAt: 1,
+		});
+		for (let index = 1; index <= PENDING_STAGE_MESSAGE_LIMIT; index++) {
+			const stageKey = index % 2 === 0 ? "review-stage-id" : "reviewer";
+			const accepted = await store.queueStageMessage(
+				pendingMessage(String(index), { stageKey }),
+				RUN_GROUP,
+				RUN_GROUP,
+				backend,
+			);
+			assert.equal(accepted?.ok && accepted.position, index);
+		}
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "review-stage-id").length, 50);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 50);
+		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 50);
+		assert.deepEqual(
+			await store.queueStageMessage(
+				pendingMessage("51", { stageKey: "review-stage-id" }),
+				RUN_GROUP,
+				RUN_GROUP,
+				backend,
+			),
+			{
+				ok: false,
+				reason: "capacity",
+				limit: 50,
+				runId: RUN_ID,
+				stageKey: "review-stage-id",
+			},
+		);
+
+		const replay = await store.queueStageMessage(
+			pendingMessage("1", { stageKey: "review-stage-id" }),
+			RUN_GROUP,
+			RUN_GROUP,
+			backend,
+		);
+		assert.equal(replay?.ok && replay.deduplicated, true);
+		const conflict = await store.queueStageMessage(
+			pendingMessage("1", { stageKey: "review-stage-id", message: message("1", "conflicting alias replay") }),
+			RUN_GROUP,
+			RUN_GROUP,
+			backend,
+		);
+		assert.equal(conflict?.ok, false);
+		if (conflict?.ok === false) assert.equal(conflict.reason, "message_id_conflict");
+		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 50);
 	});
 
 	test("live store methods publish only persisted message transitions", async () => {

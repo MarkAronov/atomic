@@ -7,8 +7,13 @@ export type {
 	PendingStageSender,
 } from "./store-types.js";
 
-/** Maximum queued messages retained for one exact workflow run/stage key. */
+/** Maximum queued messages retained for one canonical workflow stage. */
 export const PENDING_STAGE_MESSAGE_LIMIT = 50;
+
+export interface PendingStageIdentity {
+	readonly id: string;
+	readonly aliases: readonly string[];
+}
 
 /**
  * Add one queued entry without mutating the supplied collection.
@@ -23,15 +28,27 @@ export function queueStageMessage(
 	input: PendingStageMessageInput,
 	senderGroup: string | undefined,
 	runGroup: string | undefined,
+	stageIdentity?: PendingStageIdentity,
 ): PendingStageQueueResult {
 	if (normalizeDeliveryGroup(senderGroup) !== normalizeDeliveryGroup(runGroup)) {
 		return { ok: false, reason: "group_mismatch", runId: input.runId, stageKey: input.stageKey };
 	}
 
 	const messageId = input.message.id;
-	const bucket = messages.filter((entry) => matchesPendingStage(entry, input.runId, input.stageKey));
+	const bucket = messages.filter((entry) => matchesPendingStage(entry, input.runId, input.stageKey, stageIdentity));
 	const existing = bucket.find((entry) => entry.id === messageId);
 	if (existing !== undefined) {
+		if (
+			pendingStageMessageSignature(existing, stageIdentity) !== pendingStageMessageSignature(input, stageIdentity)
+		) {
+			return {
+				ok: false,
+				reason: "message_id_conflict",
+				runId: input.runId,
+				stageKey: input.stageKey,
+				messageId,
+			};
+		}
 		return {
 			ok: true,
 			messages,
@@ -51,7 +68,13 @@ export function queueStageMessage(
 		};
 	}
 
-	const entry: PendingStageMessage = { ...input, id: messageId, status: "queued" };
+	const entry: PendingStageMessage = {
+		...input,
+		id: messageId,
+		...(stageIdentity !== undefined ? { stageId: stageIdentity.id } : {}),
+		admissionOrder: nextAdmissionOrder(messages, input.runId),
+		status: "queued",
+	};
 	return {
 		ok: true,
 		messages: [...messages, entry],
@@ -61,21 +84,31 @@ export function queueStageMessage(
 	};
 }
 
-/** Read queued entries for one exact key in insertion (FIFO) order. */
+/** Read one canonical stage's queued entries in durable workflow admission order. */
 export function pendingStageMessagesFor(
 	messages: readonly PendingStageMessage[],
 	runId: string,
 	stageKey: string,
+	stageIdentity?: PendingStageIdentity,
 ): readonly PendingStageMessage[] {
-	return messages.filter((entry) => matchesPendingStage(entry, runId, stageKey) && entry.status === "queued");
+	return messages
+		.map((entry, index) => ({ entry, index }))
+		.filter(({ entry }) => matchesPendingStage(entry, runId, stageKey, stageIdentity) && entry.status === "queued")
+		.sort(
+			(left, right) =>
+				(left.entry.admissionOrder ?? left.index + 1) - (right.entry.admissionOrder ?? right.index + 1) ||
+				left.index - right.index,
+		)
+		.map(({ entry }) => entry);
 }
 
 export function queuedPendingStageMessageCount(
 	messages: readonly PendingStageMessage[],
 	runId: string,
 	stageKey: string,
+	stageIdentity?: PendingStageIdentity,
 ): number {
-	return pendingStageMessagesFor(messages, runId, stageKey).length;
+	return pendingStageMessagesFor(messages, runId, stageKey, stageIdentity).length;
 }
 
 export function markPendingStageMessageDelivered(
@@ -84,8 +117,9 @@ export function markPendingStageMessageDelivered(
 	stageKey: string,
 	messageId: string,
 	deliveredAt: string,
+	stageIdentity?: PendingStageIdentity,
 ): readonly PendingStageMessage[] {
-	return updateQueuedPendingStageMessage(messages, runId, stageKey, messageId, (entry) => ({
+	return updateQueuedPendingStageMessage(messages, runId, stageKey, messageId, stageIdentity, (entry) => ({
 		...entry,
 		status: "delivered",
 		deliveredAt,
@@ -98,8 +132,9 @@ export function markPendingStageMessageUndeliverable(
 	stageKey: string,
 	messageId: string,
 	reason: string,
+	stageIdentity?: PendingStageIdentity,
 ): readonly PendingStageMessage[] {
-	return updateQueuedPendingStageMessage(messages, runId, stageKey, messageId, (entry) => ({
+	return updateQueuedPendingStageMessage(messages, runId, stageKey, messageId, stageIdentity, (entry) => ({
 		...entry,
 		status: "undeliverable",
 		undeliverableReason: reason,
@@ -111,10 +146,14 @@ function updateQueuedPendingStageMessage(
 	runId: string,
 	stageKey: string,
 	messageId: string,
+	stageIdentity: PendingStageIdentity | undefined,
 	update: (entry: PendingStageMessage) => PendingStageMessage,
 ): readonly PendingStageMessage[] {
 	const index = messages.findIndex(
-		(entry) => matchesPendingStage(entry, runId, stageKey) && entry.id === messageId && entry.status === "queued",
+		(entry) =>
+			matchesPendingStage(entry, runId, stageKey, stageIdentity) &&
+			entry.id === messageId &&
+			entry.status === "queued",
 	);
 	if (index < 0) return messages;
 	const next = [...messages];
@@ -122,8 +161,55 @@ function updateQueuedPendingStageMessage(
 	return next;
 }
 
-function matchesPendingStage(entry: PendingStageMessage, runId: string, stageKey: string): boolean {
-	return entry.runId === runId && entry.stageKey === stageKey;
+function matchesPendingStage(
+	entry: PendingStageMessage,
+	runId: string,
+	stageKey: string,
+	stageIdentity?: PendingStageIdentity,
+): boolean {
+	if (entry.runId !== runId) return false;
+	if (stageIdentity === undefined) return entry.stageKey === stageKey;
+	return (
+		entry.stageId === stageIdentity.id ||
+		(entry.stageId === undefined && stageIdentity.aliases.includes(entry.stageKey))
+	);
+}
+
+function nextAdmissionOrder(messages: readonly PendingStageMessage[], runId: string): number {
+	let greatest = 0;
+	let legacyPosition = 0;
+	for (const entry of messages) {
+		if (entry.runId !== runId) continue;
+		legacyPosition += 1;
+		greatest = Math.max(greatest, entry.admissionOrder ?? legacyPosition);
+	}
+	return greatest + 1;
+}
+
+function pendingStageMessageSignature(
+	entry: PendingStageMessage | PendingStageMessageInput,
+	stageIdentity?: PendingStageIdentity,
+): string {
+	return stableJson({
+		target: stageIdentity?.id ?? entry.stageKey,
+		from: entry.from,
+		message: entry.message,
+	});
+}
+
+function stableJson(value: unknown): string {
+	return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortJsonValue);
+	if (typeof value !== "object" || value === null) return value;
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>)
+			.filter(([, nested]) => nested !== undefined)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, nested]) => [key, sortJsonValue(nested)]),
+	);
 }
 
 function normalizeDeliveryGroup(value?: string | null): string {

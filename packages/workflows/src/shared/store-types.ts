@@ -232,9 +232,13 @@ export interface PendingStageMessage {
 	readonly id: string;
 	readonly runId: string;
 	readonly stageKey: string;
+	/** Canonical authored stage id. Absent only on durable records written before alias canonicalization. */
+	readonly stageId?: string;
 	readonly from: PendingStageSender;
 	readonly message: PendingStageIntercomMessage;
 	readonly queuedAt: string;
+	/** Durable workflow admission sequence; sender clocks never determine delivery order. */
+	readonly admissionOrder?: number;
 	readonly status: "queued" | "delivered" | "undeliverable";
 	readonly deliveredAt?: string;
 	readonly undeliverableReason?: string;
@@ -242,7 +246,7 @@ export interface PendingStageMessage {
 
 export type PendingStageMessageInput = Omit<
 	PendingStageMessage,
-	"id" | "status" | "deliveredAt" | "undeliverableReason"
+	"id" | "stageId" | "admissionOrder" | "status" | "deliveredAt" | "undeliverableReason"
 >;
 
 export type PendingStageQueueResult =
@@ -250,7 +254,7 @@ export type PendingStageQueueResult =
 			readonly ok: true;
 			readonly messages: readonly PendingStageMessage[];
 			readonly entry: PendingStageMessage;
-			/** One-based insertion position within this exact run/stage bucket. */
+			/** One-based position within the canonical authored stage queue. */
 			readonly position: number;
 			readonly deduplicated: boolean;
 	  }
@@ -259,6 +263,13 @@ export type PendingStageQueueResult =
 			readonly reason: "group_mismatch";
 			readonly runId: string;
 			readonly stageKey: string;
+	  }
+	| {
+			readonly ok: false;
+			readonly reason: "message_id_conflict";
+			readonly runId: string;
+			readonly stageKey: string;
+			readonly messageId: string;
 	  }
 	| {
 			readonly ok: false;
