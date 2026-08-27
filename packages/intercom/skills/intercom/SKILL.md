@@ -75,11 +75,11 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full session ID or exact case-insensitive name. A `send` to a not-yet-started workflow stage instead uses the exact `<runId>:<stageKey>` inbox address.
+Live sessions accept an exact full session ID or exact case-insensitive name. Ordinary `send` to a known workflow stage whose session has not initialized uses the exact `<runId>:<stageKey>` identity. Unknown runs and stages retain the ordinary unknown-target failure.
 
-### Pending workflow-stage inboxes
+### Deliver to workflow stages that have not started
 
-When a scope change, contract change, or invalidated assumption affects a reviewer, verifier, reporter, or other stage that has not run yet, send it to that stage's durable inbox:
+Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages for known pending stages and delivers them when their sessions initialize:
 
 ```typescript
 intercom({
@@ -87,10 +87,10 @@ intercom({
   to: "<runId>:reviewer",
   message: "Scope changed: preserve raw amendment text in the verification oracle."
 })
-// → queued (distinct from delivered), with the FIFO inbox position
+// → queued, distinct from live-session delivered, with the FIFO position
 ```
 
-The stage receives the ordinary inbound Intercom message before its first model turn under **Messages received before you started**. Only same-workflow-group sessions can deposit. Each exact run/stage key holds at most 50 queued entries; the next send is refused rather than evicting one. If the stage is skipped, cancelled, or never materializes, the entry becomes undeliverable and acknowledgment-requesting senders receive a correlated failure. Do not use `ask`: an unstarted stage may never begin, so Atomic returns `stage_inbox_ask_unsupported` and recommends `send` instead of holding an unbounded waiter.
+The stage receives the ordinary inbound Intercom message before its first model turn under **Messages received before you started**, with real sender identity and a `Sent:` timestamp. Only same-workflow-group sessions may queue messages. Each exact run/stage key holds at most 50 queued messages; the next send is refused rather than evicting one. Resume/replay, broker restart, and stage-attempt restart preserve exactly-once delivery. If the stage is skipped, cancelled, or becomes terminal before its session initializes, the message becomes undeliverable and acknowledgment-requesting senders receive a correlated failure. Do not use `ask`: Atomic returns `pending_stage_ask_unsupported` and recommends ordinary `send` instead of holding an unbounded waiter.
 
 ### Runtime named groups
 

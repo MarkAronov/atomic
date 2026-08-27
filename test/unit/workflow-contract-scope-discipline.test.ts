@@ -33,9 +33,9 @@ describe("workflow contract discipline", () => {
 		);
 		assert.match(STEERING_PROPAGATION_CONTRACT, /never classify inherited user amendments as beyond_objective/);
 		assert.match(STEERING_PROPAGATION_CONTRACT, /ask through `intercom`/);
-		assert.match(STEERING_PROPAGATION_CONTRACT, /scope changes, contract changes, or invalidated assumptions/);
-		assert.match(STEERING_PROPAGATION_CONTRACT, /reviewers, verifiers, and reporters that have not run yet/);
-		assert.match(STEERING_PROPAGATION_CONTRACT, /pending stage's inbox/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /Send material updates through Intercom/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /including stages that have not started/);
+		assert.match(STEERING_PROPAGATION_CONTRACT, /known pending stages/);
 		assert.match(STEERING_PROPAGATION_CONTRACT, /Propagate nothing else this way/);
 	});
 
@@ -68,8 +68,8 @@ describe("workflow contract discipline", () => {
 	test("goal implementation stages inherit both contracts and pending-stage distribution guidance", () => {
 		const prompt = renderGoalContinuationPrompt({ receipts: [] }, "/tmp/goal-ledger.json", 3, []);
 		assert.match(prompt, /<scope_discipline>/);
-		assert.match(prompt, /<stage_inbox_guidance>/);
-		assert.match(prompt, /reviewers, verifiers, and reporters that have not run yet/);
+		assert.match(prompt, /<pending_stage_delivery_guidance>/);
+		assert.match(prompt, /including stages that have not started/);
 		assert.match(prompt, /Prefer the smallest diff that satisfies the contract/);
 		assert.match(prompt, /Only the user may change the contract/);
 	});

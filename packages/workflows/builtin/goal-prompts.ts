@@ -15,7 +15,7 @@ import {
   REVIEWER_OVERIMPLEMENTATION_GUARD,
   REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
   SCOPE_DISCIPLINE_CONTRACT,
-  STAGE_INBOX_PROPAGATION_GUIDANCE,
+  PENDING_STAGE_DELIVERY_GUIDANCE,
   WORKER_PREFLIGHT_CONTRACT,
   WORKTREE_DISCIPLINE_CONTRACT,
   keepContext,
@@ -142,7 +142,7 @@ export function renderGoalContinuationPrompt(
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
     ["repository_intent", REPO_INTENT_MINING_GUIDANCE],
-    ["stage_inbox_guidance", keepContext(STAGE_INBOX_PROPAGATION_GUIDANCE)],
+    ["pending_stage_delivery_guidance", keepContext(PENDING_STAGE_DELIVERY_GUIDANCE)],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
     ["objective", ["Continue working toward the active goal using the ledger as authoritative state for status, receipts, reviews, blockers, reducer decisions, and lifecycle events.", `The same blocker must repeat for at least ${blockerThreshold} controller observations before blocked status is available.`, "Reviewer quorum plus the reducer decides completion from reviewers' authoritative stop_review_loop signals."].join("\n")],
   ]);
@@ -178,7 +178,7 @@ export function renderReviewerPrompt(args: {
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     ["code_quality_verification", CODE_QUALITY_VERIFICATION_GUIDANCE],
     ["repository_intent", REPO_INTENT_MINING_GUIDANCE],
-    ["stage_inbox_guidance", keepContext(STAGE_INBOX_PROPAGATION_GUIDANCE)],
+    ["pending_stage_delivery_guidance", keepContext(PENDING_STAGE_DELIVERY_GUIDANCE)],
     ["final_action_policy", args.createPr ? "PR/MR/review creation is an authorized post-approval final action. If implementation and validation are proven and only that action remains, set goal_oracle_satisfied=true and stop_review_loop=true with no blocking findings, and record it as the remaining final action." : "PR/MR/review creation is not enabled; do not require or attempt it during review."],
     ["project_guidance", [
       "Apply AGENTS.md/CLAUDE.md and nearby code, test, script, config, generated-artifact, and CI conventions; specific project guidance overrides general guidance.",

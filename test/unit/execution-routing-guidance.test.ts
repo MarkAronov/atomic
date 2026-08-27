@@ -577,22 +577,6 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
-	test("documents pending-stage inbox targeting in model-visible workflow guidance and schema", () => {
-		for (const phrase of [
-			"pending stage inbox",
-			"scope changes, contract changes, or invalidated assumptions",
-			"reviewers, verifiers, and reporters that have not run yet",
-		]) {
-			expect(modelVisibleRouting).toContain(phrase);
-		}
-
-		const stageIdSchema = JSON.stringify(WorkflowParametersSchema.properties.stageId);
-		const deliverySchema = JSON.stringify(WorkflowParametersSchema.properties.delivery);
-		expect(stageIdSchema).toContain("not-yet-materialized stage");
-		expect(deliverySchema).toContain('"const":"inbox"');
-		expect(deliverySchema).toContain("auto-falls back");
-	});
-
 	test("removes direct execution options from the workflow tool boundary", () => {
 		const properties = WorkflowParametersSchema.properties as Record<string, unknown>;
 		for (const removed of [

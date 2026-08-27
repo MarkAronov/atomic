@@ -25,7 +25,7 @@ import { readSubagentMessageSource } from "./source-ownership.js";
 import {
   buildIncomingCustomMessage,
   createIncomingMessageSender,
-  framePreStartInboxEntry,
+  framePreStartPendingStageMessage,
 } from "./incoming-message-delivery.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
@@ -329,7 +329,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
-    const entry = receivedBeforeStageStart ? framePreStartInboxEntry(rawEntry) : rawEntry;
+    const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(rawEntry) : rawEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
     }

@@ -43,8 +43,8 @@ export function framePendingStageTimestamp(timestamp: number): string {
 	return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
 }
 
-/** Mark a drained workflow inbox message as pre-start context without merging it into the stage task prompt. */
-export function framePreStartInboxEntry(entry: InboundMessageEntry): InboundMessageEntry {
+/** Mark a deferred workflow-stage message as pre-start context without merging it into the stage task prompt. */
+export function framePreStartPendingStageMessage(entry: InboundMessageEntry): InboundMessageEntry {
   return {
     ...entry,
     bodyText: `**Messages received before you started**\n\nSent: ${new Date(entry.message.timestamp).toISOString()}\n\n${entry.bodyText}`,

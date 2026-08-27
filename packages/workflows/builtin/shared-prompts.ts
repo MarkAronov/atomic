@@ -16,12 +16,12 @@ export { keepContext };
  * still score the launch contract and mark the added work as unrequested scope.
  * Each stage therefore restates the amendments it received in its own handoff.
  */
-export const STAGE_INBOX_PROPAGATION_GUIDANCE_LINES = [
-  "Distribute material scope changes, contract changes, or invalidated assumptions to every affected stage, not only the current handoff.",
-  "Explicitly include reviewers, verifiers, and reporters that have not run yet: use `intercom send` to the pending stage's inbox at `<runId>:<stageKey>` so the message arrives before its first model turn.",
+export const PENDING_STAGE_DELIVERY_GUIDANCE_LINES = [
+  "Send material updates through Intercom to every affected workflow stage, including stages that have not started.",
+  "Atomic queues messages for known pending stages addressed as `<runId>:<stageKey>` and delivers them when their sessions initialize.",
 ] as const;
 
-export const STAGE_INBOX_PROPAGATION_GUIDANCE = STAGE_INBOX_PROPAGATION_GUIDANCE_LINES.join("\n");
+export const PENDING_STAGE_DELIVERY_GUIDANCE = PENDING_STAGE_DELIVERY_GUIDANCE_LINES.join("\n");
 
 export const STEERING_PROPAGATION_CONTRACT = [
   "Steering propagation contract:",
@@ -30,7 +30,7 @@ export const STEERING_PROPAGATION_CONTRACT = [
   "- Keep user-authored amendments visibly separate from your own observations, so later stages can tell a required clause from an agent proposal.",
   "- Treat amendments inherited from an upstream stage as contract clauses. Cover them in acceptance and traceability work; never classify inherited user amendments as beyond_objective, unrequested scope, or speculative expansion.",
   "- If an amendment is ambiguous, or conflicts with the launch contract or another amendment, resolve it before implementing: ask through `intercom` when a supervisor or originating stage is reachable, otherwise state the conflict in your report and implement the narrowest reading consistent with the launch contract.",
-  ...STAGE_INBOX_PROPAGATION_GUIDANCE_LINES.map((line) => `- ${line}`),
+  ...PENDING_STAGE_DELIVERY_GUIDANCE_LINES.map((line) => `- ${line}`),
   "- Propagate nothing else this way. Guidance about how to work, tool preferences, and your own improvement ideas are not amendments; those follow the scope discipline contract.",
 ].join("\n");
 
