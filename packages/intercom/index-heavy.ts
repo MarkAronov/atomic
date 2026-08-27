@@ -29,7 +29,7 @@ import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
-import { resolveHomeGroup } from "./group.js";
+import { normalizeGroup, resolveHomeGroup } from "./group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
@@ -48,6 +48,16 @@ interface PendingStageRouteRegistrationEvent {
   readonly runId: string;
   readonly group: string;
   readonly capability: string;
+}
+
+type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability">;
+
+interface PendingStageRouteClientState {
+  readonly route: PendingStageRouteRegistration;
+  client: IntercomClient | null;
+  promise: Promise<void> | null;
+  reconnectTimer: NodeJS.Timeout | null;
+  reconnectAttempt: number;
 }
 
 interface PendingStageMessageEvent extends PendingStageMessageRequest {
@@ -73,6 +83,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     else process.env[INTERCOM_SESSION_ID_ENV] = inheritedIntercomSessionId;
   };
   let client: IntercomClient | null = null;
+  let clientRegistrationGroup: string | null = null;
   const config: IntercomConfig = loadConfig();
   const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
@@ -101,7 +112,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
-  const pendingStageRoutes = new Map<string, { readonly group: string; readonly capability: string }>();
+  const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
+  const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void { replyWaiters.rejectAll(error); }
@@ -386,6 +398,35 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
     })();
   }
+  function handlePendingStageMessage(
+    nextClient: IntercomClient,
+    request: PendingStageMessageRequest,
+    isCurrent: () => boolean,
+  ): void {
+    if (!isCurrent()) return;
+    const event: PendingStageMessageEvent = { ...request, handled: false };
+    try {
+      pi.events.emit(PENDING_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
+    } catch (error) {
+      nextClient.respondPendingStageMessage(request.requestId, { outcome: "refused", reason: toError(error).message });
+      return;
+    }
+    if (!event.handled || event.completion === undefined) {
+      nextClient.respondPendingStageMessage(request.requestId, {
+        outcome: "refused",
+        reason: "Session not found",
+      });
+      return;
+    }
+    void event.completion.then(
+      (result) => nextClient.respondPendingStageMessage(request.requestId, result),
+      (error) =>
+        nextClient.respondPendingStageMessage(request.requestId, {
+          outcome: "refused",
+          reason: toError(error).message,
+        }),
+    );
+  }
   function attachClientHandlers(nextClient: IntercomClient): void {
     nextClient.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
       const liveContext = getLiveContext();
@@ -395,29 +436,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       handleIncomingMessage(liveContext, from, message, channel);
     });
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
-      if (client !== nextClient) return;
-      const event: PendingStageMessageEvent = { ...request, handled: false };
-      try {
-        pi.events.emit(PENDING_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
-      } catch (error) {
-        nextClient.respondPendingStageMessage(request.requestId, { outcome: "refused", reason: toError(error).message });
-        return;
-      }
-      if (!event.handled || event.completion === undefined) {
-        nextClient.respondPendingStageMessage(request.requestId, {
-          outcome: "refused",
-          reason: "Session not found",
-        });
-        return;
-      }
-      void event.completion.then(
-        (result) => nextClient.respondPendingStageMessage(request.requestId, result),
-        (error) =>
-          nextClient.respondPendingStageMessage(request.requestId, {
-            outcome: "refused",
-            reason: toError(error).message,
-          }),
-      );
+      handlePendingStageMessage(nextClient, request, () => client === nextClient);
     });
     nextClient.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
       if (client !== nextClient) {
@@ -431,6 +450,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
+      clientRegistrationGroup = null;
       if (process.env[INTERCOM_SESSION_ID_ENV] === nextClient.sessionId) restoreIntercomSessionIdEnv();
       if (!shuttingDown && !disposed) {
         clearReconnectTimer();
@@ -457,6 +477,146 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       });
     }, reconnectDelayMs(reconnectAttempt));
   }
+  function samePendingStageRoute(
+    left: PendingStageRouteRegistration | undefined,
+    right: PendingStageRouteRegistration,
+  ): boolean {
+    return left !== undefined
+      && normalizeGroup(left.group) === normalizeGroup(right.group)
+      && left.capability === right.capability;
+  }
+  function pendingStageRouteClientIsCurrent(
+    runId: string,
+    state: PendingStageRouteClientState,
+    context: ExtensionContext | null = runtimeContext,
+    generation = runtimeGeneration,
+  ): boolean {
+    return pendingStageRouteClients.get(runId) === state
+      && samePendingStageRoute(pendingStageRoutes.get(runId), state.route)
+      && Boolean(getLiveContext(context, generation));
+  }
+  function schedulePendingStageRouteReconnect(runId: string, state: PendingStageRouteClientState): void {
+    if (state.reconnectTimer || state.promise || !pendingStageRouteClientIsCurrent(runId, state)) return;
+    const scheduledGeneration = runtimeGeneration;
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      if (!pendingStageRouteClientIsCurrent(runId, state, runtimeContext, scheduledGeneration)) return;
+      state.reconnectAttempt += 1;
+      void ensurePendingStageRouteClient(runId, state.route).catch(() => {});
+    }, reconnectDelayMs(state.reconnectAttempt));
+  }
+  function attachPendingStageRouteClientHandlers(
+    runId: string,
+    state: PendingStageRouteClientState,
+    nextClient: IntercomClient,
+  ): void {
+    nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
+      handlePendingStageMessage(
+        nextClient,
+        request,
+        () => state.client === nextClient && pendingStageRouteClientIsCurrent(runId, state),
+      );
+    });
+    nextClient.on("disconnected", () => {
+      if (state.client !== nextClient) return;
+      state.client = null;
+      schedulePendingStageRouteReconnect(runId, state);
+    });
+    nextClient.on("error", () => {
+      // Route-owner reconnect logic runs from the disconnect path.
+    });
+  }
+  async function ensurePendingStageRouteClient(
+    runId: string,
+    route: PendingStageRouteRegistration,
+  ): Promise<void> {
+    const contextAtStart = getLiveContext();
+    const generationAtStart = runtimeGeneration;
+    if (!contextAtStart) throw new Error("Intercom runtime not initialized");
+
+    let existing = pendingStageRouteClients.get(runId);
+    if (existing && !samePendingStageRoute(existing.route, route)) {
+      pendingStageRouteClients.delete(runId);
+      if (existing.reconnectTimer) clearTimeout(existing.reconnectTimer);
+      try { await existing.promise; } catch {}
+      if (existing.client) {
+        try { await existing.client.disconnect(); } catch {}
+      }
+      existing = undefined;
+    }
+    const state: PendingStageRouteClientState = existing ?? {
+      route,
+      client: null,
+      promise: null,
+      reconnectTimer: null,
+      reconnectAttempt: 0,
+    };
+    if (!existing) pendingStageRouteClients.set(runId, state);
+    if (state.client?.isConnected()) return;
+    if (state.promise) return state.promise;
+
+    const promise = (async () => {
+      await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+      const nextClient = new IntercomClient();
+      state.client = nextClient;
+      attachPendingStageRouteClientHandlers(runId, state, nextClient);
+      await nextClient.connect(
+        { ...buildRegistration(), name: undefined, group: normalizeGroup(route.group) },
+        undefined,
+        undefined,
+        readSubagentMessageSource(runtimeContext?.subagentPolicy),
+      );
+      if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
+        await nextClient.disconnect();
+        throw new Error("Intercom runtime no longer active");
+      }
+      nextClient.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability);
+      await nextClient.listSessions();
+      if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
+        await nextClient.disconnect();
+        throw new Error("Intercom runtime no longer active");
+      }
+      state.reconnectAttempt = 0;
+    })();
+    state.promise = promise;
+    try {
+      await promise;
+    } catch (error) {
+      const failedClient = state.client;
+      state.client = null;
+      if (failedClient) {
+        try { await failedClient.disconnect(); } catch {}
+      }
+      if (state.promise === promise) state.promise = null;
+      schedulePendingStageRouteReconnect(runId, state);
+      throw toError(error);
+    } finally {
+      if (state.promise === promise) state.promise = null;
+    }
+  }
+  async function disconnectPendingStageRouteClients(): Promise<void> {
+    const states = [...pendingStageRouteClients.values()];
+    pendingStageRouteClients.clear();
+    for (const state of states) {
+      if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+      try { await state.promise; } catch {}
+      if (!state.client) continue;
+      try { await state.client.disconnect(); } catch {}
+      state.client = null;
+    }
+  }
+  async function registerPendingStageRoute(
+    activeClient: IntercomClient,
+    runId: string,
+    route: PendingStageRouteRegistration,
+  ): Promise<void> {
+    const routeGroup = normalizeGroup(route.group);
+    if (clientRegistrationGroup === routeGroup) {
+      activeClient.registerPendingStageRoute(runId, routeGroup, route.capability);
+      return;
+    }
+    await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
+  }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
     if (!config.enabled) {
       throw new Error("Intercom disabled");
@@ -478,20 +638,22 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     const nextReconnectPromise = (async () => {
       const nextClient = new IntercomClient();
+      const registration = buildRegistration();
       client = nextClient;
       attachClientHandlers(nextClient);
       try {
         await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
         const childMetadata = currentChildOrchestratorMetadata();
         await nextClient.connect(
-          buildRegistration(),
+          registration,
           childMetadata?.supervisor,
           supervisorAuthorizations.ownerToken,
           readSubagentMessageSource(runtimeContext?.subagentPolicy),
         );
+        clientRegistrationGroup = normalizeGroup(registration.group);
         await supervisorAuthorizations.restore(nextClient);
         for (const [runId, route] of pendingStageRoutes) {
-          nextClient.registerPendingStageRoute(runId, route.group, route.capability);
+          await registerPendingStageRoute(nextClient, runId, route);
         }
         const orchestration = contextAtStart.orchestrationContext;
         if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
@@ -514,6 +676,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       } catch (error) {
         if (client === nextClient) {
           client = null;
+          clientRegistrationGroup = null;
         }
         if (reason === "background" && getLiveContext(contextAtStart, generationAtStart)) {
           scheduleReconnect();
@@ -534,9 +697,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!isPendingStageRouteRegistrationEvent(payload)) return;
     pendingStageRoutes.set(payload.runId, { group: payload.group, capability: payload.capability });
     void ensureConnected("background")
-      .then((activeClient) =>
-        activeClient.registerPendingStageRoute(payload.runId, payload.group, payload.capability),
-      )
+      .then((activeClient) => registerPendingStageRoute(activeClient, payload.runId, payload))
       .catch(() => {});
   });
 
@@ -556,7 +717,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   registerIntercomLifecycle(pi, {
     config,
     client: () => client,
-    setClient: (value) => { client = value; },
+    disconnectAuxiliaryClients: disconnectPendingStageRouteClients,
+    setClient: (value) => {
+      client = value;
+      if (value === null) clientRegistrationGroup = null;
+    },
     setShuttingDown: (value) => { shuttingDown = value; },
     setDisposed: (value) => { disposed = value; },
     setRuntimeStarted: (value) => { runtimeStarted = value; },

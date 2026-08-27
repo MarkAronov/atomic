@@ -11,6 +11,12 @@ import { PendingQuestionIndex } from "./pending-question-index.js";
 export interface BrokerConnectedSession {
   socket: net.Socket;
   info: SessionInfo;
+  /**
+   * Immutable route authority from the host-admitted registration context.
+   * Model-accessible presence changes only `info.group`; they never rewrite this field.
+   * The local broker trusts initial registration metadata, matching all existing session fields.
+   */
+  readonly registrationGroup?: string;
   /** Broker-bound supervisor relationship established by a capability. */
   supervisorId?: string;
   /** Private issuer identity used to restore child capabilities after reconnects. */

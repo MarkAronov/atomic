@@ -98,6 +98,7 @@ function extensionFixture(
 	sessionId: string,
 	initialName: string,
 	pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>,
+	intercomGroup = GROUP,
 ) {
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
@@ -122,14 +123,14 @@ function extensionFixture(
 		model: { id: "test-model" },
 		orchestrationContext: pendingStageDelivery
 			? {
-					intercomGroup: GROUP,
+					intercomGroup,
 					kind: "workflow-stage",
 					workflowRunId: RUN_ID,
 					workflowStageId: "reviewer-id",
 					workflowStageName: "reviewer",
 					pendingStageDelivery,
 				}
-			: { intercomGroup: GROUP },
+			: { intercomGroup },
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
 			confirm: async () => true,
@@ -251,7 +252,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
 	setDurableBackend(backend);
-	const owner = extensionFixture("owner-runtime-session", "workflow-owner");
+	const owner = extensionFixture("owner-runtime-session", "workflow-owner", undefined, "default");
 	const sender = extensionFixture("sender-runtime-session", "stage-a");
 	intercom(owner.pi as never);
 	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
@@ -295,6 +296,19 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		assert.match(ask.content[0]?.text ?? "", /Use send/);
 		assert.equal(ask.details.refusal, "pending_stage_ask_unsupported");
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "reviewer"), []);
+
+		const workflowSessions = await executeIntercom(sender, { action: "list" });
+		assert.equal(
+			workflowSessions.content.some(({ text }) => text.includes("workflow-owner")),
+			false,
+		);
+		const ordinaryOwnerSend = await executeIntercom(sender, {
+			action: "send",
+			to: "workflow-owner",
+			message: "Must not use the route-registration membership window.",
+		});
+		assert.match(ordinaryOwnerSend.content[0]?.text ?? "", /Session not found/);
+		assert.equal(ordinaryOwnerSend.details.delivered, false);
 
 		const result = await executeIntercom(sender, {
 			action: "send",

@@ -367,6 +367,7 @@ class IntercomBroker {
         this.sessions.set(id, {
           socket,
           info,
+          registrationGroup: info.group,
           ...(supervisorId ? { supervisorId } : {}),
           ...(typeof clientMessage.supervisorOwnerToken === "string"
             ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
@@ -447,7 +448,7 @@ class IntercomBroker {
         }
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
-        const ownerGroup = normalizeGroup(owner?.info.group);
+        const ownerGroup = normalizeGroup(owner?.registrationGroup);
         const activeExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
         if (
           owner === undefined ||
@@ -497,7 +498,8 @@ class IntercomBroker {
           ownerRegistration === undefined ||
           registeringSession === undefined ||
           ownerRegistration.capability !== clientMessage.capability ||
-          normalizeGroup(ownerRegistration.group) !== normalizeGroup(registeringSession.info.group) ||
+          normalizeGroup(ownerRegistration.group) !==
+            normalizeGroup(registeringSession.registrationGroup ?? registeringSession.info.group) ||
           !this.registerLiveWorkflowStageRoute(
             currentId,
             clientMessage.requestId,

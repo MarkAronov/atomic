@@ -289,6 +289,76 @@ test("production clients keep the pending owner and live stage connected when a 
 	assert.equal(brokerOutput.includes("write after end"), false);
 });
 
+test("immutable workflow authority rejects a default-group attacker that presence-switches before attacker-first pending/live registration", async () => {
+	const runId = "6d04b37d-9d67-463f-8b2a-0ed184671b2d";
+	const group = `workflow:${runId}`;
+	const attacker = new WireClient();
+	const sender = new WireClient();
+	await register(attacker, "mutable-presence-attacker", "default");
+	await register(sender, "mutable-presence-sender", group);
+
+	attacker.send({ type: "presence", group, requestId: "attacker-presence-switch" });
+	assert.equal((await attacker.next("presence_ack")).group, group);
+	attacker.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "attacker-chosen-route-capability",
+		},
+		{
+			type: "register_live_workflow_stage_route",
+			requestId: "attacker-first-live-route",
+			runId,
+			stageKeys: ["reviewer"],
+			capability: "attacker-chosen-route-capability",
+		},
+	]);
+	assert.equal(await registrationOutcome(attacker, "attacker-first-pipeline-processed"), "closed");
+
+	sender.send({
+		type: "send",
+		to: `${runId}:reviewer`,
+		message: { id: "after-attacker-first-rejection", timestamp: 1, content: { text: "not attacker-owned" } },
+	});
+	assert.deepEqual(await sender.next("delivery_failed"), {
+		type: "delivery_failed",
+		messageId: "after-attacker-first-rejection",
+		reason: "Session not found",
+	});
+
+	const legitimateOwner = new WireClient();
+	const legitimateStage = new WireClient();
+	await register(legitimateOwner, "legitimate-owner-after-presence-attack", group);
+	await register(legitimateStage, "legitimate-stage-after-presence-attack", group);
+	legitimateOwner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "legitimate-route-capability",
+	});
+	assert.equal(await registrationOutcome(legitimateOwner, "legitimate-owner-processed"), "acknowledged");
+	legitimateStage.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "legitimate-live-route",
+		runId,
+		stageKeys: ["reviewer"],
+		capability: "legitimate-route-capability",
+	});
+	await legitimateStage.next(
+		"live_workflow_stage_route_registered",
+		(frame) => frame.requestId === "legitimate-live-route",
+	);
+
+	sender.send({
+		type: "send",
+		to: `${runId}:reviewer`,
+		message: { id: "after-legitimate-registration", timestamp: 2, content: { text: "legitimate owner only" } },
+	});
+	assert.equal((await sender.next("delivered")).messageId, "after-legitimate-registration");
+	assert.equal((await legitimateStage.next("message")).message.content.text, "legitimate owner only");
+});
+
 test("broker rejects cross-group pending-route impersonation before route mutation", async () => {
 	const attacker = new WireClient();
 	const sender = new WireClient();
