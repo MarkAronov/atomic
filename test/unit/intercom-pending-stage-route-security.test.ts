@@ -183,6 +183,13 @@ test("broker rejects same-group replacement of an active pending route owner", a
 		capability: "pending-owner-route-capability",
 	});
 	assert.equal(await registrationOutcome(legitimate, "legitimate-pending-owner-processed"), "acknowledged");
+	legitimate.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "pending-owner-route-capability",
+	});
+	assert.equal(await registrationOutcome(legitimate, "legitimate-pending-owner-repeat"), "acknowledged");
 	attacker.send({
 		type: "register_pending_stage_route",
 		runId,
@@ -289,6 +296,17 @@ test("broker rejects a different active session taking over a live composite rou
 		capability: ROUTE_CAPABILITY,
 	});
 	await legitimate.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "legitimate-route");
+	legitimate.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "legitimate-route-repeat",
+		runId: RUN_ID,
+		stageKeys: ["reviewer-id", "reviewer"],
+		capability: ROUTE_CAPABILITY,
+	});
+	await legitimate.next(
+		"live_workflow_stage_route_registered",
+		(frame) => frame.requestId === "legitimate-route-repeat",
+	);
 
 	attacker.send({
 		type: "register_live_workflow_stage_route",
