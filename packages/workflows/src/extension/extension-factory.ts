@@ -13,7 +13,7 @@ import { registerCompletedStageIntercomAskRouter } from "./completed-stage-inter
 import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { registerPendingStageIntercomBridge } from "./pending-stage-intercom.js";
-import { createPostMortemHandleResolver, postMortemDepsForRun } from "./postmortem-deps.js";
+import { createPostMortemHandleResolver } from "./postmortem-deps.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { type RunEndPayload, type RunStartPayload, renderRunBanner, renderRunSummary } from "./renderers.js";
@@ -92,7 +92,6 @@ function factory(pi: ExtensionAPI): void {
 		(ctx) => runtimeState.runtimeForContext(ctx),
 		runtimeState.reloadWorkflowResources,
 		runtimeState.ensureWorkflowResourcesLoaded,
-		{ resolvePostMortemDeps: (runId) => postMortemDepsForRun(runId, postMortemResolverDeps) },
 	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);

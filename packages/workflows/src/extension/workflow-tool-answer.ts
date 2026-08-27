@@ -104,14 +104,9 @@ function inferPromptStageTarget(runId: string, promptId: string | undefined): To
 }
 
 /**
- * Answer a pending workflow prompt. When `implicit` is true, absence of a
- * prompt returns undefined so the legacy send action can continue to its
- * stage-message path.
+ * Answer a pending workflow prompt without providing a stage-message path.
  */
-export async function workflowAnswerAction(
-	args: WorkflowToolArgs,
-	options: { readonly implicit?: boolean } = {},
-): Promise<WorkflowAnswerToolResult | undefined> {
+export async function workflowAnswerAction(args: WorkflowToolArgs): Promise<WorkflowAnswerToolResult> {
 	const target = resolveToolRunTarget(args, "No active run with a pending prompt.");
 	if (target.kind === "all") return answerResult("--all", "", "noop", "Answer requires a single run.");
 	if (target.kind === "malformed" || target.kind === "not_found") {
@@ -128,7 +123,6 @@ export async function workflowAnswerAction(
 	const stage =
 		requested.ok && requested.stageId === undefined ? inferPromptStageTarget(target.runId, args.promptId) : requested;
 	if (!stage.ok || stage.stageId === undefined) {
-		if (options.implicit === true && stage.ok && args.promptId === undefined) return undefined;
 		return answerResult(target.runId, "", "noop", stage.ok ? "Stage id or name is required." : stage.message);
 	}
 	const stageRunId = stage.runId ?? target.runId;
@@ -164,9 +158,7 @@ export async function workflowAnswerAction(
 	}
 	const promptId = args.promptId ?? snapshot?.pendingPrompt?.id;
 	if (promptId === undefined) {
-		return options.implicit === true
-			? undefined
-			: answerResult(stageRunId, stage.stageId, "noop", "No pending prompt to answer.");
+		return answerResult(stageRunId, stage.stageId, "noop", "No pending prompt to answer.");
 	}
 	if (!hasPayloadProperty(args))
 		return answerResult(stageRunId, stage.stageId, "noop", "Answer requires text, response, or message.");

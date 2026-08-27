@@ -159,21 +159,6 @@ type AnswerResult = {
 	| { status: "ok" | "noop" }
 	| { status: "failed"; code: "WORKFLOW_TERMINAL"; workflowStatus: RunStatus; error: string }
 );
-type SendResult = {
-	action: "send";
-	runId: string;
-	stageId: string;
-	delivery: string;
-	message: string;
-} & (
-	| { status: "ok" | "noop" }
-	| {
-			status: "failed";
-			code: "WORKFLOW_TERMINAL";
-			workflowStatus: RunStatus;
-			error: string;
-	  }
-);
 type PauseResult = { action: "pause"; runId: string; status: string; message: string };
 type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "noop"; message: string };
 type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };
@@ -226,7 +211,6 @@ export type WorkflowToolResult =
 	| StageDetailResult
 	| TranscriptResult
 	| AnswerResult
-	| SendResult
 	| PauseResult
 	| ReloadResult
 	| InterruptResult
@@ -504,11 +488,6 @@ export function renderResult(result: WorkflowRegisteredToolResult | null | undef
 		case "answer": {
 			const r = result as AnswerResult;
 			return renderNotice("WORKFLOW ANSWER", `${r.runId}/${r.stageId}: ${r.message}`, opts, themed);
-		}
-
-		case "send": {
-			const r = result as SendResult;
-			return renderNotice("WORKFLOW SEND", `${r.runId}/${r.stageId} ${r.delivery}: ${r.message}`, opts, themed);
 		}
 
 		case "pause": {

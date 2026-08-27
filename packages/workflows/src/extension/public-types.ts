@@ -211,7 +211,6 @@ export interface WorkflowToolArgs {
 		| "stage"
 		| "transcript"
 		| "answer"
-		| "send"
 		| "pause"
 		| "interrupt"
 		| "quit"
@@ -229,7 +228,6 @@ export interface WorkflowToolArgs {
 	includeToolOutput?: boolean;
 	text?: string;
 	response?: unknown;
-	delivery?: "auto" | "answer" | "prompt" | "steer" | "followUp" | "resume";
 	promptId?: string;
 	reason?: string;
 }

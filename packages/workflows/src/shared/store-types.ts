@@ -146,7 +146,7 @@ export interface StageInputQuestion {
  * Serializable descriptor of an in-stage `ask_user_question` (or readiness
  * gate) prompt brokered through `StageUiBroker`. Unlike {@link PendingPrompt}
  * (the simple input/confirm/select/editor HIL model), this mirrors the richer
- * structured ask_user_question shape so `workflow send` and status inspection
+ * structured ask_user_question shape so `workflow answer` and status inspection
  * can see the questions/options and answer the prompt without the TUI.
  *
  * Resolution lives in `StageUiBroker` (the awaiting `ctx.ui.custom` promise);
@@ -370,7 +370,7 @@ export interface StageSnapshot {
 	/**
 	 * Structured descriptor of a brokered ask_user_question / readiness-gate
 	 * prompt awaiting an answer. Set while the stage's `ctx.ui.custom` promise is
-	 * pending; resolution lives in `StageUiBroker`. Lets `workflow send` answer
+	 * pending; resolution lives in `StageUiBroker`. Lets `workflow answer` answer
 	 * the prompt headlessly. Distinct from {@link pendingPrompt}, which models
 	 * the simpler input/confirm/select/editor HIL prompts.
 	 */

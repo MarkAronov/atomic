@@ -658,14 +658,21 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
-	test("documents that named workflow launches run in the background", () => {
+	test("documents positive workflow communication and control guidance", () => {
 		for (const phrase of [
 			"In interactive chat, named workflow launches run in the background",
 			"`/workflow connect <run>`",
 			"see agents working",
 			"chat with and steer each stage",
 			"Inspection and control calls",
-			"`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`",
+			"`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `interrupt`, `quit`",
+			"A heartbeat is a periodic alignment check",
+			"continue a progressing run when no intervention is needed",
+			"Send free-form updates through Intercom",
+			"`<runId>:<stageKey>`",
+			"delivers immediately to live stages",
+			"before their first model turn",
+			"Use `ask` once the target has a live session that can reply",
 		]) {
 			expect(combinedGuidance).toContain(phrase);
 		}
@@ -828,6 +835,54 @@ describe("workflow-first execution routing", () => {
 		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
 	});
 
+	test("keeps live workflow communication status, help, docs, and examples on supported actions", async () => {
+		const liveGuidancePaths = [
+			"packages/workflows/src/extension/workflow-tool-content.ts",
+			"packages/workflows/src/extension/workflow-status-summary.ts",
+			"packages/workflows/src/extension/workflow-prompts.ts",
+			"packages/workflows/src/extension/workflow-schema.ts",
+			"packages/workflows/README.md",
+			"packages/coding-agent/docs/workflows.md",
+			"scripts/readme-feature-wall/tapes/6.2.tape",
+		];
+		const staleWorkflowSendGuidance = [
+			"workflow send",
+			'workflow({ action: "send"',
+			"workflow({ action: 'send'",
+			"pause/resume/interrupt/quit/send",
+			"`pause`/`resume`/`interrupt`/`quit`/`send`",
+			"send also takes stageId/promptId",
+			"messaging on nonterminal root runs and run control: `send`",
+			"For mutating actions (`reload`, `run`, `send`",
+			"Inspection and control calls (`status`, `stages`, `stage`, `transcript`, `send`",
+			"stage/prompt ids that `send` accepts",
+		];
+
+		for (const path of liveGuidancePaths) {
+			const currentGuidance = await readRepositoryFile(path);
+			for (const stale of staleWorkflowSendGuidance)
+				expect(currentGuidance, `${path}: ${stale}`).not.toContain(stale);
+		}
+
+		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		for (const current of [
+			"`answer` responds only to a pending primitive or structured human-input prompt",
+			"Use `workflow resume` only for paused workflow control",
+			"ordinary Intercom to `<runId>:<stageKey>`",
+			"delivers immediately to live stages",
+			"delivering them before their first model turn",
+			"Use `ask` once the target has a reply-capable live session",
+		]) {
+			expect(documentation).toContain(current);
+		}
+
+		const readme = await readRepositoryFile("packages/workflows/README.md");
+		expect(readme).toContain(
+			"Workflow `answer` handles pending human-input prompts, and workflow `resume` handles paused run control.",
+		);
+		expect(readme).not.toContain("the workflow tool's existing run-control `send` action");
+	});
+
 	test("keeps source-layout policy aligned across workflow authoring docs", async () => {
 		const sharedPolicyPhrases = [
 			"Keep a small, readable workflow in one entry file",
@@ -874,7 +929,7 @@ describe("workflow-first execution routing", () => {
 	 * alignment check gets read as an alarm, and the agent intervenes in, re-caps,
 	 * or polls a run that was progressing.
 	 */
-	test("assumes no budget and a 15-minute heartbeat unless the user asks", () => {
+	test("keeps the inherited budget and heartbeat cadence until the user asks", () => {
 		for (const phrase of [
 			"Do not pass a `budget` unless the user asked for a limit",
 			"omitting `budget` inherits the workflow declaration and config",
@@ -882,8 +937,8 @@ describe("workflow-first execution routing", () => {
 			"pass only the fields they named",
 			"Pass budget only when the user asked for a limit",
 			"Heartbeat cadence is 15 minutes by default",
-			"do not configure, shorten, or lengthen it unless the user explicitly asks",
-			"periodic alignment check rather than a failure",
+			"Keep that interval unless the user explicitly asks for a different cadence",
+			"A heartbeat is a periodic alignment check",
 		]) {
 			expect(modelVisibleRouting).toContain(phrase);
 		}

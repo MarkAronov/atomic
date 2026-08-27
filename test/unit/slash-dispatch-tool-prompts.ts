@@ -398,37 +398,17 @@ describe("tool run-control actions", () => {
 			dispose();
 		}
 	});
-
-	test.sequential("makeExecuteWorkflowTool auto delivery without a targeted prompt starts an idle live prompt", async () => {
-		const runId = testRunId(`stage-tool-send-auto-live-${Date.now()}`);
-		store.recordRunStart(makeInflightRun(runId));
-		store.recordStageStart(runId, {
-			id: "stage-auto-live",
-			name: "ask",
-			status: "running",
-			parentIds: [],
-			toolEvents: [],
-		});
-		const { followUps, prompts, dispose } = registerLiveStageHandle(runId, "stage-auto-live");
+	test.sequential("makeExecuteWorkflowTool rejects removed send without mutating workflow state", async () => {
 		const handler = makeToolHandler();
+		const before = store.graphSnapshot();
 
-		try {
-			const result = await handler({ action: "send", runId, stageId: "ask", text: "next" }, {} as never);
-
-			assert.equal(result.action, "send");
-			const send = result as {
-				action: string;
-				delivery: string;
-				status: string;
-				message: string;
-			};
-			assert.equal(send.delivery, "prompt");
-			assert.equal(send.status, "ok");
-			assert.equal(send.message, "Prompt started for stage.");
-			assert.deepEqual(prompts, ["next"]);
-			assert.deepEqual(followUps, []);
-		} finally {
-			dispose();
-		}
+		await assert.rejects(
+			handler(
+				{ action: "send", runId: "missing", stageId: "review", text: "must not deliver" } as never,
+				{} as never,
+			),
+			/unknown action "send"/,
+		);
+		assert.deepEqual(store.graphSnapshot(), before);
 	});
 });

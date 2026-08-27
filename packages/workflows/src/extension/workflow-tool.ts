@@ -27,7 +27,6 @@ import {
 	workflowStagesResult,
 	workflowTranscriptResult,
 } from "./workflow-tool-inspection.js";
-import { type WorkflowSendDeps, workflowSendAction } from "./workflow-tool-send.js";
 
 type DurableInspectionSourceResolution =
 	| { readonly kind: "local" }
@@ -68,7 +67,6 @@ export function makeExecuteWorkflowTool(
 	runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
 	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
-	sendDeps: WorkflowSendDeps = {},
 ): (
 	args: WorkflowToolArgs,
 	ctx: PiExecuteContext,
@@ -176,13 +174,8 @@ export function makeExecuteWorkflowTool(
 				if (action === "stage") return workflowStageResult(args, source);
 				return workflowTranscriptResult(args, source);
 			}
-			case "answer": {
-				const result = await awaitRequest(workflowAnswerAction(args));
-				if (result === undefined) throw new Error("Workflow answer returned no result");
-				return result;
-			}
-			case "send":
-				return awaitRequest(workflowSendAction(args, sendDeps));
+			case "answer":
+				return awaitRequest(workflowAnswerAction(args));
 			case "pause":
 				return awaitRequest(workflowPauseAction(args));
 			case "reload":
