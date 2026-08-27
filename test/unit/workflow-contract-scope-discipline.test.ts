@@ -2,10 +2,11 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { renderGoalContinuationPrompt } from "../../packages/workflows/builtin/goal-prompts.js";
+import { renderGoalContinuationPrompt, renderReviewerPrompt } from "../../packages/workflows/builtin/goal-prompts.js";
 import { renderForkedOrchestratorPrompt } from "../../packages/workflows/builtin/ralph-forked-prompts.js";
 import {
 	LITERAL_OBJECTIVE_CONTRACT,
+	PENDING_STAGE_DELIVERY_GUIDANCE_LINES,
 	SCOPE_DISCIPLINE_CONTRACT,
 	STEERING_PROPAGATION_CONTRACT,
 	withSteeringPropagation,
@@ -66,12 +67,39 @@ describe("workflow contract discipline", () => {
 	});
 
 	test("goal implementation stages inherit both contracts and pending-stage distribution guidance", () => {
-		const prompt = renderGoalContinuationPrompt({ receipts: [] }, "/tmp/goal-ledger.json", 3, []);
+		const prompt = withSteeringPropagation(
+			renderGoalContinuationPrompt({ receipts: [] }, "/tmp/goal-ledger.json", 3, []),
+		);
 		assert.match(prompt, /<scope_discipline>/);
-		assert.match(prompt, /<pending_stage_delivery_guidance>/);
+		assert.doesNotMatch(prompt, /<pending_stage_delivery_guidance>/);
 		assert.match(prompt, /including stages that have not started/);
 		assert.match(prompt, /Prefer the smallest diff that satisfies the contract/);
 		assert.match(prompt, /Only the user may change the contract/);
+	});
+
+	test("goal continuation and reviewer prompts emit shared pending-stage guidance exactly once", () => {
+		const prompts = [
+			withSteeringPropagation(renderGoalContinuationPrompt({ receipts: [] }, "/tmp/goal-ledger.json", 3, [])),
+			withSteeringPropagation(
+				renderReviewerPrompt({
+					reviewerRole: "reviewer",
+					focus: "correctness",
+					objective: "review the change",
+					ledgerPath: "/tmp/goal-ledger.json",
+					orchestratorReceiptPath: "/tmp/receipt.md",
+					comparisonBaseBranch: "main",
+					reviewQuorum: 2,
+					blockerThreshold: 3,
+					createPr: false,
+				}),
+			),
+		];
+		for (const prompt of prompts) {
+			assert.doesNotMatch(prompt, /<pending_stage_delivery_guidance>/);
+			for (const instruction of PENDING_STAGE_DELIVERY_GUIDANCE_LINES) {
+				assert.equal(prompt.split(instruction).length - 1, 1, instruction);
+			}
+		}
 	});
 
 	test("ralph continuation iterations keep scope discipline bound", () => {
