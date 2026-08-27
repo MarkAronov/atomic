@@ -20,23 +20,40 @@ export function createWorkflowPendingStageDelivery(
 	stageId: string,
 	stageName: string,
 ): WorkflowPendingStageDelivery {
-	let resolveReady!: () => void;
-	let rejectReady!: (error: Error) => void;
-	const readyPromise = new Promise<void>((resolve, reject) => {
-		resolveReady = resolve;
-		rejectReady = reject;
-	});
+	let resolveReady: (() => void) | undefined;
+	let rejectReady: ((error: Error) => void) | undefined;
+	let readyPromise: Promise<void> | undefined;
+	let drainError: Error | undefined;
 	let drainPromise: Promise<void> | undefined;
+	const pendingReady = (): Promise<void> => {
+		if (readyPromise === undefined) {
+			readyPromise = new Promise<void>((resolve, reject) => {
+				resolveReady = resolve;
+				rejectReady = reject;
+			});
+		}
+		return readyPromise;
+	};
 	return {
 		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
 		deliverPending(deliver) {
-			drainPromise ??= deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver).then(
-				() => resolveReady(),
-				(error: Error) => {
-					rejectReady(error);
-					throw error;
-				},
-			);
+			if (drainPromise === undefined) {
+				drainError = undefined;
+				const attempt = deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver);
+				const drain = attempt.then(
+					() => resolveReady?.(),
+					(error: Error) => {
+						drainError = error;
+						rejectReady?.(error);
+						readyPromise = undefined;
+						resolveReady = undefined;
+						rejectReady = undefined;
+						if (drainPromise === drain) drainPromise = undefined;
+						throw error;
+					},
+				);
+				drainPromise = drain;
+			}
 			return drainPromise;
 		},
 		ready() {
@@ -46,7 +63,7 @@ export function createWorkflowPendingStageDelivery(
 			) {
 				return undefined;
 			}
-			return readyPromise;
+			return drainError === undefined ? pendingReady() : Promise.reject(drainError);
 		},
 	};
 }

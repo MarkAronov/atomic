@@ -4,14 +4,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { AgentSession, CreateAgentSessionOptions } from "@bastani/atomic";
+import { Type } from "typebox";
 import { afterAll, beforeAll, test } from "vitest";
+import type { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.ts";
 import type { BrokerMessage } from "../../packages/intercom/types.js";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `${RUN_ID}:reviewer`;
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
+const BROKER_STARTUP_TIMEOUT_MS = 10_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -25,12 +30,18 @@ const { getBrokerSocketPath } = await import("../../packages/intercom/broker/pat
 const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { default: intercom } = await import("../../packages/intercom/index.js");
+const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
 const { DbosDurableBackend } = await import("../../packages/workflows/src/durable/dbos-backend.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+const { WorkflowStageAdmissionBoundary: StageAdmissionBoundary } = await import(
+	"../../packages/coding-agent/src/core/workflow-stage-admission.ts"
+);
 const { registerPendingStageIntercomBridge } = await import(
 	"../../packages/workflows/src/extension/pending-stage-intercom.js"
 );
+const { workflow } = await import("../../packages/workflows/src/authoring/workflow.js");
+const { run } = await import("../../packages/workflows/src/runs/foreground/executor.js");
 const { createWorkflowPendingStageDelivery } = await import(
 	"../../packages/workflows/src/runs/foreground/pending-stage-delivery.js"
 );
@@ -48,6 +59,11 @@ interface TestContext {
 		workflowStageId?: string;
 		workflowStageName?: string;
 		pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>;
+		messageAdmission?: {
+			readonly boundary: WorkflowStageAdmissionBoundary;
+			readonly extensionState: Map<string, object>;
+			isOpen(): boolean;
+		};
 	};
 	sessionManager: { getSessionId(): string };
 	ui: {
@@ -104,6 +120,7 @@ function extensionFixture(
 	initialName: string,
 	pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>,
 	intercomGroup = GROUP,
+	orchestrationContext?: TestContext["orchestrationContext"],
 ) {
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
@@ -127,21 +144,45 @@ function extensionFixture(
 		cwd: repoRoot,
 		isIdle: () => true,
 		model: { id: "test-model" },
-		orchestrationContext: pendingStageDelivery
-			? {
-					intercomGroup,
-					kind: "workflow-stage",
-					workflowRunId: RUN_ID,
-					workflowStageId: "reviewer-id",
-					workflowStageName: "reviewer",
-					pendingStageDelivery,
-				}
-			: { intercomGroup },
+		orchestrationContext:
+			orchestrationContext ??
+			(pendingStageDelivery
+				? {
+						intercomGroup,
+						kind: "workflow-stage",
+						workflowRunId: RUN_ID,
+						workflowStageId: "reviewer-id",
+						workflowStageName: "reviewer",
+						pendingStageDelivery,
+					}
+				: { intercomGroup }),
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
 			confirm: async () => true,
 			notify() {},
 		},
+	};
+	const recordInjected = (messages: readonly InjectedMessage[], options: InjectedMessageOptions | undefined): void => {
+		injectedMessages.push(...messages);
+		injectedOptions.push(...messages.map(() => options));
+		resolveInjectedWaiters();
+	};
+	const admitInjected = async (
+		messages: readonly InjectedMessage[],
+		options: InjectedMessageOptions | undefined,
+	): Promise<void> => {
+		const boundary = context.orchestrationContext.messageAdmission?.boundary;
+		if (boundary === undefined || options?.stageAdmissionKey === undefined) {
+			recordInjected(messages, options);
+			return;
+		}
+		await boundary.admit(
+			options.stageAdmissionKey,
+			() => recordInjected(messages, options),
+			() => {
+				throw new Error("workflow stage admission was sealed before pre-start delivery");
+			},
+		).completion;
 	};
 	const pi = {
 		on(name: string, handler: LifecycleHandler) {
@@ -157,14 +198,10 @@ function extensionFixture(
 		registerMessageRenderer() {},
 		appendEntry() {},
 		async sendMessage(message: InjectedMessage, options?: InjectedMessageOptions) {
-			injectedMessages.push(message);
-			injectedOptions.push(options);
-			resolveInjectedWaiters();
+			await admitInjected([message], options);
 		},
 		async sendMessages(messages: InjectedMessage[], options?: InjectedMessageOptions) {
-			injectedMessages.push(...messages);
-			injectedOptions.push(...messages.map(() => options));
-			resolveInjectedWaiters();
+			await admitInjected(messages, options);
 		},
 		getSessionName: () => sessionName,
 		setSessionName(name: string) {
@@ -215,21 +252,30 @@ function extensionFixture(
 	};
 }
 
-async function waitForBroker(socketPath: string): Promise<void> {
-	const deadline = Date.now() + 10_000;
-	while (Date.now() < deadline) {
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const probe = net.createConnection(socketPath);
-			probe.once("connect", () => {
-				probe.destroy();
-				resolveConnected(true);
-			});
-			probe.once("error", () => resolveConnected(false));
-		});
-		if (connected) return;
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-	}
-	throw new Error("Broker socket did not become ready");
+async function waitForBroker(child: ChildProcess): Promise<void> {
+	await new Promise<void>((resolveReady, rejectReady) => {
+		let stdout = "";
+		const finish = (error?: Error): void => {
+			clearTimeout(timer);
+			child.stdout?.off("data", onStdout);
+			child.off("exit", onExit);
+			if (error === undefined) resolveReady();
+			else rejectReady(error);
+		};
+		const onStdout = (chunk: Buffer | string): void => {
+			stdout += chunk.toString();
+			if (stdout.includes("Intercom broker started")) finish();
+		};
+		const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+			finish(new Error(`Intercom broker exited before readiness (code=${String(code)}, signal=${String(signal)})`));
+		};
+		const timer = setTimeout(
+			() => finish(new Error(`Intercom broker did not become ready within ${BROKER_STARTUP_TIMEOUT_MS}ms`)),
+			BROKER_STARTUP_TIMEOUT_MS,
+		);
+		child.stdout?.on("data", onStdout);
+		child.once("exit", onExit);
+	});
 }
 
 async function executeIntercom(
@@ -266,7 +312,7 @@ class RawBrokerClient {
 				(error) => this.socket.destroy(error),
 			),
 		);
-		this.socket.on("error", () => {});
+		this.socket.on("error", (error) => this.rejectWaiters(error));
 		this.socket.on("close", () => this.rejectWaiters(new Error("Broker client closed")));
 	}
 
@@ -351,24 +397,28 @@ let broker: ChildProcess | undefined;
 beforeAll(async () => {
 	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
-		stdio: "ignore",
+		stdio: ["ignore", "pipe", "pipe"],
 	});
-	await waitForBroker(getBrokerSocketPath());
+	await waitForBroker(broker);
 });
 
 afterAll(async () => {
 	await Promise.all([...rawClients].map((client) => client.close()));
-	if (broker !== undefined && broker.exitCode === null) {
+	const activeBroker = broker;
+	if (activeBroker !== undefined && activeBroker.exitCode === null) {
 		await new Promise<void>((resolve, reject) => {
 			const timer = setTimeout(
-				() => reject(new Error("Broker did not exit after SIGTERM")),
+				() => reject(new Error(`Broker did not exit within ${BROKER_SHUTDOWN_TIMEOUT_MS}ms after SIGTERM`)),
 				BROKER_SHUTDOWN_TIMEOUT_MS,
 			);
-			broker?.once("exit", () => {
+			activeBroker.once("exit", () => {
 				clearTimeout(timer);
 				resolve();
 			});
-			broker?.kill("SIGTERM");
+			if (!activeBroker.kill("SIGTERM")) {
+				clearTimeout(timer);
+				reject(new Error("Broker rejected SIGTERM"));
+			}
 		});
 	}
 	setDurableBackend(undefined);
@@ -571,6 +621,232 @@ test("one composite workflow-stage target transitions atomically from durable qu
 	}
 });
 
+test("a durable pending admission survives a real stage-session fallback attempt exactly once", async () => {
+	const messageId = "2717-stage-attempt-restart-message";
+	const admissionId = `intercom:${messageId}`;
+	const replayKey = "stage:reviewer:1";
+	const attemptSessionIds = ["2717-reviewer-attempt-1", "2717-reviewer-attempt-2"] as const;
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	backend.registerWorkflow({
+		workflowId: RUN_ID,
+		name: "attempt-restart",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	setDurableBackend(backend);
+	const owner = extensionFixture("attempt-restart-owner", "attempt-restart-owner", undefined, "default");
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	const sender = new RawBrokerClient();
+	rawClients.add(sender);
+	const releaseStageInitialization = Promise.withResolvers<void>();
+	const stageRegistered = Promise.withResolvers<void>();
+	const lifecycle: string[] = [];
+	const attempts: Array<{
+		readonly fixture: ReturnType<typeof extensionFixture>;
+		readonly model: string;
+		readonly orchestrationContext: TestContext["orchestrationContext"];
+		readonly sessionId: string;
+		readonly shutdown: () => Promise<void>;
+	}> = [];
+	const adapters = {
+		agentSession: {
+			async create(options: CreateAgentSessionOptions) {
+				const rawContext = options.orchestrationContext;
+				assert.equal(rawContext?.kind, "workflow-stage");
+				const orchestrationContext = rawContext as TestContext["orchestrationContext"];
+				const pendingStageDelivery = orchestrationContext.pendingStageDelivery;
+				assert.ok(pendingStageDelivery, "stage attempt did not receive production pending delivery");
+				if (orchestrationContext.messageAdmission === undefined) {
+					const boundary = new StageAdmissionBoundary();
+					orchestrationContext.messageAdmission = {
+						boundary,
+						extensionState: new Map(),
+						isOpen: () => boundary.isOpen(),
+					};
+				}
+				const modelValue = options.model;
+				const model =
+					typeof modelValue === "string"
+						? modelValue
+						: `${String(modelValue?.provider)}/${String(modelValue?.id)}`;
+				const sessionId = attemptSessionIds[attempts.length];
+				assert.ok(sessionId, `unexpected stage attempt ${attempts.length + 1}`);
+				const fixture = extensionFixture(sessionId, "reviewer", pendingStageDelivery, GROUP, orchestrationContext);
+				if (attempts.length === 0) {
+					fixture.pi.sendMessage = async () => {
+						throw new Error("503 service unavailable before external pending-stage admission");
+					};
+				}
+				intercomHeavy(fixture.pi as never);
+				let stopped = false;
+				const shutdown = async (): Promise<void> => {
+					if (stopped) return;
+					stopped = true;
+					await fixture.shutdown();
+				};
+				attempts.push({ fixture, model, orchestrationContext, sessionId, shutdown });
+				try {
+					await fixture.start();
+				} catch (error) {
+					await shutdown();
+					throw error;
+				}
+				if (fixture.injectedMessages.length > 0) lifecycle.push(`admission:${sessionId}`);
+				const messages: AgentSession["messages"] = [];
+				const session: StageSessionRuntime & {
+					readonly orchestrationContext: TestContext["orchestrationContext"];
+					readonly state: object;
+					readonly sessionManager: TestContext["sessionManager"];
+					readonly modelRuntime: object;
+					getContextUsage(): undefined;
+				} = {
+					async prompt() {
+						lifecycle.push(`task:${sessionId}`);
+						return "fallback attempt completed";
+					},
+					async steer() {},
+					async followUp() {},
+					subscribe: () => () => {},
+					sessionFile: join(agentDir, `${sessionId}.jsonl`),
+					sessionId,
+					async setModel() {},
+					setThinkingLevel() {},
+					cycleModel: async () => undefined,
+					cycleThinkingLevel: () => undefined,
+					agent: { waitForIdle: async () => {} } as never,
+					model: {
+						provider: model.split("/")[0] ?? "test",
+						id: model.split("/")[1] ?? model,
+					} as AgentSession["model"],
+					thinkingLevel: "medium",
+					messages,
+					isStreaming: false,
+					navigateTree: async () => ({ cancelled: false }),
+					compact: async () => ({}) as never,
+					abortCompaction() {},
+					async abort() {},
+					dispose: shutdown,
+					getLastAssistantText: () => "fallback attempt completed",
+					orchestrationContext,
+					state: {},
+					sessionManager: fixture.context.sessionManager,
+					modelRuntime: {},
+					getContextUsage: () => undefined,
+				};
+				return { session };
+			},
+		},
+	};
+	const definition = workflow({
+		name: "attempt-restart",
+		description: "",
+		inputs: {},
+		outputs: { result: Type.String() },
+		run: async (ctx) => {
+			const reviewer = ctx.stage("reviewer", {
+				tools: ["intercom"],
+				model: "anthropic/primary",
+				fallbackModels: ["openai/fallback"],
+				settingsManager: {
+					getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+					getRetrySettings: () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0 }),
+				},
+			} as never);
+			stageRegistered.resolve();
+			await releaseStageInitialization.promise;
+			return { result: String(await reviewer.prompt("attempt 2 first model task")) };
+		},
+	});
+	let runPromise: ReturnType<typeof run> | undefined;
+
+	try {
+		await owner.start();
+		runPromise = run(definition, {}, { runId: RUN_ID, store, adapters });
+		await stageRegistered.promise;
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await sender.register("attempt-restart-sender", GROUP);
+		sender.send({
+			type: "send",
+			to: TARGET,
+			message: {
+				id: messageId,
+				timestamp: 1_787_860_000_000,
+				content: { text: "preserve this admission across the stage attempt restart" },
+			},
+		});
+		const queued = await sender.next("queued", (frame) => frame.messageId === messageId);
+		assert.equal(queued.position, 1);
+		const queuedEntry = store.pendingStageMessagesFor(RUN_ID, "reviewer")[0];
+		assert.equal(queuedEntry?.id, messageId);
+		assert.equal(queuedEntry?.stageReplayKey, replayKey);
+		assert.equal(queuedEntry?.status, "queued");
+
+		releaseStageInitialization.resolve();
+		const result = await runPromise;
+		assert.equal(result.status, "completed", JSON.stringify(result, undefined, 2));
+		assert.deepEqual(
+			attempts.map(({ model, sessionId }) => ({ model, sessionId })),
+			[
+				{ model: "anthropic/primary", sessionId: attemptSessionIds[0] },
+				{ model: "openai/fallback", sessionId: attemptSessionIds[1] },
+			],
+		);
+		assert.notEqual(attempts[0]?.sessionId, attempts[1]?.sessionId);
+		assert.equal(new Set(attempts.map(({ orchestrationContext }) => orchestrationContext.workflowStageId)).size, 1);
+		assert.equal(queuedEntry?.stageId, attempts[1]?.orchestrationContext.workflowStageId);
+		assert.deepEqual(lifecycle, [`admission:${attemptSessionIds[1]}`, `task:${attemptSessionIds[1]}`]);
+		assert.equal(attempts[0]?.fixture.injectedMessages.length, 0);
+		assert.equal(attempts[1]?.fixture.injectedMessages.length, 1);
+		const visible = attempts.flatMap(({ fixture }) => fixture.injectedMessages);
+		assert.notStrictEqual(attempts[0]?.orchestrationContext, attempts[1]?.orchestrationContext);
+		assert.notStrictEqual(
+			attempts[0]?.orchestrationContext.messageAdmission?.boundary,
+			attempts[1]?.orchestrationContext.messageAdmission?.boundary,
+		);
+		assert.equal(visible.length, 1);
+		assert.equal(visible[0]?.details?.message?.id, messageId);
+		assert.equal(visible[0]?.details?.from?.id, queuedEntry?.from.id);
+		assert.equal(visible[0]?.details?.from?.name, "attempt-restart-sender");
+		assert.equal(attempts[1]?.fixture.injectedOptions[0]?.stageAdmissionKey, admissionId);
+		const durableEntry = backend.getWorkflow(RUN_ID)?.pendingStageMessages?.[0];
+		assert.deepEqual(
+			durableEntry && {
+				id: durableEntry.id,
+				stageId: durableEntry.stageId,
+				stageReplayKey: durableEntry.stageReplayKey,
+				status: durableEntry.status,
+			},
+			{
+				id: messageId,
+				stageId: attempts[1]?.orchestrationContext.workflowStageId,
+				stageReplayKey: replayKey,
+				status: "delivered",
+			},
+		);
+		assert.equal(store.runs().find((candidate) => candidate.id === RUN_ID)?.status, "completed");
+		assert.deepEqual(
+			result.stages[0]?.modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
+			[
+				{ model: "anthropic/primary", success: false },
+				{ model: "openai/fallback", success: true },
+			],
+		);
+	} finally {
+		releaseStageInitialization.resolve();
+		try {
+			if (runPromise !== undefined) await runPromise;
+		} finally {
+			await Promise.all(attempts.map(({ shutdown }) => shutdown()));
+			await sender.close();
+			rawClients.delete(sender);
+			disposeBridge();
+			await owner.shutdown();
+		}
+	}
+});
 test("raw malformed messages are rejected before durable mutation and valid optional fields survive DBOS reload", async () => {
 	const runId = "2f34ff35-9813-4a60-b7a3-24698cd01592";
 	const group = `workflow:${runId}`;
