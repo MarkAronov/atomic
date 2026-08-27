@@ -126,6 +126,7 @@ class IntercomBroker {
     let sessionId: string | null = null;
 
     const reader = createMessageReader((msg) => {
+      if (socket.destroyed || socket.writableEnded) return;
       this.handleMessage(socket, msg, sessionId, (id) => {
         sessionId = id;
       });
@@ -446,20 +447,27 @@ class IntercomBroker {
         }
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
+        const ownerGroup = normalizeGroup(owner?.info.group);
+        const activeExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
         if (
           owner === undefined ||
-          normalizeGroup(clientMessage.group) !== normalizeGroup(owner.info.group) ||
-          (existing !== undefined &&
-            (existing.sessionId !== currentId || existing.capability !== clientMessage.capability) &&
-            this.sessions.has(existing.sessionId))
+          normalizeGroup(clientMessage.group) !== ownerGroup ||
+          (activeExisting !== undefined &&
+            (activeExisting.capability !== clientMessage.capability || activeExisting.group !== ownerGroup))
         ) {
           writeMessage(socket, { type: "registration_failed", reason: "Pending-stage route is not authorized" });
           socket.end();
           return;
         }
+        if (activeExisting !== undefined && activeExisting.sessionId !== currentId) {
+          // A stage replays the process-shared owner announcement before
+          // registering its live aliases. Authenticate it without replacing
+          // the workflow owner that handles pending delivery.
+          break;
+        }
         this.pendingStageRoutes.set(clientMessage.runId, {
           sessionId: currentId,
-          group: normalizeGroup(owner.info.group),
+          group: ownerGroup,
           capability: clientMessage.capability,
         });
         break;

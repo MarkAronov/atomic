@@ -5,10 +5,11 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test } from "vitest";
+import type { PendingStageMessageRequest } from "../../packages/intercom/broker/client.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
-import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
+import type { BrokerMessage, ClientMessage, Message } from "../../packages/intercom/types.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -18,23 +19,40 @@ const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const TARGET = `${RUN_ID}:reviewer`;
 const VICTIM_GROUP = `workflow:${RUN_ID}`;
 const ROUTE_CAPABILITY = "victim-workflow-route-capability";
+const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const clients = new Set<WireClient>();
+const realClients = new Set<InstanceType<typeof IntercomClient>>();
 let broker: ChildProcess | undefined;
 let brokerOutput = "";
 
 class WireClient {
 	readonly received: BrokerMessage[] = [];
+	readonly rejectionLifecycle: string[] = [];
 	readonly socket = net.createConnection(socketPath);
 	readonly closed: Promise<void>;
+	closeHadError: boolean | undefined;
 	private consumed = new Set<number>();
 
 	constructor() {
 		clients.add(this);
-		this.closed = new Promise((resolveClosed) => this.socket.once("close", () => resolveClosed()));
+		this.closed = new Promise((resolveClosed) => {
+			this.socket.once("close", (hadError) => {
+				this.closeHadError = hadError;
+				this.rejectionLifecycle.push("close");
+				resolveClosed();
+			});
+		});
+		this.socket.once("end", () => this.rejectionLifecycle.push("end"));
 		this.socket.on(
 			"data",
 			createMessageReader(
-				(message) => this.received.push(message as BrokerMessage),
+				(message) => {
+					const brokerMessage = message as BrokerMessage;
+					if (brokerMessage.type === "registration_failed") this.rejectionLifecycle.push("registration_failed");
+					this.received.push(brokerMessage);
+				},
 				(error) => this.socket.destroy(error),
 			),
 		);
@@ -46,6 +64,16 @@ class WireClient {
 		await new Promise<void>((resolveConnected, reject) => {
 			this.socket.once("connect", resolveConnected).once("error", reject);
 		});
+	}
+
+	sendBatch(messages: readonly unknown[]): void {
+		const frames = messages.map((message) => {
+			const payload = Buffer.from(JSON.stringify(message), "utf8");
+			const header = Buffer.alloc(4);
+			header.writeUInt32BE(payload.length);
+			return Buffer.concat([header, payload]);
+		});
+		this.socket.write(Buffer.concat(frames));
 	}
 
 	send(message: ClientMessage): void {
@@ -121,12 +149,144 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+	for (const client of realClients) await client.disconnect();
 	for (const client of clients) client.socket.destroy();
 	if (broker?.exitCode === null) {
 		broker.kill("SIGTERM");
 		await new Promise<void>((resolveExit) => broker?.once("exit", () => resolveExit()));
 	}
+	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 	rmSync(agentDir, { recursive: true, force: true });
+});
+test("broker flushes registration_failed before an orderly close and ignores later pipelined frames", async () => {
+	const runId = "892588e7-bf6c-4e44-bba8-bb298794a9c4";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const attacker = new WireClient();
+	const observer = new WireClient();
+	await register(owner, "rejection-owner", group);
+	await register(attacker, "rejection-attacker", group);
+	await register(observer, "rejection-observer", group);
+	owner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "rejection-owner-capability",
+	});
+	assert.equal(await registrationOutcome(owner, "rejection-owner-processed"), "acknowledged");
+
+	attacker.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "different-capability",
+		},
+		{ type: "list", requestId: "must-not-run-after-rejection" },
+	]);
+	assert.deepEqual(await attacker.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Pending-stage route is not authorized",
+	});
+	await attacker.closed;
+	assert.deepEqual(attacker.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(attacker.closeHadError, false);
+	assert.equal(
+		attacker.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-rejection",
+		),
+		false,
+	);
+
+	const missingCapability = new WireClient();
+	await register(missingCapability, "missing-capability-attacker", group);
+	missingCapability.sendBatch([
+		{ type: "register_pending_stage_route", runId, group },
+		{ type: "list", requestId: "must-not-run-after-invalid-registration" },
+	]);
+	await missingCapability.closed;
+	assert.equal(
+		missingCapability.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-invalid-registration",
+		),
+		false,
+	);
+
+	observer.send({ type: "list", requestId: "rejection-log-barrier" });
+	await observer.next("sessions", (frame) => frame.requestId === "rejection-log-barrier");
+	assert.equal(brokerOutput.includes("write after end"), false, brokerOutput);
+});
+
+function productionRegistration(name: string, group: string) {
+	return { name, group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 };
+}
+
+test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
+	const runId = "13ec4058-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "production-shared-owner-stage-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [owner, stage, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("workflow-owner", group));
+	await stage.connect(productionRegistration("workflow-stage", group));
+	await sender.connect(productionRegistration("workflow-sender", group));
+
+	owner.registerPendingStageRoute(runId, group, capability);
+	await owner.listSessions();
+	stage.registerPendingStageRoute(runId, group, capability);
+	await stage.listSessions();
+
+	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const pendingSend = sender.send(`${runId}:pending-stage`, { text: "queue before stage startup" });
+	const request = await pendingRequest;
+	assert.equal(request.message.content.text, "queue before stage startup");
+	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+	const pendingResult = await pendingSend;
+	assert.deepEqual(pendingResult, {
+		id: pendingResult.id,
+		delivered: false,
+		queued: true,
+		runId,
+		stageKey: "pending-stage",
+		position: 1,
+	});
+
+	for (const target of ["ordinary-unknown", "2ca70520-338b-4740-a94c-d814b08b4155:reviewer"]) {
+		const unknownResult = await sender.send(target, { text: "ordinary miss" });
+		assert.deepEqual(unknownResult, {
+			id: unknownResult.id,
+			delivered: false,
+			reason: "Session not found",
+		});
+	}
+	const askRefusal = await sender.send(`${runId}:still-pending`, {
+		text: "blocking question",
+		expectsReply: true,
+	});
+	assert.equal(askRefusal.delivered, false);
+	assert.match(askRefusal.reason ?? "", /Cannot ask a workflow stage whose session has not initialized\. Use send/);
+
+	await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-id", "reviewer"], capability);
+	const liveMessage = new Promise<Message>((resolveMessage) => {
+		stage.once("message", (_from, message) => resolveMessage(message));
+	});
+	const liveSend = await sender.send(`${runId}:reviewer`, { text: "deliver to live composite" });
+	assert.equal(liveSend.delivered, true);
+	assert.equal((await liveMessage).content.text, "deliver to live composite");
+
+	assert.equal(owner.isConnected(), true);
+	assert.equal(stage.isConnected(), true);
+	assert.equal(sender.isConnected(), true);
+	await Promise.all([owner.listSessions(), stage.listSessions(), sender.listSessions()]);
+	assert.equal(brokerOutput.includes("write after end"), false);
 });
 
 test("broker rejects cross-group pending-route impersonation before route mutation", async () => {
