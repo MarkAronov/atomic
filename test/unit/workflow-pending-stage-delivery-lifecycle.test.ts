@@ -11,8 +11,12 @@ import { InboundMessageAdmission } from "../../packages/intercom/inbound-message
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { settleUndeliverablePendingStageMessages } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
+import {
+	registerPendingStageIntercomBridge,
+	settleUndeliverablePendingStageMessages,
+} from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
 	PendingStageMessage,
@@ -67,10 +71,104 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 
 afterEach(() => {
 	setDurableBackend(undefined);
+	resetDbosLifecycleForTests();
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("pending workflow stage delivery lifecycle", () => {
+	test("registers against an empty store without touching an uninitialized durable backend", async () => {
+		const activeStore = createStore();
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests();
+		const warnings: unknown[][] = [];
+		const originalWarn = console.warn;
+		console.warn = (...args: unknown[]) => warnings.push(args);
+		try {
+			const dispose = registerPendingStageIntercomBridge({}, activeStore);
+			await new Promise((resolve) => setImmediate(resolve));
+			dispose();
+			assert.deepEqual(warnings, []);
+		} finally {
+			console.warn = originalWarn;
+		}
+	});
+
+	test("sweeps eligible durable state added after empty startup exactly once", async () => {
+		const activeStore = createStore();
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests();
+		let notifications = 0;
+		const dispose = registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit(event, payload) {
+						if (event !== "atomic:workflow-pending-stage-undeliverable") return;
+						notifications += 1;
+						payload.handled = true;
+						payload.completion = Promise.resolve(true);
+					},
+				},
+			},
+			activeStore,
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const backend = new InMemoryDurableBackend();
+		const runId = testRunId("pending-delivery-after-empty-startup");
+		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		activeStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		activeStore.recordStageStart(runId, {
+			id: "review-stage",
+			name: "reviewer",
+			status: "pending",
+			parentIds: [],
+			toolEvents: [],
+		});
+		await activeStore.queueStageMessage(
+			pendingMessage(runId, "review-stage"),
+			`workflow:${runId}`,
+			`workflow:${runId}`,
+			backend,
+		);
+		const notified = Promise.withResolvers<void>();
+		const unsubscribe = activeStore.subscribeInvalidation(() => {
+			if (activeStore.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt !== undefined) {
+				notified.resolve();
+			}
+		});
+		activeStore.recordRunEnd(runId, "completed");
+		await notified.promise;
+		unsubscribe();
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.equal(notifications, 1);
+		assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
+		assert.equal(typeof activeStore.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt, "string");
+		dispose();
+	});
+
+	test("reports a durable backend error when eligible settlement work exists", async () => {
+		const { activeStore } = await lifecycleFixture("completed");
+		setDurableBackend(undefined);
+		resetDbosLifecycleForTests();
+		const warnings: unknown[][] = [];
+		const originalWarn = console.warn;
+		console.warn = (...args: unknown[]) => warnings.push(args);
+		let dispose = (): void => {};
+		try {
+			dispose = registerPendingStageIntercomBridge({}, activeStore);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(warnings.length, 1);
+			assert.equal(warnings[0]?.[0], "atomic-workflows: pending stage delivery sweep failed");
+			assert.equal((warnings[0]?.[1] as Error | undefined)?.name, "DbosNotReadyError");
+			assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "queued");
+		} finally {
+			dispose();
+			console.warn = originalWarn;
+		}
+	});
+
 	test("marks a skipped stage message undeliverable and notifies its sender", async () => {
 		const { activeStore } = await lifecycleFixture("running", "skipped");
 		const notifications: string[] = [];
