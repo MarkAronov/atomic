@@ -25,6 +25,7 @@ import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durabl
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -529,6 +530,12 @@ describe("durable pending-stage resume", () => {
 					id: "sender-session",
 					name: "sender",
 					group: `workflow:${workflowId}`,
+					cwd: "/durable/project",
+					model: "test-model",
+					pid: 2717,
+					startedAt: 10,
+					lastActivity: 20,
+					status: "tool:intercom",
 				},
 				message: { id: messageId, timestamp: 20, content: { text: "survive process resume" } },
 				queuedAt: "2026-08-27T20:00:00.000Z",
@@ -569,12 +576,18 @@ describe("durable pending-stage resume", () => {
 		setDurableBackend(reader);
 		const freshStore = createStore();
 		const jobs = createJobTracker();
+		const lifecycle: string[] = [];
 		const observedBeforeFirstTask: Array<{
 			readonly id: string;
 			readonly text: string;
 			readonly senderId: string;
 			readonly senderName: string | undefined;
 			readonly senderGroup: string | undefined;
+			readonly senderCwd: string;
+			readonly senderModel: string;
+			readonly senderPid: number;
+			readonly senderStartedAt: number;
+			readonly senderLastActivity: number;
 		}> = [];
 		const definition = workflow({
 			name: "pending-stage-process-resume",
@@ -582,9 +595,9 @@ describe("durable pending-stage resume", () => {
 			inputs: {},
 			outputs: {},
 			run: async (ctx) => {
-				const receiver = ctx.stage("receiver");
-				await ctx.stage("sender").complete("sender must replay");
-				await receiver.complete("receiver first task");
+				const receiver = ctx.stage("receiver", { tools: ["intercom"] });
+				await ctx.stage("sender", { tools: ["intercom"] }).prompt("sender must replay");
+				await receiver.prompt("receiver first task");
 				return {};
 			},
 		});
@@ -598,34 +611,53 @@ describe("durable pending-stage resume", () => {
 			store: freshStore,
 			jobs,
 			adapters: {
-				complete: {
-					complete: async () => {
-						const receiver = freshStore
-							.runs()
-							.find((run) => run.id === workflowId)
-							?.stages.find((stage) => stage.name === "receiver");
-						assert.ok(receiver);
-						const pending = freshStore.pendingStageMessagesFor(workflowId, receiver.id);
-						for (const entry of pending) {
+				agentSession: {
+					async create(options) {
+						const delivery = options.orchestrationContext?.pendingStageDelivery;
+						assert.ok(delivery, "receiver session must expose production pending delivery");
+						await delivery.deliverPending((from, message) => {
+							lifecycle.push("pending-delivery");
 							observedBeforeFirstTask.push({
-								id: entry.id,
-								text: entry.message.content.text,
-								senderId: entry.from.id,
-								senderName: entry.from.name,
-								senderGroup: entry.from.group,
+								id: message.id,
+								text: message.content.text,
+								senderId: from.id,
+								senderName: from.name,
+								senderGroup: from.group,
+								senderCwd: from.cwd,
+								senderModel: from.model,
+								senderPid: from.pid,
+								senderStartedAt: from.startedAt,
+								senderLastActivity: from.lastActivity,
 							});
-							assert.equal(
-								await freshStore.markPendingStageMessageDelivered(
-									workflowId,
-									entry.stageKey,
-									entry.id,
-									"2026-08-27T20:01:00.000Z",
-									reader,
-								),
-								true,
-							);
-						}
-						return "receiver completed";
+						});
+						const session: StageSessionRuntime = {
+							async prompt() {
+								lifecycle.push("first-task");
+								assert.equal(observedBeforeFirstTask.length, 1);
+								return "receiver completed";
+							},
+							async steer() {},
+							async followUp() {},
+							subscribe: () => () => {},
+							sessionFile: "/tmp/pending-resume-receiver.ndjson",
+							sessionId: "pending-resume-receiver",
+							async setModel() {},
+							setThinkingLevel() {},
+							cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
+							cycleThinkingLevel: (() => undefined) as StageSessionRuntime["cycleThinkingLevel"],
+							agent: undefined as never,
+							model: undefined,
+							thinkingLevel: "medium",
+							messages: [],
+							isStreaming: false,
+							navigateTree: (async () => ({ cancelled: false })) as StageSessionRuntime["navigateTree"],
+							compact: (async () => ({})) as unknown as StageSessionRuntime["compact"],
+							abortCompaction() {},
+							async abort() {},
+							dispose() {},
+							getLastAssistantText: () => "receiver completed",
+						};
+						return session;
 					},
 				},
 			},
@@ -642,6 +674,7 @@ describe("durable pending-stage resume", () => {
 		await terminal.promise;
 		unsubscribe();
 
+		assert.deepEqual(lifecycle, ["pending-delivery", "first-task"]);
 		assert.deepEqual(observedBeforeFirstTask, [
 			{
 				id: messageId,
@@ -649,6 +682,11 @@ describe("durable pending-stage resume", () => {
 				senderId: "sender-session",
 				senderName: "sender",
 				senderGroup: `workflow:${workflowId}`,
+				senderCwd: "/durable/project",
+				senderModel: "test-model",
+				senderPid: 2717,
+				senderStartedAt: 10,
+				senderLastActivity: 20,
 			},
 		]);
 		assert.equal(freshStore.runs().find((run) => run.id === workflowId)?.status, "completed");
