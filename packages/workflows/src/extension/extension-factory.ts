@@ -16,6 +16,7 @@ import { createPostMortemHandleResolver, postMortemDepsForRun } from "./postmort
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { type RunEndPayload, type RunStartPayload, renderRunBanner, renderRunSummary } from "./renderers.js";
+import { registerStageInboxIntercomBridge } from "./stage-inbox-intercom.js";
 import { buildRuntimeAdapters } from "./wiring.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
 import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow-command-utils.js";
@@ -83,6 +84,7 @@ function factory(pi: ExtensionAPI): void {
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
 	const overlay = buildWorkflowOverlay(pi, postMortemHandleResolver);
 	registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
+	registerStageInboxIntercomBridge(pi, store);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
 	const storeWidgetRef: { current: (() => void) | null } = { current: null };
 	const intercomControlRef: { current: (() => void) | null } = { current: null };

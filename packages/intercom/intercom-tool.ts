@@ -274,6 +274,26 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
               attachments,
               replyTo,
             });
+            if (result.queued === true) {
+              pi.appendEntry("intercom_sent", {
+                to,
+                message: { text: message, attachments, replyTo },
+                messageId: result.id,
+                timestamp: Date.now(),
+              });
+              return {
+                content: [{ type: "text", text: `Message queued for ${to}` }],
+                isError: false,
+                details: {
+                  messageId: result.id,
+                  delivered: false,
+                  queued: true,
+                  runId: result.runId,
+                  stageKey: result.stageKey,
+                  position: result.position,
+                },
+              };
+            }
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
@@ -414,10 +434,20 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
               wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
+              const stageInboxAskRefusal = errorText.startsWith(
+                "Cannot ask a workflow stage that has not started.",
+              );
               return {
                 content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
-                details: { error: true },
+                details: stageInboxAskRefusal
+                  ? {
+                      error: true,
+                      refusal: "stage_inbox_ask_unsupported",
+                      recommendedAction: "send",
+                      reason: errorText,
+                    }
+                  : { error: true },
               };
             }
             pi.appendEntry("intercom_sent", {

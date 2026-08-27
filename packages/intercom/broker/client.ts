@@ -24,8 +24,24 @@ export interface SendOptions {
 export interface SendResult {
   id: string;
   delivered: boolean;
+  queued?: boolean;
   reason?: string;
+  runId?: string;
+  stageKey?: string;
+  position?: number;
 }
+
+export interface StageInboxDeposit {
+  readonly depositId: string;
+  readonly from: SessionInfo;
+  readonly runId: string;
+  readonly stageKey: string;
+  readonly message: Message;
+}
+
+export type StageInboxDepositResult =
+  | { readonly outcome: "queued"; readonly position: number }
+  | { readonly outcome: "refused"; readonly reason: string };
 export interface PresenceUpdates {
   name?: string;
   status?: string;
@@ -304,6 +320,37 @@ export class IntercomClient extends EventEmitter {
         this.emit("message", from, message, channel);
         break;
       }
+      case "inbox_deposit": {
+        const { depositId, from, runId, stageKey, message } = brokerMessage;
+        if (
+          typeof depositId !== "string" ||
+          !isSessionInfo(from) ||
+          typeof runId !== "string" ||
+          typeof stageKey !== "string" ||
+          !isMessage(message)
+        ) {
+          throw new Error("Invalid stage inbox deposit event");
+        }
+        this.emit("inbox_deposit", { depositId, from, runId, stageKey, message } satisfies StageInboxDeposit);
+        break;
+      }
+      case "queued": {
+        const { messageId, attemptId, runId, stageKey, position } = brokerMessage;
+        if (
+          typeof messageId !== "string" ||
+          (attemptId !== undefined && typeof attemptId !== "string") ||
+          typeof runId !== "string" ||
+          typeof stageKey !== "string" ||
+          typeof position !== "number" ||
+          position < 1
+        ) {
+          throw new Error("Invalid queued message");
+        }
+        const result = { id: messageId, delivered: false, queued: true, runId, stageKey, position } as const;
+        if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+        else this.pendingSends.resolve(messageId, attemptId, result);
+        break;
+      }
       case "delivered": {
         const { messageId, attemptId } = brokerMessage;
         if (typeof messageId !== "string" || (attemptId !== undefined && typeof attemptId !== "string")) {
@@ -490,6 +537,20 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
+  registerStageInboxOwner(runId: string, group: string): void {
+    writeMessage(this.requireActiveSocket(), { type: "register_stage_inbox_owner", runId, group });
+  }
+
+  respondStageInboxDeposit(depositId: string, result: StageInboxDepositResult): void {
+    const socket = this.requireActiveSocket();
+    writeMessage(
+      socket,
+      result.outcome === "queued"
+        ? { type: "inbox_deposit_result", depositId, outcome: "queued", position: result.position }
+        : { type: "inbox_deposit_result", depositId, outcome: "refused", reason: result.reason },
+    );
+  }
+
   send(to: string, options: SendOptions): Promise<SendResult> {
     return this.sendFrame("send", to, options);
   }

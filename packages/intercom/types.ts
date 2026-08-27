@@ -48,6 +48,14 @@ export type ClientMessage =
   | { type: "list"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
+  | { type: "register_stage_inbox_owner"; runId: string; group: string }
+  | {
+      type: "inbox_deposit_result";
+      depositId: string;
+      outcome: "queued" | "refused";
+      position?: number;
+      reason?: string;
+    }
   | { type: "presence"; name?: string; status?: string; model?: string; group?: string; requestId?: string };
 
 export type BrokerMessage =
@@ -56,6 +64,7 @@ export type BrokerMessage =
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
+  | { type: "inbox_deposit"; depositId: string; from: SessionInfo; runId: string; stageKey: string; message: Message }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }
@@ -64,4 +73,5 @@ export type BrokerMessage =
   | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
+  | { type: "queued"; messageId: string; attemptId?: string; runId: string; stageKey: string; position: number }
   | { type: "delivery_failed"; messageId: string; reason: string; attemptId?: string };

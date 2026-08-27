@@ -13,6 +13,7 @@ function workflowSessionOptions(meta: StageExecutionMeta) {
 function workflowOrchestrationContext(
 	meta: StageExecutionMeta,
 	stageOptions: StageOptions | undefined,
+	stageInbox?: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["stageInbox"],
 ): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
 	const base = {
 		kind: "workflow-stage" as const,
@@ -24,16 +25,18 @@ function workflowOrchestrationContext(
 	const intercomGroup = stageHasIntercomAccess(stageOptions)
 		? resolveStageGroup(stageOptions, meta.workflowIntercomGroup)
 		: undefined;
-	return intercomGroup ? { ...base, intercomGroup } : base;
+	const context = intercomGroup ? { ...base, intercomGroup } : base;
+	return stageInbox === undefined ? context : { ...context, stageInbox };
 }
 
 export function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
 	meta: StageExecutionMeta,
+	stageInbox?: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["stageInbox"],
 ): CreateAgentSessionOptions {
 	const classification = workflowSessionOptions(meta);
-	const orchestrationContext = workflowOrchestrationContext(meta, options);
+	const orchestrationContext = workflowOrchestrationContext(meta, options, stageInbox);
 	if (!options) {
 		return defaultSessionDir === undefined
 			? { orchestrationContext }

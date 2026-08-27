@@ -8,7 +8,12 @@ import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
 import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../types.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
-import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
+import {
+  handleBrokerSend,
+  stageInboxAskRefusal,
+  type BrokerConnectedSession,
+  type StageInboxRoute,
+} from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { normalizeGroup } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -17,6 +22,23 @@ import { PendingQuestionIndex } from "./pending-question-index.js";
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
 const PID_PATH = getBrokerPidPath();
+
+const STAGE_INBOX_DEPOSIT_TIMEOUT_MS = 10_000;
+
+interface StageInboxOwner {
+  readonly sessionId: string;
+  readonly group: string;
+}
+
+interface PendingStageInboxDeposit {
+  readonly ownerSessionId: string;
+  readonly senderSocket: net.Socket;
+  readonly messageId: string;
+  readonly attemptId?: string;
+  readonly runId: string;
+  readonly stageKey: string;
+  readonly timeout: NodeJS.Timeout;
+}
 
 type ConnectedSession = BrokerConnectedSession;
 
@@ -62,6 +84,8 @@ class IntercomBroker {
   private deliveredMessages = new DeliveredMessageCache();
   private supervisorChannel = new SupervisorChannelCache();
   private pendingQuestions = new PendingQuestionIndex();
+  private stageInboxOwners = new Map<string, StageInboxOwner>();
+  private pendingStageInboxDeposits = new Map<string, PendingStageInboxDeposit>();
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
@@ -120,6 +144,95 @@ class IntercomBroker {
       }
     }, 5000);
   }
+  private routeStageInbox = (route: StageInboxRoute): boolean => {
+    const ownerRegistration = this.stageInboxOwners.get(route.runId);
+    if (ownerRegistration === undefined) return false;
+    const owner = this.sessions.get(ownerRegistration.sessionId);
+    if (owner === undefined) {
+      this.stageInboxOwners.delete(route.runId);
+      return false;
+    }
+    if (normalizeGroup(route.from.info.group) !== normalizeGroup(ownerRegistration.group)) {
+      writeMessage(route.socket, {
+        type: "delivery_failed",
+        messageId: route.message.id,
+        ...(route.attemptId ? { attemptId: route.attemptId } : {}),
+        reason: "Target workflow run is in a different intercom group",
+      });
+      return true;
+    }
+    const askRefusal = stageInboxAskRefusal(route.message);
+    if (askRefusal !== undefined) {
+      writeMessage(route.socket, {
+        type: "delivery_failed",
+        messageId: route.message.id,
+        ...(route.attemptId ? { attemptId: route.attemptId } : {}),
+        reason: askRefusal,
+      });
+      return true;
+    }
+    const depositId = randomUUID();
+    const timeout = setTimeout(() => {
+      const pending = this.pendingStageInboxDeposits.get(depositId);
+      if (pending === undefined) return;
+      this.pendingStageInboxDeposits.delete(depositId);
+      writeMessage(pending.senderSocket, {
+        type: "delivery_failed",
+        messageId: pending.messageId,
+        ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+        reason: "Workflow stage inbox owner did not acknowledge the deposit",
+      });
+    }, STAGE_INBOX_DEPOSIT_TIMEOUT_MS);
+    this.pendingStageInboxDeposits.set(depositId, {
+      ownerSessionId: ownerRegistration.sessionId,
+      senderSocket: route.socket,
+      messageId: route.message.id,
+      ...(route.attemptId ? { attemptId: route.attemptId } : {}),
+      runId: route.runId,
+      stageKey: route.stageKey,
+      timeout,
+    });
+    writeMessage(owner.socket, {
+      type: "inbox_deposit",
+      depositId,
+      from: route.from.info,
+      runId: route.runId,
+      stageKey: route.stageKey,
+      message: route.message,
+    });
+    return true;
+  };
+
+  private settleStageInboxDeposit(
+    currentId: string,
+    depositId: string,
+    outcome: "queued" | "refused",
+    position: number | undefined,
+    reason: string | undefined,
+  ): void {
+    const pending = this.pendingStageInboxDeposits.get(depositId);
+    if (pending === undefined || pending.ownerSessionId !== currentId) return;
+    clearTimeout(pending.timeout);
+    this.pendingStageInboxDeposits.delete(depositId);
+    if (outcome === "queued" && typeof position === "number" && position > 0) {
+      writeMessage(pending.senderSocket, {
+        type: "queued",
+        messageId: pending.messageId,
+        ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+        runId: pending.runId,
+        stageKey: pending.stageKey,
+        position,
+      });
+      return;
+    }
+    writeMessage(pending.senderSocket, {
+      type: "delivery_failed",
+      messageId: pending.messageId,
+      ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+      reason: reason ?? "Workflow stage inbox refused the deposit",
+    });
+  }
+
 
   private handleMessage(
     socket: net.Socket,
@@ -243,6 +356,36 @@ class IntercomBroker {
         break;
       }
 
+      case "register_stage_inbox_owner": {
+        if (typeof clientMessage.runId !== "string" || !clientMessage.runId || typeof clientMessage.group !== "string") {
+          throw new Error("Invalid stage inbox owner registration");
+        }
+        this.stageInboxOwners.set(clientMessage.runId, {
+          sessionId: currentId,
+          group: normalizeGroup(clientMessage.group),
+        });
+        break;
+      }
+
+      case "inbox_deposit_result": {
+        if (
+          typeof clientMessage.depositId !== "string" ||
+          (clientMessage.outcome !== "queued" && clientMessage.outcome !== "refused") ||
+          (clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
+          (clientMessage.reason !== undefined && typeof clientMessage.reason !== "string")
+        ) {
+          throw new Error("Invalid stage inbox deposit result");
+        }
+        this.settleStageInboxDeposit(
+          currentId,
+          clientMessage.depositId,
+          clientMessage.outcome,
+          clientMessage.position,
+          clientMessage.reason,
+        );
+        break;
+      }
+
       case "send":
       case "supervisor_send": {
         handleBrokerSend(
@@ -254,6 +397,7 @@ class IntercomBroker {
           writeMessage,
           this.supervisorChannel,
           this.pendingQuestions,
+          this.routeStageInbox,
         );
         break;
       }
@@ -290,6 +434,20 @@ class IntercomBroker {
       });
     }
 
+    for (const [runId, owner] of this.stageInboxOwners) {
+      if (owner.sessionId === sessionId) this.stageInboxOwners.delete(runId);
+    }
+    for (const [depositId, pending] of this.pendingStageInboxDeposits) {
+      if (pending.ownerSessionId !== sessionId) continue;
+      clearTimeout(pending.timeout);
+      this.pendingStageInboxDeposits.delete(depositId);
+      writeMessage(pending.senderSocket, {
+        type: "delivery_failed",
+        messageId: pending.messageId,
+        ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+        reason: "Workflow stage inbox owner disconnected before acknowledging the deposit",
+      });
+    }
     this.sessions.delete(sessionId);
     this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
   }

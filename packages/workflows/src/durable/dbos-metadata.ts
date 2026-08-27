@@ -200,6 +200,12 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 			id: entry.from.id,
 			...(entry.from.name !== undefined ? { name: entry.from.name } : {}),
 			...(entry.from.group !== undefined ? { group: entry.from.group } : {}),
+			...(entry.from.cwd !== undefined ? { cwd: entry.from.cwd } : {}),
+			...(entry.from.model !== undefined ? { model: entry.from.model } : {}),
+			...(entry.from.pid !== undefined ? { pid: entry.from.pid } : {}),
+			...(entry.from.startedAt !== undefined ? { startedAt: entry.from.startedAt } : {}),
+			...(entry.from.lastActivity !== undefined ? { lastActivity: entry.from.lastActivity } : {}),
+			...(entry.from.status !== undefined ? { status: entry.from.status } : {}),
 		},
 		message: {
 			id: entry.message.id,
@@ -259,7 +265,13 @@ function isPendingStageSender(value: WorkflowSerializableValue | undefined): boo
 		isSerializableObject(value) &&
 		typeof value.id === "string" &&
 		(value.name === undefined || typeof value.name === "string") &&
-		(value.group === undefined || typeof value.group === "string")
+		(value.group === undefined || typeof value.group === "string") &&
+		(value.cwd === undefined || typeof value.cwd === "string") &&
+		(value.model === undefined || typeof value.model === "string") &&
+		(value.pid === undefined || typeof value.pid === "number") &&
+		(value.startedAt === undefined || typeof value.startedAt === "number") &&
+		(value.lastActivity === undefined || typeof value.lastActivity === "number") &&
+		(value.status === undefined || typeof value.status === "string")
 	);
 }
 

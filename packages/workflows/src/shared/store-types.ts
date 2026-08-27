@@ -226,6 +226,12 @@ export interface PendingStageSender {
 	readonly id: string;
 	readonly name?: string;
 	readonly group?: string;
+	readonly cwd?: string;
+	readonly model?: string;
+	readonly pid?: number;
+	readonly startedAt?: number;
+	readonly lastActivity?: number;
+	readonly status?: string;
 }
 
 export interface PendingStageMessage {

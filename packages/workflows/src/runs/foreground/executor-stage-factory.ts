@@ -2,6 +2,7 @@ import { runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
+import { stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
@@ -36,6 +37,7 @@ import type {
 } from "./executor-stage-types.js";
 import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
+import { createWorkflowStageInboxDelivery } from "./stage-inbox-delivery.js";
 import {
 	createStageContext as createInnerStageContext,
 	type InternalStageContext,
@@ -176,6 +178,9 @@ export function createWorkflowStageFactory(input: {
 			workflowIntercomGroup: input.workflowIntercomGroup,
 			signal: input.signal,
 			stageOptions: stageOptionsForContext,
+			...(stageHasIntercomAccess(stageOptionsForContext)
+				? { stageInbox: createWorkflowStageInboxDelivery(input.activeStore, input.runId, stageId, name) }
+				: {}),
 			models: input.opts.models,
 			executionMode: input.opts.executionMode,
 			defaultSessionDir: input.opts.defaultSessionDir,
