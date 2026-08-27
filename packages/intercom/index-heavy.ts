@@ -48,6 +48,7 @@ interface PendingStageRouteRegistrationEvent {
   readonly runId: string;
   readonly group: string;
   readonly capability: string;
+  completion?: Promise<void>;
 }
 
 type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability">;
@@ -696,9 +697,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   pi.events.on(PENDING_STAGE_ROUTE_EVENT, (payload) => {
     if (!isPendingStageRouteRegistrationEvent(payload)) return;
     pendingStageRoutes.set(payload.runId, { group: payload.group, capability: payload.capability });
-    void ensureConnected("background")
-      .then((activeClient) => registerPendingStageRoute(activeClient, payload.runId, payload))
-      .catch(() => {});
+    const completion = ensureConnected("background").then((activeClient) =>
+      registerPendingStageRoute(activeClient, payload.runId, payload),
+    );
+    payload.completion = completion;
+    void completion.catch(() => {});
   });
 
   registerSubagentRelay(pi, {

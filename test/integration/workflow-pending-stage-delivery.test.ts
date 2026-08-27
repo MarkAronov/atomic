@@ -11,7 +11,8 @@ import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `${RUN_ID}:reviewer`;
-const OWNER_DISCOVERY_BUDGET_MS = 2_000;
+const BROKER_FRAME_TIMEOUT_MS = 5_000;
+const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "pending-stage-"));
@@ -106,6 +107,7 @@ function extensionFixture(
 ) {
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
+	const eventCompletions = new Map<string, Promise<void>>();
 	const tools = new Map<string, CapturedTool>();
 	const injectedMessages: InjectedMessage[] = [];
 	const injectedOptions: Array<InjectedMessageOptions | undefined> = [];
@@ -185,6 +187,8 @@ function extensionFixture(
 			},
 			emit(name: string, payload: object) {
 				for (const handler of eventHandlers.get(name) ?? []) void handler(payload);
+				const completion = (payload as { completion?: Promise<void> }).completion;
+				if (completion !== undefined) eventCompletions.set(name, completion);
 			},
 		},
 	};
@@ -200,6 +204,11 @@ function extensionFixture(
 		waitForInjectedCount(count: number): Promise<void> {
 			if (injectedMessages.length >= count) return Promise.resolve();
 			return new Promise((resolveWaiter) => injectedWaiters.push({ count, resolve: resolveWaiter }));
+		},
+		waitForEventCompletion(name: string): Promise<void> {
+			const completion = eventCompletions.get(name);
+			assert.ok(completion, `Expected ${name} to expose a completion promise`);
+			return completion;
 		},
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
@@ -232,20 +241,33 @@ async function executeIntercom(
 	return execute("test-call", params, undefined, undefined, fixture.context);
 }
 
+interface BrokerFrameWaiter {
+	readonly type: BrokerMessage["type"];
+	readonly matches: (message: BrokerMessage) => boolean;
+	readonly resolve: (message: BrokerMessage) => void;
+	readonly reject: (error: Error) => void;
+	readonly timer: NodeJS.Timeout;
+}
+
 class RawBrokerClient {
 	readonly socket = net.createConnection(getBrokerSocketPath());
 	readonly received: BrokerMessage[] = [];
 	private readonly consumed = new Set<number>();
+	private readonly waiters = new Set<BrokerFrameWaiter>();
 
 	constructor() {
 		this.socket.on(
 			"data",
 			createMessageReader(
-				(message) => this.received.push(message as BrokerMessage),
+				(message) => {
+					this.received.push(message as BrokerMessage);
+					this.resolveWaiters();
+				},
 				(error) => this.socket.destroy(error),
 			),
 		);
 		this.socket.on("error", () => {});
+		this.socket.on("close", () => this.rejectWaiters(new Error("Broker client closed")));
 	}
 
 	async register(name: string, group: string): Promise<void> {
@@ -265,19 +287,61 @@ class RawBrokerClient {
 		type: T,
 		matches: (message: Extract<BrokerMessage, { type: T }>) => boolean = () => true,
 	): Promise<Extract<BrokerMessage, { type: T }>> {
-		const deadline = Date.now() + 5_000;
-		while (Date.now() < deadline) {
-			const index = this.received.findIndex((message, candidate) => {
-				if (this.consumed.has(candidate) || message.type !== type) return false;
-				return matches(message as Extract<BrokerMessage, { type: T }>);
-			});
-			if (index >= 0) {
-				this.consumed.add(index);
-				return this.received[index] as Extract<BrokerMessage, { type: T }>;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 10));
+		const buffered = this.consume(type, (message) => matches(message as Extract<BrokerMessage, { type: T }>));
+		if (buffered !== undefined) return buffered as Extract<BrokerMessage, { type: T }>;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.waiters.delete(waiter);
+				reject(new Error(`Timed out waiting for broker frame ${type}`));
+			}, BROKER_FRAME_TIMEOUT_MS);
+			const waiter: BrokerFrameWaiter = {
+				type,
+				matches: (message) => matches(message as Extract<BrokerMessage, { type: T }>),
+				resolve: (message) => resolve(message as Extract<BrokerMessage, { type: T }>),
+				reject,
+				timer,
+			};
+			this.waiters.add(waiter);
+			this.resolveWaiters();
+		});
+	}
+
+	async close(): Promise<void> {
+		if (this.socket.destroyed) return;
+		await new Promise<void>((resolve) => {
+			this.socket.once("close", resolve);
+			this.socket.destroy();
+		});
+	}
+
+	private consume(
+		type: BrokerMessage["type"],
+		matches: (message: BrokerMessage) => boolean,
+	): BrokerMessage | undefined {
+		const index = this.received.findIndex(
+			(message, candidate) => !this.consumed.has(candidate) && message.type === type && matches(message),
+		);
+		if (index < 0) return undefined;
+		this.consumed.add(index);
+		return this.received[index];
+	}
+
+	private resolveWaiters(): void {
+		for (const waiter of this.waiters) {
+			const message = this.consume(waiter.type, waiter.matches);
+			if (message === undefined) continue;
+			this.waiters.delete(waiter);
+			clearTimeout(waiter.timer);
+			waiter.resolve(message);
 		}
-		throw new Error(`Timed out waiting for broker frame ${type}`);
+	}
+
+	private rejectWaiters(error: Error): void {
+		for (const waiter of this.waiters) {
+			clearTimeout(waiter.timer);
+			waiter.reject(error);
+		}
+		this.waiters.clear();
 	}
 }
 
@@ -292,9 +356,21 @@ beforeAll(async () => {
 	await waitForBroker(getBrokerSocketPath());
 });
 
-afterAll(() => {
-	broker?.kill("SIGTERM");
-	for (const client of rawClients) client.socket.destroy();
+afterAll(async () => {
+	await Promise.all([...rawClients].map((client) => client.close()));
+	if (broker !== undefined && broker.exitCode === null) {
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(
+				() => reject(new Error("Broker did not exit after SIGTERM")),
+				BROKER_SHUTDOWN_TIMEOUT_MS,
+			);
+			broker?.once("exit", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+			broker?.kill("SIGTERM");
+		});
+	}
 	setDurableBackend(undefined);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
@@ -344,14 +420,8 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			startedAt: 1,
 		});
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await sender.start();
-
-		const discoveryDeadline = Date.now() + OWNER_DISCOVERY_BUDGET_MS;
-		while (Date.now() < discoveryDeadline) {
-			const listed = await executeIntercom(sender, { action: "list" });
-			if (listed.content.some(({ text }) => text.includes("workflow-owner"))) break;
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-		}
 
 		const unknown = await executeIntercom(sender, {
 			action: "send",
@@ -526,6 +596,7 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 	rawClients.add(raw);
 	try {
 		await owner.start();
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await raw.register("raw-sender", group);
 		const malformed = [
 			{ id: "malformed-reply-error", timestamp: 1, replyError: { bad: true }, content: { text: "bad" } },
@@ -599,7 +670,7 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 		assert.equal(validReload.getWorkflow(runId)?.pendingStageMessages?.length, 50);
 		assert.deepEqual(validReload.getWorkflow(runId)?.pendingStageMessages?.[0]?.message, validMessage);
 	} finally {
-		raw.socket.destroy();
+		await raw.close();
 		rawClients.delete(raw);
 		disposeBridge();
 		await owner.shutdown();

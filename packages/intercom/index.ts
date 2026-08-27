@@ -392,11 +392,19 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		PENDING_STAGE_ROUTE_EVENT,
 	] as const) {
 		pi.events.on(eventName, (payload) => {
-			void loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			const completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 				handle.assertCurrent();
 				await dispatchEventHandlers(handle.heavy, eventName, payload);
 				handle.assertCurrent();
-			}).catch((error) => {
+				if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
+					const routeCompletion = (payload as { completion?: Promise<void> }).completion;
+					if (routeCompletion !== undefined && routeCompletion !== completion) await routeCompletion;
+				}
+			});
+			if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
+				(payload as { completion?: Promise<void> }).completion = completion;
+			}
+			void completion.catch((error) => {
 				rejectLazyResultRelay(pi, eventName, payload, error);
 				console.error(`Intercom event relay failed (${eventName}):`, error);
 			});
