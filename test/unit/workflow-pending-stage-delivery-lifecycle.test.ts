@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import type net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager-core.ts";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
+import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
@@ -10,12 +15,15 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { settleUndeliverablePendingStageMessages } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
+	PendingStageMessage,
 	PendingStageMessageInput,
 	RunStatus,
 	StageStatus,
 } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+
+const tempDirs: string[] = [];
 
 function pendingMessage(runId: string, stageKey: string, expectsReply = true): PendingStageMessageInput {
 	return {
@@ -57,7 +65,10 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 	return { activeStore, backend, runId };
 }
 
-afterEach(() => setDurableBackend(undefined));
+afterEach(() => {
+	setDurableBackend(undefined);
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 describe("pending workflow stage delivery lifecycle", () => {
 	test("marks a skipped stage message undeliverable and notifies its sender", async () => {
@@ -152,15 +163,15 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 		["workflow-owner", { socket: workflowSocket, info: sessionInfo("workflow-owner", "workflow-owner") }],
 		["planner-session", { socket: senderSocket, info: sessionInfo("planner-session", "planner") }],
 	]);
-	const deliveredMessages = new DeliveredMessageCache();
-	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	const recipientSessionDir = mkdtempSync(join(tmpdir(), "pending-failure-recipient-"));
+	tempDirs.push(recipientSessionDir);
+	let recipientSession = SessionManager.create("/repo", recipientSessionDir);
+	let recipientAdmission = new InboundMessageAdmission();
+	let deliveredMessages = new DeliveredMessageCache();
+	let senderVisibleNotifications = 0;
+	let wireNotifications = 0;
 	const notifyThroughBroker = async (
-		entry: Parameters<typeof settleUndeliverablePendingStageMessages>[1] extends (
-			entry: infer Entry,
-			...args: never[]
-		) => unknown
-			? Entry
-			: never,
+		entry: PendingStageMessage,
 		reason: string,
 		notificationId: string,
 	): Promise<boolean> => {
@@ -172,14 +183,43 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 			replyError: actionable,
 			content: { text: actionable },
 		};
+		const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+		const recipientCompletions: Promise<void>[] = [];
 		handleBrokerSend(
 			workflowSocket,
 			{ type: "send", to: entry.from.id, message },
 			"workflow-owner",
 			sessions,
 			deliveredMessages,
-			(socket, brokerMessage) => writes.push({ socket, message: brokerMessage }),
+			(socket, brokerMessage) => {
+				writes.push({ socket, message: brokerMessage });
+				if (socket !== senderSocket || brokerMessage.type !== "message") return;
+				wireNotifications++;
+				const admission = recipientAdmission.admit(brokerMessage.from, brokerMessage.message);
+				if (admission.kind === "pending") {
+					recipientCompletions.push(admission.completion);
+					return;
+				}
+				if (admission.kind === "duplicate") return;
+				recipientCompletions.push(
+					Promise.resolve().then(() => {
+						senderVisibleNotifications++;
+						recipientSession.appendCustomMessageEntry(
+							"intercom_message",
+							brokerMessage.message.content.text,
+							true,
+							{ from: brokerMessage.from, message: brokerMessage.message },
+							undefined,
+							undefined,
+							`intercom:${brokerMessage.message.id}`,
+						);
+						recipientSession.flush();
+						recipientAdmission.commit(admission.reservation);
+					}),
+				);
+			},
 		);
+		await Promise.all(recipientCompletions);
 		return writes.some(
 			(write) =>
 				write.socket === workflowSocket &&
@@ -196,7 +236,8 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 		}),
 		/simulated process exit after notification/,
 	);
-	assert.equal(writes.filter((write) => write.socket === senderSocket && write.message.type === "message").length, 1);
+	assert.equal(senderVisibleNotifications, 1);
+	assert.equal(wireNotifications, 1);
 
 	const reader = new DbosDurableBackend(sdk, { executorId: "notification-reader" });
 	await reader.hydrateWorkflow(runId);
@@ -227,8 +268,16 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 		pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
 	});
 	setDurableBackend(reader);
+	// Simulate broker and sender-stage process restarts from their durable records.
+	deliveredMessages = new DeliveredMessageCache();
+	const recipientSessionFile = recipientSession.getSessionFile();
+	assert.ok(recipientSessionFile !== undefined);
+	recipientSession = SessionManager.open(recipientSessionFile, recipientSessionDir, "/repo");
+	recipientAdmission = new InboundMessageAdmission();
+	recipientAdmission.restore(recipientSession.getBranch());
 	assert.equal(await settleUndeliverablePendingStageMessages(reloadedStore, notifyThroughBroker), 0);
-	assert.equal(writes.filter((write) => write.socket === senderSocket && write.message.type === "message").length, 1);
+	assert.equal(wireNotifications, 2);
+	assert.equal(senderVisibleNotifications, 1);
 	const terminal = new DbosDurableBackend(sdk, { executorId: "notification-terminal-reader" });
 	await terminal.hydrateWorkflow(runId);
 	const terminalEntry = terminal.getWorkflow(runId)?.pendingStageMessages?.[0];

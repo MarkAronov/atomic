@@ -775,6 +775,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         sessionHomeGroup = null;
       } else {
         sessionHomeGroup = resolveHomeGroup(config, value);
+        inboundDeliveries.restore(value.sessionManager.getBranch());
       }
       runtimeContext = value;
     },
