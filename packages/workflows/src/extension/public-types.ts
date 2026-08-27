@@ -210,6 +210,7 @@ export interface WorkflowToolArgs {
 		| "stages"
 		| "stage"
 		| "transcript"
+		| "answer"
 		| "send"
 		| "pause"
 		| "interrupt"

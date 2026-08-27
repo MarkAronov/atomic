@@ -19,6 +19,7 @@ export interface WorkflowToolArgs {
 		| "stages"
 		| "stage"
 		| "transcript"
+		| "answer"
 		| "send"
 		| "pause"
 		| "interrupt"
@@ -82,6 +83,9 @@ export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): s
 				name === undefined
 					? "workflow: read stage transcript"
 					: `workflow: read stage transcript in ${quoted(name)}`;
+			break;
+		case "answer":
+			line = name === undefined ? "workflow: answer prompt" : `workflow: answer prompt in ${quoted(name)}`;
 			break;
 		case "send":
 			line = name === undefined ? "workflow: send to stage" : `workflow: send to stage in ${quoted(name)}`;

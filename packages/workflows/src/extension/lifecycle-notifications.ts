@@ -438,7 +438,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 	const stage = details.stageName ?? details.stageId ?? "unknown";
 	const responseHint =
 		details.stageId && details.promptId
-			? `/workflow connect ${details.runId} or workflow({ action: "send", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
+			? `/workflow connect ${details.runId} or workflow({ action: "answer", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
 			: `/workflow connect ${details.runId}`;
 	return `？ Workflow "${workflowName}" needs input (run ${details.runId}, stage ${stage}).${prompt} Respond: ${responseHint}.`;
 }

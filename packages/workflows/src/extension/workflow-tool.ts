@@ -12,6 +12,7 @@ import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
+import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
 	workflowInterruptAction,
@@ -174,6 +175,11 @@ export function makeExecuteWorkflowTool(
 				if (action === "stages") return workflowStagesResult(args, source);
 				if (action === "stage") return workflowStageResult(args, source);
 				return workflowTranscriptResult(args, source);
+			}
+			case "answer": {
+				const result = await awaitRequest(workflowAnswerAction(args));
+				if (result === undefined) throw new Error("Workflow answer returned no result");
+				return result;
 			}
 			case "send":
 				return awaitRequest(workflowSendAction(args, sendDeps));

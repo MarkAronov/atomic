@@ -150,6 +150,15 @@ type TranscriptResult = {
 	fallbackNote?: string;
 	inlineMode?: TranscriptInlineMode;
 };
+type AnswerResult = {
+	action: "answer";
+	runId: string;
+	stageId: string;
+	message: string;
+} & (
+	| { status: "ok" | "noop" }
+	| { status: "failed"; code: "WORKFLOW_TERMINAL"; workflowStatus: RunStatus; error: string }
+);
 type SendResult = {
 	action: "send";
 	runId: string;
@@ -216,6 +225,7 @@ export type WorkflowToolResult =
 	| StageListResult
 	| StageDetailResult
 	| TranscriptResult
+	| AnswerResult
 	| SendResult
 	| PauseResult
 	| ReloadResult
@@ -489,6 +499,11 @@ export function renderResult(result: WorkflowRegisteredToolResult | null | undef
 				opts,
 				themed,
 			);
+		}
+
+		case "answer": {
+			const r = result as AnswerResult;
+			return renderNotice("WORKFLOW ANSWER", `${r.runId}/${r.stageId}: ${r.message}`, opts, themed);
 		}
 
 		case "send": {

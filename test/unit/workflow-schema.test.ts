@@ -18,6 +18,7 @@ describe("WorkflowParametersSchema", () => {
 			{ action: "stage", runId: "abc123", stageId: "review" },
 			{ action: "transcript", runId: "abc123", stageId: "review", tail: 20 },
 			{ action: "send", runId: "abc123", stageId: "review", text: "continue" },
+			{ action: "answer", runId: "abc123", stageId: "review", response: true },
 			{ action: "pause", runId: "abc123" },
 			{ action: "resume", runId: "abc123" },
 			{ action: "interrupt", runId: "abc123" },
