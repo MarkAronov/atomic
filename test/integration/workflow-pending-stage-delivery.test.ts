@@ -30,6 +30,8 @@ const { getBrokerSocketPath } = await import("../../packages/intercom/broker/pat
 const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { default: intercom } = await import("../../packages/intercom/index.js");
+const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+const { SessionManager } = await import("../../packages/coding-agent/src/core/session-manager-core.ts");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
 const { DbosDurableBackend } = await import("../../packages/workflows/src/durable/dbos-backend.js");
@@ -78,6 +80,7 @@ interface ToolResult {
 		delivered?: boolean;
 		position?: number;
 		queued?: boolean;
+		group?: string;
 		runId?: string;
 		stageKey?: string;
 		messageId?: string;
@@ -288,7 +291,7 @@ async function executeIntercom(
 }
 
 interface BrokerFrameWaiter {
-	readonly type: BrokerMessage["type"];
+	readonly type?: BrokerMessage["type"];
 	readonly matches: (message: BrokerMessage) => boolean;
 	readonly resolve: (message: BrokerMessage) => void;
 	readonly reject: (error: Error) => void;
@@ -352,6 +355,33 @@ class RawBrokerClient {
 		});
 	}
 
+	async nextDeliveryAcknowledgment(
+		messageId: string,
+	): Promise<Extract<BrokerMessage, { type: "delivered" | "queued" | "delivery_failed" }>> {
+		const matches = (message: BrokerMessage): boolean =>
+			(message.type === "delivered" || message.type === "queued" || message.type === "delivery_failed") &&
+			message.messageId === messageId;
+		const buffered = this.consume(undefined, matches);
+		if (buffered !== undefined) {
+			return buffered as Extract<BrokerMessage, { type: "delivered" | "queued" | "delivery_failed" }>;
+		}
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.waiters.delete(waiter);
+				reject(new Error(`Timed out waiting for broker delivery acknowledgment ${messageId}`));
+			}, BROKER_FRAME_TIMEOUT_MS);
+			const waiter: BrokerFrameWaiter = {
+				matches,
+				resolve: (message) =>
+					resolve(message as Extract<BrokerMessage, { type: "delivered" | "queued" | "delivery_failed" }>),
+				reject,
+				timer,
+			};
+			this.waiters.add(waiter);
+			this.resolveWaiters();
+		});
+	}
+
 	async close(): Promise<void> {
 		if (this.socket.destroyed) return;
 		await new Promise<void>((resolve) => {
@@ -361,11 +391,12 @@ class RawBrokerClient {
 	}
 
 	private consume(
-		type: BrokerMessage["type"],
+		type: BrokerMessage["type"] | undefined,
 		matches: (message: BrokerMessage) => boolean,
 	): BrokerMessage | undefined {
 		const index = this.received.findIndex(
-			(message, candidate) => !this.consumed.has(candidate) && message.type === type && matches(message),
+			(message, candidate) =>
+				!this.consumed.has(candidate) && (type === undefined || message.type === type) && matches(message),
 		);
 		if (index < 0) return undefined;
 		this.consumed.add(index);
@@ -394,39 +425,328 @@ class RawBrokerClient {
 const rawClients = new Set<RawBrokerClient>();
 let broker: ChildProcess | undefined;
 
-beforeAll(async () => {
+async function startBroker(): Promise<void> {
+	assert.equal(broker, undefined, "broker fixture must be stopped before restart");
 	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	await waitForBroker(broker);
-});
+}
+
+async function stopBroker(): Promise<void> {
+	const activeBroker = broker;
+	if (activeBroker === undefined) return;
+	broker = undefined;
+	if (activeBroker.exitCode !== null) return;
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new Error(`Broker did not exit within ${BROKER_SHUTDOWN_TIMEOUT_MS}ms after SIGTERM`)),
+			BROKER_SHUTDOWN_TIMEOUT_MS,
+		);
+		activeBroker.once("exit", () => {
+			clearTimeout(timer);
+			resolve();
+		});
+		if (!activeBroker.kill("SIGTERM")) {
+			clearTimeout(timer);
+			reject(new Error("Broker rejected SIGTERM"));
+		}
+	});
+}
+
+beforeAll(startBroker);
 
 afterAll(async () => {
 	await Promise.all([...rawClients].map((client) => client.close()));
-	const activeBroker = broker;
-	if (activeBroker !== undefined && activeBroker.exitCode === null) {
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(
-				() => reject(new Error(`Broker did not exit within ${BROKER_SHUTDOWN_TIMEOUT_MS}ms after SIGTERM`)),
-				BROKER_SHUTDOWN_TIMEOUT_MS,
-			);
-			activeBroker.once("exit", () => {
-				clearTimeout(timer);
-				resolve();
-			});
-			if (!activeBroker.kill("SIGTERM")) {
-				clearTimeout(timer);
-				reject(new Error("Broker rejected SIGTERM"));
-			}
-		});
-	}
+	await stopBroker();
 	setDurableBackend(undefined);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
 	rmSync(agentDir, { recursive: true, force: true });
+});
+
+test("the production owner route refuses stages without an Intercom startup drain", async () => {
+	const scenarios = [
+		{
+			name: "no-tools",
+			runId: "23bb9cf2-354e-475a-8c6f-a4c42306bb03",
+			options: { noTools: "all" },
+			acceptsPending: false,
+		},
+		{
+			name: "read-only",
+			runId: "d10852aa-3f68-46f8-baa7-f7bad2b50b9d",
+			options: { tools: ["read"] },
+			acceptsPending: false,
+		},
+		{
+			name: "excluded-intercom",
+			runId: "3a601bed-fafa-43a7-a68e-587df2c0174a",
+			options: { excludedTools: ["intercom"] },
+			acceptsPending: false,
+		},
+		{
+			name: "explicit-isolated-group",
+			runId: "dc107fa8-bf94-4cbc-8e56-7768db6ff10d",
+			options: { tools: ["intercom"], group: "isolated-reviewers" },
+			acceptsPending: false,
+		},
+		{
+			name: "exact-owner-group",
+			runId: "f87f3f73-0f31-491b-a487-6955cc163dc4",
+			options: { tools: ["intercom"], group: "workflow:f87f3f73-0f31-491b-a487-6955cc163dc4" },
+			acceptsPending: true,
+		},
+		{
+			name: "default-tools",
+			runId: "0bbd30b6-cd4e-49b8-9172-1896dff2bcc1",
+			options: undefined,
+			acceptsPending: true,
+		},
+		{
+			name: "explicit-intercom",
+			runId: "41e61e3c-bc02-4d75-a641-d7563df34d46",
+			options: { tools: ["intercom"] },
+			acceptsPending: true,
+		},
+	] as const;
+
+	for (const scenario of scenarios) {
+		const group = `workflow:${scenario.runId}`;
+		const store = createStore();
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: scenario.runId,
+			name: scenario.name,
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		setDurableBackend(backend);
+		const owner = extensionFixture(`${scenario.name}-owner`, `${scenario.name}-owner`, undefined, "default");
+		intercomHeavy(owner.pi as never);
+		const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+		const raw = new RawBrokerClient();
+		rawClients.add(raw);
+		const stageRegistered = Promise.withResolvers<void>();
+		const releaseRun = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: scenario.name,
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				if (scenario.options === undefined) ctx.stage("reviewer");
+				else ctx.stage("reviewer", scenario.options as never);
+				stageRegistered.resolve();
+				await releaseRun.promise;
+				return ctx.exit({ status: "skipped", reason: "test complete" });
+			},
+		});
+		let runPromise: ReturnType<typeof run> | undefined;
+		try {
+			await owner.start();
+			runPromise = run(definition, {}, { runId: scenario.runId, store });
+			await stageRegistered.promise;
+			await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+			await raw.register(`${scenario.name}-sender`, group);
+			const messageId = `${scenario.name}-message`;
+			raw.send({
+				type: "send",
+				to: `${scenario.runId}:reviewer`,
+				message: { id: messageId, timestamp: 1, content: { text: scenario.name } },
+			});
+			const acknowledgment = await raw.nextDeliveryAcknowledgment(messageId);
+			if (scenario.acceptsPending) {
+				assert.deepEqual(acknowledgment, {
+					type: "queued",
+					messageId,
+					runId: scenario.runId,
+					stageKey: "reviewer",
+					position: 1,
+				});
+				assert.equal(store.pendingStageMessagesFor(scenario.runId, "reviewer").length, 1);
+				assert.equal(backend.getWorkflow(scenario.runId)?.pendingStageMessages?.length, 1);
+			} else {
+				assert.deepEqual(acknowledgment, {
+					type: "delivery_failed",
+					messageId,
+					reason: `Workflow stage ${scenario.runId}:reviewer cannot receive Intercom messages before startup`,
+				});
+				assert.deepEqual(store.runs()[0]?.pendingStageMessages ?? [], []);
+				assert.deepEqual(backend.getWorkflow(scenario.runId)?.pendingStageMessages, []);
+			}
+		} finally {
+			releaseRun.resolve();
+			if (runPromise !== undefined) await runPromise;
+			disposeBridge();
+			await owner.shutdown();
+			await raw.close();
+			rawClients.delete(raw);
+		}
+	}
+});
+
+test("an explicit isolated stage refuses pending workflow delivery but keeps ordinary live Intercom", async () => {
+	const runId = "7d8db053-d87c-49da-9487-9dc06c41aa74";
+	const workflowGroup = `workflow:${runId}`;
+	const isolatedGroup = "isolated-reviewers";
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	backend.registerWorkflow({ workflowId: runId, name: "isolated-live", inputs: {}, status: "running", createdAt: 1 });
+	setDurableBackend(backend);
+	const owner = extensionFixture("isolated-owner-session", "isolated-owner", undefined, "default");
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	const peer = extensionFixture("isolated-peer-session", "isolated-peer", undefined, isolatedGroup);
+	intercomHeavy(peer.pi as never);
+	const workflowSender = new RawBrokerClient();
+	rawClients.add(workflowSender);
+	const stageRegistered = Promise.withResolvers<void>();
+	const releaseStageInitialization = Promise.withResolvers<void>();
+	let stageFixture: ReturnType<typeof extensionFixture> | undefined;
+	let stageContext: TestContext["orchestrationContext"] | undefined;
+	const adapters = {
+		agentSession: {
+			async create(options: CreateAgentSessionOptions) {
+				const rawContext = options.orchestrationContext;
+				assert.equal(rawContext?.kind, "workflow-stage");
+				const orchestrationContext = rawContext as TestContext["orchestrationContext"];
+				stageContext = orchestrationContext;
+				const fixture = extensionFixture(
+					"isolated-stage-session",
+					"isolated-stage",
+					orchestrationContext.pendingStageDelivery,
+					isolatedGroup,
+					orchestrationContext,
+				);
+				stageFixture = fixture;
+				intercomHeavy(fixture.pi as never);
+				await fixture.start();
+				let stopped = false;
+				const shutdown = async (): Promise<void> => {
+					if (stopped) return;
+					stopped = true;
+					await fixture.shutdown();
+				};
+				const session: StageSessionRuntime = {
+					async prompt() {
+						const stageList = await executeIntercom(fixture, { action: "list" });
+						assert.equal(stageList.isError, false);
+						assert.match(stageList.content[0]?.text ?? "", /isolated-peer \([^)]+\)/);
+						assert.doesNotMatch(stageList.content[0]?.text ?? "", /isolated-owner/);
+						const peerList = await executeIntercom(peer, { action: "list" });
+						assert.match(peerList.content[0]?.text ?? "", /isolated-stage \([^)]+\)/);
+
+						const sent = await executeIntercom(fixture, {
+							action: "send",
+							to: "isolated-peer",
+							message: "ordinary isolated send",
+						});
+						assert.equal(sent.details.delivered, true);
+						await peer.waitForInjectedCount(1);
+
+						const asked = executeIntercom(fixture, {
+							action: "ask",
+							to: "isolated-peer",
+							message: "ordinary isolated ask",
+						});
+						await peer.waitForInjectedCount(2);
+						const reply = await executeIntercom(peer, { action: "reply", message: "isolated answer" });
+						assert.equal(reply.details.delivered, true);
+						assert.match((await asked).content[0]?.text ?? "", /isolated answer/);
+						return "isolated live intercom remained usable";
+					},
+					async steer() {},
+					async followUp() {},
+					subscribe: () => () => {},
+					sessionFile: join(agentDir, "isolated-stage-session.jsonl"),
+					sessionId: "isolated-stage-session",
+					async setModel() {},
+					setThinkingLevel() {},
+					cycleModel: async () => undefined,
+					cycleThinkingLevel: () => undefined,
+					agent: { waitForIdle: async () => {} } as never,
+					model: { provider: "test", id: "model" } as AgentSession["model"],
+					thinkingLevel: "medium",
+					messages: [],
+					isStreaming: false,
+					navigateTree: async () => ({ cancelled: false }),
+					compact: async () => ({}) as never,
+					abortCompaction() {},
+					async abort() {},
+					dispose: shutdown,
+					getLastAssistantText: () => "isolated live intercom remained usable",
+				};
+				return { session };
+			},
+		},
+	};
+	const definition = workflow({
+		name: "isolated-live",
+		description: "",
+		inputs: {},
+		outputs: { result: Type.String() },
+		run: async (ctx) => {
+			const reviewer = ctx.stage("reviewer", {
+				tools: ["intercom"],
+				group: isolatedGroup,
+				model: "test/model",
+				settingsManager: {
+					getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+					getRetrySettings: () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0 }),
+				},
+			} as never);
+			stageRegistered.resolve();
+			await releaseStageInitialization.promise;
+			return { result: String(await reviewer.prompt("use ordinary isolated Intercom")) };
+		},
+	});
+	let runPromise: ReturnType<typeof run> | undefined;
+	try {
+		await owner.start();
+		await peer.start();
+		const peerStarted = await executeIntercom(peer, { action: "list" });
+		assert.equal(peerStarted.details.group, isolatedGroup);
+		runPromise = run(definition, {}, { runId, store, adapters });
+		await stageRegistered.promise;
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await workflowSender.register("workflow-group-sender", workflowGroup);
+		const messageId = "isolated-pre-start-send";
+		workflowSender.send({
+			type: "send",
+			to: `${runId}:reviewer`,
+			message: { id: messageId, timestamp: 1, content: { text: "must not cross into isolated stage" } },
+		});
+		assert.deepEqual(await workflowSender.nextDeliveryAcknowledgment(messageId), {
+			type: "delivery_failed",
+			messageId,
+			reason: `Workflow stage ${runId}:reviewer cannot receive Intercom messages before startup`,
+		});
+		assert.deepEqual(store.runs()[0]?.pendingStageMessages ?? [], []);
+		assert.deepEqual(backend.getWorkflow(runId)?.pendingStageMessages, []);
+
+		releaseStageInitialization.resolve();
+		const result = await runPromise;
+		assert.equal(result.status, "completed", JSON.stringify(result, undefined, 2));
+		assert.equal(result.result?.result, "isolated live intercom remained usable");
+		assert.equal(stageContext?.intercomGroup, isolatedGroup);
+		assert.equal(stageContext?.pendingStageDelivery, undefined);
+		assert.ok(stageFixture);
+		assert.equal(peer.injectedMessages.length, 2);
+	} finally {
+		releaseStageInitialization.resolve();
+		if (runPromise !== undefined) await runPromise;
+		if (stageFixture !== undefined) await stageFixture.shutdown();
+		await workflowSender.close();
+		rawClients.delete(workflowSender);
+		disposeBridge();
+		await peer.shutdown();
+		await owner.shutdown();
+	}
 });
 
 test("one composite workflow-stage target transitions atomically from durable queueing to live delivery", async () => {
@@ -448,7 +768,14 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			inputs: {},
 			status: "running",
 			stages: [
-				{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] },
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
 				{ id: "completed-id", name: "completed-stage", status: "completed", parentIds: [], toolEvents: [] },
 				{
 					id: "late-id",
@@ -847,6 +1174,412 @@ test("a durable pending admission survives a real stage-session fallback attempt
 		}
 	}
 });
+
+test("an identical durable delivered retry is acknowledged as delivered through a fresh owner route", async () => {
+	const runId = "d75641e7-3df3-4d46-9107-4e61e3cbc021";
+	const group = `workflow:${runId}`;
+	const message = { id: "durable-delivered-retry", timestamp: 1_787_860_000_001, content: { text: "exactly once" } };
+	const sdk = createMockSdk();
+	const writer = new DbosDurableBackend(sdk, { executorId: "delivered-retry-writer" });
+	writer.registerWorkflow({ workflowId: runId, name: "delivered-retry", inputs: {}, status: "running", createdAt: 1 });
+	await writer.flush();
+	setDurableBackend(writer);
+	const store = createStore();
+	store.recordRunStart({
+		id: runId,
+		name: "delivered-retry",
+		inputs: {},
+		status: "running",
+		stages: [
+			{
+				id: "reviewer-id",
+				name: "reviewer",
+				status: "pending",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			},
+		],
+		startedAt: 1,
+	});
+	const firstOwner = extensionFixture("delivered-retry-owner-1", "delivered-retry-owner-1", undefined, "default");
+	intercomHeavy(firstOwner.pi as never);
+	let disposeFirstBridge = (): void => {};
+	const raw = new RawBrokerClient();
+	rawClients.add(raw);
+	let secondOwner: ReturnType<typeof extensionFixture> | undefined;
+	let disposeSecondBridge = (): void => {};
+	try {
+		await firstOwner.start();
+		disposeFirstBridge = registerPendingStageIntercomBridge(firstOwner.pi as never, store);
+		await firstOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await raw.register("delivered-retry-sender", group);
+		raw.send({ type: "send", to: `${runId}:reviewer`, message });
+		assert.deepEqual(await raw.nextDeliveryAcknowledgment(message.id), {
+			type: "queued",
+			messageId: message.id,
+			runId,
+			stageKey: "reviewer",
+			position: 1,
+		});
+		assert.equal(
+			await store.markPendingStageMessageDelivered(
+				runId,
+				"reviewer",
+				message.id,
+				"2026-08-27T12:00:00.000Z",
+				writer,
+			),
+			true,
+		);
+		const deliveredSnapshot = structuredClone(writer.getWorkflow(runId)?.pendingStageMessages);
+
+		disposeFirstBridge();
+		await firstOwner.shutdown();
+		const reader = new DbosDurableBackend(sdk, { executorId: "delivered-retry-reader" });
+		await reader.hydrateWorkflow(runId);
+		const reloadedStore = createStore();
+		reloadedStore.recordRunStart({
+			id: runId,
+			name: "delivered-retry",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+			pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
+		});
+		setDurableBackend(reader);
+		secondOwner = extensionFixture("delivered-retry-owner-2", "delivered-retry-owner-2", undefined, "default");
+		intercomHeavy(secondOwner.pi as never);
+		await secondOwner.start();
+		disposeSecondBridge = registerPendingStageIntercomBridge(secondOwner.pi as never, reloadedStore);
+		await secondOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+
+		raw.send({ type: "send", to: `${runId}:reviewer-id`, message });
+		assert.deepEqual(await raw.nextDeliveryAcknowledgment(message.id), {
+			type: "delivered",
+			messageId: message.id,
+		});
+		assert.deepEqual(reader.getWorkflow(runId)?.pendingStageMessages, deliveredSnapshot);
+		assert.deepEqual(reloadedStore.runs()[0]?.pendingStageMessages, deliveredSnapshot);
+		assert.deepEqual(reloadedStore.pendingStageMessagesFor(runId, "reviewer"), []);
+	} finally {
+		disposeSecondBridge();
+		if (secondOwner !== undefined) await secondOwner.shutdown();
+		disposeFirstBridge();
+		await firstOwner.shutdown();
+		await raw.close();
+		rawClients.delete(raw);
+	}
+});
+
+test("a drained message ID is revalidated by its durable owner after a broker restart", async () => {
+	const runId = "a9f23cf8-10c1-4b72-9cc6-9f6677961fd1";
+	const group = `workflow:${runId}`;
+	const target = `${runId}:reviewer`;
+	const messageId = "drained-live-conflict";
+	const sdk = createMockSdk();
+	const writer = new DbosDurableBackend(sdk, { executorId: "live-conflict-writer" });
+	writer.registerWorkflow({ workflowId: runId, name: "live-conflict", inputs: {}, status: "running", createdAt: 1 });
+	await writer.flush();
+	setDurableBackend(writer);
+	const store = createStore();
+	const stage = (id: string, name: string, status: "pending" | "running", sessionId?: string) => ({
+		id,
+		name,
+		status,
+		parentIds: [],
+		toolEvents: [],
+		pendingStageDeliveryAvailable: true,
+		...(sessionId === undefined ? {} : { sessionId }),
+	});
+	store.recordRunStart({
+		id: runId,
+		name: "live-conflict",
+		inputs: {},
+		status: "running",
+		stages: [stage("reviewer-id", "reviewer", "pending"), stage("other-id", "other", "pending")],
+		startedAt: 1,
+	});
+	const firstOwner = extensionFixture("live-conflict-owner-1", "live-conflict-owner-1", undefined, "default");
+	intercomHeavy(firstOwner.pi as never);
+	let disposeFirstBridge = (): void => {};
+	const firstSender = new IntercomClient();
+	const firstStage = new RawBrokerClient();
+	const controlSender = new RawBrokerClient();
+	const conflictingSender = new RawBrokerClient();
+	for (const client of [firstStage, controlSender, conflictingSender]) rawClients.add(client);
+	const recipientDir = mkdtempSync(join(tmpdir(), "live-conflict-recipient-"));
+	const recipientSession = SessionManager.create("/repo", recipientDir);
+	const firstAdmission = StageAdmissionBoundary.restore(recipientSession.getBranch());
+	let secondOwner: ReturnType<typeof extensionFixture> | undefined;
+	let disposeSecondBridge = (): void => {};
+	let secondSender: InstanceType<typeof IntercomClient> | undefined;
+	let secondStage: RawBrokerClient | undefined;
+	try {
+		await firstOwner.start();
+		disposeFirstBridge = registerPendingStageIntercomBridge(firstOwner.pi as never, store);
+		await firstOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await firstSender.connect(
+			{ name: "live-conflict-sender", group, cwd: repoRoot, model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+			undefined,
+			undefined,
+			{ subagentRunId: "admitted-source" },
+		);
+		assert.deepEqual(await firstSender.send(target, { messageId, text: "original payload" }), {
+			id: messageId,
+			delivered: false,
+			queued: true,
+			runId,
+			stageKey: "reviewer",
+			position: 1,
+		});
+		const durableControl = {
+			id: "durable-live-controls",
+			timestamp: 100,
+			replyTo: "original-reply",
+			expectsReply: false,
+			replyError: "original-error",
+			source: { subagentRunId: "control-source", subagentAgent: "reviewer", subagentIndex: 1 },
+			content: {
+				text: "control payload",
+				attachments: [{ type: "snippet", name: "contract.md", content: "literal", language: "md" }],
+			},
+		} as const;
+		await controlSender.register("live-control-sender", group);
+		controlSender.send({ type: "send", to: target, message: durableControl });
+		assert.equal((await controlSender.next("queued", (frame) => frame.messageId === durableControl.id)).position, 2);
+
+		const firstPending = createWorkflowPendingStageDelivery(store, runId, "reviewer-id", "reviewer");
+		await firstStage.register("live-conflict-stage-1", group);
+		for (const registration of [
+			{ requestId: "live-conflict-route-1", stageKeys: ["reviewer-id", "reviewer"] },
+			{ requestId: "live-conflict-other-route-1", stageKeys: ["other-id", "other"] },
+		] as const) {
+			firstStage.send({
+				type: "register_live_workflow_stage_route",
+				requestId: registration.requestId,
+				runId,
+				stageKeys: registration.stageKeys,
+				capability: firstPending.routeCapability,
+			});
+			await firstStage.next(
+				"live_workflow_stage_route_registered",
+				(frame) => frame.requestId === registration.requestId,
+			);
+		}
+		let visible = 0;
+		await firstPending.deliverPending(async (from, message) => {
+			const admitted = firstAdmission.admit(
+				`intercom:${message.id}`,
+				() => {
+					recipientSession.appendCustomMessageEntry(
+						"intercom_message",
+						message.content.text,
+						true,
+						{ from, message },
+						undefined,
+						undefined,
+						`intercom:${message.id}`,
+					);
+					recipientSession.flush();
+					visible += 1;
+				},
+				() => {
+					throw new Error("unexpected late pending-stage delivery");
+				},
+			);
+			assert.equal(admitted.decision, "admitted");
+			await admitted.completion;
+		});
+		assert.equal(visible, 2);
+		assert.deepEqual(
+			writer.getWorkflow(runId)?.pendingStageMessages?.map((entry) => entry.status),
+			["delivered", "delivered"],
+		);
+		assert.equal(recipientSession.getBranch().filter((entry) => entry.type === "custom_message").length, 2);
+
+		controlSender.send({ type: "send", to: target, message: { ...durableControl, timestamp: 999 } });
+		assert.deepEqual(await controlSender.nextDeliveryAcknowledgment(durableControl.id), {
+			type: "delivered",
+			messageId: durableControl.id,
+		});
+		await conflictingSender.register("changed-control-sender", group);
+		const conflicts = [
+			{ to: `${runId}:other`, message: durableControl },
+			{ to: target, message: { ...durableControl, content: { ...durableControl.content, text: "changed text" } } },
+			{
+				to: target,
+				message: {
+					...durableControl,
+					content: {
+						...durableControl.content,
+						attachments: [{ type: "snippet", name: "contract.md", content: "changed", language: "md" }],
+					},
+				},
+			},
+			{ to: target, message: { ...durableControl, replyTo: "changed-reply" } },
+			{ to: target, message: { ...durableControl, expectsReply: true } },
+			{ to: target, message: { ...durableControl, replyError: "changed-error" } },
+			{
+				to: target,
+				message: { ...durableControl, source: { ...durableControl.source, subagentRunId: "changed-source" } },
+			},
+		] as const;
+		for (const conflict of conflicts) {
+			controlSender.send({ type: "send", ...conflict });
+			assert.equal(
+				(await controlSender.next("delivery_failed", (frame) => frame.messageId === durableControl.id)).reasonCode,
+				"message_id_conflict",
+			);
+		}
+		conflictingSender.send({ type: "send", to: target, message: durableControl });
+		assert.equal(
+			(await conflictingSender.next("delivery_failed", (frame) => frame.messageId === durableControl.id)).reasonCode,
+			"message_id_conflict",
+		);
+
+		const brandNewId = "brand-new-live-message";
+		assert.deepEqual(await firstSender.send(target, { messageId: brandNewId, text: "immediate live delivery" }), {
+			id: brandNewId,
+			delivered: true,
+		});
+		await firstStage.next("message", (frame) => frame.message.id === brandNewId);
+		assert.equal(
+			firstStage.received.filter((frame) => frame.type === "message" && frame.message.id === durableControl.id)
+				.length,
+			0,
+			"a durable delivered retry is not forwarded",
+		);
+		assert.equal(writer.getWorkflow(runId)?.pendingStageMessages?.length, 2);
+		assert.equal(
+			writer.getWorkflow(runId)?.pendingStageMessages?.some((entry) => entry.id === brandNewId),
+			false,
+			"a brand-new live ID is not persisted as pending validation state",
+		);
+
+		await firstSender.disconnect();
+		await firstStage.close();
+		rawClients.delete(firstStage);
+		disposeFirstBridge();
+		disposeFirstBridge = (): void => {};
+		await firstOwner.shutdown();
+		await stopBroker();
+		await startBroker();
+
+		const reader = new DbosDurableBackend(sdk, { executorId: "live-conflict-reader" });
+		await reader.hydrateWorkflow(runId);
+		setDurableBackend(reader);
+		const reloadedStore = createStore();
+		reloadedStore.recordRunStart({
+			id: runId,
+			name: "live-conflict",
+			inputs: {},
+			status: "running",
+			stages: [
+				stage("reviewer-id", "reviewer", "running", "durable-stage-session"),
+				stage("other-id", "other", "running", "other-session"),
+			],
+			startedAt: 1,
+			pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
+		});
+		secondOwner = extensionFixture("live-conflict-owner-2", "live-conflict-owner-2", undefined, "default");
+		intercomHeavy(secondOwner.pi as never);
+		await secondOwner.start();
+		disposeSecondBridge = registerPendingStageIntercomBridge(secondOwner.pi as never, reloadedStore);
+		await secondOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		const secondPending = createWorkflowPendingStageDelivery(reloadedStore, runId, "reviewer-id", "reviewer");
+		secondStage = new RawBrokerClient();
+		rawClients.add(secondStage);
+		await secondStage.register("live-conflict-stage-2", group);
+		secondStage.send({
+			type: "register_live_workflow_stage_route",
+			requestId: "live-conflict-route-2",
+			runId,
+			stageKeys: ["reviewer-id", "reviewer"],
+			capability: secondPending.routeCapability,
+		});
+		await secondStage.next(
+			"live_workflow_stage_route_registered",
+			(frame) => frame.requestId === "live-conflict-route-2",
+		);
+		secondSender = new IntercomClient();
+		await secondSender.connect(
+			{ name: "live-conflict-sender", group, cwd: repoRoot, model: "test", pid: 2, startedAt: 2, lastActivity: 2 },
+			undefined,
+			undefined,
+			{ subagentRunId: "changed-source" },
+		);
+
+		const acknowledgment = await secondSender.send(target, { messageId, text: "CHANGED payload" });
+		if (acknowledgment.delivered) {
+			const forwarded = await secondStage.next(
+				"message",
+				(frame) => frame.message.id === messageId && frame.message.content.text === "CHANGED payload",
+			);
+			const restoredAdmission = StageAdmissionBoundary.restore(recipientSession.getBranch());
+			const duplicate = restoredAdmission.admit(
+				`intercom:${forwarded.message.id}`,
+				() => {
+					throw new Error("persistent recipient admitted a duplicate");
+				},
+				() => {
+					throw new Error("unexpected late route");
+				},
+			);
+			assert.equal(duplicate.decision, "duplicate");
+			await duplicate.completion;
+		}
+		assert.deepEqual(acknowledgment, {
+			id: messageId,
+			delivered: false,
+			reason: `Intercom message ID '${messageId}' conflicts with the durable identity for ${target}`,
+			reasonCode: "message_id_conflict",
+		});
+		const freshBrandNewId = "fresh-broker-brand-new-live";
+		assert.deepEqual(
+			await secondSender.send(target, { messageId: freshBrandNewId, text: "fresh immediate delivery" }),
+			{
+				id: freshBrandNewId,
+				delivered: true,
+			},
+		);
+		await secondStage.next("message", (frame) => frame.message.id === freshBrandNewId);
+		assert.equal(
+			secondStage.received.filter((frame) => frame.type === "message" && frame.message.id === messageId).length,
+			0,
+			"the durable conflict is refused before forwarding",
+		);
+		assert.equal(reader.getWorkflow(runId)?.pendingStageMessages?.length, 2);
+		assert.equal(recipientSession.getBranch().filter((entry) => entry.type === "custom_message").length, 2);
+	} finally {
+		if (secondSender !== undefined) await secondSender.disconnect();
+		if (secondStage !== undefined) {
+			await secondStage.close();
+			rawClients.delete(secondStage);
+		}
+		disposeSecondBridge();
+		if (secondOwner !== undefined) await secondOwner.shutdown();
+		await firstSender.disconnect();
+		for (const client of [firstStage, controlSender, conflictingSender]) {
+			await client.close();
+			rawClients.delete(client);
+		}
+		disposeFirstBridge();
+		await firstOwner.shutdown();
+		if (broker === undefined) await startBroker();
+		rmSync(recipientDir, { recursive: true, force: true });
+	}
+});
 test("raw malformed messages are rejected before durable mutation and valid optional fields survive DBOS reload", async () => {
 	const runId = "2f34ff35-9813-4a60-b7a3-24698cd01592";
 	const group = `workflow:${runId}`;
@@ -862,7 +1595,16 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 		name: "wire-validation",
 		inputs: {},
 		status: "running",
-		stages: [{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+		stages: [
+			{
+				id: "reviewer-id",
+				name: "reviewer",
+				status: "pending",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			},
+		],
 		startedAt: 1,
 	});
 	const owner = extensionFixture("wire-owner", "wire-owner", undefined, "default");

@@ -36,9 +36,8 @@ export function queueStageMessage(
 	}
 
 	const messageId = input.message.id;
-	const bucket = messages.filter((entry) => matchesPendingStage(entry, input.runId, input.stageKey, stageIdentity));
 	const queued = pendingStageMessagesFor(messages, input.runId, input.stageKey, stageIdentity);
-	const existing = bucket.find((entry) => entry.id === messageId);
+	const existing = messages.find((entry) => entry.runId === input.runId && entry.id === messageId);
 	if (existing !== undefined) {
 		if (
 			pendingStageMessageSignature(existing, stageIdentity) !== pendingStageMessageSignature(input, stageIdentity)

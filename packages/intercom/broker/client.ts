@@ -26,22 +26,26 @@ export interface SendResult {
   delivered: boolean;
   queued?: boolean;
   reason?: string;
+	reasonCode?: "message_id_conflict";
   runId?: string;
   stageKey?: string;
   position?: number;
 }
 
 export interface PendingStageMessageRequest {
-  readonly requestId: string;
-  readonly from: SessionInfo;
-  readonly runId: string;
-  readonly stageKey: string;
-  readonly message: Message;
+	readonly requestId: string;
+	readonly from: SessionInfo;
+	readonly runId: string;
+	readonly stageKey: string;
+	readonly message: Message;
+	readonly live?: boolean;
 }
 
 export type PendingStageMessageResult =
-  | { readonly outcome: "queued"; readonly position: number }
-  | { readonly outcome: "refused"; readonly reason: string };
+	| { readonly outcome: "queued"; readonly position: number }
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "forward" }
+	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
 export interface PresenceUpdates {
   name?: string;
   status?: string;
@@ -324,17 +328,25 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "pending_stage_message": {
-        const { requestId, from, runId, stageKey, message } = brokerMessage;
+		const { requestId, from, runId, stageKey, message, live } = brokerMessage;
         if (
           typeof requestId !== "string" ||
           !isSessionInfo(from) ||
           typeof runId !== "string" ||
           typeof stageKey !== "string" ||
-          !isMessage(message)
-        ) {
+			!isMessage(message) ||
+			(live !== undefined && typeof live !== "boolean")
+		) {
           throw new Error("Invalid pending-stage message event");
         }
-        this.emit("pending_stage_message", { requestId, from, runId, stageKey, message } satisfies PendingStageMessageRequest);
+		this.emit("pending_stage_message", {
+			requestId,
+			from,
+			runId,
+			stageKey,
+			message,
+			...(live === true ? { live: true } : {}),
+		} satisfies PendingStageMessageRequest);
         break;
       }
       case "live_workflow_stage_route_registered": {
@@ -374,14 +386,24 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "delivery_failed": {
-        const { messageId, attemptId, reason } = brokerMessage;
-        if (typeof messageId !== "string" || (attemptId !== undefined && typeof attemptId !== "string") || typeof reason !== "string") {
-          throw new Error("Invalid delivery_failed message");
-        }
-        const result = { id: messageId, delivered: false, reason } as const;
-        if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
-        else this.pendingSends.resolve(messageId, attemptId, result);
-        break;
+		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
+		if (
+			typeof messageId !== "string" ||
+			(attemptId !== undefined && typeof attemptId !== "string") ||
+			typeof reason !== "string" ||
+			(reasonCode !== undefined && reasonCode !== "message_id_conflict")
+		) {
+			throw new Error("Invalid delivery_failed message");
+		}
+		const result = {
+			id: messageId,
+			delivered: false,
+			reason,
+			...(reasonCode === undefined ? {} : { reasonCode }),
+		} as const;
+		if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+		else this.pendingSends.resolve(messageId, attemptId, result);
+		break;
       }
       case "session_joined": {
         if (!isSessionInfo(brokerMessage.session)) {
@@ -578,15 +600,23 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  respondPendingStageMessage(requestId: string, result: PendingStageMessageResult): void {
-    const socket = this.requireActiveSocket();
-    writeMessage(
-      socket,
-      result.outcome === "queued"
-        ? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
-        : { type: "pending_stage_message_result", requestId, outcome: "refused", reason: result.reason },
-    );
-  }
+	respondPendingStageMessage(requestId: string, result: PendingStageMessageResult): void {
+		const socket = this.requireActiveSocket();
+		writeMessage(
+			socket,
+			result.outcome === "queued"
+				? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
+				: result.outcome === "refused"
+					? {
+							type: "pending_stage_message_result",
+							requestId,
+							outcome: "refused",
+							reason: result.reason,
+							...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
+						}
+					: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
+		);
+	}
 
   send(to: string, options: SendOptions): Promise<SendResult> {
     return this.sendFrame("send", to, options);

@@ -56,13 +56,14 @@ export type ClientMessage =
       stageKeys: string[];
       capability: string;
     }
-  | {
-      type: "pending_stage_message_result";
-      requestId: string;
-      outcome: "queued" | "refused";
-      position?: number;
-      reason?: string;
-    }
+	| {
+		type: "pending_stage_message_result";
+		requestId: string;
+		outcome: "queued" | "delivered" | "forward" | "refused";
+		position?: number;
+		reason?: string;
+		reasonCode?: "message_id_conflict";
+	  }
   | { type: "presence"; name?: string; status?: string; model?: string; group?: string; requestId?: string };
 
 export type BrokerMessage =
@@ -71,7 +72,7 @@ export type BrokerMessage =
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
-  | { type: "pending_stage_message"; requestId: string; from: SessionInfo; runId: string; stageKey: string; message: Message }
+	| { type: "pending_stage_message"; requestId: string; from: SessionInfo; runId: string; stageKey: string; message: Message; live?: boolean }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
@@ -82,4 +83,4 @@ export type BrokerMessage =
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
   | { type: "queued"; messageId: string; attemptId?: string; runId: string; stageKey: string; position: number }
-  | { type: "delivery_failed"; messageId: string; reason: string; attemptId?: string };
+	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict"; attemptId?: string };

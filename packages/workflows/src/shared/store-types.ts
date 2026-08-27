@@ -291,6 +291,13 @@ export type PendingStageQueueResult =
 			readonly stageKey: string;
 	  };
 
+export type LiveStageMessageValidationResult =
+	| { readonly outcome: "forward" }
+	| { readonly outcome: "queued"; readonly position: number }
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "undeliverable"; readonly reason?: string }
+	| { readonly outcome: "message_id_conflict"; readonly messageId: string };
+
 export interface StageSnapshot {
 	readonly id: string;
 	readonly name: string;
@@ -330,6 +337,8 @@ export interface StageSnapshot {
 	skippedReason?: string;
 	/** Stable continuation replay identity, separate from display name. */
 	replayKey?: string;
+	/** Authoritative stage-factory capability; only true stages have a pre-start Intercom drain. */
+	pendingStageDeliveryAvailable?: boolean;
 	/** Snapshot-safe prompt answer availability marker; never contains the raw answer. */
 	promptAnswerState?: "available" | "unavailable" | "ambiguous";
 	/** Snapshot-safe descriptor of the prompt UI shown by this stage; never contains the raw answer. */

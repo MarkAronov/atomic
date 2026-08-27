@@ -31,6 +31,8 @@ export interface PendingStageRoute {
   readonly stageKey: string;
   readonly message: Message;
   readonly attemptId?: string;
+	readonly liveTargetId?: string;
+	readonly signature?: string;
 }
 
 export type PendingStageRouter = (route: PendingStageRoute) => boolean;
@@ -95,27 +97,28 @@ export function handleBrokerSend(
   }
   const supervisorSend = clientMessage.type === "supervisor_send";
 
-  const signature = buildMessageSendSignature(clientMessage.to, message);
-  const deliveredMatch = deliveredMessages.lookup(message.id, signature);
-  if (deliveredMatch === "match") {
-    write(socket, { type: "delivered", messageId: message.id, attemptId });
-    return;
-  }
-  if (deliveredMatch === "conflict") {
-    write(socket, {
-      type: "delivery_failed",
-      messageId: message.id,
-      attemptId,
-      reason: `Intercom message ID '${message.id}' was already delivered with a different target or payload`,
-    });
-    return;
-  }
 
   const fromSession = currentId ? sessions.get(currentId) : undefined;
   if (!fromSession) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
   }
+	const signature = buildMessageSendSignature(clientMessage.to, message, fromSession.info.id);
+	const deliveredMatch = deliveredMessages.lookup(message.id, signature);
+	if (deliveredMatch === "match") {
+		write(socket, { type: "delivered", messageId: message.id, attemptId });
+		return;
+	}
+	if (deliveredMatch === "conflict") {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			attemptId,
+			reason: `Intercom message ID '${message.id}' was already delivered with a different target or payload`,
+			reasonCode: "message_id_conflict",
+		});
+		return;
+	}
   const trimmedTo = clientMessage.to.trim();
   if (supervisorSend && !fromSession.supervisorId) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor channel is not authorized" });
@@ -130,7 +133,8 @@ export function handleBrokerSend(
   // Exact-id targeting always resolves against the full pool so a cross-group id
   // is caught by the defense-in-depth group check below. Only a broker-authorized
   // supervisor frame or an exact recorded reply may resolve across groups.
-  const exactIdTarget = sessions.get(trimmedTo) ?? resolveLiveWorkflowStage?.(trimmedTo);
+	const liveWorkflowTarget = sessions.has(trimmedTo) ? undefined : resolveLiveWorkflowStage?.(trimmedTo);
+	const exactIdTarget = sessions.get(trimmedTo) ?? liveWorkflowTarget;
   const senderGroup = normalizeGroup(fromSession.info.group);
   const reachableAcrossGroups = supervisorSend || Boolean(message.replyTo);
   const candidates = reachableAcrossGroups
@@ -166,6 +170,22 @@ export function handleBrokerSend(
       });
       return;
     }
+		const liveTarget = parsePendingStageTarget(trimmedTo);
+		if (
+			liveWorkflowTarget !== undefined &&
+			liveTarget !== undefined &&
+			routePendingStage?.({
+				socket,
+				from: fromSession,
+				...liveTarget,
+				message,
+				...(attemptId ? { attemptId } : {}),
+				liveTargetId: target.info.id,
+				signature,
+			})
+		) {
+			return;
+		}
     write(target.socket, supervisorSend
       ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
       : { type: "message", from: fromSession.info, message });

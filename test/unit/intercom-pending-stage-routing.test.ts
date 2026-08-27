@@ -143,7 +143,16 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
-			stages: [{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
 			startedAt: 1,
 		});
 		const backend = new InMemoryDurableBackend();
@@ -174,6 +183,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 				handled: boolean;
 				completion?: Promise<
 					| { readonly outcome: "queued"; readonly position: number }
+					| { readonly outcome: "delivered" }
 					| { readonly outcome: "refused"; readonly reason: string }
 				>;
 				requestId: string;

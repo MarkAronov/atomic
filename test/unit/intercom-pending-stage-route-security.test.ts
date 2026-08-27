@@ -134,6 +134,12 @@ async function registrationOutcome(client: WireClient, requestId: string): Promi
 	]);
 }
 
+async function forwardNextLiveMessage(owner: WireClient): Promise<BrokerMessage & { type: "pending_stage_message" }> {
+	const request = await owner.next("pending_stage_message", (frame) => frame.live === true);
+	owner.send({ type: "pending_stage_message_result", requestId: request.requestId, outcome: "forward" });
+	return request;
+}
+
 beforeAll(async () => {
 	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
@@ -296,14 +302,26 @@ test("production clients keep the pending owner and live stage connected when a 
 	const liveMessage = new Promise<Message>((resolveMessage) => {
 		stage.once("message", (_from, message) => resolveMessage(message));
 	});
-	const liveSend = await sender.send(`${runId}:reviewer`, { text: "deliver to live composite" });
-	assert.equal(liveSend.delivered, true);
+	const liveValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const liveSendPromise = sender.send(`${runId}:reviewer`, { text: "deliver to live composite" });
+	const liveRequest = await liveValidation;
+	assert.equal(liveRequest.live, true);
+	owner.respondPendingStageMessage(liveRequest.requestId, { outcome: "forward" });
+	assert.equal((await liveSendPromise).delivered, true);
 	assert.equal((await liveMessage).content.text, "deliver to live composite");
 	const liveAskMessage = new Promise<Message>((resolveMessage) => {
 		stage.once("message", (_from, message) => resolveMessage(message));
 	});
-	const liveAsk = await sender.send(`${runId}:reviewer-id`, { text: "live blocking question", expectsReply: true });
-	assert.equal(liveAsk.delivered, true);
+	const liveAskValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const liveAskPromise = sender.send(`${runId}:reviewer-id`, { text: "live blocking question", expectsReply: true });
+	const liveAskRequest = await liveAskValidation;
+	assert.equal(liveAskRequest.live, true);
+	owner.respondPendingStageMessage(liveAskRequest.requestId, { outcome: "forward" });
+	assert.equal((await liveAskPromise).delivered, true);
 	assert.equal((await liveAskMessage).content.text, "live blocking question");
 
 	assert.equal(owner.isConnected(), true);
@@ -374,11 +392,13 @@ test("immutable workflow authority rejects a default-group attacker that presenc
 		(frame) => frame.requestId === "legitimate-live-route",
 	);
 
+	const legitimateValidation = forwardNextLiveMessage(legitimateOwner);
 	sender.send({
 		type: "send",
 		to: `${runId}:reviewer`,
 		message: { id: "after-legitimate-registration", timestamp: 2, content: { text: "legitimate owner only" } },
 	});
+	assert.equal((await legitimateValidation).message.id, "after-legitimate-registration");
 	assert.equal((await sender.next("delivered")).messageId, "after-legitimate-registration");
 	assert.equal((await legitimateStage.next("message")).message.content.text, "legitimate owner only");
 });
@@ -513,11 +533,13 @@ test("broker rejects an attacker-first live route without the workflow capabilit
 		"live_workflow_stage_route_registered",
 		(frame) => frame.requestId === "legitimate-after-attacker-route",
 	);
+	const attackerFirstValidation = forwardNextLiveMessage(owner);
 	sender.send({
 		type: "send",
 		to: target,
 		message: { id: "attacker-first-live-send", timestamp: 3, content: { text: "legitimate recipient only" } },
 	});
+	assert.equal((await attackerFirstValidation).message.id, "attacker-first-live-send");
 	assert.equal((await sender.next("delivered")).messageId, "attacker-first-live-send");
 	assert.equal((await legitimate.next("message")).message.content.text, "legitimate recipient only");
 	assert.equal(
@@ -571,12 +593,14 @@ test("broker rejects a different active session taking over a live composite rou
 	});
 	assert.equal(await registrationOutcome(attacker, "takeover-route-processed"), "closed");
 
+	const takeoverValidation = forwardNextLiveMessage(owner);
 	const canary = "live-route-takeover-security-canary";
 	sender.send({
 		type: "send",
 		to: TARGET,
 		message: { id: "after-takeover", timestamp: 2, content: { text: canary } },
 	});
+	assert.equal((await takeoverValidation).message.id, "after-takeover");
 	assert.deepEqual(await sender.next("delivered"), {
 		type: "delivered",
 		messageId: "after-takeover",
@@ -627,11 +651,13 @@ test("live composite route replacement requires the old owner to disconnect", as
 		capability: "transition-route-capability",
 	});
 	await nextAttempt.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "next-attempt-route");
+	const attemptTransitionValidation = forwardNextLiveMessage(owner);
 	sender.send({
 		type: "send",
 		to: `${transitionRunId}:reviewer`,
 		message: { id: "stage-attempt-transition", timestamp: 3, content: { text: "transition message" } },
 	});
+	assert.equal((await attemptTransitionValidation).message.id, "stage-attempt-transition");
 	await sender.next("delivered", (frame) => frame.messageId === "stage-attempt-transition");
 	assert.equal((await nextAttempt.next("message")).message.content.text, "transition message");
 });

@@ -24,7 +24,7 @@ function message(id: string, text = "hello"): Message {
 	return { id, timestamp: 1, content: { text } };
 }
 
-test("broker wire send dedupes identical retries, rejects conflicts, and preserves attempt IDs across sender replacement", () => {
+test("broker wire send dedupes identical retries and rejects target, payload, or sender conflicts with attempt IDs", () => {
 	const senderOne = {} as net.Socket;
 	const senderTwo = {} as net.Socket;
 	const recipient = {} as net.Socket;
@@ -97,17 +97,18 @@ test("broker wire send dedupes identical retries, rejects conflicts, and preserv
 		cache,
 		write,
 	);
-	assert.equal(
-		writes.filter(
-			(entry) =>
-				entry.socket === senderTwo && entry.message.type === "delivered" && entry.message.attemptId === "attempt-5",
-		).length,
-		1,
-	);
+	const senderConflict = writes.find(
+		(entry) =>
+			entry.socket === senderTwo &&
+			entry.message.type === "delivery_failed" &&
+			entry.message.attemptId === "attempt-5",
+	)?.message;
+	assert.equal(senderConflict?.type, "delivery_failed");
+	if (senderConflict?.type === "delivery_failed") assert.equal(senderConflict.reasonCode, "message_id_conflict");
 	assert.equal(
 		writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length,
 		1,
-		"replacement sender receives cached acknowledgement without replay",
+		"a replacement sender cannot claim another sender's delivered message ID",
 	);
 });
 

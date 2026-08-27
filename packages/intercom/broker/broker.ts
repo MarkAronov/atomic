@@ -6,7 +6,7 @@ import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
-import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../types.js";
+import type { SessionInfo, Message, BrokerMessage, SupervisorRegistration } from "../types.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import {
   handleBrokerSend,
@@ -38,6 +38,11 @@ interface PendingStageAcknowledgment {
   readonly attemptId?: string;
   readonly runId: string;
   readonly stageKey: string;
+	readonly senderSessionId: string;
+	readonly sender: SessionInfo;
+	readonly message: Message;
+	readonly liveTargetId?: string;
+	readonly signature?: string;
   readonly timeout: NodeJS.Timeout;
 }
 
@@ -161,12 +166,13 @@ class IntercomBroker {
   private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
     const registration = this.liveWorkflowStageRoutes.get(target);
     if (registration === undefined) return undefined;
-    const parsedTarget = parsePendingStageTarget(target);
-    const currentOwner = parsedTarget === undefined ? undefined : this.pendingStageRoutes.get(parsedTarget.runId);
-    if (currentOwner !== undefined && currentOwner.capability !== registration.capability) {
-      this.liveWorkflowStageRoutes.delete(target);
-      return undefined;
-    }
+		const parsedTarget = parsePendingStageTarget(target);
+		const currentOwner = parsedTarget === undefined ? undefined : this.pendingStageRoutes.get(parsedTarget.runId);
+		if (currentOwner === undefined) return undefined;
+		if (currentOwner.capability !== registration.capability) {
+			this.liveWorkflowStageRoutes.delete(target);
+			return undefined;
+		}
     const session = this.sessions.get(registration.sessionId);
     if (session !== undefined) return session;
     this.liveWorkflowStageRoutes.delete(target);
@@ -228,7 +234,7 @@ class IntercomBroker {
       this.pendingStageRoutes.delete(route.runId);
       return false;
     }
-    if (normalizeGroup(route.from.info.group) !== normalizeGroup(ownerRegistration.group)) {
+		if (route.liveTargetId === undefined && normalizeGroup(route.from.info.group) !== normalizeGroup(ownerRegistration.group)) {
       writeMessage(route.socket, {
         type: "delivery_failed",
         messageId: route.message.id,
@@ -257,6 +263,11 @@ class IntercomBroker {
       ...(route.attemptId ? { attemptId: route.attemptId } : {}),
       runId: route.runId,
       stageKey: route.stageKey,
+		senderSessionId: route.from.info.id,
+		sender: { ...route.from.info },
+		message: route.message,
+		...(route.liveTargetId === undefined ? {} : { liveTargetId: route.liveTargetId }),
+		...(route.signature === undefined ? {} : { signature: route.signature }),
       timeout,
     });
     writeMessage(owner.socket, {
@@ -266,40 +277,100 @@ class IntercomBroker {
       runId: route.runId,
       stageKey: route.stageKey,
       message: route.message,
+		...(route.liveTargetId === undefined ? {} : { live: true }),
     });
     return true;
   };
 
-  private settlePendingStageMessageRequest(
-    currentId: string,
-    requestId: string,
-    outcome: "queued" | "refused",
-    position: number | undefined,
-    reason: string | undefined,
-  ): void {
-    const pending = this.pendingStageAcknowledgments.get(requestId);
-    if (pending === undefined || pending.ownerSessionId !== currentId) return;
-    clearTimeout(pending.timeout);
-    this.pendingStageAcknowledgments.delete(requestId);
-    this.releasePendingStageAcknowledgment(requestId);
-    if (outcome === "queued" && typeof position === "number" && position > 0) {
-      writeMessage(pending.senderSocket, {
-        type: "queued",
-        messageId: pending.messageId,
-        ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-        runId: pending.runId,
-        stageKey: pending.stageKey,
-        position,
-      });
-      return;
-    }
-    writeMessage(pending.senderSocket, {
-      type: "delivery_failed",
-      messageId: pending.messageId,
-      ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-      reason: reason ?? "Pending-stage delivery was refused",
-    });
-  }
+	private settlePendingStageMessageRequest(
+		currentId: string,
+		requestId: string,
+		outcome: "queued" | "delivered" | "forward" | "refused",
+		position: number | undefined,
+		reason: string | undefined,
+		reasonCode: "message_id_conflict" | undefined,
+	): void {
+		const pending = this.pendingStageAcknowledgments.get(requestId);
+		if (pending === undefined || pending.ownerSessionId !== currentId) return;
+		clearTimeout(pending.timeout);
+		this.pendingStageAcknowledgments.delete(requestId);
+		this.releasePendingStageAcknowledgment(requestId);
+		if (outcome === "forward") {
+			this.forwardValidatedLiveStageMessage(pending);
+			return;
+		}
+		if (outcome === "delivered") {
+			writeMessage(pending.senderSocket, {
+				type: "delivered",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+			});
+			return;
+		}
+		if (outcome === "queued" && typeof position === "number" && position > 0) {
+			writeMessage(pending.senderSocket, {
+				type: "queued",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				runId: pending.runId,
+				stageKey: pending.stageKey,
+				position,
+			});
+			return;
+		}
+		writeMessage(pending.senderSocket, {
+			type: "delivery_failed",
+			messageId: pending.messageId,
+			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+			reason: reason ?? "Pending-stage delivery was refused",
+			...(reasonCode === undefined ? {} : { reasonCode }),
+		});
+	}
+
+	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment): void {
+		const from = this.sessions.get(pending.senderSessionId);
+		const target = this.resolveLiveWorkflowStage(`${pending.runId}:${pending.stageKey}`);
+		if (
+			from === undefined ||
+			target === undefined ||
+			target.info.id !== pending.liveTargetId ||
+			pending.signature === undefined
+		) {
+			writeMessage(pending.senderSocket, {
+				type: "delivery_failed",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				reason: "Session not found",
+			});
+			return;
+		}
+		const deliveredMatch = this.deliveredMessages.lookup(pending.messageId, pending.signature);
+		if (deliveredMatch === "conflict") {
+			writeMessage(pending.senderSocket, {
+				type: "delivery_failed",
+				messageId: pending.messageId,
+				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+				reason: `Intercom message ID '${pending.messageId}' was already delivered with a different target or payload`,
+				reasonCode: "message_id_conflict",
+			});
+			return;
+		}
+		if (deliveredMatch === "miss") {
+			writeMessage(target.socket, { type: "message", from: pending.sender, message: pending.message });
+			this.deliveredMessages.record(pending.messageId, pending.signature);
+			if (pending.message.expectsReply === true) {
+				this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
+			}
+			if (pending.message.replyTo !== undefined) {
+				this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo);
+			}
+		}
+		writeMessage(pending.senderSocket, {
+			type: "delivered",
+			messageId: pending.messageId,
+			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+		});
+	}
 
 
   private handleMessage(
@@ -510,9 +581,13 @@ class IntercomBroker {
       case "pending_stage_message_result": {
         if (
           typeof clientMessage.requestId !== "string" ||
-          (clientMessage.outcome !== "queued" && clientMessage.outcome !== "refused") ||
-          (clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
-          (clientMessage.reason !== undefined && typeof clientMessage.reason !== "string")
+			(clientMessage.outcome !== "queued" &&
+				clientMessage.outcome !== "delivered" &&
+				clientMessage.outcome !== "forward" &&
+				clientMessage.outcome !== "refused") ||
+			(clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
+			(clientMessage.reason !== undefined && typeof clientMessage.reason !== "string") ||
+			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict")
         ) {
           throw new Error("Invalid pending-stage message result");
         }
@@ -521,7 +596,8 @@ class IntercomBroker {
           clientMessage.requestId,
           clientMessage.outcome,
           clientMessage.position,
-          clientMessage.reason,
+			clientMessage.reason,
+			clientMessage.reasonCode,
         );
         break;
       }

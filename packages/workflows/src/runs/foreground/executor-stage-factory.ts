@@ -2,7 +2,7 @@ import { runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
-import { stageHasIntercomAccess } from "../../shared/intercom-group.js";
+import { stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
@@ -96,6 +96,18 @@ export function createWorkflowStageFactory(input: {
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
 		const shouldReplay = replaySource !== undefined;
+		const stageOptionsForContext: StageOptions | undefined =
+			executeReplaySource?.sessionFile === undefined
+				? options
+				: {
+						...(options ?? {}),
+						context: options?.context ?? "fork",
+						forkFromSessionFile: options?.forkFromSessionFile ?? executeReplaySource.sessionFile,
+					};
+		const pendingStageDeliveryAvailable = stageCanUseWorkflowPendingStageRoute(
+			stageOptionsForContext,
+			input.workflowIntercomGroup,
+		);
 
 		const stageSnapshot: StageSnapshot = {
 			id: stageId,
@@ -104,6 +116,7 @@ export function createWorkflowStageFactory(input: {
 			status: shouldReplay ? "completed" : "pending",
 			parentIds: Object.freeze(parentIds),
 			toolEvents: [],
+			pendingStageDeliveryAvailable,
 			...(shouldReplay
 				? {
 						startedAt: Date.now(),
@@ -138,15 +151,6 @@ export function createWorkflowStageFactory(input: {
 			}) as StageContextWithMeta;
 		}
 
-		const stageOptionsForContext: StageOptions | undefined =
-			executeReplaySource?.sessionFile === undefined
-				? options
-				: {
-						...(options ?? {}),
-						context: options?.context ?? "fork",
-						forkFromSessionFile: options?.forkFromSessionFile ?? executeReplaySource.sessionFile,
-					};
-
 		const applyModelFallbackMeta = (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>): void => {
 			if (meta.model !== undefined) stageSnapshot.model = meta.model;
 			if (meta.fastMode !== undefined) {
@@ -178,7 +182,7 @@ export function createWorkflowStageFactory(input: {
 			workflowIntercomGroup: input.workflowIntercomGroup,
 			signal: input.signal,
 			stageOptions: stageOptionsForContext,
-			...(stageHasIntercomAccess(stageOptionsForContext)
+			...(pendingStageDeliveryAvailable
 				? {
 						pendingStageDelivery: createWorkflowPendingStageDelivery(
 							input.activeStore,
@@ -318,6 +322,7 @@ export function createWorkflowStageFactory(input: {
 				name,
 				parentIds: stageSnapshot.parentIds,
 				...stageReplayFields(stageSnapshot),
+				pendingStageDeliveryAvailable,
 				ts: stageSnapshot.startedAt ?? Date.now(),
 			});
 		};

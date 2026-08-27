@@ -21,7 +21,9 @@ interface PendingStageMessageEvent {
 	handled: boolean;
 	completion?: Promise<
 		| { readonly outcome: "queued"; readonly position: number }
-		| { readonly outcome: "refused"; readonly reason: string }
+		| { readonly outcome: "delivered" }
+		| { readonly outcome: "forward" }
+		| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" }
 	>;
 	readonly requestId?: string;
 	readonly from?: PendingStageSender;
@@ -48,12 +50,21 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
 		const run = activeStore.runs().find((candidate) => candidate.id === payload.runId);
-		if (run === undefined || !isKnownUninitializedStage(run, payload.stageKey)) return;
+		if (run === undefined) return;
+		if (payload.live === true) {
+			if (knownLiveStage(run, payload.stageKey) === undefined) return;
+			payload.handled = true;
+			payload.completion = validateLiveDelivery(activeStore, payload);
+			return;
+		}
+		const stage = knownUninitializedStage(run, payload.stageKey);
+		if (stage === undefined) return;
 		payload.handled = true;
 		payload.completion = queueAndPersist(
 			activeStore,
 			payload,
 			workflowInvocationIntercomGroup(run.rootRunId ?? run.id),
+			stage.pendingStageDeliveryAvailable === true,
 		);
 	});
 	const dispose = (): void => {
@@ -65,14 +76,15 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	return dispose;
 }
 
-function isPendingStageMessageEvent(
-	value: unknown,
-): value is PendingStageMessageEvent &
-	Required<Pick<PendingStageMessageEvent, "from" | "runId" | "stageKey" | "message">> {
+function isPendingStageMessageEvent(value: unknown): value is PendingStageMessageEvent &
+	Required<Pick<PendingStageMessageEvent, "from" | "runId" | "stageKey" | "message">> & {
+		readonly live?: boolean;
+	} {
 	if (typeof value !== "object" || value === null) return false;
-	const event = value as PendingStageMessageEvent;
+	const event = value as PendingStageMessageEvent & { readonly live?: unknown };
 	return (
 		typeof event.handled === "boolean" &&
+		(event.live === undefined || typeof event.live === "boolean") &&
 		typeof event.runId === "string" &&
 		typeof event.stageKey === "string" &&
 		typeof event.from?.id === "string" &&
@@ -83,16 +95,63 @@ function isPendingStageMessageEvent(
 	);
 }
 
+function knownLiveStage(
+	run: ReturnType<Store["runs"]>[number],
+	stageKey: string,
+): ReturnType<Store["runs"]>[number]["stages"][number] | undefined {
+	const exactIds = run.stages.filter((stage) => stage.id === stageKey);
+	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
+	return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+async function validateLiveDelivery(
+	activeStore: Store,
+	event: PendingStageMessageEvent &
+		Required<Pick<PendingStageMessageEvent, "from" | "runId" | "stageKey" | "message">>,
+): Promise<
+	| { readonly outcome: "queued"; readonly position: number }
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "forward" }
+	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" }
+> {
+	const result = await activeStore.validateLiveStageMessage({
+		runId: event.runId,
+		stageKey: event.stageKey,
+		from: event.from,
+		message: event.message,
+		queuedAt: new Date().toISOString(),
+	});
+	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
+	if (result.outcome === "forward" || result.outcome === "delivered" || result.outcome === "queued") return result;
+	if (result.outcome === "undeliverable") {
+		return { outcome: "refused", reason: result.reason ?? "Pending-stage delivery was refused" };
+	}
+	return {
+		outcome: "refused",
+		reason: `Intercom message ID '${result.messageId}' conflicts with the durable identity for ${event.runId}:${event.stageKey}`,
+		reasonCode: "message_id_conflict",
+	};
+}
+
 async function queueAndPersist(
 	activeStore: Store,
 	event: PendingStageMessageEvent &
 		Required<Pick<PendingStageMessageEvent, "from" | "runId" | "stageKey" | "message">>,
 	runGroup: string,
+	pendingStageDeliveryAvailable: boolean,
 ): Promise<
-	{ readonly outcome: "queued"; readonly position: number } | { readonly outcome: "refused"; readonly reason: string }
+	| { readonly outcome: "queued"; readonly position: number }
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "refused"; readonly reason: string }
 > {
 	if (event.message.expectsReply === true) {
 		return { outcome: "refused", reason: PENDING_STAGE_ASK_REFUSAL };
+	}
+	if (!pendingStageDeliveryAvailable) {
+		return {
+			outcome: "refused",
+			reason: `Workflow stage ${event.runId}:${event.stageKey} cannot receive Intercom messages before startup`,
+		};
 	}
 	const request: PendingStageMessageInput = {
 		runId: event.runId,
@@ -124,17 +183,28 @@ async function queueAndPersist(
 		}
 		return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
 	}
+	if (result.entry.status === "delivered") return { outcome: "delivered" };
+	if (result.entry.status === "undeliverable") {
+		return {
+			outcome: "refused",
+			reason: result.entry.undeliverableReason ?? "Pending-stage delivery was refused",
+		};
+	}
+	if (result.position === undefined) return { outcome: "refused", reason: "Pending-stage delivery was refused" };
 	return { outcome: "queued", position: result.position };
 }
 
-function isKnownUninitializedStage(run: ReturnType<Store["runs"]>[number], stageKey: string): boolean {
+function knownUninitializedStage(
+	run: ReturnType<Store["runs"]>[number],
+	stageKey: string,
+): ReturnType<Store["runs"]>[number]["stages"][number] | undefined {
 	const exactIds = run.stages.filter((stage) => stage.id === stageKey);
 	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
-	if (candidates.length !== 1) return false;
+	if (candidates.length !== 1) return undefined;
 	const stage = candidates[0]!;
-	return (
-		(stage.status === "pending" || stage.status === "running") &&
+	return (stage.status === "pending" || stage.status === "running") &&
 		stage.sessionId === undefined &&
 		stage.sessionFile === undefined
-	);
+		? stage
+		: undefined;
 }

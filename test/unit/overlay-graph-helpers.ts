@@ -99,6 +99,7 @@ export function makeStore(snap: StoreSnapshot): Store {
 		activeRunId: () => snap.runs[0]?.id ?? null,
 		recordRunStart: () => {},
 		queueStageMessage: async () => undefined,
+		validateLiveStageMessage: async () => undefined,
 		pendingStageMessagesFor: () => [],
 		markPendingStageMessageDelivered: async () => false,
 		markPendingStageMessageUndeliverable: async () => false,

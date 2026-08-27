@@ -121,6 +121,7 @@ function compactStage(stage: StageSnapshot): StageSnapshot {
 		inputRequest,
 		notices,
 		mcpScope: _mcpScope,
+		pendingStageDeliveryAvailable: _pendingStageDeliveryAvailable,
 		attemptedModels: _attemptedModels,
 		modelAttempts: _modelAttempts,
 		// Agent-stage results can be unbounded and graph cards do not render

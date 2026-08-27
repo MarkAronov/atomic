@@ -11,10 +11,12 @@ import {
 } from "./pending-stage-delivery.js";
 import type { StoreContext } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
+import type { LiveStageMessageValidationResult } from "./store-types.js";
 
 type PendingStageDeliveryStoreMethods = Pick<
 	Store,
 	| "queueStageMessage"
+	| "validateLiveStageMessage"
 	| "pendingStageMessagesFor"
 	| "markPendingStageMessageDelivered"
 	| "markPendingStageMessageUndeliverable"
@@ -60,6 +62,36 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					context.bumpAndNotify();
 				}
 				return result;
+			});
+		},
+
+		async validateLiveStageMessage(
+			input: PendingStageMessageInput,
+		): Promise<LiveStageMessageValidationResult | undefined> {
+			return await serialize(input.runId, async () => {
+				const run = context.findRun(input.runId);
+				if (run === undefined) return undefined;
+				const result = queueStageMessage(
+					run.pendingStageMessages ?? [],
+					input,
+					undefined,
+					undefined,
+					resolvePendingStageIdentity(run, input.stageKey),
+				);
+				if (!result.ok) {
+					return result.reason === "message_id_conflict"
+						? { outcome: "message_id_conflict", messageId: result.messageId }
+						: { outcome: "forward" };
+				}
+				if (!result.deduplicated) return { outcome: "forward" };
+				if (result.entry.status === "delivered") return { outcome: "delivered" };
+				if (result.entry.status === "undeliverable") {
+					return { outcome: "undeliverable", reason: result.entry.undeliverableReason };
+				}
+				if (result.position === undefined) {
+					throw new Error(`atomic-workflows: queued message ${input.message.id} has no active position`);
+				}
+				return { outcome: "queued", position: result.position };
 			});
 		},
 

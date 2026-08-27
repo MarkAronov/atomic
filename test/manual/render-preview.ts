@@ -191,6 +191,7 @@ const store: Store = {
 	activeRunId: () => run?.id ?? null,
 	recordRunStart: () => {},
 	queueStageMessage: async () => undefined,
+	validateLiveStageMessage: async () => undefined,
 	pendingStageMessagesFor: () => [],
 	markPendingStageMessageDelivered: async () => false,
 	markPendingStageMessageUndeliverable: async () => false,

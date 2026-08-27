@@ -5,6 +5,7 @@ import type {
 	PendingStageQueueResult,
 } from "./pending-stage-delivery.js";
 import type {
+	LiveStageMessageValidationResult,
 	PendingPrompt,
 	PromptKind,
 	RunResumeSource,
@@ -114,6 +115,8 @@ export interface Store {
 		runGroup: string | undefined,
 		backend: DurableWorkflowBackend,
 	): Promise<PendingStageQueueResult | undefined>;
+	/** Revalidate a live composite delivery against workflow-owned durable identity without queueing a new ID. */
+	validateLiveStageMessage(input: PendingStageMessageInput): Promise<LiveStageMessageValidationResult | undefined>;
 	/** Read queued entries for an exact run/stage key in FIFO order. */
 	pendingStageMessagesFor(runId: string, stageKey: string): readonly PendingStageMessage[];
 	markPendingStageMessageDelivered(
