@@ -15,6 +15,11 @@ import {
 	WORKFLOWS_SDK_BUNDLE_ENTRY,
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
+import {
+	deriveImportClosure,
+	INSTALLED_IMPORT_CLOSURE_ROOTS,
+	shouldSkipBuiltinCopyEntry,
+} from "./derive-import-closure.js";
 
 interface BuiltinCopy {
 	label: string;
@@ -148,23 +153,7 @@ function assertPackageDir(packageDir: string, expectedName: string): void {
 }
 
 function shouldSkipEntry(name: string): boolean {
-	return (
-		name === "node_modules" ||
-		name === ".git" ||
-		name === ".github" ||
-		name === "coverage" ||
-		name === ".nyc_output" ||
-		name === ".DS_Store" ||
-		name === ".turbo" ||
-		name === ".vite" ||
-		name === ".vitest" ||
-		name === "test" ||
-		name === "tests" ||
-		name.endsWith(".test.ts") ||
-		name.endsWith(".test.mjs") ||
-		name.endsWith(".spec.ts") ||
-		name.endsWith(".map")
-	);
+	return shouldSkipBuiltinCopyEntry(name);
 }
 
 function copyFilteredDirectory(sourceDir: string, destinationDir: string): void {
@@ -323,17 +312,28 @@ function pointWorkflowsSdkAtBundle(pkg: Record<string, unknown>): void {
 	}
 }
 
-function shouldKeepInstalledPath(dirName: BuiltinPackageDirName, relativePath: string): boolean {
+function shouldKeepInstalledPath(
+	dirName: BuiltinPackageDirName,
+	relativePath: string,
+	importClosure: ReadonlySet<string>,
+): boolean {
 	const normalized = relativePath.split("\\").join("/");
-	return INSTALLED_KEEP_PREFIXES[dirName].some((keep) => {
-		if (keep.endsWith("/")) {
-			return normalized === keep.slice(0, -1) || normalized.startsWith(keep);
-		}
-		return normalized === keep;
-	});
+	return (
+		importClosure.has(normalized) ||
+		INSTALLED_KEEP_PREFIXES[dirName].some((keep) => {
+			if (keep.endsWith("/")) {
+				return normalized === keep.slice(0, -1) || normalized.startsWith(keep);
+			}
+			return normalized === keep;
+		})
+	);
 }
 
-function pruneInstalledPackage(packageDir: string, dirName: BuiltinPackageDirName): void {
+function pruneInstalledPackage(
+	packageDir: string,
+	dirName: BuiltinPackageDirName,
+	importClosure: ReadonlySet<string>,
+): void {
 	const visit = (dir: string): void => {
 		for (const entry of readdirSync(dir)) {
 			const fullPath = join(dir, entry);
@@ -346,7 +346,7 @@ function pruneInstalledPackage(packageDir: string, dirName: BuiltinPackageDirNam
 				}
 				continue;
 			}
-			if (!shouldKeepInstalledPath(dirName, relativePath)) {
+			if (!shouldKeepInstalledPath(dirName, relativePath, importClosure)) {
 				rmSync(fullPath);
 			}
 		}
@@ -354,12 +354,16 @@ function pruneInstalledPackage(packageDir: string, dirName: BuiltinPackageDirNam
 	visit(packageDir);
 }
 
+const installedImportClosures = new Map<BuiltinPackageDirName, ReadonlySet<string>>();
+
 rmSync(distBuiltinDir, { recursive: true, force: true });
 mkdirSync(distBuiltinDir, { recursive: true });
 
 for (const copy of getCopyPlan()) {
 	const destinationDir = join(distBuiltinDir, copy.destinationName);
 	copyFilteredDirectory(copy.sourceDir, destinationDir);
+	const closureRoots = INSTALLED_IMPORT_CLOSURE_ROOTS[copy.destinationName] ?? [];
+	installedImportClosures.set(copy.destinationName, deriveImportClosure(copy.sourceDir, closureRoots));
 	console.log(`Copied builtin ${copy.label} -> ${join("dist", "builtin", basename(destinationDir))}`);
 }
 
@@ -414,6 +418,6 @@ for (const dirName of ["subagents", "mcp", "web-access", "intercom"] as const) {
 }
 
 for (const dirName of WORKSPACE_BUILTINS.map((entry) => entry.workspaceDirName)) {
-	pruneInstalledPackage(join(distBuiltinDir, dirName), dirName);
+	pruneInstalledPackage(join(distBuiltinDir, dirName), dirName, installedImportClosures.get(dirName) ?? new Set());
 	console.log(`Pruned installed sources for ${dirName}`);
 }
