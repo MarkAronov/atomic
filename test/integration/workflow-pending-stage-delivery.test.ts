@@ -18,6 +18,7 @@ const TARGET = `${RUN_ID}:reviewer`;
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
 const BROKER_STARTUP_TIMEOUT_MS = 10_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
+const STORE_EVENT_TIMEOUT_MS = 5_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "pending-stage-"));
@@ -289,6 +290,23 @@ async function executeIntercom(
 	const execute = fixture.tools.get("intercom")?.execute;
 	assert.ok(execute);
 	return execute("test-call", params, undefined, undefined, fixture.context);
+}
+
+function waitForStoreState(activeStore: ReturnType<typeof createStore>, predicate: () => boolean): Promise<void> {
+	if (predicate()) return Promise.resolve();
+	return new Promise((resolve, reject) => {
+		let unsubscribe = (): void => {};
+		const timer = setTimeout(() => {
+			unsubscribe();
+			reject(new Error("Timed out waiting for store state"));
+		}, STORE_EVENT_TIMEOUT_MS);
+		unsubscribe = activeStore.subscribeInvalidation(() => {
+			if (!predicate()) return;
+			clearTimeout(timer);
+			unsubscribe();
+			resolve();
+		});
+	});
 }
 
 interface BrokerFrameWaiter {
@@ -1771,13 +1789,8 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 			status: "running",
 			createdAt: 1,
 		});
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await sender.start();
-		const discoveryDeadline = Date.now() + OWNER_DISCOVERY_BUDGET_MS;
-		while (Date.now() < discoveryDeadline) {
-			const listed = await executeIntercom(sender, { action: "list" });
-			if (listed.content.some(({ text }) => text.includes("undeliverable-owner"))) break;
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-		}
 		const queued = await executeIntercom(sender, {
 			action: "send",
 			to: `${runId}:reviewer`,
@@ -1787,6 +1800,11 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 		assert.ok(queued.details.messageId);
 		assert.equal(store.pendingStageMessagesFor(runId, "reviewer")[0]?.message.expectsReply, undefined);
 
+		const failureVisible = sender.waitForInjectedCount(1);
+		const notified = waitForStoreState(
+			store,
+			() => store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt !== undefined,
+		);
 		store.recordStageEnd(runId, {
 			id: "reviewer-id",
 			name: "reviewer",
@@ -1795,21 +1813,12 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 			toolEvents: [],
 			skippedReason: "fail-fast",
 		});
-		const deliveryDeadline = Date.now() + 2_000;
-		while (Date.now() < deliveryDeadline && sender.injectedMessages.length === 0) {
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-		}
+		await failureVisible;
+		await notified;
 		const failure = sender.injectedMessages[0];
 		assert.match(failure?.content ?? "", /could not receive intercom message:.*skipped.*fail-fast/i);
 		assert.equal(failure?.details?.message?.replyTo, queued.details.messageId);
 		assert.match(failure?.details?.message?.replyError ?? "", /could not receive intercom message/i);
-		const notifiedDeadline = Date.now() + 2_000;
-		while (
-			Date.now() < notifiedDeadline &&
-			store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt === undefined
-		) {
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-		}
 		assert.equal(typeof store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt, "string");
 		assert.equal(sender.injectedMessages.length, 1);
 	} finally {
