@@ -69,6 +69,52 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 	return { activeStore, backend, runId };
 }
 
+async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus: StageStatus) {
+	const runId = testRunId(`pending-delivery-renamed-${runStatus}-${restoredStageStatus}`);
+	const group = `workflow:${runId}`;
+	const backend = new InMemoryDurableBackend();
+	backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	setDurableBackend(backend);
+	const writerStore = createStore();
+	writerStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	writerStore.recordStageStart(runId, {
+		id: "stable-stage-id",
+		name: "old-reviewer-name",
+		replayKey: "stage:reviewer:1",
+		status: "pending",
+		parentIds: [],
+		toolEvents: [],
+	});
+	const queued = await writerStore.queueStageMessage(
+		pendingMessage(runId, "old-reviewer-name"),
+		group,
+		group,
+		backend,
+	);
+	assert.equal(queued?.ok, true);
+	const activeStore = createStore();
+	activeStore.recordRunStart({
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: runStatus,
+		stages: [
+			{
+				id: "stable-stage-id",
+				name: "renamed-reviewer",
+				replayKey: "stage:reviewer:1",
+				status: restoredStageStatus,
+				parentIds: [],
+				toolEvents: [],
+				...(restoredStageStatus === "skipped" ? { skippedReason: "replayed fail-fast" } : {}),
+			},
+		],
+		startedAt: 1,
+		pendingStageMessages: [...(backend.getWorkflow(runId)?.pendingStageMessages ?? [])],
+	});
+	return { activeStore, backend, runId };
+}
+
 afterEach(() => {
 	setDurableBackend(undefined);
 	resetDbosLifecycleForTests();
@@ -183,26 +229,238 @@ describe("pending workflow stage delivery lifecycle", () => {
 		assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
 	});
 
-	test("settles a cancelled run separately", async () => {
-		const { activeStore } = await lifecycleFixture("cancelled", "skipped");
-		const reasons: string[] = [];
-		await settleUndeliverablePendingStageMessages(activeStore, async (_entry, reason) => {
-			reasons.push(reason);
-			return true;
+	test("settles a name-addressed skipped destination by canonical identity after durable reload and rename", async () => {
+		const runId = testRunId("pending-delivery-canonical-rename");
+		const group = `workflow:${runId}`;
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		const writerStore = createStore();
+		writerStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		writerStore.recordStageStart(runId, {
+			id: "stable-stage-id",
+			name: "old-reviewer-name",
+			replayKey: "stage:reviewer:1",
+			status: "pending",
+			parentIds: [],
+			toolEvents: [],
 		});
-		assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
-		assert.match(reasons[0] ?? "", /terminated with status cancelled/);
+		writerStore.recordStageStart(runId, {
+			id: "unrelated-stage-id",
+			name: "other-reviewer-name",
+			replayKey: "stage:other:1",
+			status: "pending",
+			parentIds: [],
+			toolEvents: [],
+		});
+		const queued = await writerStore.queueStageMessage(
+			pendingMessage(runId, "old-reviewer-name"),
+			group,
+			group,
+			backend,
+		);
+		const unrelated = await writerStore.queueStageMessage(
+			pendingMessage(runId, "other-reviewer-name"),
+			group,
+			group,
+			backend,
+		);
+		assert.equal(queued?.ok, true);
+		assert.equal(queued?.ok ? queued.entry.stageId : undefined, "stable-stage-id");
+		assert.equal(queued?.ok ? queued.entry.stageReplayKey : undefined, "stage:reviewer:1");
+		assert.equal(unrelated?.ok, true);
+
+		const reloadedStore = createStore();
+		reloadedStore.recordRunStart({
+			id: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "stable-stage-id",
+					name: "renamed-reviewer",
+					replayKey: "stage:reviewer:1",
+					status: "skipped",
+					parentIds: [],
+					toolEvents: [],
+					skippedReason: "replayed fail-fast",
+				},
+				{
+					id: "unrelated-stage-id",
+					name: "renamed-other-reviewer",
+					replayKey: "stage:other:1",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
+			startedAt: 1,
+			pendingStageMessages: [...(backend.getWorkflow(runId)?.pendingStageMessages ?? [])],
+		});
+		const notifications: string[] = [];
+		const notify = async (_entry: PendingStageMessage, reason: string): Promise<boolean> => {
+			notifications.push(reason);
+			return true;
+		};
+		assert.equal(await settleUndeliverablePendingStageMessages(reloadedStore, notify), 1);
+		assert.equal(await settleUndeliverablePendingStageMessages(reloadedStore, notify), 0);
+		assert.deepEqual(notifications, ["Workflow stage old-reviewer-name was skipped (replayed fail-fast)"]);
+		const entries = reloadedStore.runs()[0]?.pendingStageMessages ?? [];
+		assert.equal(entries.find((entry) => entry.stageId === "stable-stage-id")?.status, "undeliverable");
+		assert.equal(entries.find((entry) => entry.stageId === "unrelated-stage-id")?.status, "queued");
 	});
 
-	test("settles a known pending stage when its run completes before initialization", async () => {
-		const { activeStore } = await lifecycleFixture("completed");
+	test("uses stable replay identity when a durable entry has no canonical stage id", async () => {
+		const { backend, runId } = await renamedLifecycleFixture("running", "skipped");
+		const durableEntry = backend.getWorkflow(runId)?.pendingStageMessages?.[0];
+		assert.ok(durableEntry !== undefined);
+		const { stageId: discardedStageId, ...replayEntry } = durableEntry;
+		assert.equal(discardedStageId, "stable-stage-id");
+		assert.equal(replayEntry.stageReplayKey, "stage:reviewer:1");
+		const replayedStore = createStore();
+		replayedStore.recordRunStart({
+			id: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "recreated-stage-id",
+					name: "renamed-reviewer",
+					replayKey: "stage:reviewer:1",
+					status: "skipped",
+					parentIds: [],
+					toolEvents: [],
+					skippedReason: "replayed by stable key",
+				},
+			],
+			startedAt: 1,
+			pendingStageMessages: [replayEntry],
+		});
+		const notifications: string[] = [];
+		assert.equal(
+			await settleUndeliverablePendingStageMessages(replayedStore, async (_entry, reason) => {
+				notifications.push(reason);
+				return true;
+			}),
+			1,
+		);
+		assert.deepEqual(notifications, ["Workflow stage old-reviewer-name was skipped (replayed by stable key)"]);
+		assert.equal(replayedStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
+	});
+
+	test("retains exact legacy id and unique-name fallback without collapsing duplicate names", async () => {
+		const { backend, runId } = await renamedLifecycleFixture("running", "skipped");
+		const durableEntry = backend.getWorkflow(runId)?.pendingStageMessages?.[0];
+		assert.ok(durableEntry !== undefined);
+		const { stageId: discardedStageId, stageReplayKey: discardedReplayKey, ...legacyBase } = durableEntry;
+		assert.equal(discardedStageId, "stable-stage-id");
+		assert.equal(discardedReplayKey, "stage:reviewer:1");
+		const legacyEntry = (stageKey: string, id: string): PendingStageMessage => ({
+			...legacyBase,
+			id,
+			stageKey,
+			message: { ...legacyBase.message, id },
+		});
+		const legacyById = legacyEntry("legacy-stage-id", "legacy-id-message");
+		const legacyByName = legacyEntry("legacy-reviewer", "legacy-name-message");
+		const ambiguousLegacy = legacyEntry("duplicate-reviewer", "ambiguous-name-message");
+		const unknownCanonical: PendingStageMessage = {
+			...legacyEntry("legacy-reviewer", "unknown-canonical-message"),
+			stageId: "missing-canonical-stage",
+		};
+		const activeStore = createStore();
+		activeStore.recordRunStart({
+			id: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "legacy-stage-id",
+					name: "renamed-legacy-id",
+					status: "skipped",
+					parentIds: [],
+					toolEvents: [],
+					skippedReason: "legacy id",
+				},
+				{
+					id: "legacy-name-stage-id",
+					name: "legacy-reviewer",
+					status: "skipped",
+					parentIds: [],
+					toolEvents: [],
+					skippedReason: "legacy name",
+				},
+				{
+					id: "duplicate-a",
+					name: "duplicate-reviewer",
+					status: "skipped",
+					parentIds: [],
+					toolEvents: [],
+				},
+				{
+					id: "duplicate-b",
+					name: "duplicate-reviewer",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
+			startedAt: 1,
+			pendingStageMessages: [legacyById, legacyByName, ambiguousLegacy, unknownCanonical],
+		});
+		const notifications: string[] = [];
+		const notify = async (entry: PendingStageMessage, reason: string): Promise<boolean> => {
+			notifications.push(`${entry.id}:${reason}`);
+			return true;
+		};
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 2);
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 0);
+		assert.deepEqual(notifications, [
+			"legacy-id-message:Workflow stage legacy-stage-id was skipped (legacy id)",
+			"legacy-name-message:Workflow stage legacy-reviewer was skipped (legacy name)",
+		]);
+		const statuses = Object.fromEntries(
+			(activeStore.runs()[0]?.pendingStageMessages ?? []).map((entry) => [entry.id, entry.status]),
+		);
+		assert.deepEqual(statuses, {
+			"legacy-id-message": "undeliverable",
+			"legacy-name-message": "undeliverable",
+			"ambiguous-name-message": "queued",
+			"unknown-canonical-message": "queued",
+		});
+	});
+
+	test("settles a name-addressed cancelled destination after durable reload and rename", async () => {
+		const { activeStore } = await renamedLifecycleFixture("cancelled", "skipped");
 		const reasons: string[] = [];
-		await settleUndeliverablePendingStageMessages(activeStore, async (_entry, reason) => {
+		const notify = async (_entry: PendingStageMessage, reason: string): Promise<boolean> => {
 			reasons.push(reason);
 			return true;
-		});
+		};
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 1);
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 0);
+		assert.deepEqual(reasons, [
+			`Workflow run ${activeStore.runs()[0]?.id} terminated with status cancelled before stage old-reviewer-name started`,
+		]);
 		assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
-		assert.match(reasons[0] ?? "", /completed before stage review-stage started/);
+	});
+
+	test("settles a name-addressed terminal-before-init destination after durable reload and rename", async () => {
+		const { activeStore } = await renamedLifecycleFixture("completed", "pending");
+		const reasons: string[] = [];
+		const notify = async (_entry: PendingStageMessage, reason: string): Promise<boolean> => {
+			reasons.push(reason);
+			return true;
+		};
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 1);
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 0);
+		assert.deepEqual(reasons, [
+			`Workflow run ${activeStore.runs()[0]?.id} terminated with status completed before stage old-reviewer-name started`,
+		]);
+		assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
 	});
 
 	test("leaves blocked and nonterminal stage routing untouched", async () => {

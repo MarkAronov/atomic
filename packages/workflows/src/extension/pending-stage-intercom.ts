@@ -255,11 +255,28 @@ function knownUninitializedStage(
 		: undefined;
 }
 
+function pendingStageDestination(
+	run: ReturnType<Store["runs"]>[number],
+	entry: PendingStageMessage,
+): ReturnType<Store["runs"]>[number]["stages"][number] | undefined {
+	if (entry.stageId !== undefined) {
+		const candidates = run.stages.filter((stage) => stage.id === entry.stageId);
+		return candidates.length === 1 ? candidates[0] : undefined;
+	}
+	if (entry.stageReplayKey !== undefined) {
+		const candidates = run.stages.filter((stage) => stage.replayKey === entry.stageReplayKey);
+		return candidates.length === 1 ? candidates[0] : undefined;
+	}
+	const exactIds = run.stages.filter((stage) => stage.id === entry.stageKey);
+	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === entry.stageKey);
+	return candidates.length === 1 ? candidates[0] : undefined;
+}
+
 function pendingStageUndeliverableReason(
 	run: ReturnType<Store["runs"]>[number],
 	entry: PendingStageMessage,
 ): string | undefined {
-	const stage = run.stages.find((candidate) => candidate.id === entry.stageKey || candidate.name === entry.stageKey);
+	const stage = pendingStageDestination(run, entry);
 	if (run.status === "cancelled") {
 		return `Workflow run ${run.id} terminated with status cancelled before stage ${entry.stageKey} started`;
 	}
