@@ -1190,7 +1190,7 @@ test("a durable pending admission survives a real stage-session fallback attempt
 			to: TARGET,
 			message: {
 				id: messageId,
-				timestamp: 1_787_860_000_000,
+				timestamp: 9_000_000_000_000_000,
 				content: { text: "preserve this admission across the stage attempt restart" },
 			},
 		});
@@ -1227,6 +1227,7 @@ test("a durable pending admission survives a real stage-session fallback attempt
 		assert.equal(visible[0]?.details?.message?.id, messageId);
 		assert.equal(visible[0]?.details?.from?.id, queuedEntry?.from.id);
 		assert.equal(visible[0]?.details?.from?.name, "attempt-restart-sender");
+		assert.match(visible[0]?.content ?? "", /Sent: 9000000000000000/);
 		assert.equal(attempts[1]?.fixture.injectedOptions[0]?.stageAdmissionKey, admissionId);
 		const durableEntry = backend.getWorkflow(RUN_ID)?.pendingStageMessages?.[0];
 		assert.deepEqual(
@@ -1235,12 +1236,14 @@ test("a durable pending admission survives a real stage-session fallback attempt
 				stageId: durableEntry.stageId,
 				stageReplayKey: durableEntry.stageReplayKey,
 				status: durableEntry.status,
+				timestamp: durableEntry.message.timestamp,
 			},
 			{
 				id: messageId,
 				stageId: attempts[1]?.orchestrationContext.workflowStageId,
 				stageReplayKey: replayKey,
 				status: "delivered",
+				timestamp: 9_000_000_000_000_000,
 			},
 		);
 		assert.equal(store.runs().find((candidate) => candidate.id === RUN_ID)?.status, "completed");

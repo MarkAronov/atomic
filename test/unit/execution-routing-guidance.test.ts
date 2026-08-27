@@ -9,6 +9,7 @@ import {
 	DEFAULT_PROMPT_GUIDANCE as workflowGuidance,
 } from "../../packages/workflows/src/extension/workflow-prompts.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
+import { registerWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
 import { moduleDir, readText } from "../helpers/runtime.js";
 
 const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -798,6 +799,33 @@ describe("workflow-first execution routing", () => {
 		]) {
 			expect(authoringGuidance).toContain(phrase);
 		}
+	});
+
+	test("registers exact live and queued Intercom steering guidance on the workflow tool", async () => {
+		let registered: { description: string } | undefined;
+		const returned = registerWorkflowTool(
+			{
+				registerTool(tool: { description: string }) {
+					registered = tool;
+				},
+			} as never,
+			async () => ({ action: "list", items: [] }),
+			async (_policy, operation) => operation(),
+		);
+		expect(returned).toBeDefined();
+		expect(registered?.description).toBe(WORKFLOW_TOOL_DESCRIPTION);
+		expect(registered?.description).toContain(
+			"When steering or communication is useful, use Intercom; address a workflow stage as `<runId>:<stageKey>`.",
+		);
+		expect(registered?.description).toContain(
+			"Live delivery is immediate; a known stage that has not started is queued and receives the message before its first model turn.",
+		);
+		expect(registered?.description).toContain("Use `ask` only for a reply-capable live session.");
+		expect(registered?.description).toContain("answer pending prompts");
+		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
+		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
+		const readme = await readRepositoryFile("packages/workflows/README.md");
+		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
 	});
 
 	test("keeps source-layout policy aligned across workflow authoring docs", async () => {

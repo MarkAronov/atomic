@@ -49,6 +49,10 @@ Use this to communicate findings, request help, or coordinate work with other se
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 
+For send, live session names and exact full session IDs remain supported. For a known
+workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pending stages
+queue automatically.
+
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
   intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
@@ -71,7 +75,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
