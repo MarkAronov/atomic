@@ -434,16 +434,16 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
               wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
-              const stageInboxAskRefusal = errorText.startsWith(
-                "Cannot ask a workflow stage that has not started.",
-              );
+							const pendingStageAskRefusal = errorText.startsWith(
+								"Cannot ask a workflow stage whose session has not initialized.",
+							);
               return {
                 content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
-                details: stageInboxAskRefusal
+                details: pendingStageAskRefusal
                   ? {
                       error: true,
-                      refusal: "stage_inbox_ask_unsupported",
+                      refusal: "pending_stage_ask_unsupported",
                       recommendedAction: "send",
                       reason: errorText,
                     }

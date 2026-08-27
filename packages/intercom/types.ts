@@ -48,10 +48,10 @@ export type ClientMessage =
   | { type: "list"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
-  | { type: "register_stage_inbox_owner"; runId: string; group: string }
+  | { type: "register_pending_stage_route"; runId: string; group: string }
   | {
-      type: "inbox_deposit_result";
-      depositId: string;
+      type: "pending_stage_message_result";
+      requestId: string;
       outcome: "queued" | "refused";
       position?: number;
       reason?: string;
@@ -64,7 +64,7 @@ export type BrokerMessage =
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
-  | { type: "inbox_deposit"; depositId: string; from: SessionInfo; runId: string; stageKey: string; message: Message }
+  | { type: "pending_stage_message"; requestId: string; from: SessionInfo; runId: string; stageKey: string; message: Message }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }

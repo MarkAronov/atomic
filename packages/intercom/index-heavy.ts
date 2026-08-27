@@ -1,6 +1,6 @@
 import { APP_NAME, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
-import { IntercomClient, type StageInboxDeposit, type StageInboxDepositResult } from "./broker/client.js";
+import { IntercomClient, type PendingStageMessageRequest, type PendingStageMessageResult } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.ts";
@@ -41,22 +41,22 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
-const STAGE_INBOX_OWNER_EVENT = "atomic:workflow-stage-inbox-owner";
-const STAGE_INBOX_DEPOSIT_EVENT = "atomic:workflow-stage-inbox-deposit";
+const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 
-interface StageInboxOwnerEvent {
+interface PendingStageRouteRegistrationEvent {
   readonly runId: string;
   readonly group: string;
 }
 
-interface StageInboxDepositEvent extends StageInboxDeposit {
+interface PendingStageMessageEvent extends PendingStageMessageRequest {
   handled: boolean;
-  completion?: Promise<StageInboxDepositResult>;
+  completion?: Promise<PendingStageMessageResult>;
 }
 
-function isStageInboxOwnerEvent(value: unknown): value is StageInboxOwnerEvent {
+function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingStageRouteRegistrationEvent {
   if (typeof value !== "object" || value === null) return false;
-  const event = value as Partial<StageInboxOwnerEvent>;
+  const event = value as Partial<PendingStageRouteRegistrationEvent>;
   return typeof event.runId === "string" && event.runId.length > 0 && typeof event.group === "string";
 }
 export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
@@ -94,7 +94,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
-  const stageInboxOwners = new Map<string, string>();
+  const pendingStageRoutes = new Map<string, string>();
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void { replyWaiters.rejectAll(error); }
@@ -387,26 +387,26 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       handleIncomingMessage(liveContext, from, message, channel);
     });
-    nextClient.on("inbox_deposit", (deposit: StageInboxDeposit) => {
+    nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
       if (client !== nextClient) return;
-      const event: StageInboxDepositEvent = { ...deposit, handled: false };
+      const event: PendingStageMessageEvent = { ...request, handled: false };
       try {
-        pi.events.emit(STAGE_INBOX_DEPOSIT_EVENT, event as unknown as Record<string, unknown>);
+        pi.events.emit(PENDING_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
       } catch (error) {
-        nextClient.respondStageInboxDeposit(deposit.depositId, { outcome: "refused", reason: toError(error).message });
+        nextClient.respondPendingStageMessage(request.requestId, { outcome: "refused", reason: toError(error).message });
         return;
       }
       if (!event.handled || event.completion === undefined) {
-        nextClient.respondStageInboxDeposit(deposit.depositId, {
+        nextClient.respondPendingStageMessage(request.requestId, {
           outcome: "refused",
-          reason: "Workflow stage inbox owner is unavailable",
+          reason: "Session not found",
         });
         return;
       }
       void event.completion.then(
-        (result) => nextClient.respondStageInboxDeposit(deposit.depositId, result),
+        (result) => nextClient.respondPendingStageMessage(request.requestId, result),
         (error) =>
-          nextClient.respondStageInboxDeposit(deposit.depositId, {
+          nextClient.respondPendingStageMessage(request.requestId, {
             outcome: "refused",
             reason: toError(error).message,
           }),
@@ -483,7 +483,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           readSubagentMessageSource(runtimeContext?.subagentPolicy),
         );
         await supervisorAuthorizations.restore(nextClient);
-        for (const [runId, group] of stageInboxOwners) nextClient.registerStageInboxOwner(runId, group);
+        for (const [runId, group] of pendingStageRoutes) nextClient.registerPendingStageRoute(runId, group);
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
           throw new Error("Intercom runtime no longer active");
@@ -513,11 +513,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     reconnectPromiseGeneration = generationAtStart;
     return nextReconnectPromise;
   }
-  pi.events.on(STAGE_INBOX_OWNER_EVENT, (payload) => {
-    if (!isStageInboxOwnerEvent(payload)) return;
-    stageInboxOwners.set(payload.runId, payload.group);
+  pi.events.on(PENDING_STAGE_ROUTE_EVENT, (payload) => {
+    if (!isPendingStageRouteRegistrationEvent(payload)) return;
+    pendingStageRoutes.set(payload.runId, payload.group);
     void ensureConnected("background")
-      .then((activeClient) => activeClient.registerStageInboxOwner(payload.runId, payload.group))
+      .then((activeClient) => activeClient.registerPendingStageRoute(payload.runId, payload.group))
       .catch(() => {});
   });
 
@@ -572,10 +572,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     currentStatus,
   });
   pi.on("session_start", async (_event, ctx) => {
-    const stageInbox = ctx.orchestrationContext?.kind === "workflow-stage" ? ctx.orchestrationContext.stageInbox : undefined;
-    if (stageInbox === undefined) return;
+    const pendingStageDelivery = ctx.orchestrationContext?.kind === "workflow-stage" ? ctx.orchestrationContext.pendingStageDelivery : undefined;
+    if (pendingStageDelivery === undefined) return;
     await ensureConnected("startup");
-    await stageInbox.drain((from, message) =>
+    await pendingStageDelivery.deliverPending((from, message) =>
       handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
     );
   });

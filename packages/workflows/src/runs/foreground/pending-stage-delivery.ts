@@ -1,22 +1,22 @@
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 
-type WorkflowStageInboxDelivery = NonNullable<
-	NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["stageInbox"]
+type WorkflowPendingStageDelivery = NonNullable<
+	NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"]
 >;
-type WorkflowStageInboxDeliver = Parameters<WorkflowStageInboxDelivery["drain"]>[0];
-type WorkflowStageInboxSender = Parameters<WorkflowStageInboxDeliver>[0];
-type WorkflowStageInboxMessage = Parameters<WorkflowStageInboxDeliver>[1];
+type WorkflowPendingStageDeliver = Parameters<WorkflowPendingStageDelivery["deliverPending"]>[0];
+type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
+type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 
 import { getDurableBackend } from "../../durable/factory.js";
 import type { Store } from "../../shared/store.js";
-import type { StageInboxEntry } from "../../shared/store-types.js";
+import type { PendingStageMessage } from "../../shared/store-types.js";
 
-export function createWorkflowStageInboxDelivery(
+export function createWorkflowPendingStageDelivery(
 	activeStore: Store,
 	runId: string,
 	stageId: string,
 	stageName: string,
-): WorkflowStageInboxDelivery {
+): WorkflowPendingStageDelivery {
 	let resolveReady!: () => void;
 	let rejectReady!: (error: Error) => void;
 	const readyPromise = new Promise<void>((resolve, reject) => {
@@ -25,8 +25,8 @@ export function createWorkflowStageInboxDelivery(
 	});
 	let drainPromise: Promise<void> | undefined;
 	return {
-		drain(deliver) {
-			drainPromise ??= drainWorkflowStageInbox(activeStore, runId, stageId, stageName, deliver).then(
+		deliverPending(deliver) {
+			drainPromise ??= deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver).then(
 				() => resolveReady(),
 				(error: Error) => {
 					rejectReady(error);
@@ -37,8 +37,8 @@ export function createWorkflowStageInboxDelivery(
 		},
 		ready() {
 			if (
-				activeStore.peekStageInbox(runId, stageId).length === 0 &&
-				(stageId === stageName || activeStore.peekStageInbox(runId, stageName).length === 0)
+				activeStore.pendingStageMessagesFor(runId, stageId).length === 0 &&
+				(stageId === stageName || activeStore.pendingStageMessagesFor(runId, stageName).length === 0)
 			) {
 				return undefined;
 			}
@@ -47,17 +47,17 @@ export function createWorkflowStageInboxDelivery(
 	};
 }
 
-async function drainWorkflowStageInbox(
+async function deliverPendingStageMessages(
 	activeStore: Store,
 	runId: string,
 	stageId: string,
 	stageName: string,
-	deliver: (from: WorkflowStageInboxSender, message: WorkflowStageInboxMessage) => void | Promise<void>,
+	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 ): Promise<void> {
 	const stageKeys = stageId === stageName ? [stageId] : [stageId, stageName];
 	const order = new Map<string, number>();
 	const entries = stageKeys
-		.flatMap((stageKey) => activeStore.peekStageInbox(runId, stageKey))
+		.flatMap((stageKey) => activeStore.pendingStageMessagesFor(runId, stageKey))
 		.filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index)
 		.map((entry, index) => {
 			order.set(entry.id, index);
@@ -65,26 +65,26 @@ async function drainWorkflowStageInbox(
 		})
 		.sort(
 			(left, right) =>
-				left.depositedAt.localeCompare(right.depositedAt) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
+				left.queuedAt.localeCompare(right.queuedAt) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
 		);
 	for (const entry of entries) {
-		if (!activeStore.markStageInboxEntryDelivered(runId, entry.stageKey, entry.id, new Date().toISOString()))
+		if (!activeStore.markPendingStageMessageDelivered(runId, entry.stageKey, entry.id, new Date().toISOString()))
 			continue;
-		await persistStageInbox(activeStore, runId);
-		await deliver(toInboxSender(entry), entry.message);
+		await persistPendingStageMessages(activeStore, runId);
+		await deliver(toPendingStageSender(entry), entry.message);
 	}
 }
 
-async function persistStageInbox(activeStore: Store, runId: string): Promise<void> {
+async function persistPendingStageMessages(activeStore: Store, runId: string): Promise<void> {
 	const backend = getDurableBackend();
 	const handle = backend.getWorkflow(runId);
 	const run = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (handle === undefined || run === undefined) return;
-	backend.registerWorkflow({ ...handle, stageInbox: run.stageInbox ?? [] });
+	backend.registerWorkflow({ ...handle, pendingStageMessages: run.pendingStageMessages ?? [] });
 	await backend.flush();
 }
 
-function toInboxSender(entry: StageInboxEntry): WorkflowStageInboxSender {
+function toPendingStageSender(entry: PendingStageMessage): WorkflowPendingStageSender {
 	return {
 		...entry.from,
 		cwd: entry.from.cwd ?? "",

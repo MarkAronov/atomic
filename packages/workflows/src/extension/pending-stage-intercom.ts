@@ -1,10 +1,10 @@
 import { getDurableBackend } from "../durable/factory.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import type { Store } from "../shared/store.js";
-import type { StageInboxDeposit, StageInboxDepositResult, StageInboxSender } from "../shared/store-types.js";
+import type { PendingStageMessageInput, PendingStageQueueResult, PendingStageSender } from "../shared/store-types.js";
 
-const STAGE_INBOX_OWNER_EVENT = "atomic:workflow-stage-inbox-owner";
-const STAGE_INBOX_DEPOSIT_EVENT = "atomic:workflow-stage-inbox-deposit";
+const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 
 interface WorkflowEventSurface {
 	readonly events?: {
@@ -14,26 +14,26 @@ interface WorkflowEventSurface {
 	on?(event: "session_shutdown", listener: () => void): void;
 }
 
-interface StageInboxDepositEvent {
+interface PendingStageMessageEvent {
 	handled: boolean;
 	completion?: Promise<
 		| { readonly outcome: "queued"; readonly position: number }
 		| { readonly outcome: "refused"; readonly reason: string }
 	>;
-	readonly depositId?: string;
-	readonly from?: StageInboxSender;
+	readonly requestId?: string;
+	readonly from?: PendingStageSender;
 	readonly runId?: string;
 	readonly stageKey?: string;
-	readonly message?: StageInboxDeposit["message"];
+	readonly message?: PendingStageMessageInput["message"];
 }
 
-export function registerStageInboxIntercomBridge(pi: WorkflowEventSurface, activeStore: Store): () => void {
+export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, activeStore: Store): () => void {
 	let disposed = false;
 	const announceOwners = (): void => {
 		if (disposed) return;
 		for (const run of activeStore.runs()) {
 			const rootRunId = run.rootRunId ?? run.id;
-			pi.events?.emit?.(STAGE_INBOX_OWNER_EVENT, {
+			pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
 			});
@@ -41,12 +41,12 @@ export function registerStageInboxIntercomBridge(pi: WorkflowEventSurface, activ
 	};
 	const unsubscribeStore = activeStore.subscribeInvalidation(announceOwners);
 	announceOwners();
-	const subscription = pi.events?.on?.(STAGE_INBOX_DEPOSIT_EVENT, (payload) => {
-		if (disposed || !isStageInboxDepositEvent(payload) || payload.handled) return;
+	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) => {
+		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
 		const run = activeStore.runs().find((candidate) => candidate.id === payload.runId);
-		if (run === undefined) return;
+		if (run === undefined || !isKnownUninitializedStage(run, payload.stageKey)) return;
 		payload.handled = true;
-		payload.completion = depositAndPersist(
+		payload.completion = queueAndPersist(
 			activeStore,
 			payload,
 			workflowInvocationIntercomGroup(run.rootRunId ?? run.id),
@@ -61,11 +61,12 @@ export function registerStageInboxIntercomBridge(pi: WorkflowEventSurface, activ
 	return dispose;
 }
 
-function isStageInboxDepositEvent(
+function isPendingStageMessageEvent(
 	value: unknown,
-): value is StageInboxDepositEvent & Required<Pick<StageInboxDepositEvent, "from" | "runId" | "stageKey" | "message">> {
+): value is PendingStageMessageEvent &
+	Required<Pick<PendingStageMessageEvent, "from" | "runId" | "stageKey" | "message">> {
 	if (typeof value !== "object" || value === null) return false;
-	const event = value as StageInboxDepositEvent;
+	const event = value as PendingStageMessageEvent;
 	return (
 		typeof event.handled === "boolean" &&
 		typeof event.runId === "string" &&
@@ -78,31 +79,32 @@ function isStageInboxDepositEvent(
 	);
 }
 
-async function depositAndPersist(
+async function queueAndPersist(
 	activeStore: Store,
-	event: StageInboxDepositEvent & Required<Pick<StageInboxDepositEvent, "from" | "runId" | "stageKey" | "message">>,
+	event: PendingStageMessageEvent &
+		Required<Pick<PendingStageMessageEvent, "from" | "runId" | "stageKey" | "message">>,
 	runGroup: string,
 ): Promise<
 	{ readonly outcome: "queued"; readonly position: number } | { readonly outcome: "refused"; readonly reason: string }
 > {
-	const deposit: StageInboxDeposit = {
+	const request: PendingStageMessageInput = {
 		runId: event.runId,
 		stageKey: event.stageKey,
 		from: event.from,
 		message: event.message,
-		depositedAt: new Date(event.message.timestamp).toISOString(),
+		queuedAt: new Date(event.message.timestamp).toISOString(),
 	};
-	const result: StageInboxDepositResult | undefined = activeStore.depositStageInboxEntry(
-		deposit,
+	const result: PendingStageQueueResult | undefined = activeStore.queueStageMessage(
+		request,
 		event.from.group,
 		runGroup,
 	);
-	if (result === undefined) return { outcome: "refused", reason: `Workflow run not found: ${event.runId}` };
+	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
 	if (!result.ok) {
 		return result.reason === "capacity"
 			? {
 					outcome: "refused",
-					reason: `Workflow stage inbox is full (limit ${result.limit}) for ${result.runId}:${result.stageKey}`,
+					reason: `Pending stage message queue is full (limit ${result.limit}) for ${result.runId}:${result.stageKey}`,
 				}
 			: { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
 	}
@@ -110,8 +112,20 @@ async function depositAndPersist(
 	const handle = backend.getWorkflow(event.runId);
 	const run = activeStore.runs().find((candidate) => candidate.id === event.runId);
 	if (handle !== undefined && run !== undefined) {
-		backend.registerWorkflow({ ...handle, stageInbox: run.stageInbox ?? [] });
+		backend.registerWorkflow({ ...handle, pendingStageMessages: run.pendingStageMessages ?? [] });
 		await backend.flush();
 	}
 	return { outcome: "queued", position: result.position };
+}
+
+function isKnownUninitializedStage(run: ReturnType<Store["runs"]>[number], stageKey: string): boolean {
+	const exactIds = run.stages.filter((stage) => stage.id === stageKey);
+	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
+	if (candidates.length !== 1) return false;
+	const stage = candidates[0]!;
+	return (
+		(stage.status === "pending" || stage.status === "running") &&
+		stage.sessionId === undefined &&
+		stage.sessionFile === undefined
+	);
 }

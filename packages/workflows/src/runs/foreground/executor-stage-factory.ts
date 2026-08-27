@@ -36,8 +36,8 @@ import type {
 	StageMcpScope,
 } from "./executor-stage-types.js";
 import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
+import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
-import { createWorkflowStageInboxDelivery } from "./stage-inbox-delivery.js";
 import {
 	createStageContext as createInnerStageContext,
 	type InternalStageContext,
@@ -179,7 +179,14 @@ export function createWorkflowStageFactory(input: {
 			signal: input.signal,
 			stageOptions: stageOptionsForContext,
 			...(stageHasIntercomAccess(stageOptionsForContext)
-				? { stageInbox: createWorkflowStageInboxDelivery(input.activeStore, input.runId, stageId, name) }
+				? {
+						pendingStageDelivery: createWorkflowPendingStageDelivery(
+							input.activeStore,
+							input.runId,
+							stageId,
+							name,
+						),
+					}
 				: {}),
 			models: input.opts.models,
 			executionMode: input.opts.executionMode,

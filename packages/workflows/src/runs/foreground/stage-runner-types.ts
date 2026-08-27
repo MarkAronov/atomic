@@ -11,7 +11,9 @@ import type {
 	WorkflowModelCatalogPort,
 } from "../../shared/types.js";
 
-type WorkflowStageInboxDelivery = NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["stageInbox"];
+type WorkflowPendingStageDelivery = NonNullable<
+	CreateAgentSessionOptions["orchestrationContext"]
+>["pendingStageDelivery"];
 
 type AgentStageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
 export type StageSessionEvent = AgentStageSessionEvent & { readonly turnId?: string | number };
@@ -152,7 +154,7 @@ export interface StageRunnerOpts {
 	/** Internal: persist stage-session identity once the SDK has created its path. */
 	onSessionReady?: () => void | Promise<void>;
 	/** Internal durable pre-start message bridge consumed by the intercom extension. */
-	stageInbox?: WorkflowStageInboxDelivery;
+	pendingStageDelivery?: WorkflowPendingStageDelivery;
 }
 
 export interface InternalStageContext extends StageContext {

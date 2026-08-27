@@ -31,15 +31,15 @@ export interface SendResult {
   position?: number;
 }
 
-export interface StageInboxDeposit {
-  readonly depositId: string;
+export interface PendingStageMessageRequest {
+  readonly requestId: string;
   readonly from: SessionInfo;
   readonly runId: string;
   readonly stageKey: string;
   readonly message: Message;
 }
 
-export type StageInboxDepositResult =
+export type PendingStageMessageResult =
   | { readonly outcome: "queued"; readonly position: number }
   | { readonly outcome: "refused"; readonly reason: string };
 export interface PresenceUpdates {
@@ -320,18 +320,18 @@ export class IntercomClient extends EventEmitter {
         this.emit("message", from, message, channel);
         break;
       }
-      case "inbox_deposit": {
-        const { depositId, from, runId, stageKey, message } = brokerMessage;
+      case "pending_stage_message": {
+        const { requestId, from, runId, stageKey, message } = brokerMessage;
         if (
-          typeof depositId !== "string" ||
+          typeof requestId !== "string" ||
           !isSessionInfo(from) ||
           typeof runId !== "string" ||
           typeof stageKey !== "string" ||
           !isMessage(message)
         ) {
-          throw new Error("Invalid stage inbox deposit event");
+          throw new Error("Invalid pending-stage message event");
         }
-        this.emit("inbox_deposit", { depositId, from, runId, stageKey, message } satisfies StageInboxDeposit);
+        this.emit("pending_stage_message", { requestId, from, runId, stageKey, message } satisfies PendingStageMessageRequest);
         break;
       }
       case "queued": {
@@ -537,17 +537,17 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  registerStageInboxOwner(runId: string, group: string): void {
-    writeMessage(this.requireActiveSocket(), { type: "register_stage_inbox_owner", runId, group });
+  registerPendingStageRoute(runId: string, group: string): void {
+    writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group });
   }
 
-  respondStageInboxDeposit(depositId: string, result: StageInboxDepositResult): void {
+  respondPendingStageMessage(requestId: string, result: PendingStageMessageResult): void {
     const socket = this.requireActiveSocket();
     writeMessage(
       socket,
       result.outcome === "queued"
-        ? { type: "inbox_deposit_result", depositId, outcome: "queued", position: result.position }
-        : { type: "inbox_deposit_result", depositId, outcome: "refused", reason: result.reason },
+        ? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
+        : { type: "pending_stage_message_result", requestId, outcome: "refused", reason: result.reason },
     );
   }
 

@@ -1187,7 +1187,7 @@ export class StageSessionController {
 							stageOptions,
 							this.opts.defaultSessionDir,
 							this.meta,
-							this.opts.stageInbox,
+							this.opts.pendingStageDelivery,
 						) as StageSessionCreateOptions,
 						{
 							...this.meta,
@@ -1215,8 +1215,8 @@ export class StageSessionController {
 			this.attachSession(result),
 		);
 		const attachedSession = session instanceof Promise ? await session : session;
-		const stageInboxReady = this.sharedOrchestrationContext?.stageInbox?.ready();
-		if (stageInboxReady !== undefined) await stageInboxReady;
+		const pendingStageDeliveryReady = this.sharedOrchestrationContext?.pendingStageDelivery?.ready();
+		if (pendingStageDeliveryReady !== undefined) await pendingStageDeliveryReady;
 		await this.opts.onSessionReady?.();
 		return attachedSession;
 	}

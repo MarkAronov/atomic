@@ -55,7 +55,7 @@ export interface WorkflowStageMessageAdmission {
 	isOpen(): boolean;
 }
 
-export interface WorkflowStageInboxSender {
+export interface WorkflowPendingStageSender {
 	readonly id: string;
 	readonly name?: string;
 	readonly cwd: string;
@@ -67,7 +67,7 @@ export interface WorkflowStageInboxSender {
 	readonly group?: string;
 }
 
-export interface WorkflowStageInboxMessage {
+export interface WorkflowPendingStageMessage {
 	readonly id: string;
 	readonly timestamp: number;
 	readonly replyTo?: string;
@@ -84,9 +84,9 @@ export interface WorkflowStageInboxMessage {
 	};
 }
 
-export interface WorkflowStageInboxDelivery {
-	drain(
-		deliver: (from: WorkflowStageInboxSender, message: WorkflowStageInboxMessage) => void | Promise<void>,
+export interface WorkflowPendingStageDelivery {
+	deliverPending(
+		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 	): Promise<void>;
 	ready(): Promise<void> | undefined;
 }
@@ -110,7 +110,7 @@ export interface WorkflowStageOrchestrationContext {
 	 */
 	readonly intercomGroup?: string;
 	/** Durable pre-start intercom delivery, drained by the intercom extension before the first turn. */
-	readonly stageInbox?: WorkflowStageInboxDelivery;
+	readonly pendingStageDelivery?: WorkflowPendingStageDelivery;
 }
 /** Typed child intercom identity and supervisor capability issued at admission. */
 export interface SubagentIntercomIdentity {

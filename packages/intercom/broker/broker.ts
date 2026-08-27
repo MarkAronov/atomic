@@ -10,9 +10,9 @@ import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../type
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import {
   handleBrokerSend,
-  stageInboxAskRefusal,
+  pendingStageAskRefusal,
   type BrokerConnectedSession,
-  type StageInboxRoute,
+  type PendingStageRoute,
 } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { normalizeGroup } from "../group.js";
@@ -23,14 +23,14 @@ const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
 const PID_PATH = getBrokerPidPath();
 
-const STAGE_INBOX_DEPOSIT_TIMEOUT_MS = 10_000;
+const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 
-interface StageInboxOwner {
+interface PendingStageRouteRegistration {
   readonly sessionId: string;
   readonly group: string;
 }
 
-interface PendingStageInboxDeposit {
+interface PendingStageAcknowledgment {
   readonly ownerSessionId: string;
   readonly senderSocket: net.Socket;
   readonly messageId: string;
@@ -84,8 +84,8 @@ class IntercomBroker {
   private deliveredMessages = new DeliveredMessageCache();
   private supervisorChannel = new SupervisorChannelCache();
   private pendingQuestions = new PendingQuestionIndex();
-  private stageInboxOwners = new Map<string, StageInboxOwner>();
-  private pendingStageInboxDeposits = new Map<string, PendingStageInboxDeposit>();
+  private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
+  private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
@@ -144,12 +144,12 @@ class IntercomBroker {
       }
     }, 5000);
   }
-  private routeStageInbox = (route: StageInboxRoute): boolean => {
-    const ownerRegistration = this.stageInboxOwners.get(route.runId);
+  private routePendingStage = (route: PendingStageRoute): boolean => {
+    const ownerRegistration = this.pendingStageRoutes.get(route.runId);
     if (ownerRegistration === undefined) return false;
     const owner = this.sessions.get(ownerRegistration.sessionId);
     if (owner === undefined) {
-      this.stageInboxOwners.delete(route.runId);
+      this.pendingStageRoutes.delete(route.runId);
       return false;
     }
     if (normalizeGroup(route.from.info.group) !== normalizeGroup(ownerRegistration.group)) {
@@ -161,7 +161,7 @@ class IntercomBroker {
       });
       return true;
     }
-    const askRefusal = stageInboxAskRefusal(route.message);
+    const askRefusal = pendingStageAskRefusal(route.message);
     if (askRefusal !== undefined) {
       writeMessage(route.socket, {
         type: "delivery_failed",
@@ -171,19 +171,19 @@ class IntercomBroker {
       });
       return true;
     }
-    const depositId = randomUUID();
+    const requestId = randomUUID();
     const timeout = setTimeout(() => {
-      const pending = this.pendingStageInboxDeposits.get(depositId);
+      const pending = this.pendingStageAcknowledgments.get(requestId);
       if (pending === undefined) return;
-      this.pendingStageInboxDeposits.delete(depositId);
+      this.pendingStageAcknowledgments.delete(requestId);
       writeMessage(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-        reason: "Workflow stage inbox owner did not acknowledge the deposit",
+        reason: "Pending-stage route did not acknowledge the message",
       });
-    }, STAGE_INBOX_DEPOSIT_TIMEOUT_MS);
-    this.pendingStageInboxDeposits.set(depositId, {
+    }, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
+    this.pendingStageAcknowledgments.set(requestId, {
       ownerSessionId: ownerRegistration.sessionId,
       senderSocket: route.socket,
       messageId: route.message.id,
@@ -193,8 +193,8 @@ class IntercomBroker {
       timeout,
     });
     writeMessage(owner.socket, {
-      type: "inbox_deposit",
-      depositId,
+      type: "pending_stage_message",
+      requestId,
       from: route.from.info,
       runId: route.runId,
       stageKey: route.stageKey,
@@ -203,17 +203,17 @@ class IntercomBroker {
     return true;
   };
 
-  private settleStageInboxDeposit(
+  private settlePendingStageMessageRequest(
     currentId: string,
-    depositId: string,
+    requestId: string,
     outcome: "queued" | "refused",
     position: number | undefined,
     reason: string | undefined,
   ): void {
-    const pending = this.pendingStageInboxDeposits.get(depositId);
+    const pending = this.pendingStageAcknowledgments.get(requestId);
     if (pending === undefined || pending.ownerSessionId !== currentId) return;
     clearTimeout(pending.timeout);
-    this.pendingStageInboxDeposits.delete(depositId);
+    this.pendingStageAcknowledgments.delete(requestId);
     if (outcome === "queued" && typeof position === "number" && position > 0) {
       writeMessage(pending.senderSocket, {
         type: "queued",
@@ -229,7 +229,7 @@ class IntercomBroker {
       type: "delivery_failed",
       messageId: pending.messageId,
       ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-      reason: reason ?? "Workflow stage inbox refused the deposit",
+      reason: reason ?? "Pending-stage delivery was refused",
     });
   }
 
@@ -356,29 +356,29 @@ class IntercomBroker {
         break;
       }
 
-      case "register_stage_inbox_owner": {
+      case "register_pending_stage_route": {
         if (typeof clientMessage.runId !== "string" || !clientMessage.runId || typeof clientMessage.group !== "string") {
-          throw new Error("Invalid stage inbox owner registration");
+          throw new Error("Invalid pending-stage route registration");
         }
-        this.stageInboxOwners.set(clientMessage.runId, {
+        this.pendingStageRoutes.set(clientMessage.runId, {
           sessionId: currentId,
           group: normalizeGroup(clientMessage.group),
         });
         break;
       }
 
-      case "inbox_deposit_result": {
+      case "pending_stage_message_result": {
         if (
-          typeof clientMessage.depositId !== "string" ||
+          typeof clientMessage.requestId !== "string" ||
           (clientMessage.outcome !== "queued" && clientMessage.outcome !== "refused") ||
           (clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
           (clientMessage.reason !== undefined && typeof clientMessage.reason !== "string")
         ) {
-          throw new Error("Invalid stage inbox deposit result");
+          throw new Error("Invalid pending-stage message result");
         }
-        this.settleStageInboxDeposit(
+        this.settlePendingStageMessageRequest(
           currentId,
-          clientMessage.depositId,
+          clientMessage.requestId,
           clientMessage.outcome,
           clientMessage.position,
           clientMessage.reason,
@@ -397,7 +397,7 @@ class IntercomBroker {
           writeMessage,
           this.supervisorChannel,
           this.pendingQuestions,
-          this.routeStageInbox,
+          this.routePendingStage,
         );
         break;
       }
@@ -434,18 +434,18 @@ class IntercomBroker {
       });
     }
 
-    for (const [runId, owner] of this.stageInboxOwners) {
-      if (owner.sessionId === sessionId) this.stageInboxOwners.delete(runId);
+    for (const [runId, owner] of this.pendingStageRoutes) {
+      if (owner.sessionId === sessionId) this.pendingStageRoutes.delete(runId);
     }
-    for (const [depositId, pending] of this.pendingStageInboxDeposits) {
+    for (const [requestId, pending] of this.pendingStageAcknowledgments) {
       if (pending.ownerSessionId !== sessionId) continue;
       clearTimeout(pending.timeout);
-      this.pendingStageInboxDeposits.delete(depositId);
+      this.pendingStageAcknowledgments.delete(requestId);
       writeMessage(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-        reason: "Workflow stage inbox owner disconnected before acknowledging the deposit",
+        reason: "Pending-stage route disconnected before acknowledging the message",
       });
     }
     this.sessions.delete(sessionId);

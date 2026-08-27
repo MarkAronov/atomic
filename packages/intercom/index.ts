@@ -43,7 +43,7 @@ interface SupervisorAuthorizationRequest {
 }
 
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
-const STAGE_INBOX_OWNER_EVENT = "atomic:workflow-stage-inbox-owner";
+const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 
 interface WorkflowStageLateMessageEvent {
 	handled?: boolean;
@@ -273,7 +273,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     }
     const generation = ++lifecycleGeneration;
     sessionSnapshot = { event, ctx, generation, lease };
-    if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.stageInbox !== undefined) {
+    if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.pendingStageDelivery !== undefined) {
       await loadHeavy(ctx);
     } else if (loadedHeavy) {
       await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
@@ -389,7 +389,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	for (const eventName of [
 		SUBAGENT_CONTROL_INTERCOM_EVENT,
 		SUBAGENT_RESULT_INTERCOM_EVENT,
-		STAGE_INBOX_OWNER_EVENT,
+		PENDING_STAGE_ROUTE_EVENT,
 	] as const) {
 		pi.events.on(eventName, (payload) => {
 			void loadHeavy(latestLifecycleContext()).then(async (handle) => {

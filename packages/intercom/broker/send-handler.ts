@@ -17,7 +17,7 @@ export interface BrokerConnectedSession {
   supervisorOwnerToken?: string;
 }
 
-export interface StageInboxRoute {
+export interface PendingStageRoute {
   readonly socket: net.Socket;
   readonly from: BrokerConnectedSession;
   readonly runId: string;
@@ -26,22 +26,22 @@ export interface StageInboxRoute {
   readonly attemptId?: string;
 }
 
-export type StageInboxRouter = (route: StageInboxRoute) => boolean;
+export type PendingStageRouter = (route: PendingStageRoute) => boolean;
 
 const WORKFLOW_RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function parseStageInboxTarget(target: string): { runId: string; stageKey: string } | undefined {
+export function parsePendingStageTarget(target: string): { runId: string; stageKey: string } | undefined {
   const separator = target.indexOf(":");
   if (separator < 0) return undefined;
   const runId = target.slice(0, separator);
   const stageKey = target.slice(separator + 1);
   return WORKFLOW_RUN_ID_PATTERN.test(runId) && stageKey.length > 0 ? { runId, stageKey } : undefined;
 }
-export const STAGE_INBOX_ASK_REFUSAL =
-  "Cannot ask a workflow stage that has not started. Use send to queue a message in the stage inbox; it will be delivered when the stage starts.";
+export const PENDING_STAGE_ASK_REFUSAL =
+  "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
-export function stageInboxAskRefusal(message: Message): string | undefined {
-  return message.expectsReply === true ? STAGE_INBOX_ASK_REFUSAL : undefined;
+export function pendingStageAskRefusal(message: Message): string | undefined {
+  return message.expectsReply === true ? PENDING_STAGE_ASK_REFUSAL : undefined;
 }
 
 interface SendClientMessage extends Record<string, unknown> {
@@ -78,7 +78,7 @@ export function handleBrokerSend(
   write: (target: net.Socket, message: BrokerMessage) => void,
   supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
   pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
-  routeStageInbox?: StageInboxRouter,
+  routePendingStage?: PendingStageRouter,
 ): void {
   const message = clientMessage.message;
   const messageId = isMessage(message) ? message.id : "unknown";
@@ -187,11 +187,11 @@ export function handleBrokerSend(
     write(socket, { type: "delivered", messageId: message.id, attemptId });
     return;
   }
-  if (resolution.kind === "not_found" && !supervisorSend && routeStageInbox !== undefined) {
-    const inboxTarget = parseStageInboxTarget(trimmedTo);
+  if (resolution.kind === "not_found" && !supervisorSend && routePendingStage !== undefined) {
+    const pendingTarget = parsePendingStageTarget(trimmedTo);
     if (
-      inboxTarget !== undefined &&
-      routeStageInbox({ socket, from: fromSession, ...inboxTarget, message, ...(attemptId ? { attemptId } : {}) })
+      pendingTarget !== undefined &&
+      routePendingStage({ socket, from: fromSession, ...pendingTarget, message, ...(attemptId ? { attemptId } : {}) })
     ) {
       return;
     }

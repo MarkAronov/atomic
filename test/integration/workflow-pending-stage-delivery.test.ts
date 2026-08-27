@@ -12,7 +12,7 @@ const TARGET = `${RUN_ID}:reviewer`;
 const OWNER_DISCOVERY_BUDGET_MS = 2_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
-const agentDir = mkdtempSync(join(tmpdir(), "workflow-stage-inbox-owner-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pending-stage-"));
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
@@ -23,11 +23,11 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { default: intercom } = await import("../../packages/intercom/index.js");
 const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
-const { registerStageInboxIntercomBridge } = await import(
-	"../../packages/workflows/src/extension/stage-inbox-intercom.js"
+const { registerPendingStageIntercomBridge } = await import(
+	"../../packages/workflows/src/extension/pending-stage-intercom.js"
 );
-const { createWorkflowStageInboxDelivery } = await import(
-	"../../packages/workflows/src/runs/foreground/stage-inbox-delivery.js"
+const { createWorkflowPendingStageDelivery } = await import(
+	"../../packages/workflows/src/runs/foreground/pending-stage-delivery.js"
 );
 const { createStore } = await import("../../packages/workflows/src/shared/store.js");
 
@@ -39,7 +39,7 @@ interface TestContext {
 	orchestrationContext: {
 		intercomGroup: string;
 		kind?: "workflow-stage";
-		stageInbox?: ReturnType<typeof createWorkflowStageInboxDelivery>;
+		pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>;
 	};
 	sessionManager: { getSessionId(): string };
 	ui: {
@@ -57,6 +57,7 @@ interface ToolResult {
 		runId?: string;
 		stageKey?: string;
 		messageId?: string;
+		refusal?: string;
 	};
 	isError: boolean;
 }
@@ -93,7 +94,7 @@ type EventHandler = (payload: object) => void | Promise<void>;
 function extensionFixture(
 	sessionId: string,
 	initialName: string,
-	stageInbox?: ReturnType<typeof createWorkflowStageInboxDelivery>,
+	pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>,
 ) {
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
@@ -107,8 +108,8 @@ function extensionFixture(
 		cwd: repoRoot,
 		isIdle: () => true,
 		model: { id: "test-model" },
-		orchestrationContext: stageInbox
-			? { intercomGroup: GROUP, kind: "workflow-stage", stageInbox }
+		orchestrationContext: pendingStageDelivery
+			? { intercomGroup: GROUP, kind: "workflow-stage", pendingStageDelivery }
 			: { intercomGroup: GROUP },
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
@@ -228,13 +229,20 @@ test("a pending-stage send crosses the real broker and reaches the stage before 
 	const owner = extensionFixture("owner-runtime-session", "workflow-owner");
 	const sender = extensionFixture("sender-runtime-session", "stage-a");
 	intercom(owner.pi as never);
-	const disposeBridge = registerStageInboxIntercomBridge(owner.pi as never, store);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
 	intercom(sender.pi as never);
 	let reviewer: ReturnType<typeof extensionFixture> | undefined;
 
 	try {
 		await owner.start();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+			startedAt: 1,
+		});
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await sender.start();
 
@@ -244,6 +252,24 @@ test("a pending-stage send crosses the real broker and reaches the stage before 
 			if (listed.content.some(({ text }) => text.includes("workflow-owner"))) break;
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
 		}
+
+		const unknown = await executeIntercom(sender, {
+			action: "send",
+			to: `${RUN_ID}:unknown-stage`,
+			message: "This target does not exist.",
+		});
+		assert.match(unknown.content[0]?.text ?? "", /Session not found/);
+		assert.equal(unknown.details.delivered, false);
+		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
+
+		const ask = await executeIntercom(sender, {
+			action: "ask",
+			to: TARGET,
+			message: "Can you reply before starting?",
+		});
+		assert.match(ask.content[0]?.text ?? "", /Use send/);
+		assert.equal(ask.details.refusal, "pending_stage_ask_unsupported");
+		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "reviewer"), []);
 
 		const result = await executeIntercom(sender, {
 			action: "send",
@@ -260,12 +286,13 @@ test("a pending-stage send crosses the real broker and reaches the stage before 
 			stageKey: "reviewer",
 			position: 1,
 		});
-		assert.equal(store.peekStageInbox(RUN_ID, "reviewer").length, 1);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer")[0]?.id, result.details.messageId);
 
 		reviewer = extensionFixture(
 			"reviewer-runtime-session",
 			"reviewer",
-			createWorkflowStageInboxDelivery(store, RUN_ID, "reviewer-id", "reviewer"),
+			createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer"),
 		);
 		intercom(reviewer.pi as never);
 		await reviewer.start();
@@ -276,7 +303,7 @@ test("a pending-stage send crosses the real broker and reaches the stage before 
 		assert.match(reviewer.injectedMessages[0]?.content ?? "", /Scope changed: preserve raw amendments\./);
 		assert.equal(reviewer.injectedMessages[0]?.details?.from?.name, "stage-a");
 		assert.equal(typeof reviewer.injectedMessages[0]?.details?.message?.timestamp, "number");
-		assert.equal(store.runs()[0]?.stageInbox?.[0]?.status, "delivered");
+		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
 	} finally {
 		if (reviewer !== undefined) await reviewer.shutdown();
 		disposeBridge();
