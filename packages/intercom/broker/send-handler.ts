@@ -1,5 +1,6 @@
 import type net from "node:net";
-import type { Attachment, BrokerMessage, Message, SessionInfo } from "../types.js";
+import type { BrokerMessage, Message, SessionInfo } from "../types.js";
+import { isMessage } from "./client-message-validation.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { buildMessageSendSignature } from "./send-signature.js";
@@ -48,33 +49,16 @@ export function parsePendingStageTarget(target: string): { runId: string; stageK
 export const PENDING_STAGE_ASK_REFUSAL =
   "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
-export function pendingStageAskRefusal(message: Message): string | undefined {
-  return message.expectsReply === true ? PENDING_STAGE_ASK_REFUSAL : undefined;
-}
 
 interface SendClientMessage extends Record<string, unknown> {
   type: string;
 }
-
-function isAttachment(value: unknown): value is Attachment {
-  if (typeof value !== "object" || value === null) return false;
-  const attachment = value as Record<string, unknown>;
-  if (attachment.type !== "file" && attachment.type !== "snippet" && attachment.type !== "context") return false;
-  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") return false;
-  return attachment.language === undefined || typeof attachment.language === "string";
+function wireMessageId(value: unknown): string {
+  if (typeof value !== "object" || value === null) return "unknown";
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === "string" ? id : "unknown";
 }
 
-function isMessage(value: unknown): value is Message {
-  if (typeof value !== "object" || value === null) return false;
-  const message = value as Record<string, unknown>;
-  if (typeof message.id !== "string" || typeof message.timestamp !== "number") return false;
-  if (message.replyTo !== undefined && typeof message.replyTo !== "string") return false;
-  if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") return false;
-  if (typeof message.content !== "object" || message.content === null) return false;
-  const content = message.content as Record<string, unknown>;
-  if (typeof content.text !== "string") return false;
-  return content.attachments === undefined || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
-}
 
 /** Validate and route one wire-level send request. */
 export function handleBrokerSend(
@@ -90,7 +74,7 @@ export function handleBrokerSend(
   resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
 ): void {
   const message = clientMessage.message;
-  const messageId = isMessage(message) ? message.id : "unknown";
+  const messageId = wireMessageId(message);
   const hasAttemptId = Object.prototype.hasOwnProperty.call(clientMessage, "attemptId");
   if (hasAttemptId && typeof clientMessage.attemptId !== "string") {
     write(socket, {

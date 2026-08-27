@@ -11,7 +11,6 @@ import {
 	type BrokerConnectedSession,
 	handleBrokerSend,
 	PENDING_STAGE_ASK_REFUSAL,
-	pendingStageAskRefusal,
 } from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -132,9 +131,7 @@ test("live workflow stage targets still deliver immediately before pending-stage
 	]);
 });
 
-test("pending-stage asks are refused with a send recommendation before request routing", () => {
-	assert.equal(pendingStageAskRefusal({ ...message("ask"), expectsReply: true }), PENDING_STAGE_ASK_REFUSAL);
-	assert.equal(pendingStageAskRefusal(message("send")), undefined);
+test("pending-stage ask refusal recommends nonblocking send", () => {
 	assert.equal(PENDING_STAGE_ASK_REFUSAL.includes("Use send"), true);
 });
 
@@ -167,7 +164,12 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			},
 		};
 		const dispose = registerPendingStageIntercomBridge(pi, store);
-		const request = async (id: string, group = GROUP, stageKey = "reviewer") => {
+		const request = async (
+			id: string,
+			group = GROUP,
+			stageKey = "reviewer",
+			messageOverride: Message = message(id, 1_725_000_000_000 + Number(id)),
+		) => {
 			const payload: {
 				handled: boolean;
 				completion?: Promise<
@@ -185,7 +187,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 				from: { ...sender({} as net.Socket).info, group },
 				runId: RUN_ID,
 				stageKey,
-				message: message(id, 1_725_000_000_000 + Number(id)),
+				message: messageOverride,
 			};
 			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
 			return { payload, result: payload.completion === undefined ? undefined : await payload.completion };
@@ -209,17 +211,50 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		dispose();
 	});
 
-	test("surfaces the exact 50-message cap boundary through the request event", async () => {
+	test("enforces one exact 50-message cap across stage id and name aliases", async () => {
 		const { store, backend, request, dispose } = harness();
 		for (let index = 1; index <= 50; index += 1) {
-			assert.deepEqual((await request(String(index))).result, { outcome: "queued", position: index });
+			const stageKey = index % 2 === 0 ? "reviewer-id" : "reviewer";
+			assert.deepEqual((await request(String(index), GROUP, stageKey)).result, {
+				outcome: "queued",
+				position: index,
+			});
 		}
-		assert.deepEqual((await request("51")).result, {
+		assert.deepEqual((await request("51", GROUP, "reviewer-id")).result, {
 			outcome: "refused",
-			reason: `Pending stage message queue is full (limit 50) for ${RUN_ID}:reviewer`,
+			reason: `Pending stage message queue is full (limit 50) for ${RUN_ID}:reviewer-id`,
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 50);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer-id").length, 50);
 		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 50);
+		dispose();
+	});
+
+	test("deduplicates identical alias replays and rejects conflicting message-id reuse", async () => {
+		const { store, backend, request, dispose } = harness();
+		const original = message("stable", 100);
+		assert.deepEqual((await request("stable", GROUP, "reviewer", original)).result, {
+			outcome: "queued",
+			position: 1,
+		});
+		assert.deepEqual((await request("stable", GROUP, "reviewer-id", original)).result, {
+			outcome: "queued",
+			position: 1,
+		});
+		assert.deepEqual(
+			(
+				await request("stable", GROUP, "reviewer-id", {
+					...original,
+					content: { text: "conflicting payload" },
+				})
+			).result,
+			{
+				outcome: "refused",
+				reason: `Intercom message ID 'stable' was already queued for ${RUN_ID}:reviewer-id with a different target, sender, or payload`,
+			},
+		);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
+		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 1);
 		dispose();
 	});
 
@@ -231,29 +266,67 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
 		dispose();
 	});
+
+	test("validates the stage before refusing an ask", async () => {
+		const { store, request, dispose } = harness();
+		const ask = { ...message("ask"), expectsReply: true };
+		const unknown = await request("ask", GROUP, "unknown-stage", ask);
+		assert.equal(unknown.payload.handled, false);
+		assert.equal(unknown.result, undefined);
+		const pending = await request("ask", GROUP, "reviewer", ask);
+		assert.equal(pending.payload.handled, true);
+		assert.deepEqual(pending.result, {
+			outcome: "refused",
+			reason: PENDING_STAGE_ASK_REFUSAL,
+		});
+		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "reviewer"), []);
+		dispose();
+	});
 });
 
-test("drains stage id and name buckets FIFO once across stage attempt restarts with provenance", async () => {
+test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {
+	const sdk = createMockSdk();
+	const writer = new DbosDurableBackend(sdk, { executorId: "fifo-writer" });
+	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.flush();
 	const store = createStore();
-	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	setDurableBackend(backend);
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		stages: [{ id: "stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+		startedAt: 1,
+	});
+	setDurableBackend(writer);
 	const from = sender({} as net.Socket).info;
 	await store.queueStageMessage(
-		{ runId: RUN_ID, stageKey: "reviewer", from, message: message("later", 200), queuedAt: "2026-01-02" },
+		{ runId: RUN_ID, stageKey: "reviewer", from, message: message("deposit-a", 200), queuedAt: "2026-01-02" },
 		GROUP,
 		GROUP,
-		backend,
+		writer,
 	);
 	await store.queueStageMessage(
-		{ runId: RUN_ID, stageKey: "stage-id", from, message: message("earlier", 100), queuedAt: "2026-01-01" },
+		{ runId: RUN_ID, stageKey: "stage-id", from, message: message("deposit-b", 100), queuedAt: "2026-01-01" },
 		GROUP,
 		GROUP,
-		backend,
+		writer,
 	);
+	const reader = new DbosDurableBackend(sdk, { executorId: "fifo-reader" });
+	await reader.hydrateWorkflow(RUN_ID);
+	const reloadedStore = createStore();
+	reloadedStore.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		stages: [{ id: "stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+		startedAt: 1,
+		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+	});
+	setDurableBackend(reader);
 	const delivered: Array<{ id: string; name?: string; cwd: string; timestamp: number }> = [];
-	const firstAttempt = createWorkflowPendingStageDelivery(store, RUN_ID, "stage-id", "reviewer");
+	const firstAttempt = createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "stage-id", "reviewer");
 	await firstAttempt.deliverPending((entryFrom, entryMessage) => {
 		delivered.push({
 			id: entryMessage.id,
@@ -265,13 +338,13 @@ test("drains stage id and name buckets FIFO once across stage attempt restarts w
 	await firstAttempt.ready();
 	assert.deepEqual(
 		delivered.map((entry) => entry.id),
-		["earlier", "later"],
+		["deposit-a", "deposit-b"],
 	);
 	assert.equal(delivered[0]?.name, "planner");
 	assert.equal(delivered[0]?.cwd, "/repo");
-	assert.equal(delivered[0]?.timestamp, 100);
+	assert.equal(delivered[0]?.timestamp, 200);
 
-	const restartedAttempt = createWorkflowPendingStageDelivery(store, RUN_ID, "stage-id", "reviewer");
+	const restartedAttempt = createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "stage-id", "reviewer");
 	await restartedAttempt.deliverPending((entryFrom, entryMessage) => {
 		delivered.push({
 			id: entryMessage.id,
@@ -282,7 +355,7 @@ test("drains stage id and name buckets FIFO once across stage attempt restarts w
 	});
 	assert.equal(delivered.length, 2);
 	assert.deepEqual(
-		backend.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ status }) => status),
+		reader.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ status }) => status),
 		["delivered", "delivered"],
 	);
 });

@@ -6,6 +6,8 @@ import type { PendingStageMessageInput, PendingStageQueueResult, PendingStageSen
 
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
+const PENDING_STAGE_ASK_REFUSAL =
+	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
 interface WorkflowEventSurface {
 	readonly events?: {
@@ -89,12 +91,15 @@ async function queueAndPersist(
 ): Promise<
 	{ readonly outcome: "queued"; readonly position: number } | { readonly outcome: "refused"; readonly reason: string }
 > {
+	if (event.message.expectsReply === true) {
+		return { outcome: "refused", reason: PENDING_STAGE_ASK_REFUSAL };
+	}
 	const request: PendingStageMessageInput = {
 		runId: event.runId,
 		stageKey: event.stageKey,
 		from: event.from,
 		message: event.message,
-		queuedAt: new Date(event.message.timestamp).toISOString(),
+		queuedAt: new Date().toISOString(),
 	};
 	const backend = getDurableBackend();
 	const result: PendingStageQueueResult | undefined = await activeStore.queueStageMessage(
@@ -105,12 +110,19 @@ async function queueAndPersist(
 	);
 	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
 	if (!result.ok) {
-		return result.reason === "capacity"
-			? {
-					outcome: "refused",
-					reason: `Pending stage message queue is full (limit ${result.limit}) for ${result.runId}:${result.stageKey}`,
-				}
-			: { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
+		if (result.reason === "capacity") {
+			return {
+				outcome: "refused",
+				reason: `Pending stage message queue is full (limit ${result.limit}) for ${result.runId}:${result.stageKey}`,
+			};
+		}
+		if (result.reason === "message_id_conflict") {
+			return {
+				outcome: "refused",
+				reason: `Intercom message ID '${result.messageId}' was already queued for ${result.runId}:${result.stageKey} with a different target, sender, or payload`,
+			};
+		}
+		return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
 	}
 	return { outcome: "queued", position: result.position };
 }

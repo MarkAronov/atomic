@@ -58,19 +58,20 @@ async function deliverPendingStageMessages(
 	stageName: string,
 	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 ): Promise<void> {
-	const stageKeys = stageId === stageName ? [stageId] : [stageId, stageName];
-	const order = new Map<string, number>();
-	const entries = stageKeys
-		.flatMap((stageKey) => activeStore.pendingStageMessagesFor(runId, stageKey))
-		.filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index)
-		.map((entry, index) => {
-			order.set(entry.id, index);
-			return entry;
-		})
+	const stageKeys = new Set(stageId === stageName ? [stageId] : [stageId, stageName]);
+	const entries = (activeStore.runs().find((run) => run.id === runId)?.pendingStageMessages ?? [])
+		.map((entry, index) => ({ entry, index }))
+		.filter(
+			({ entry }) =>
+				entry.status === "queued" &&
+				(entry.stageId === stageId || (entry.stageId === undefined && stageKeys.has(entry.stageKey))),
+		)
 		.sort(
 			(left, right) =>
-				left.queuedAt.localeCompare(right.queuedAt) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
-		);
+				(left.entry.admissionOrder ?? left.index + 1) - (right.entry.admissionOrder ?? right.index + 1) ||
+				left.index - right.index,
+		)
+		.map(({ entry }) => entry);
 	const backend = getDurableBackend();
 	for (const entry of entries) {
 		const releaseClaim = claimPendingDelivery(activeStore, runId, entry.stageKey, entry.id);

@@ -5,6 +5,8 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test } from "vitest";
+import type { BrokerMessage } from "../../packages/intercom/types.js";
+import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
@@ -19,9 +21,11 @@ process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { default: intercom } = await import("../../packages/intercom/index.js");
 const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
+const { DbosDurableBackend } = await import("../../packages/workflows/src/durable/dbos-backend.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
 const { registerPendingStageIntercomBridge } = await import(
 	"../../packages/workflows/src/extension/pending-stage-intercom.js"
@@ -228,6 +232,56 @@ async function executeIntercom(
 	return execute("test-call", params, undefined, undefined, fixture.context);
 }
 
+class RawBrokerClient {
+	readonly socket = net.createConnection(getBrokerSocketPath());
+	readonly received: BrokerMessage[] = [];
+	private readonly consumed = new Set<number>();
+
+	constructor() {
+		this.socket.on(
+			"data",
+			createMessageReader(
+				(message) => this.received.push(message as BrokerMessage),
+				(error) => this.socket.destroy(error),
+			),
+		);
+		this.socket.on("error", () => {});
+	}
+
+	async register(name: string, group: string): Promise<void> {
+		if (this.socket.connecting) await new Promise<void>((resolve) => this.socket.once("connect", resolve));
+		writeMessage(this.socket, {
+			type: "register",
+			session: { name, group, cwd: repoRoot, model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+		});
+		await this.next("registered");
+	}
+
+	send(message: unknown): void {
+		writeMessage(this.socket, message as never);
+	}
+
+	async next<T extends BrokerMessage["type"]>(
+		type: T,
+		matches: (message: Extract<BrokerMessage, { type: T }>) => boolean = () => true,
+	): Promise<Extract<BrokerMessage, { type: T }>> {
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			const index = this.received.findIndex((message, candidate) => {
+				if (this.consumed.has(candidate) || message.type !== type) return false;
+				return matches(message as Extract<BrokerMessage, { type: T }>);
+			});
+			if (index >= 0) {
+				this.consumed.add(index);
+				return this.received[index] as Extract<BrokerMessage, { type: T }>;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		throw new Error(`Timed out waiting for broker frame ${type}`);
+	}
+}
+
+const rawClients = new Set<RawBrokerClient>();
 let broker: ChildProcess | undefined;
 
 beforeAll(async () => {
@@ -240,6 +294,7 @@ beforeAll(async () => {
 
 afterAll(() => {
 	broker?.kill("SIGTERM");
+	for (const client of rawClients) client.socket.destroy();
 	setDurableBackend(undefined);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
@@ -266,7 +321,26 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			name: "flow",
 			inputs: {},
 			status: "running",
-			stages: [{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+			stages: [
+				{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] },
+				{ id: "completed-id", name: "completed-stage", status: "completed", parentIds: [], toolEvents: [] },
+				{
+					id: "late-id",
+					name: "late-stage",
+					status: "running",
+					sessionId: "former-live-session",
+					parentIds: [],
+					toolEvents: [],
+				},
+				{
+					id: "closed-id",
+					name: "closed-stage",
+					status: "completed",
+					sessionFile: "/tmp/closed-stage.jsonl",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
 			startedAt: 1,
 		});
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
@@ -287,6 +361,16 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		assert.match(unknown.content[0]?.text ?? "", /Session not found/);
 		assert.equal(unknown.details.delivered, false);
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
+
+		for (const stageKey of ["unknown-stage", "completed-stage", "late-stage", "closed-stage"]) {
+			const ordinaryAskFailure = await executeIntercom(sender, {
+				action: "ask",
+				to: `${RUN_ID}:${stageKey}`,
+				message: `Lifecycle validation for ${stageKey}`,
+			});
+			assert.match(ordinaryAskFailure.content[0]?.text ?? "", /Session not found/);
+			assert.equal(ordinaryAskFailure.details.refusal, undefined);
+		}
 
 		const ask = await executeIntercom(sender, {
 			action: "ask",
@@ -413,6 +497,111 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		if (reviewer !== undefined) await reviewer.shutdown();
 		disposeBridge();
 		await sender.shutdown();
+		await owner.shutdown();
+	}
+});
+
+test("raw malformed messages are rejected before durable mutation and valid optional fields survive DBOS reload", async () => {
+	const runId = "2f34ff35-9813-4a60-b7a3-24698cd01592";
+	const group = `workflow:${runId}`;
+	const target = `${runId}:reviewer`;
+	const sdk = createMockSdk();
+	const writer = new DbosDurableBackend(sdk, { executorId: "wire-validation-writer" });
+	writer.registerWorkflow({ workflowId: runId, name: "wire-validation", inputs: {}, status: "running", createdAt: 1 });
+	await writer.flush();
+	setDurableBackend(writer);
+	const store = createStore();
+	store.recordRunStart({
+		id: runId,
+		name: "wire-validation",
+		inputs: {},
+		status: "running",
+		stages: [{ id: "reviewer-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
+		startedAt: 1,
+	});
+	const owner = extensionFixture("wire-owner", "wire-owner", undefined, "default");
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	const raw = new RawBrokerClient();
+	rawClients.add(raw);
+	try {
+		await owner.start();
+		await raw.register("raw-sender", group);
+		const malformed = [
+			{ id: "malformed-reply-error", timestamp: 1, replyError: { bad: true }, content: { text: "bad" } },
+			{ id: "malformed-source", timestamp: 2, source: {}, content: { text: "bad" } },
+			{
+				id: "malformed-attachment",
+				timestamp: 3,
+				content: { text: "bad", attachments: [{ type: "file", name: "bad", content: "bad", language: 9 }] },
+			},
+		] as const;
+		for (const message of malformed) {
+			raw.send({ type: "send", to: target, message });
+			assert.deepEqual(await raw.next("delivery_failed", (frame) => frame.messageId === message.id), {
+				type: "delivery_failed",
+				messageId: message.id,
+				reason: "Invalid message format",
+			});
+		}
+		assert.deepEqual(store.pendingStageMessagesFor(runId, "reviewer"), []);
+		const cleanReload = new DbosDurableBackend(sdk, { executorId: "wire-validation-clean-reader" });
+		await cleanReload.hydrateWorkflow(runId);
+		assert.deepEqual(cleanReload.getWorkflow(runId)?.pendingStageMessages, []);
+
+		const validMessage = {
+			id: "valid-full-message",
+			timestamp: 4,
+			replyTo: "prior-message",
+			expectsReply: false,
+			replyError: "preserved remote context",
+			source: { subagentRunId: "subagent-run", subagentAgent: "reviewer", subagentIndex: 3 },
+			content: {
+				text: "valid",
+				attachments: [{ type: "context", name: "contract", content: "literal", language: "txt" }],
+			},
+		};
+		raw.send({ type: "send", to: target, message: validMessage });
+		const queued = await raw.next("queued", (frame) => frame.messageId === validMessage.id);
+		assert.equal(queued.position, 1);
+		raw.send({ type: "send", to: `${runId}:reviewer-id`, message: validMessage });
+		assert.equal((await raw.next("queued", (frame) => frame.messageId === validMessage.id)).position, 1);
+		raw.send({
+			type: "send",
+			to: `${runId}:reviewer-id`,
+			message: { ...validMessage, content: { ...validMessage.content, text: "conflicting reuse" } },
+		});
+		assert.deepEqual(await raw.next("delivery_failed", (frame) => frame.messageId === validMessage.id), {
+			type: "delivery_failed",
+			messageId: validMessage.id,
+			reason: `Intercom message ID '${validMessage.id}' was already queued for ${runId}:reviewer-id with a different target, sender, or payload`,
+		});
+		for (let position = 2; position <= 50; position++) {
+			const message = { id: `capacity-${position}`, timestamp: position + 4, content: { text: String(position) } };
+			raw.send({
+				type: "send",
+				to: `${runId}:${position % 2 === 0 ? "reviewer-id" : "reviewer"}`,
+				message,
+			});
+			assert.equal((await raw.next("queued", (frame) => frame.messageId === message.id)).position, position);
+		}
+		raw.send({
+			type: "send",
+			to: `${runId}:reviewer`,
+			message: { id: "capacity-51", timestamp: 55, content: { text: "refused" } },
+		});
+		assert.match(
+			(await raw.next("delivery_failed", (frame) => frame.messageId === "capacity-51")).reason,
+			/queue is full \(limit 50\)/,
+		);
+		const validReload = new DbosDurableBackend(sdk, { executorId: "wire-validation-valid-reader" });
+		await validReload.hydrateWorkflow(runId);
+		assert.equal(validReload.getWorkflow(runId)?.pendingStageMessages?.length, 50);
+		assert.deepEqual(validReload.getWorkflow(runId)?.pendingStageMessages?.[0]?.message, validMessage);
+	} finally {
+		raw.socket.destroy();
+		rawClients.delete(raw);
+		disposeBridge();
 		await owner.shutdown();
 	}
 });

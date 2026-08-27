@@ -267,12 +267,30 @@ test("production clients keep the pending owner and live stage connected when a 
 			reason: "Session not found",
 		});
 	}
-	const askRefusal = await sender.send(`${runId}:still-pending`, {
-		text: "blocking question",
-		expectsReply: true,
-	});
-	assert.equal(askRefusal.delivered, false);
-	assert.match(askRefusal.reason ?? "", /Cannot ask a workflow stage whose session has not initialized\. Use send/);
+	for (const [stageKey, reason] of [
+		[
+			"still-pending",
+			"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.",
+		],
+		["unknown-stage", "Session not found"],
+		["completed-stage", "Session not found"],
+		["late-stage", "Session not found"],
+		["closed-stage", "Session not found"],
+	] as const) {
+		const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+			owner.once("pending_stage_message", resolveRequest);
+		});
+		const ask = sender.send(`${runId}:${stageKey}`, {
+			text: `blocking question for ${stageKey}`,
+			expectsReply: true,
+		});
+		const request = await ownerValidation;
+		assert.equal(request.stageKey, stageKey);
+		owner.respondPendingStageMessage(request.requestId, { outcome: "refused", reason });
+		const refusal = await ask;
+		assert.equal(refusal.delivered, false);
+		assert.equal(refusal.reason, reason);
+	}
 
 	await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-id", "reviewer"], capability);
 	const liveMessage = new Promise<Message>((resolveMessage) => {
@@ -281,6 +299,12 @@ test("production clients keep the pending owner and live stage connected when a 
 	const liveSend = await sender.send(`${runId}:reviewer`, { text: "deliver to live composite" });
 	assert.equal(liveSend.delivered, true);
 	assert.equal((await liveMessage).content.text, "deliver to live composite");
+	const liveAskMessage = new Promise<Message>((resolveMessage) => {
+		stage.once("message", (_from, message) => resolveMessage(message));
+	});
+	const liveAsk = await sender.send(`${runId}:reviewer-id`, { text: "live blocking question", expectsReply: true });
+	assert.equal(liveAsk.delivered, true);
+	assert.equal((await liveAskMessage).content.text, "live blocking question");
 
 	assert.equal(owner.isConnected(), true);
 	assert.equal(stage.isConnected(), true);

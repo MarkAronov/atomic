@@ -168,6 +168,76 @@ test("broker wire send keeps absent attemptId compatibility but rejects malforme
 		"malformed attemptId must not downgrade and forward",
 	);
 });
+
+test("broker rejects every malformed durable message field before pending routing", () => {
+	const senderSocket = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([["sender", session("sender", "sender", senderSocket)]]);
+	const writes: BrokerMessage[] = [];
+	let pendingRoutes = 0;
+	const malformedMessages = [
+		{ id: "bad-reply-error", timestamp: 1, replyError: { bad: true }, content: { text: "bad" } },
+		{ id: "bad-source", timestamp: 1, source: {}, content: { text: "bad" } },
+		{
+			id: "bad-attachment",
+			timestamp: 1,
+			content: { text: "bad", attachments: [{ type: "file", name: "bad", content: "bad", language: 3 }] },
+		},
+	] as const;
+	for (const malformed of malformedMessages) {
+		handleBrokerSend(
+			senderSocket,
+			{ type: "send", to: "4ac72924-c452-4e5f-9e63-2435722109f7:reviewer", message: malformed },
+			"sender",
+			sessions,
+			new DeliveredMessageCache(),
+			(_socket, value) => writes.push(value),
+			undefined,
+			undefined,
+			() => {
+				pendingRoutes++;
+				return true;
+			},
+		);
+	}
+	assert.equal(pendingRoutes, 0);
+	assert.deepEqual(
+		writes.map((entry) => entry.type === "delivery_failed" && [entry.messageId, entry.reason]),
+		malformedMessages.map((entry) => [entry.id, "Invalid message format"]),
+	);
+});
+
+test("broker preserves all valid optional durable message fields verbatim", () => {
+	const senderSocket = {} as net.Socket;
+	const recipientSocket = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["sender", session("sender", "sender", senderSocket)],
+		["recipient", session("recipient", "recipient", recipientSocket)],
+	]);
+	const fullMessage: Message = {
+		id: "full-message",
+		timestamp: 123,
+		replyTo: "question",
+		expectsReply: false,
+		replyError: "remote failure",
+		source: { subagentRunId: "run", subagentAgent: "worker", subagentIndex: 2 },
+		content: {
+			text: "verbatim",
+			attachments: [{ type: "snippet", name: "proof", content: "literal", language: "txt" }],
+		},
+	};
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+	handleBrokerSend(
+		senderSocket,
+		{ type: "send", to: "recipient", message: fullMessage },
+		"sender",
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, value) => writes.push({ socket, message: value }),
+	);
+	const delivered = writes.find(({ socket, message }) => socket === recipientSocket && message.type === "message");
+	assert.equal(delivered?.message.type, "message");
+	if (delivered?.message.type === "message") assert.strictEqual(delivered.message.message, fullMessage);
+});
 test("broker routes the exact full session ID", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;

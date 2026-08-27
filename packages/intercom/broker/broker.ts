@@ -10,7 +10,6 @@ import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../type
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import {
   handleBrokerSend,
-  pendingStageAskRefusal,
   parsePendingStageTarget,
   type BrokerConnectedSession,
   type PendingStageRoute,
@@ -235,16 +234,6 @@ class IntercomBroker {
         messageId: route.message.id,
         ...(route.attemptId ? { attemptId: route.attemptId } : {}),
         reason: "Target workflow run is in a different intercom group",
-      });
-      return true;
-    }
-    const askRefusal = pendingStageAskRefusal(route.message);
-    if (askRefusal !== undefined) {
-      writeMessage(route.socket, {
-        type: "delivery_failed",
-        messageId: route.message.id,
-        ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-        reason: askRefusal,
       });
       return true;
     }
