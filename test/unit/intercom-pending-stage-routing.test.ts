@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import type net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager-core.ts";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import {
@@ -22,6 +26,8 @@ const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `${RUN_ID}:reviewer`;
 
+const tempDirs: string[] = [];
+
 function sender(socket: net.Socket): BrokerConnectedSession {
 	return {
 		socket,
@@ -42,7 +48,10 @@ function message(id: string, timestamp = 100): Message {
 	return { id, timestamp, content: { text: `scope ${id}` } };
 }
 
-afterEach(() => setDurableBackend(undefined));
+afterEach(() => {
+	setDurableBackend(undefined);
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 test("pending-stage fallback runs only for a valid composite unknown target and preserves ordinary unknown failures", () => {
 	const socket = {} as net.Socket;
@@ -407,7 +416,10 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 	);
 
 	let senderVisibleDeliveries = 0;
-	const firstRecipient = new WorkflowStageAdmissionBoundary();
+	const recipientSessionDir = mkdtempSync(join(tmpdir(), "pending-stage-recipient-"));
+	tempDirs.push(recipientSessionDir);
+	let recipientSession = SessionManager.create("/repo", recipientSessionDir);
+	const firstRecipient = WorkflowStageAdmissionBoundary.restore(recipientSession.getBranch());
 	const deliverThroughRecipient = (recipient: WorkflowStageAdmissionBoundary) => {
 		const pending = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer");
 		const ready = pending.ready();
@@ -418,6 +430,16 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 					`intercom:${entryMessage.id}`,
 					() => {
 						senderVisibleDeliveries++;
+						recipientSession.appendCustomMessageEntry(
+							"intercom_message",
+							entryMessage.content.text,
+							true,
+							undefined,
+							undefined,
+							undefined,
+							`intercom:${entryMessage.id}`,
+						);
+						recipientSession.flush();
 					},
 					() => {
 						throw new Error("unexpected late route");
@@ -445,7 +467,18 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
 	});
 	setDurableBackend(reader);
-	const reloadedRecipient = new WorkflowStageAdmissionBoundary(undefined, ["intercom:retry-after-ack-failure"]);
+	assert.deepEqual(
+		recipientSession.getBranch().map((entry) => ("stageAdmissionKey" in entry ? entry.stageAdmissionKey : undefined)),
+		["intercom:retry-after-ack-failure"],
+	);
+	const recipientSessionFile = recipientSession.getSessionFile();
+	assert.ok(recipientSessionFile !== undefined);
+	recipientSession = SessionManager.open(recipientSessionFile, recipientSessionDir, "/repo");
+	const reloadedRecipient = WorkflowStageAdmissionBoundary.restore(recipientSession.getBranch());
+	assert.deepEqual(
+		recipientSession.getBranch().map((entry) => ("stageAdmissionKey" in entry ? entry.stageAdmissionKey : undefined)),
+		["intercom:retry-after-ack-failure"],
+	);
 	await createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "reviewer-id", "reviewer").deliverPending(
 		async (_from, entryMessage) => {
 			await reloadedRecipient.admit(

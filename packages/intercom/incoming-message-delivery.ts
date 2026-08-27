@@ -28,6 +28,7 @@ export function createIncomingMessageSender(input: {
     }
     const baseOptions = {
       stageAdmissionKey: `intercom:${entry.message.id}`,
+      persistWhenStreaming: true,
       ...(stageAdmissionBarrier ? { stageAdmissionBarrier } : {}),
     } as const;
     const options = delivery === "trigger"

@@ -13,6 +13,11 @@ export interface WorkflowStageAdmissionResult {
  * an enqueue that wins belongs to the stage, while close makes every later enqueue
  * use the external route. Stable keys make either outcome exactly-once.
  */
+
+export interface PersistedWorkflowStageAdmission {
+	readonly type: string;
+	readonly stageAdmissionKey?: string;
+}
 export class WorkflowStageAdmissionBoundary {
 	private open = true;
 	private readonly completed: Set<string>;
@@ -25,6 +30,20 @@ export class WorkflowStageAdmissionBoundary {
 	constructor(drainAdmittedWork: (() => Promise<void>) | undefined = undefined, completedKeys: Iterable<string> = []) {
 		this.drainAdmittedWork = drainAdmittedWork ?? (async () => {});
 		this.completed = new Set(completedKeys);
+	}
+
+	static restore(
+		entries: Iterable<PersistedWorkflowStageAdmission>,
+		drainAdmittedWork?: () => Promise<void>,
+	): WorkflowStageAdmissionBoundary {
+		return new WorkflowStageAdmissionBoundary(
+			drainAdmittedWork,
+			Array.from(entries).flatMap((entry) =>
+				entry.type === "custom_message" && typeof entry.stageAdmissionKey === "string"
+					? [entry.stageAdmissionKey]
+					: [],
+			),
+		);
 	}
 
 	admit(
