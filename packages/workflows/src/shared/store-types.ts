@@ -234,6 +234,8 @@ export interface PendingStageMessage {
 	readonly stageKey: string;
 	/** Canonical authored stage id. Absent only on durable records written before alias canonicalization. */
 	readonly stageId?: string;
+	/** Stable authored replay identity used to restore the canonical stage across process resume. */
+	readonly stageReplayKey?: string;
 	readonly from: PendingStageSender;
 	readonly message: PendingStageIntercomMessage;
 	readonly queuedAt: string;
@@ -246,7 +248,7 @@ export interface PendingStageMessage {
 
 export type PendingStageMessageInput = Omit<
 	PendingStageMessage,
-	"id" | "stageId" | "admissionOrder" | "status" | "deliveredAt" | "undeliverableReason"
+	"id" | "stageId" | "stageReplayKey" | "admissionOrder" | "status" | "deliveredAt" | "undeliverableReason"
 >;
 
 export type PendingStageQueueResult =

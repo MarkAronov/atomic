@@ -12,6 +12,7 @@ export const PENDING_STAGE_MESSAGE_LIMIT = 50;
 
 export interface PendingStageIdentity {
 	readonly id: string;
+	readonly replayKey?: string;
 	readonly aliases: readonly string[];
 }
 
@@ -72,6 +73,7 @@ export function queueStageMessage(
 		...input,
 		id: messageId,
 		...(stageIdentity !== undefined ? { stageId: stageIdentity.id } : {}),
+		...(stageIdentity?.replayKey !== undefined ? { stageReplayKey: stageIdentity.replayKey } : {}),
 		admissionOrder: nextAdmissionOrder(messages, input.runId),
 		status: "queued",
 	};
@@ -171,6 +173,7 @@ function matchesPendingStage(
 	if (stageIdentity === undefined) return entry.stageKey === stageKey;
 	return (
 		entry.stageId === stageIdentity.id ||
+		(entry.stageReplayKey !== undefined && entry.stageReplayKey === stageIdentity.replayKey) ||
 		(entry.stageId === undefined && stageIdentity.aliases.includes(entry.stageKey))
 	);
 }
@@ -191,7 +194,7 @@ function pendingStageMessageSignature(
 	stageIdentity?: PendingStageIdentity,
 ): string {
 	return stableJson({
-		target: stageIdentity?.id ?? entry.stageKey,
+		target: stageIdentity?.replayKey ?? stageIdentity?.id ?? entry.stageKey,
 		from: entry.from,
 		message: entry.message,
 	});

@@ -10,9 +10,10 @@
 
 import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isDurableWorkflowResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
@@ -21,12 +22,15 @@ import {
 	resumeDurableWorkflow,
 } from "../../packages/workflows/src/durable/resume-runtime.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
 	return {
@@ -471,6 +475,185 @@ describe("resumeDurableWorkflow", () => {
 		const workflowId = testRunId("wf-hydrated");
 		const result = await resumeDurableWorkflow(workflowId, { ...deps(), durableBackend: hydrating });
 		assert.equal(result.ok, true);
+	});
+});
+
+describe("durable pending-stage resume", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		setDurableBackend(undefined);
+	});
+
+	test("fresh extension resume restores a queued receiver before its first task", async () => {
+		let clock = 1_000;
+		vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+		const workflowId = testRunId("pending-stage-process-resume");
+		const messageId = "resume-message-exact-id";
+		const replayKey = "stage:receiver:1";
+		const receiverStageId = "receiver-before-process-exit";
+		const sdk = createMockSdk();
+		const writer = new DbosDurableBackend(sdk, { executorId: "pending-resume-writer" });
+		writer.registerWorkflow({
+			workflowId,
+			name: "pending-stage-process-resume",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			rootWorkflowId: workflowId,
+			resumable: true,
+		});
+		await writer.flush();
+		const firstStore = createStore();
+		firstStore.recordRunStart({
+			id: workflowId,
+			name: "pending-stage-process-resume",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: receiverStageId,
+					name: "receiver",
+					replayKey,
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+				},
+			],
+			startedAt: 1,
+		});
+		const queued = await firstStore.queueStageMessage(
+			{
+				runId: workflowId,
+				stageKey: "receiver",
+				from: {
+					id: "sender-session",
+					name: "sender",
+					group: `workflow:${workflowId}`,
+				},
+				message: { id: messageId, timestamp: 20, content: { text: "survive process resume" } },
+				queuedAt: "2026-08-27T20:00:00.000Z",
+			},
+			`workflow:${workflowId}`,
+			`workflow:${workflowId}`,
+			writer,
+		);
+		assert.equal(queued?.ok, true);
+		writer.recordCheckpoint({
+			kind: "stage",
+			workflowId,
+			checkpointId: "stage:stage:sender:1",
+			name: "sender",
+			replayKey: "stage:sender:1",
+			output: "sender checkpoint replayed",
+			completedAt: 30,
+			topology: {
+				version: 1,
+				stageId: "sender-before-process-exit",
+				parentIds: [],
+				sourceOrder: 1,
+				status: "completed",
+				order: 1,
+				run: { runId: workflowId, runName: "pending-stage-process-resume" },
+			},
+		});
+		writer.setWorkflowStatus(workflowId, "paused", 0, true);
+		await writer.flush();
+		assert.equal(writer.getWorkflow(workflowId)?.pendingStageMessages?.[0]?.id, messageId);
+
+		// Process boundary: no Store, backend mirror, runtime, or extension object survives.
+		firstStore.clear();
+		writer.reset();
+		setDurableBackend(undefined);
+
+		const reader = new DbosDurableBackend(sdk, { executorId: "pending-resume-reader" });
+		setDurableBackend(reader);
+		const freshStore = createStore();
+		const jobs = createJobTracker();
+		const observedBeforeFirstTask: Array<{
+			readonly id: string;
+			readonly text: string;
+			readonly senderId: string;
+			readonly senderName: string | undefined;
+			readonly senderGroup: string | undefined;
+		}> = [];
+		const definition = workflow({
+			name: "pending-stage-process-resume",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const receiver = ctx.stage("receiver");
+				await ctx.stage("sender").complete("sender must replay");
+				await receiver.complete("receiver first task");
+				return {};
+			},
+		});
+		const terminal = Promise.withResolvers<void>();
+		const unsubscribe = freshStore.subscribeInvalidation(() => {
+			const status = freshStore.runs().find((run) => run.id === workflowId)?.status;
+			if (status === "completed" || status === "failed" || status === "cancelled") terminal.resolve();
+		});
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store: freshStore,
+			jobs,
+			adapters: {
+				complete: {
+					complete: async () => {
+						const receiver = freshStore
+							.runs()
+							.find((run) => run.id === workflowId)
+							?.stages.find((stage) => stage.name === "receiver");
+						assert.ok(receiver);
+						const pending = freshStore.pendingStageMessagesFor(workflowId, receiver.id);
+						for (const entry of pending) {
+							observedBeforeFirstTask.push({
+								id: entry.id,
+								text: entry.message.content.text,
+								senderId: entry.from.id,
+								senderName: entry.from.name,
+								senderGroup: entry.from.group,
+							});
+							assert.equal(
+								await freshStore.markPendingStageMessageDelivered(
+									workflowId,
+									entry.stageKey,
+									entry.id,
+									"2026-08-27T20:01:00.000Z",
+									reader,
+								),
+								true,
+							);
+						}
+						return "receiver completed";
+					},
+				},
+			},
+		});
+		const catalog = await runtime.prepareDurableResumable(workflowId);
+		assert.equal(reader.getWorkflow(workflowId)?.status, "paused");
+		assert.equal(reader.getWorkflow(workflowId)?.completedCheckpoints, 1);
+		assert.equal(
+			catalog.some((entry) => entry.workflowId === workflowId),
+			true,
+		);
+		const resumed = await runtime.resumeDurableWorkflow(workflowId, { actor: "agent" });
+		assert.equal(resumed.ok, true);
+		await terminal.promise;
+		unsubscribe();
+
+		assert.deepEqual(observedBeforeFirstTask, [
+			{
+				id: messageId,
+				text: "survive process resume",
+				senderId: "sender-session",
+				senderName: "sender",
+				senderGroup: `workflow:${workflowId}`,
+			},
+		]);
+		assert.equal(freshStore.runs().find((run) => run.id === workflowId)?.status, "completed");
+		assert.equal(reader.getWorkflow(workflowId)?.status, "completed");
+		assert.equal(reader.getWorkflow(workflowId)?.pendingStageMessages?.[0]?.status, "delivered");
 	});
 });
 

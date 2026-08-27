@@ -130,14 +130,20 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 }
 
 function resolvePendingStageIdentity(
-	run: { readonly stages: readonly { readonly id: string; readonly name: string }[] },
+	run: {
+		readonly stages: readonly { readonly id: string; readonly name: string; readonly replayKey?: string }[];
+	},
 	stageKey: string,
 ): PendingStageIdentity | undefined {
 	const exactIds = run.stages.filter((stage) => stage.id === stageKey);
 	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
 	if (candidates.length !== 1) return undefined;
 	const stage = candidates[0]!;
-	return { id: stage.id, aliases: stage.id === stage.name ? [stage.id] : [stage.id, stage.name] };
+	return {
+		id: stage.id,
+		...(stage.replayKey !== undefined ? { replayKey: stage.replayKey } : {}),
+		aliases: stage.id === stage.name ? [stage.id] : [stage.id, stage.name],
+	};
 }
 
 async function persistTransition(

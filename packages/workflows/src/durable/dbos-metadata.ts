@@ -193,6 +193,7 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 		runId: entry.runId,
 		stageKey: entry.stageKey,
 		...(entry.stageId !== undefined ? { stageId: entry.stageId } : {}),
+		...(entry.stageReplayKey !== undefined ? { stageReplayKey: entry.stageReplayKey } : {}),
 		from: {
 			id: entry.from.id,
 			...(entry.from.name !== undefined ? { name: entry.from.name } : {}),
@@ -235,6 +236,7 @@ function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
 		typeof value.runId === "string" &&
 		typeof value.stageKey === "string" &&
 		(value.stageId === undefined || typeof value.stageId === "string") &&
+		(value.stageReplayKey === undefined || typeof value.stageReplayKey === "string") &&
 		typeof value.queuedAt === "string" &&
 		(value.admissionOrder === undefined ||
 			(typeof value.admissionOrder === "number" &&
