@@ -92,23 +92,444 @@ describe("workflow stage messages store", () => {
 		assert.equal(duplicate.entry.queuedAt, first.entry.queuedAt);
 	});
 
-	test("rejects conflicting reuse of a durable message id", () => {
-		const first = queueStageMessage([], pendingMessage("same"), RUN_GROUP, RUN_GROUP);
+	test("deduplicates a durable retry across volatile sender presence changes", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const original = pendingMessage("presence", {
+			from: {
+				id: "stable-sender-id",
+				name: "planner",
+				group: RUN_GROUP,
+				cwd: "/repo/first",
+				model: "model-a",
+				pid: 10,
+				startedAt: 11,
+				lastActivity: 12,
+				status: "idle",
+			} as PendingStageMessageInput["from"],
+		});
+		const writer = createStore();
+		writer.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		assert.equal((await writer.queueStageMessage(original, RUN_GROUP, RUN_GROUP, backend))?.ok, true);
+
+		const retry = pendingMessage("presence", {
+			from: {
+				id: "stable-sender-id",
+				name: "renamed-planner",
+				group: "presence-display-group",
+				cwd: "/repo/second",
+				model: "model-b",
+				pid: 20,
+				startedAt: 21,
+				lastActivity: 22,
+				status: "working",
+			} as PendingStageMessageInput["from"],
+			queuedAt: "later transport attempt",
+		});
+		const restoredQueued = createStore();
+		restoredQueued.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			pendingStageMessages: [...(backend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+			startedAt: 1,
+		});
+		const queuedRetry = await restoredQueued.queueStageMessage(retry, RUN_GROUP, RUN_GROUP, backend);
+		assert.equal(queuedRetry?.ok, true);
+		if (queuedRetry?.ok !== true) return;
+		assert.equal(queuedRetry.deduplicated, true);
+		assert.equal(queuedRetry.entry.status, "queued");
+		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 1);
+
+		assert.equal(
+			await restoredQueued.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "presence", "delivered", backend),
+			true,
+		);
+		const restoredDelivered = createStore();
+		restoredDelivered.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			pendingStageMessages: [...(backend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+			startedAt: 1,
+		});
+		const deliveredRetry = await restoredDelivered.queueStageMessage(retry, RUN_GROUP, RUN_GROUP, backend);
+		assert.equal(deliveredRetry?.ok, true);
+		if (deliveredRetry?.ok !== true) return;
+		assert.equal(deliveredRetry.deduplicated, true);
+		assert.equal(deliveredRetry.entry.status, "delivered");
+
+		const senderConflict = await restoredDelivered.queueStageMessage(
+			{ ...retry, from: { ...retry.from, id: "different-sender-id" } },
+			RUN_GROUP,
+			RUN_GROUP,
+			backend,
+		);
+		assert.equal(senderConflict?.ok, false);
+		if (senderConflict?.ok === false) assert.equal(senderConflict.reason, "message_id_conflict");
+	});
+
+	test("deduplicates a reconstructed durable retry with a regenerated timestamp", async () => {
+		const sdk = createMockSdk();
+		const writerBackend = new DbosDurableBackend(sdk, { executorId: "timestamp-retry-writer" });
+		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await writerBackend.flush();
+		const writerStore = createStore();
+		writerStore.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		const original = pendingMessage("timestamp-retry", {
+			message: {
+				...message("timestamp-retry", "same logical send"),
+				timestamp: 100,
+				replyTo: "question-1",
+				expectsReply: true,
+				replyError: "same reply error",
+				source: { subagentRunId: "subagent-run-1", subagentAgent: "reviewer", subagentIndex: 1 },
+			},
+		});
+		const admitted = await writerStore.queueStageMessage(original, RUN_GROUP, RUN_GROUP, writerBackend);
+		assert.equal(admitted?.ok, true);
+		if (admitted?.ok !== true) return;
+
+		const retryBackend = new DbosDurableBackend(sdk, { executorId: "timestamp-retry-reader" });
+		await retryBackend.hydrateWorkflow(RUN_ID);
+		const durableBeforeRetry = retryBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
+		const retryStore = createStore();
+		retryStore.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			pendingStageMessages: [...durableBeforeRetry],
+			startedAt: 1,
+		});
+		let invalidations = 0;
+		retryStore.subscribeInvalidation(() => invalidations++);
+		const retry = await retryStore.queueStageMessage(
+			{
+				...original,
+				message: { ...original.message, timestamp: 200 },
+				queuedAt: "regenerated transport attempt",
+			},
+			RUN_GROUP,
+			RUN_GROUP,
+			retryBackend,
+		);
+		assert.equal(retry?.ok, true);
+		if (retry?.ok !== true) return;
+		assert.equal(retry.deduplicated, true);
+		assert.equal(retry.entry.status, "queued");
+		assert.equal(retry.position, 1);
+		assert.equal(retry.entry.message.timestamp, 100);
+		assert.equal(retry.entry.stageKey, STAGE_KEY);
+		assert.equal(retry.entry.admissionOrder, 1);
+		assert.equal(invalidations, 0);
+		assert.strictEqual(retry.messages, retryStore.runs()[0]?.pendingStageMessages);
+		assert.deepEqual(retry.messages, durableBeforeRetry);
+		assert.deepEqual(retryBackend.getWorkflow(RUN_ID)?.pendingStageMessages, durableBeforeRetry);
+		assert.deepEqual(
+			retryStore.pendingStageMessagesFor(RUN_ID, STAGE_KEY).map(({ id }) => id),
+			["timestamp-retry"],
+		);
+
+		assert.equal(
+			await retryStore.markPendingStageMessageDelivered(
+				RUN_ID,
+				STAGE_KEY,
+				"timestamp-retry",
+				"2026-08-27T12:00:00.000Z",
+				retryBackend,
+			),
+			true,
+		);
+		const deliveredBackend = new DbosDurableBackend(sdk, { executorId: "timestamp-retry-delivered-reader" });
+		await deliveredBackend.hydrateWorkflow(RUN_ID);
+		const deliveredBeforeRetry = deliveredBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
+		const deliveredStore = createStore();
+		deliveredStore.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			pendingStageMessages: [...deliveredBeforeRetry],
+			startedAt: 1,
+		});
+		const deliveredRetry = await deliveredStore.queueStageMessage(
+			{ ...original, message: { ...original.message, timestamp: 300 } },
+			RUN_GROUP,
+			RUN_GROUP,
+			deliveredBackend,
+		);
+		assert.equal(deliveredRetry?.ok, true);
+		if (deliveredRetry?.ok !== true) return;
+		assert.equal(deliveredRetry.deduplicated, true);
+		assert.equal(deliveredRetry.entry.status, "delivered");
+		assert.equal(deliveredRetry.position, undefined);
+		assert.equal(deliveredRetry.entry.message.timestamp, 100);
+		assert.equal(deliveredRetry.entry.stageKey, STAGE_KEY);
+		assert.equal(deliveredRetry.entry.admissionOrder, 1);
+		assert.deepEqual(deliveredRetry.messages, deliveredBeforeRetry);
+		assert.deepEqual(deliveredBackend.getWorkflow(RUN_ID)?.pendingStageMessages, deliveredBeforeRetry);
+		assert.equal(deliveredStore.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 0);
+		assert.equal(deliveredRetry.messages.length, 1);
+	});
+
+	test("canonicalizes omitted message defaults across durable queued and delivered retries", async () => {
+		const sdk = createMockSdk();
+		const writerBackend = new DbosDurableBackend(sdk, { executorId: "optional-defaults-writer" });
+		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await writerBackend.flush();
+		const writerStore = createStore();
+		writerStore.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		const omitted = pendingMessage("defaults-omitted", {
+			message: {
+				id: "defaults-omitted",
+				timestamp: 100,
+				replyTo: "question-1",
+				replyError: "same reply error",
+				source: { subagentRunId: "subagent-run-1", subagentAgent: "reviewer", subagentIndex: 1 },
+				content: { text: "omitted then explicit" },
+			},
+			queuedAt: "2026-08-27T12:00:00.000Z",
+		});
+		const explicit = pendingMessage("defaults-explicit", {
+			message: {
+				id: "defaults-explicit",
+				timestamp: 101,
+				replyTo: "question-2",
+				expectsReply: false,
+				replyError: "same reply error",
+				source: { subagentRunId: "subagent-run-2", subagentAgent: "reviewer", subagentIndex: 2 },
+				content: { text: "explicit then omitted", attachments: [] },
+			},
+			queuedAt: "2026-08-27T12:00:01.000Z",
+		});
+		assert.equal((await writerStore.queueStageMessage(omitted, RUN_GROUP, RUN_GROUP, writerBackend))?.ok, true);
+		assert.equal((await writerStore.queueStageMessage(explicit, RUN_GROUP, RUN_GROUP, writerBackend))?.ok, true);
+
+		const retryInputs: readonly PendingStageMessageInput[] = [
+			{
+				...omitted,
+				message: {
+					...omitted.message,
+					timestamp: 200,
+					expectsReply: false,
+					content: { ...omitted.message.content, attachments: [] },
+				},
+				queuedAt: "regenerated omitted transport attempt",
+			},
+			{
+				...explicit,
+				message: {
+					id: explicit.message.id,
+					timestamp: 201,
+					replyTo: explicit.message.replyTo,
+					replyError: explicit.message.replyError,
+					source: explicit.message.source,
+					content: { text: explicit.message.content.text },
+				},
+				queuedAt: "regenerated explicit transport attempt",
+			},
+		];
+		const queuedBackend = new DbosDurableBackend(sdk, { executorId: "optional-defaults-queued-reader" });
+		await queuedBackend.hydrateWorkflow(RUN_ID);
+		const queuedBeforeRetry = queuedBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
+		const queuedStore = createStore();
+		queuedStore.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			pendingStageMessages: [...queuedBeforeRetry],
+			startedAt: 1,
+		});
+		let invalidations = 0;
+		queuedStore.subscribeInvalidation(() => invalidations++);
+		for (const [index, retryInput] of retryInputs.entries()) {
+			const retry = await queuedStore.queueStageMessage(retryInput, RUN_GROUP, RUN_GROUP, queuedBackend);
+			assert.equal(retry?.ok, true);
+			if (retry?.ok !== true) continue;
+			assert.equal(retry.deduplicated, true);
+			assert.equal(retry.entry.status, "queued");
+			assert.equal(retry.position, index + 1);
+			assert.deepEqual(retry.entry, queuedBeforeRetry[index]);
+		}
+		const changedDefaults: readonly PendingStageMessageInput[] = [
+			{
+				...retryInputs[0]!,
+				message: { ...retryInputs[0]!.message, expectsReply: true },
+			},
+			{
+				...retryInputs[0]!,
+				message: {
+					...retryInputs[0]!.message,
+					content: {
+						...retryInputs[0]!.message.content,
+						attachments: [{ type: "snippet", name: "new.md", content: "not the empty default", language: "md" }],
+					},
+				},
+			},
+		];
+		for (const changedDefault of changedDefaults) {
+			const conflict = await queuedStore.queueStageMessage(changedDefault, RUN_GROUP, RUN_GROUP, queuedBackend);
+			assert.equal(conflict?.ok, false);
+			if (conflict?.ok === false) assert.equal(conflict.reason, "message_id_conflict");
+		}
+		assert.equal(invalidations, 0);
+		assert.equal(queuedStore.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 2);
+		assert.deepEqual(queuedBackend.getWorkflow(RUN_ID)?.pendingStageMessages, queuedBeforeRetry);
+		assert.equal(Object.hasOwn(queuedBeforeRetry[0]?.message ?? {}, "expectsReply"), false);
+		assert.equal(Object.hasOwn(queuedBeforeRetry[0]?.message.content ?? {}, "attachments"), false);
+		assert.equal(queuedBeforeRetry[0]?.message.timestamp, 100);
+		assert.equal(queuedBeforeRetry[0]?.queuedAt, "2026-08-27T12:00:00.000Z");
+		assert.equal(queuedBeforeRetry[0]?.admissionOrder, 1);
+		assert.equal(queuedBeforeRetry[1]?.message.expectsReply, false);
+		assert.deepEqual(queuedBeforeRetry[1]?.message.content.attachments, []);
+		assert.equal(queuedBeforeRetry[1]?.admissionOrder, 2);
+
+		for (const retryInput of retryInputs) {
+			assert.equal(
+				await queuedStore.markPendingStageMessageDelivered(
+					RUN_ID,
+					STAGE_KEY,
+					retryInput.message.id,
+					"2026-08-27T13:00:00.000Z",
+					queuedBackend,
+				),
+				true,
+			);
+		}
+		const deliveredBackend = new DbosDurableBackend(sdk, { executorId: "optional-defaults-delivered-reader" });
+		await deliveredBackend.hydrateWorkflow(RUN_ID);
+		const deliveredBeforeRetry = deliveredBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
+		const deliveredStore = createStore();
+		deliveredStore.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			pendingStageMessages: [...deliveredBeforeRetry],
+			startedAt: 1,
+		});
+		for (const [index, retryInput] of retryInputs.entries()) {
+			const retry = await deliveredStore.queueStageMessage(retryInput, RUN_GROUP, RUN_GROUP, deliveredBackend);
+			assert.equal(retry?.ok, true);
+			if (retry?.ok !== true) continue;
+			assert.equal(retry.deduplicated, true);
+			assert.equal(retry.entry.status, "delivered");
+			assert.equal(retry.position, undefined);
+			assert.deepEqual(retry.entry, deliveredBeforeRetry[index]);
+		}
+		assert.equal(deliveredStore.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 0);
+		assert.deepEqual(deliveredBackend.getWorkflow(RUN_ID)?.pendingStageMessages, deliveredBeforeRetry);
+		assert.equal(deliveredBeforeRetry.length, 2);
+		assert.equal(Object.hasOwn(deliveredBeforeRetry[0]?.message ?? {}, "expectsReply"), false);
+		assert.equal(Object.hasOwn(deliveredBeforeRetry[0]?.message.content ?? {}, "attachments"), false);
+		assert.equal(deliveredBeforeRetry[0]?.message.timestamp, 100);
+		assert.deepEqual(deliveredBeforeRetry[0]?.message.source, omitted.message.source);
+	});
+
+	test("a delivered retry is a terminal no-op without an active queue position", () => {
+		const accepted = queueStageMessage([], pendingMessage("delivered"), RUN_GROUP, RUN_GROUP);
+		assert.equal(accepted.ok, true);
+		if (!accepted.ok) return;
+		const delivered = markPendingStageMessageDelivered(
+			accepted.messages,
+			RUN_ID,
+			STAGE_KEY,
+			"delivered",
+			"2026-08-27T12:00:00.000Z",
+		);
+		const retry = queueStageMessage(delivered, pendingMessage("delivered"), RUN_GROUP, RUN_GROUP);
+		assert.equal(retry.ok, true);
+		if (!retry.ok) return;
+		assert.equal(retry.deduplicated, true);
+		assert.equal(retry.entry.status, "delivered");
+		assert.equal(retry.position, undefined);
+		assert.strictEqual(retry.messages, delivered);
+	});
+
+	test("rejects stable sender, canonical target, and exact payload message-id conflicts", () => {
+		const original = pendingMessage("same", {
+			message: {
+				...message("same"),
+				content: {
+					text: "message same",
+					attachments: [
+						{ type: "snippet", name: "contract.md", content: "literal amendment", language: "md" },
+						{ type: "context", name: "context.txt", content: "ordered context", language: "txt" },
+					],
+				},
+				replyTo: "question-1",
+				expectsReply: false,
+				replyError: "original error",
+				source: { subagentRunId: "subagent-run-1", subagentAgent: "reviewer", subagentIndex: 1 },
+			},
+		});
+		const first = queueStageMessage([], original, RUN_GROUP, RUN_GROUP);
 		assert.equal(first.ok, true);
 		if (!first.ok) return;
-		const conflict = queueStageMessage(
+		const changedMessages: PendingStageMessageInput["message"][] = [
+			{ ...original.message, content: { ...original.message.content, text: "different payload" } },
+			{
+				...original.message,
+				content: {
+					...original.message.content,
+					attachments: [
+						{ type: "snippet", name: "contract.md", content: "changed", language: "md" },
+						{ type: "context", name: "context.txt", content: "ordered context", language: "txt" },
+					],
+				},
+			},
+			{
+				...original.message,
+				content: {
+					...original.message.content,
+					attachments: [...(original.message.content.attachments ?? [])].reverse(),
+				},
+			},
+			{ ...original.message, replyTo: "question-2" },
+			{ ...original.message, expectsReply: true },
+			{ ...original.message, replyError: "changed error" },
+			{ ...original.message, source: { ...original.message.source!, subagentRunId: "subagent-run-2" } },
+		];
+		for (const changedMessage of changedMessages) {
+			const conflict = queueStageMessage(
+				first.messages,
+				pendingMessage("same", { message: changedMessage }),
+				RUN_GROUP,
+				RUN_GROUP,
+			);
+			assert.equal(conflict.ok, false);
+			if (!conflict.ok) assert.equal(conflict.reason, "message_id_conflict");
+		}
+
+		const senderConflict = queueStageMessage(
 			first.messages,
-			pendingMessage("same", { message: message("same", "different payload") }),
+			pendingMessage("same", { message: original.message, from: { ...original.from, id: "sender-2" } }),
 			RUN_GROUP,
 			RUN_GROUP,
 		);
-		assert.deepEqual(conflict, {
-			ok: false,
-			reason: "message_id_conflict",
-			runId: RUN_ID,
-			stageKey: STAGE_KEY,
-			messageId: "same",
+		assert.equal(senderConflict.ok, false);
+		if (!senderConflict.ok) assert.equal(senderConflict.reason, "message_id_conflict");
+
+		const canonical = { id: "stage-id", replayKey: "stage:original", aliases: [STAGE_KEY, "stage-id"] };
+		const canonicalFirst = queueStageMessage([], original, RUN_GROUP, RUN_GROUP, canonical);
+		assert.equal(canonicalFirst.ok, true);
+		if (!canonicalFirst.ok) return;
+		const targetConflict = queueStageMessage(canonicalFirst.messages, original, RUN_GROUP, RUN_GROUP, {
+			...canonical,
+			replayKey: "stage:replacement",
 		});
+		assert.equal(targetConflict.ok, false);
+		if (!targetConflict.ok) assert.equal(targetConflict.reason, "message_id_conflict");
 		assert.equal(first.messages.length, 1);
 	});
 
@@ -205,6 +626,27 @@ describe("workflow stage messages store", () => {
 		assert.equal(conflict?.ok, false);
 		if (conflict?.ok === false) assert.equal(conflict.reason, "message_id_conflict");
 		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 50);
+		assert.equal(
+			await store.markPendingStageMessageDelivered(RUN_ID, "reviewer", "1", "2026-08-27T12:00:00.000Z", backend),
+			true,
+		);
+		const admittedAfterDelivery = await store.queueStageMessage(
+			pendingMessage("51", { stageKey: "review-stage-id" }),
+			RUN_GROUP,
+			RUN_GROUP,
+			backend,
+		);
+		assert.equal(admittedAfterDelivery?.ok && admittedAfterDelivery.position, 50);
+		const queuedAliasRetry = await store.queueStageMessage(
+			pendingMessage("51", { stageKey: "reviewer" }),
+			RUN_GROUP,
+			RUN_GROUP,
+			backend,
+		);
+		assert.equal(queuedAliasRetry?.ok && queuedAliasRetry.position, 50);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "review-stage-id").length, 50);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 50);
+		assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length, 51);
 	});
 
 	test("live store methods publish only persisted message transitions", async () => {

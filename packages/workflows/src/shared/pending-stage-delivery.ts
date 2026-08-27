@@ -37,6 +37,7 @@ export function queueStageMessage(
 
 	const messageId = input.message.id;
 	const bucket = messages.filter((entry) => matchesPendingStage(entry, input.runId, input.stageKey, stageIdentity));
+	const queued = pendingStageMessagesFor(messages, input.runId, input.stageKey, stageIdentity);
 	const existing = bucket.find((entry) => entry.id === messageId);
 	if (existing !== undefined) {
 		if (
@@ -50,16 +51,17 @@ export function queueStageMessage(
 				messageId,
 			};
 		}
+		const queuedPosition = queued.indexOf(existing);
 		return {
 			ok: true,
 			messages,
 			entry: existing,
-			position: bucket.indexOf(existing) + 1,
+			...(queuedPosition >= 0 ? { position: queuedPosition + 1 } : {}),
 			deduplicated: true,
 		};
 	}
 
-	if (bucket.filter((entry) => entry.status === "queued").length >= PENDING_STAGE_MESSAGE_LIMIT) {
+	if (queued.length >= PENDING_STAGE_MESSAGE_LIMIT) {
 		return {
 			ok: false,
 			reason: "capacity",
@@ -81,7 +83,7 @@ export function queueStageMessage(
 		ok: true,
 		messages: [...messages, entry],
 		entry,
-		position: bucket.length + 1,
+		position: queued.length + 1,
 		deduplicated: false,
 	};
 }
@@ -193,10 +195,20 @@ function pendingStageMessageSignature(
 	entry: PendingStageMessage | PendingStageMessageInput,
 	stageIdentity?: PendingStageIdentity,
 ): string {
+	const storedTarget = "status" in entry ? (entry.stageReplayKey ?? entry.stageId) : undefined;
+	const { timestamp: transportTimestamp, ...logicalMessage } = entry.message;
+	void transportTimestamp;
 	return stableJson({
-		target: stageIdentity?.replayKey ?? stageIdentity?.id ?? entry.stageKey,
-		from: entry.from,
-		message: entry.message,
+		target: storedTarget ?? stageIdentity?.replayKey ?? stageIdentity?.id ?? entry.stageKey,
+		senderId: entry.from.id,
+		message: {
+			...logicalMessage,
+			expectsReply: logicalMessage.expectsReply ?? false,
+			content: {
+				...logicalMessage.content,
+				attachments: logicalMessage.content.attachments ?? [],
+			},
+		},
 	});
 }
 

@@ -256,8 +256,8 @@ export type PendingStageQueueResult =
 			readonly ok: true;
 			readonly messages: readonly PendingStageMessage[];
 			readonly entry: PendingStageMessage;
-			/** One-based position within the canonical authored stage queue. */
-			readonly position: number;
+			/** One-based position within the active canonical authored stage queue; absent for terminal retries. */
+			readonly position?: number;
 			readonly deduplicated: boolean;
 	  }
 	| {
