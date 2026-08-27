@@ -44,6 +44,30 @@ interface SupervisorAuthorizationRequest {
 
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+
+interface PendingStageUndeliverableRelay {
+	handled?: boolean;
+	completion?: Promise<boolean>;
+	runId?: string;
+	senderId?: string;
+	messageId?: string;
+	notificationId?: string;
+	reason?: string;
+}
+
+function isPendingStageUndeliverableRelay(value: unknown): value is PendingStageUndeliverableRelay &
+	Required<Pick<PendingStageUndeliverableRelay, "runId" | "senderId" | "messageId" | "notificationId" | "reason">> {
+	if (typeof value !== "object" || value === null) return false;
+	const event = value as PendingStageUndeliverableRelay;
+	return (
+		typeof event.runId === "string" &&
+		typeof event.senderId === "string" &&
+		typeof event.messageId === "string" &&
+		typeof event.notificationId === "string" &&
+		typeof event.reason === "string"
+	);
+}
 
 interface WorkflowStageLateMessageEvent {
 	handled?: boolean;
@@ -385,6 +409,24 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			if (!forwarded.completion) throw new Error("Intercom supervisor authorization provider is unavailable");
 			return await forwarded.completion;
 		});
+	});
+	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
+		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;
+		payload.handled = true;
+		const forwarded = { ...payload, handled: false, completion: undefined };
+		payload.completion = loadHeavy(latestLifecycleContext())
+			.then(async (handle) => {
+				handle.assertCurrent();
+				await dispatchEventHandlers(handle.heavy, PENDING_STAGE_UNDELIVERABLE_EVENT, forwarded);
+				handle.assertCurrent();
+				return forwarded.handled === true && forwarded.completion !== undefined
+					? await forwarded.completion
+					: false;
+			})
+			.catch((error) => {
+				console.error(`Intercom event relay failed (${PENDING_STAGE_UNDELIVERABLE_EVENT}):`, error);
+				return false;
+			});
 	});
 	for (const eventName of [
 		SUBAGENT_CONTROL_INTERCOM_EVENT,

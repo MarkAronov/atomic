@@ -142,9 +142,7 @@ export function markPendingStageMessageUndeliverable(
 		...entry,
 		status: "undeliverable",
 		undeliverableReason: reason,
-		...(entry.message.expectsReply === true
-			? { undeliverableNotificationId: pendingStageUndeliverableNotificationId(entry) }
-			: {}),
+		undeliverableNotificationId: pendingStageUndeliverableNotificationId(entry),
 	}));
 }
 

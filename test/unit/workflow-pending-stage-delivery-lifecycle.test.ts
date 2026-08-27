@@ -25,7 +25,7 @@ import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const tempDirs: string[] = [];
 
-function pendingMessage(runId: string, stageKey: string, expectsReply = true): PendingStageMessageInput {
+function pendingMessage(runId: string, stageKey: string, expectsReply = false): PendingStageMessageInput {
 	return {
 		runId,
 		stageKey,
@@ -33,7 +33,7 @@ function pendingMessage(runId: string, stageKey: string, expectsReply = true): P
 		message: {
 			id: `message-${stageKey}`,
 			timestamp: 1_725_000_000_000,
-			expectsReply,
+			...(expectsReply ? { expectsReply: true } : {}),
 			content: { text: "scope changed" },
 		},
 		queuedAt: "2026-08-26T00:00:00.000Z",

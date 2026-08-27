@@ -95,7 +95,7 @@ interface InjectedMessage {
 	content?: string;
 	details?: {
 		from?: { id?: string; name?: string };
-		message?: { id?: string; timestamp?: number };
+		message?: { id?: string; timestamp?: number; replyTo?: string; replyError?: string };
 	};
 }
 
@@ -1730,6 +1730,91 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 		await raw.close();
 		rawClients.delete(raw);
 		disposeBridge();
+		await owner.shutdown();
+	}
+});
+
+test("an ordinary queued send receives one correlated failure when its stage becomes undeliverable", async () => {
+	const runId = "71805cb7-169f-4531-ad39-bbcab6b01087";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const owner = extensionFixture("undeliverable-owner", "undeliverable-owner", undefined, "default");
+	const sender = extensionFixture("undeliverable-sender", "undeliverable-sender", undefined, group);
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	intercom(sender.pi as never);
+	try {
+		await owner.start();
+		store.recordRunStart({
+			id: runId,
+			name: "undeliverable",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "undeliverable",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await sender.start();
+		const discoveryDeadline = Date.now() + OWNER_DISCOVERY_BUDGET_MS;
+		while (Date.now() < discoveryDeadline) {
+			const listed = await executeIntercom(sender, { action: "list" });
+			if (listed.content.some(({ text }) => text.includes("undeliverable-owner"))) break;
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+		}
+		const queued = await executeIntercom(sender, {
+			action: "send",
+			to: `${runId}:reviewer`,
+			message: "ordinary handoff",
+		});
+		assert.equal(queued.details.queued, true);
+		assert.ok(queued.details.messageId);
+		assert.equal(store.pendingStageMessagesFor(runId, "reviewer")[0]?.message.expectsReply, undefined);
+
+		store.recordStageEnd(runId, {
+			id: "reviewer-id",
+			name: "reviewer",
+			status: "skipped",
+			parentIds: [],
+			toolEvents: [],
+			skippedReason: "fail-fast",
+		});
+		const deliveryDeadline = Date.now() + 2_000;
+		while (Date.now() < deliveryDeadline && sender.injectedMessages.length === 0) {
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+		}
+		const failure = sender.injectedMessages[0];
+		assert.match(failure?.content ?? "", /could not receive intercom message:.*skipped.*fail-fast/i);
+		assert.equal(failure?.details?.message?.replyTo, queued.details.messageId);
+		assert.match(failure?.details?.message?.replyError ?? "", /could not receive intercom message/i);
+		const notifiedDeadline = Date.now() + 2_000;
+		while (
+			Date.now() < notifiedDeadline &&
+			store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt === undefined
+		) {
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+		}
+		assert.equal(typeof store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt, "string");
+		assert.equal(sender.injectedMessages.length, 1);
+	} finally {
+		disposeBridge();
+		await sender.shutdown();
 		await owner.shutdown();
 	}
 });

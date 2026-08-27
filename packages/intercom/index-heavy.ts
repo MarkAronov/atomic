@@ -70,6 +70,7 @@ interface PendingStageMessageEvent extends PendingStageMessageRequest {
 interface PendingStageUndeliverableEvent {
   handled: boolean;
   completion?: Promise<boolean>;
+  readonly runId: string;
   readonly senderId: string;
   readonly messageId: string;
   readonly notificationId: string;
@@ -80,6 +81,7 @@ function isPendingStageUndeliverableEvent(value: unknown): value is PendingStage
   if (typeof value !== "object" || value === null) return false;
   const event = value as Partial<PendingStageUndeliverableEvent>;
   return (
+    typeof event.runId === "string" &&
     typeof event.handled === "boolean" &&
     typeof event.senderId === "string" &&
     typeof event.messageId === "string" &&
@@ -725,11 +727,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     payload.completion = completion;
     void completion.catch(() => {});
   });
+  async function pendingStageNotificationClient(runId: string): Promise<IntercomClient> {
+    const route = pendingStageRoutes.get(runId);
+    if (route === undefined) throw new Error("Pending workflow route is unavailable");
+    if (client?.isConnected() && clientRegistrationGroup === normalizeGroup(route.group)) return client;
+    await ensurePendingStageRouteClient(runId, route);
+    const routeClient = pendingStageRouteClients.get(runId)?.client;
+    if (!routeClient?.isConnected()) throw new Error("Pending workflow route is disconnected");
+    return routeClient;
+  }
   pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
     if (!isPendingStageUndeliverableEvent(payload) || payload.handled) return;
     payload.handled = true;
     const actionable = `Pending workflow stage could not receive intercom message: ${payload.reason}`;
-    payload.completion = ensureConnected("background")
+    payload.completion = pendingStageNotificationClient(payload.runId)
       .then((activeClient) =>
         activeClient.send(payload.senderId, {
           text: actionable,

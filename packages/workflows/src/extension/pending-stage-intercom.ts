@@ -43,6 +43,7 @@ interface PendingStageMessageEvent {
 interface PendingStageUndeliverableEvent extends Record<string, unknown> {
 	handled: boolean;
 	completion?: Promise<boolean>;
+	readonly runId: string;
 	readonly senderId: string;
 	readonly messageId: string;
 	readonly notificationId: string;
@@ -57,9 +58,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		reason: string,
 		notificationId: string,
 	): Promise<boolean> => {
-		if (entry.message.expectsReply !== true) return true;
 		const payload: PendingStageUndeliverableEvent = {
 			handled: false,
+			runId: entry.runId,
 			senderId: entry.from.id,
 			messageId: entry.message.id,
 			notificationId,
