@@ -133,6 +133,14 @@ export interface Store {
 		reason: string,
 		backend: DurableWorkflowBackend,
 	): Promise<boolean>;
+	markPendingStageMessageUndeliverableNotified(
+		runId: string,
+		stageKey: string,
+		messageId: string,
+		notificationId: string,
+		notifiedAt: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
 	/** Compare-and-swap a cached child run's owning boundary during durable replay. */
 	reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean;
 	recordStageStart(runId: string, stage: StageSnapshot): void;

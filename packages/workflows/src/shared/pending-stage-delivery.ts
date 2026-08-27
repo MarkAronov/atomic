@@ -9,6 +9,7 @@ export type {
 
 /** Maximum queued messages retained for one canonical workflow stage. */
 export const PENDING_STAGE_MESSAGE_LIMIT = 50;
+const PENDING_STAGE_UNDELIVERABLE_NOTIFICATION_PREFIX = "atomic-pending-stage-undeliverable";
 
 export interface PendingStageIdentity {
 	readonly id: string;
@@ -141,7 +142,44 @@ export function markPendingStageMessageUndeliverable(
 		...entry,
 		status: "undeliverable",
 		undeliverableReason: reason,
+		...(entry.message.expectsReply === true
+			? { undeliverableNotificationId: pendingStageUndeliverableNotificationId(entry) }
+			: {}),
 	}));
+}
+
+export function markPendingStageMessageUndeliverableNotified(
+	messages: readonly PendingStageMessage[],
+	runId: string,
+	stageKey: string,
+	messageId: string,
+	notificationId: string,
+	notifiedAt: string,
+): readonly PendingStageMessage[] {
+	const index = messages.findIndex(
+		(entry) =>
+			matchesPendingStage(entry, runId, stageKey) &&
+			entry.id === messageId &&
+			entry.status === "undeliverable" &&
+			entry.undeliverableNotificationId === notificationId &&
+			entry.undeliverableNotifiedAt === undefined,
+	);
+	if (index < 0) return messages;
+	const next = [...messages];
+	next[index] = { ...next[index]!, undeliverableNotifiedAt: notifiedAt };
+	return next;
+}
+
+/** Stable broker identity lets DeliveredMessageCache consume workflow-process crash retries. */
+export function pendingStageUndeliverableNotificationId(
+	entry: Pick<PendingStageMessage, "runId" | "stageKey" | "id">,
+): string {
+	return [
+		PENDING_STAGE_UNDELIVERABLE_NOTIFICATION_PREFIX,
+		encodeURIComponent(entry.runId),
+		encodeURIComponent(entry.stageKey),
+		encodeURIComponent(entry.id),
+	].join(":");
 }
 
 function updateQueuedPendingStageMessage(

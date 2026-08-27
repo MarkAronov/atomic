@@ -72,6 +72,7 @@ interface PendingStageUndeliverableEvent {
   completion?: Promise<boolean>;
   readonly senderId: string;
   readonly messageId: string;
+  readonly notificationId: string;
   readonly reason: string;
 }
 
@@ -82,6 +83,7 @@ function isPendingStageUndeliverableEvent(value: unknown): value is PendingStage
     typeof event.handled === "boolean" &&
     typeof event.senderId === "string" &&
     typeof event.messageId === "string" &&
+    typeof event.notificationId === "string" &&
     typeof event.reason === "string"
   );
 }
@@ -733,6 +735,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           text: actionable,
           replyTo: payload.messageId,
           replyError: actionable,
+          messageId: payload.notificationId,
         }),
       )
       .then((result) => result.delivered)

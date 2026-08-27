@@ -103,6 +103,7 @@ export function makeStore(snap: StoreSnapshot): Store {
 		pendingStageMessagesFor: () => [],
 		markPendingStageMessageDelivered: async () => false,
 		markPendingStageMessageUndeliverable: async () => false,
+		markPendingStageMessageUndeliverableNotified: async () => false,
 		reconcileRunParentStage: () => false,
 		recordStageStart: () => {},
 		recordStageWorkflowChildRun: () => false,

@@ -45,18 +45,24 @@ interface PendingStageUndeliverableEvent extends Record<string, unknown> {
 	completion?: Promise<boolean>;
 	readonly senderId: string;
 	readonly messageId: string;
+	readonly notificationId: string;
 	readonly reason: string;
 }
 
 export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, activeStore: Store): () => void {
 	let disposed = false;
 	let sweepPromise: Promise<void> = Promise.resolve();
-	const notifyUndeliverable = async (entry: PendingStageMessage, reason: string): Promise<boolean> => {
+	const notifyUndeliverable = async (
+		entry: PendingStageMessage,
+		reason: string,
+		notificationId: string,
+	): Promise<boolean> => {
 		if (entry.message.expectsReply !== true) return true;
 		const payload: PendingStageUndeliverableEvent = {
 			handled: false,
 			senderId: entry.from.id,
 			messageId: entry.message.id,
+			notificationId,
 			reason,
 		};
 		pi.events?.emit?.(PENDING_STAGE_UNDELIVERABLE_EVENT, payload);
@@ -251,40 +257,55 @@ function knownUninitializedStage(
 /** Settle queued messages whose destination can no longer enter the pre-start lifecycle window. */
 export async function settleUndeliverablePendingStageMessages(
 	activeStore: Store,
-	notify: (entry: PendingStageMessage, reason: string) => Promise<boolean>,
+	notify: (entry: PendingStageMessage, reason: string, notificationId: string) => Promise<boolean>,
 ): Promise<number> {
 	let settled = 0;
-	const touchedRunIds = new Set<string>();
+	const backend = getDurableBackend();
 	for (const run of activeStore.runs()) {
-		for (const entry of run.pendingStageMessages ?? []) {
-			if (entry.status !== "queued") continue;
-			const stage = run.stages.find(
-				(candidate) => candidate.id === entry.stageKey || candidate.name === entry.stageKey,
+		for (const snapshotEntry of run.pendingStageMessages ?? []) {
+			let entry = snapshotEntry;
+			if (entry.status === "queued") {
+				const stage = run.stages.find(
+					(candidate) => candidate.id === entry.stageKey || candidate.name === entry.stageKey,
+				);
+				let reason: string | undefined;
+				if (run.status === "cancelled") {
+					reason = `Workflow run ${run.id} terminated with status cancelled before stage ${entry.stageKey} started`;
+				} else if (stage?.status === "skipped") {
+					reason = `Workflow stage ${entry.stageKey} was skipped${stage.skippedReason ? ` (${stage.skippedReason})` : ""}`;
+				} else if (isTerminalRunStatus(run.status)) {
+					reason = `Workflow run ${run.id} terminated with status ${run.status} before stage ${entry.stageKey} started`;
+				}
+				if (reason === undefined) continue;
+				if (
+					await activeStore.markPendingStageMessageUndeliverable(run.id, entry.stageKey, entry.id, reason, backend)
+				) {
+					settled += 1;
+				}
+				const currentRun = activeStore.runs().find((candidate) => candidate.id === run.id);
+				const currentEntry = currentRun?.pendingStageMessages?.find(
+					(candidate) => candidate.stageKey === entry.stageKey && candidate.id === entry.id,
+				);
+				if (currentEntry === undefined) continue;
+				entry = currentEntry;
+			}
+			if (
+				entry.status !== "undeliverable" ||
+				entry.undeliverableNotificationId === undefined ||
+				entry.undeliverableNotifiedAt !== undefined ||
+				entry.undeliverableReason === undefined
+			)
+				continue;
+			if (!(await notify(entry, entry.undeliverableReason, entry.undeliverableNotificationId))) continue;
+			await activeStore.markPendingStageMessageUndeliverableNotified(
+				run.id,
+				entry.stageKey,
+				entry.id,
+				entry.undeliverableNotificationId,
+				new Date().toISOString(),
+				backend,
 			);
-			let reason: string | undefined;
-			if (run.status === "cancelled") {
-				reason = `Workflow run ${run.id} terminated with status cancelled before stage ${entry.stageKey} started`;
-			} else if (stage?.status === "skipped") {
-				reason = `Workflow stage ${entry.stageKey} was skipped${stage.skippedReason ? ` (${stage.skippedReason})` : ""}`;
-			} else if (isTerminalRunStatus(run.status)) {
-				reason = `Workflow run ${run.id} terminated with status ${run.status} before stage ${entry.stageKey} started`;
-			}
-			if (reason === undefined || !(await notify(entry, reason))) continue;
-			if (activeStore.markPendingStageMessageUndeliverable(run.id, entry.stageKey, entry.id, reason)) {
-				settled += 1;
-				touchedRunIds.add(run.id);
-			}
 		}
 	}
-	for (const runId of touchedRunIds) await persistPendingStageMessages(activeStore, runId);
 	return settled;
-}
-
-async function persistPendingStageMessages(activeStore: Store, runId: string): Promise<void> {
-	const backend = getDurableBackend();
-	const handle = backend.getWorkflow(runId);
-	const run = activeStore.runs().find((candidate) => candidate.id === runId);
-	if (handle === undefined || run === undefined) return;
-	backend.registerWorkflow({ ...handle, pendingStageMessages: run.pendingStageMessages ?? [] });
-	await backend.flush();
 }

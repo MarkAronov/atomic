@@ -226,6 +226,12 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 		status: entry.status,
 		...(entry.deliveredAt !== undefined ? { deliveredAt: entry.deliveredAt } : {}),
 		...(entry.undeliverableReason !== undefined ? { undeliverableReason: entry.undeliverableReason } : {}),
+		...(entry.undeliverableNotificationId !== undefined
+			? { undeliverableNotificationId: entry.undeliverableNotificationId }
+			: {}),
+		...(entry.undeliverableNotifiedAt !== undefined
+			? { undeliverableNotifiedAt: entry.undeliverableNotifiedAt }
+			: {}),
 	}));
 }
 
@@ -255,6 +261,8 @@ function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
 		(value.status === "queued" || value.status === "delivered" || value.status === "undeliverable") &&
 		(value.deliveredAt === undefined || typeof value.deliveredAt === "string") &&
 		(value.undeliverableReason === undefined || typeof value.undeliverableReason === "string") &&
+		(value.undeliverableNotificationId === undefined || typeof value.undeliverableNotificationId === "string") &&
+		(value.undeliverableNotifiedAt === undefined || typeof value.undeliverableNotifiedAt === "string") &&
 		isPendingStageSender(value.from) &&
 		isPendingStageIntercomMessage(value.message)
 	);

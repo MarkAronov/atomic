@@ -254,11 +254,22 @@ export interface PendingStageMessage {
 	readonly status: "queued" | "delivered" | "undeliverable";
 	readonly deliveredAt?: string;
 	readonly undeliverableReason?: string;
+	/** Deterministic outbox identity retained until the correlated sender notification is acknowledged. */
+	readonly undeliverableNotificationId?: string;
+	readonly undeliverableNotifiedAt?: string;
 }
 
 export type PendingStageMessageInput = Omit<
 	PendingStageMessage,
-	"id" | "stageId" | "stageReplayKey" | "admissionOrder" | "status" | "deliveredAt" | "undeliverableReason"
+	| "id"
+	| "stageId"
+	| "stageReplayKey"
+	| "admissionOrder"
+	| "status"
+	| "deliveredAt"
+	| "undeliverableReason"
+	| "undeliverableNotificationId"
+	| "undeliverableNotifiedAt"
 >;
 
 export type PendingStageQueueResult =

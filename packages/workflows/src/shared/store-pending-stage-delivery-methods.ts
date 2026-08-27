@@ -2,6 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import {
 	markPendingStageMessageDelivered,
 	markPendingStageMessageUndeliverable,
+	markPendingStageMessageUndeliverableNotified,
 	type PendingStageIdentity,
 	type PendingStageMessage,
 	type PendingStageMessageInput,
@@ -20,6 +21,7 @@ type PendingStageDeliveryStoreMethods = Pick<
 	| "pendingStageMessagesFor"
 	| "markPendingStageMessageDelivered"
 	| "markPendingStageMessageUndeliverable"
+	| "markPendingStageMessageUndeliverableNotified"
 >;
 
 export function createPendingStageDeliveryStoreMethods(context: StoreContext): PendingStageDeliveryStoreMethods {
@@ -150,6 +152,34 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					messageId,
 					reason,
 					resolvePendingStageIdentity(run, stageKey),
+				);
+				if (next === current) return false;
+				await persistTransition(backend, runId, next);
+				run.pendingStageMessages = [...next];
+				context.bumpAndNotify();
+				return true;
+			});
+		},
+
+		async markPendingStageMessageUndeliverableNotified(
+			runId: string,
+			stageKey: string,
+			messageId: string,
+			notificationId: string,
+			notifiedAt: string,
+			backend: DurableWorkflowBackend,
+		): Promise<boolean> {
+			return await serialize(runId, async () => {
+				const run = context.findRun(runId);
+				if (run === undefined) return false;
+				const current = run.pendingStageMessages ?? [];
+				const next = markPendingStageMessageUndeliverableNotified(
+					current,
+					runId,
+					stageKey,
+					messageId,
+					notificationId,
+					notifiedAt,
 				);
 				if (next === current) return false;
 				await persistTransition(backend, runId, next);
