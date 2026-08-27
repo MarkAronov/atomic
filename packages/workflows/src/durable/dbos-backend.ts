@@ -223,6 +223,31 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		});
 	}
 
+	async persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly import("../shared/store-types.js").PendingStageMessage[],
+	): Promise<boolean> {
+		let persisted = false;
+		await this.enqueueWrite(async () => {
+			if (!this.isWorkflowLoadable(workflowId)) return;
+			const handle = this.mem.getWorkflow(workflowId);
+			const value = this.mem.toMetadata(workflowId);
+			if (handle === undefined || value === undefined) return;
+			const updatedAt = Math.max(Date.now(), handle.updatedAt + 1);
+			const pendingStageMessages = [...messages];
+			const metadata = {
+				...this.promptReservations.metadata(workflowId, value),
+				pendingStageMessages,
+				ownerExecutorId: this.executorId,
+				updatedAt,
+			};
+			await this.sdk.recordStepOutput(workflowId, metadataStepName(updatedAt), encodeMetadata(metadata));
+			this.mem.registerWorkflow({ ...handle, pendingStageMessages, updatedAt });
+			persisted = true;
+		});
+		return persisted;
+	}
+
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
 		this.mem.recordCheckpoint(checkpoint);

@@ -1,3 +1,4 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type {
 	PendingStageMessage,
 	PendingStageMessageInput,
@@ -106,16 +107,29 @@ export interface Store {
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
-	/** Queue an ordinary intercom message for an exact future-stage key. */
+	/** Persist, then queue, an ordinary intercom message for an exact future-stage key. */
 	queueStageMessage(
 		input: PendingStageMessageInput,
 		senderGroup: string | undefined,
 		runGroup: string | undefined,
-	): PendingStageQueueResult | undefined;
+		backend: DurableWorkflowBackend,
+	): Promise<PendingStageQueueResult | undefined>;
 	/** Read queued entries for an exact run/stage key in FIFO order. */
 	pendingStageMessagesFor(runId: string, stageKey: string): readonly PendingStageMessage[];
-	markPendingStageMessageDelivered(runId: string, stageKey: string, messageId: string, deliveredAt: string): boolean;
-	markPendingStageMessageUndeliverable(runId: string, stageKey: string, messageId: string, reason: string): boolean;
+	markPendingStageMessageDelivered(
+		runId: string,
+		stageKey: string,
+		messageId: string,
+		deliveredAt: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
+	markPendingStageMessageUndeliverable(
+		runId: string,
+		stageKey: string,
+		messageId: string,
+		reason: string,
+		backend: DurableWorkflowBackend,
+	): Promise<boolean>;
 	/** Compare-and-swap a cached child run's owning boundary during durable replay. */
 	reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean;
 	recordStageStart(runId: string, stage: StageSnapshot): void;

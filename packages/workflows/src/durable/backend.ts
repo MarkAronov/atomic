@@ -1,5 +1,6 @@
 /** Durable workflow backend seam for DBOS and explicit in-memory tests. */
 
+import type { PendingStageMessage } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { withCurrentStageTopology } from "./dbos-envelope.js";
 import {
@@ -54,6 +55,8 @@ export interface DurableWorkflowBackend {
 	readonly persistent: boolean;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
+	/** Persist one pending-stage lifecycle transition before it becomes live-observable. */
+	persistPendingStageMessages(workflowId: string, messages: readonly PendingStageMessage[]): Promise<boolean>;
 
 	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
@@ -256,7 +259,18 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				stageOutputByReplayKey: new Map(),
 				stageSessionByReplayKey: new Map(),
 			});
+
 		if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
+	}
+	async persistPendingStageMessages(workflowId: string, messages: readonly PendingStageMessage[]): Promise<boolean> {
+		const handle = this.getWorkflow(workflowId);
+		if (handle === undefined) return false;
+		this.registerWorkflow({
+			...handle,
+			pendingStageMessages: [...messages],
+			updatedAt: nextMetadataTimestamp(handle.updatedAt),
+		});
+		return true;
 	}
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		const currentCheckpoint = withCurrentStageTopology(checkpoint);
@@ -604,4 +618,8 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		createdAt: handle.createdAt,
 		updatedAt: handle.updatedAt,
 	};
+}
+
+function nextMetadataTimestamp(previous: number): number {
+	return Math.max(Date.now(), previous + 1);
 }

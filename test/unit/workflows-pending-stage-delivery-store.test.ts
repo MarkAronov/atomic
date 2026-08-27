@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { Message } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { encodeMetadata, parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
 import {
@@ -14,6 +15,7 @@ import {
 	queueStageMessage,
 } from "../../packages/workflows/src/shared/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const RUN_ID = "run-1";
 const STAGE_KEY = " Reviewer Stage ";
@@ -117,16 +119,18 @@ describe("workflow stage messages store", () => {
 		});
 	});
 
-	test("live store methods mutate the optional run messages collection", () => {
+	test("live store methods publish only persisted message transitions", async () => {
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
-		const result = store.queueStageMessage(pendingMessage("live"), RUN_GROUP, RUN_GROUP);
+		const result = await store.queueStageMessage(pendingMessage("live"), RUN_GROUP, RUN_GROUP, backend);
 		assert.equal(result?.ok, true);
 		assert.deepEqual(
 			store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).map((entry) => entry.id),
 			["live"],
 		);
-		assert.equal(store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "live", "done"), true);
+		assert.equal(await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "live", "done", backend), true);
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 0);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
 	});
@@ -183,5 +187,115 @@ describe("durable workflow stage messages metadata", () => {
 		assert.deepEqual(backend.toMetadata(RUN_ID)?.pendingStageMessages, accepted.messages);
 		backend.registerWorkflow({ workflowId: "empty", name: "empty", inputs: {}, status: "running", createdAt: 1 });
 		assert.deepEqual(backend.getWorkflow("empty")?.pendingStageMessages, []);
+	});
+
+	test("store lifecycle transitions survive DBOS metadata reload", async () => {
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk, { executorId: "pending-stage-writer" });
+		backend.registerWorkflow({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await backend.flush();
+		const store = createStore();
+		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+
+		const queued = await store.queueStageMessage(pendingMessage("queued"), RUN_GROUP, RUN_GROUP, backend);
+		assert.equal(queued?.ok, true);
+		let reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-reader-add" });
+		await reloaded.hydrateWorkflow(RUN_ID);
+		assert.deepEqual(
+			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
+			[{ id: "queued", status: "queued" }],
+		);
+
+		assert.equal(
+			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "queued", "2026-08-27T12:00:00.000Z", backend),
+			true,
+		);
+		reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-reader-delivered" });
+		await reloaded.hydrateWorkflow(RUN_ID);
+		assert.deepEqual(
+			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
+			[{ id: "queued", status: "delivered" }],
+		);
+
+		const refused = await store.queueStageMessage(pendingMessage("refused"), RUN_GROUP, RUN_GROUP, backend);
+		assert.equal(refused?.ok, true);
+		assert.equal(
+			await store.markPendingStageMessageUndeliverable(RUN_ID, STAGE_KEY, "refused", "stage ended", backend),
+			true,
+		);
+		reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-reader-undeliverable" });
+		await reloaded.hydrateWorkflow(RUN_ID);
+		assert.deepEqual(
+			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
+			[
+				{ id: "queued", status: "delivered" },
+				{ id: "refused", status: "undeliverable" },
+			],
+		);
+	});
+
+	test("concurrent queue transitions retain FIFO in live and reloaded metadata", async () => {
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk, { executorId: "pending-stage-concurrent-writer" });
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const store = createStore();
+		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+
+		const [first, second] = await Promise.all([
+			store.queueStageMessage(pendingMessage("1"), RUN_GROUP, RUN_GROUP, backend),
+			store.queueStageMessage(pendingMessage("2"), RUN_GROUP, RUN_GROUP, backend),
+		]);
+		assert.equal(first?.ok && first.position, 1);
+		assert.equal(second?.ok && second.position, 2);
+		assert.deepEqual(
+			store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).map(({ id }) => id),
+			["1", "2"],
+		);
+
+		const reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-concurrent-reader" });
+		await reloaded.hydrateWorkflow(RUN_ID);
+		assert.deepEqual(
+			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id }) => id),
+			["1", "2"],
+		);
+	});
+
+	test("DBOS rejection leaves the transition invisible and propagates the error", async () => {
+		const sdk = createMockSdk();
+		let rejectWrites = false;
+		const backend = new DbosDurableBackend(
+			{
+				...sdk,
+				async recordStepOutput(workflowId, stepName, output) {
+					if (rejectWrites) throw new Error("pending stage DBOS write rejected");
+					await sdk.recordStepOutput(workflowId, stepName, output);
+				},
+			},
+			{ executorId: "pending-stage-rejection-writer" },
+		);
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const store = createStore();
+		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		let notifications = 0;
+		store.subscribeInvalidation(() => notifications++);
+		rejectWrites = true;
+
+		await assert.rejects(
+			store.queueStageMessage(pendingMessage("rejected"), RUN_GROUP, RUN_GROUP, backend),
+			/pending stage DBOS write rejected/,
+		);
+		assert.equal(notifications, 0);
+		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY), []);
+		const reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-rejection-reader" });
+		await reloaded.hydrateWorkflow(RUN_ID);
+		assert.deepEqual(reloaded.getWorkflow(RUN_ID)?.pendingStageMessages, []);
 	});
 });
