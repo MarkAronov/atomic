@@ -126,6 +126,112 @@ describe("loadEntriesFromFile", () => {
 	});
 });
 
+describe("SessionManager durable prelude persistence", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `session-prelude-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("persists each admitted pre-start message once before the first task across restart", () => {
+		const session = SessionManager.create(tempDir, tempDir, {
+			internal: true,
+			workflow: { runId: "run-2724", stageId: "reviewer-id", stageName: "reviewer" },
+		});
+		session.appendModelChange("test-provider", "test-model");
+		session.appendThinkingLevelChange("high");
+		const admissionKeys = ["intercom:pending-first", "intercom:pending-second"];
+		for (const stageAdmissionKey of admissionKeys) {
+			session.appendCustomMessageEntry(
+				"intercom_message",
+				stageAdmissionKey,
+				true,
+				{ message: { id: stageAdmissionKey.slice("intercom:".length) } },
+				undefined,
+				undefined,
+				stageAdmissionKey,
+			);
+			session.flush();
+		}
+		session.appendMessage({ role: "user", content: "review task", timestamp: 1 });
+		session.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "review complete" }],
+			api: "anthropic-messages",
+			provider: "test-provider",
+			model: "test-model",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		});
+
+		const sessionFile = session.getSessionFile();
+		expect(sessionFile).toBeDefined();
+		const readPhysicalEntries = () =>
+			readFileSync(sessionFile!, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+		const physicalEntries = readPhysicalEntries();
+		const firstTaskIndex = physicalEntries.findIndex(
+			(entry) => entry.type === "message" && entry.message?.role === "user",
+		);
+		expect({
+			sessionHeaders: physicalEntries.filter((entry) => entry.type === "session").length,
+			modelChanges: physicalEntries.filter((entry) => entry.type === "model_change").length,
+			thinkingChanges: physicalEntries.filter((entry) => entry.type === "thinking_level_change").length,
+			admissions: admissionKeys.map(
+				(key) => physicalEntries.filter((entry) => entry.stageAdmissionKey === key).length,
+			),
+			admissionsBeforeTask: admissionKeys.map(
+				(key) =>
+					physicalEntries.filter((entry, index) => index < firstTaskIndex && entry.stageAdmissionKey === key)
+						.length,
+			),
+		}).toEqual({
+			sessionHeaders: 1,
+			modelChanges: 1,
+			thinkingChanges: 1,
+			admissions: [1, 1],
+			admissionsBeforeTask: [1, 1],
+		});
+
+		const restored = SessionManager.open(sessionFile!, tempDir, tempDir);
+		restored.appendMessage({ role: "user", content: "retry task", timestamp: 3 });
+		restored.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "retry complete" }],
+			api: "anthropic-messages",
+			provider: "test-provider",
+			model: "test-model",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 4,
+		});
+		expect(
+			admissionKeys.map((key) => readPhysicalEntries().filter((entry) => entry.stageAdmissionKey === key).length),
+		).toEqual([1, 1]);
+	});
+});
 describe("findMostRecentSession", () => {
 	let tempDir: string;
 

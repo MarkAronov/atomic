@@ -208,6 +208,8 @@ export function hasAssistantMessage(entries: FileEntry[]): boolean {
 /**
  * Append one already-published entry. Buffered entries stay unwritten until an
  * assistant message exists; the first write after that flushes them together.
+ * An explicit flush makes every later entry append immediately, including
+ * entries written before the first assistant turn.
  * Returns the new flushed state and throws without changing it on write failure.
  */
 export function persistAppendedEntry(
@@ -216,8 +218,8 @@ export function persistAppendedEntry(
 	entry: FileEntry,
 	flushed: boolean,
 ): boolean {
-	if (!hasAssistantMessage(entries)) return false;
 	if (flushed) appendSessionEntry(filePath, entry);
+	else if (!hasAssistantMessage(entries)) return false;
 	else appendSessionEntries(filePath, entries);
 	return true;
 }
