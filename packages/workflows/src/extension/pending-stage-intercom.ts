@@ -94,10 +94,12 @@ async function queueAndPersist(
 		message: event.message,
 		queuedAt: new Date(event.message.timestamp).toISOString(),
 	};
-	const result: PendingStageQueueResult | undefined = activeStore.queueStageMessage(
+	const backend = getDurableBackend();
+	const result: PendingStageQueueResult | undefined = await activeStore.queueStageMessage(
 		request,
 		event.from.group,
 		runGroup,
+		backend,
 	);
 	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
 	if (!result.ok) {
@@ -107,13 +109,6 @@ async function queueAndPersist(
 					reason: `Pending stage message queue is full (limit ${result.limit}) for ${result.runId}:${result.stageKey}`,
 				}
 			: { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
-	}
-	const backend = getDurableBackend();
-	const handle = backend.getWorkflow(event.runId);
-	const run = activeStore.runs().find((candidate) => candidate.id === event.runId);
-	if (handle !== undefined && run !== undefined) {
-		backend.registerWorkflow({ ...handle, pendingStageMessages: run.pendingStageMessages ?? [] });
-		await backend.flush();
 	}
 	return { outcome: "queued", position: result.position };
 }

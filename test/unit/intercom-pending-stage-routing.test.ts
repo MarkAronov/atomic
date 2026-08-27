@@ -10,10 +10,12 @@ import {
 } from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
@@ -228,15 +230,17 @@ test("drains stage id and name buckets FIFO once across stage attempt restarts w
 	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(backend);
 	const from = sender({} as net.Socket).info;
-	store.queueStageMessage(
+	await store.queueStageMessage(
 		{ runId: RUN_ID, stageKey: "reviewer", from, message: message("later", 200), queuedAt: "2026-01-02" },
 		GROUP,
 		GROUP,
+		backend,
 	);
-	store.queueStageMessage(
+	await store.queueStageMessage(
 		{ runId: RUN_ID, stageKey: "stage-id", from, message: message("earlier", 100), queuedAt: "2026-01-01" },
 		GROUP,
 		GROUP,
+		backend,
 	);
 	const delivered: Array<{ id: string; name?: string; cwd: string; timestamp: number }> = [];
 	const firstAttempt = createWorkflowPendingStageDelivery(store, RUN_ID, "stage-id", "reviewer");
@@ -271,4 +275,100 @@ test("drains stage id and name buckets FIFO once across stage attempt restarts w
 		backend.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ status }) => status),
 		["delivered", "delivered"],
 	);
+});
+
+test("concurrent stage drains claim one queued message exactly once", async () => {
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	setDurableBackend(backend);
+	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	await store.queueStageMessage(
+		{
+			runId: RUN_ID,
+			stageKey: "reviewer",
+			from: sender({} as net.Socket).info,
+			message: message("concurrent-drain"),
+			queuedAt: "2026-08-27T12:00:00.000Z",
+		},
+		GROUP,
+		GROUP,
+		backend,
+	);
+	const deliveryStarted = Promise.withResolvers<void>();
+	const releaseDelivery = Promise.withResolvers<void>();
+	let deliveries = 0;
+	const first = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer").deliverPending(
+		async () => {
+			deliveries++;
+			deliveryStarted.resolve();
+			await releaseDelivery.promise;
+		},
+	);
+	await deliveryStarted.promise;
+	await createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer").deliverPending(async () => {
+		deliveries++;
+	});
+	assert.equal(deliveries, 1);
+	releaseDelivery.resolve();
+	await first;
+	assert.equal(backend.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "delivered");
+});
+
+test("rejected inbound delivery remains queued and retries after durable reload", async () => {
+	const sdk = createMockSdk();
+	const writer = new DbosDurableBackend(sdk, { executorId: "pending-delivery-writer" });
+	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.flush();
+	setDurableBackend(writer);
+	const store = createStore();
+	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	await store.queueStageMessage(
+		{
+			runId: RUN_ID,
+			stageKey: "reviewer",
+			from: sender({} as net.Socket).info,
+			message: message("retry-after-rejection"),
+			queuedAt: "2026-08-27T12:00:00.000Z",
+		},
+		GROUP,
+		GROUP,
+		writer,
+	);
+
+	const firstAttempt = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer");
+	const ready = firstAttempt.ready();
+	assert.ok(ready !== undefined);
+	await assert.rejects(
+		Promise.all([
+			firstAttempt.deliverPending(async () => {
+				throw new Error("inbound admission rejected");
+			}),
+			ready,
+		]),
+		/inbound admission rejected/,
+	);
+
+	const fresh = new DbosDurableBackend(sdk, { executorId: "pending-delivery-reader" });
+	await fresh.hydrateWorkflow(RUN_ID);
+	assert.equal(fresh.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "queued");
+	const reloadedStore = createStore();
+	reloadedStore.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: 1,
+		pendingStageMessages: [...(fresh.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+	});
+	setDurableBackend(fresh);
+	let retries = 0;
+	await createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "reviewer-id", "reviewer").deliverPending(
+		async () => {
+			retries++;
+		},
+	);
+	assert.equal(retries, 1);
+	assert.equal(fresh.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "delivered");
 });

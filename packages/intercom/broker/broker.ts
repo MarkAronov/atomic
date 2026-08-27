@@ -185,10 +185,21 @@ class IntercomBroker {
     requestId: string,
     runId: string,
     stageKeys: readonly string[],
-  ): void {
+  ): boolean {
     const uniqueStageKeys = [...new Set(stageKeys)];
-    for (const stageKey of uniqueStageKeys) {
-      this.liveWorkflowStageRoutes.set(`${runId}:${stageKey}`, { sessionId: currentId });
+    const targets = uniqueStageKeys.map((stageKey) => `${runId}:${stageKey}`);
+    for (const target of targets) {
+      const existing = this.liveWorkflowStageRoutes.get(target);
+      if (
+        existing !== undefined &&
+        existing.sessionId !== currentId &&
+        this.sessions.has(existing.sessionId)
+      ) {
+        return false;
+      }
+    }
+    for (const target of targets) {
+      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId });
     }
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]
@@ -197,6 +208,7 @@ class IntercomBroker {
     );
     this.liveWorkflowStageRouteActivations.set(requestId, { sessionId: currentId, pendingRequestIds });
     this.acknowledgeLiveWorkflowStageRoute(requestId);
+    return true;
   }
 
   private routePendingStage = (route: PendingStageRoute): boolean => {
@@ -417,9 +429,15 @@ class IntercomBroker {
         if (typeof clientMessage.runId !== "string" || !clientMessage.runId || typeof clientMessage.group !== "string") {
           throw new Error("Invalid pending-stage route registration");
         }
+        const owner = this.sessions.get(currentId);
+        if (owner === undefined || normalizeGroup(clientMessage.group) !== normalizeGroup(owner.info.group)) {
+          writeMessage(socket, { type: "registration_failed", reason: "Pending-stage route group is not authorized" });
+          socket.end();
+          return;
+        }
         this.pendingStageRoutes.set(clientMessage.runId, {
           sessionId: currentId,
-          group: normalizeGroup(clientMessage.group),
+          group: normalizeGroup(owner.info.group),
         });
         break;
       }
@@ -440,12 +458,21 @@ class IntercomBroker {
         ) {
           throw new Error("Invalid live workflow-stage route registration");
         }
-        this.registerLiveWorkflowStageRoute(
-          currentId,
-          clientMessage.requestId,
-          clientMessage.runId,
-          clientMessage.stageKeys,
-        );
+        if (
+          !this.registerLiveWorkflowStageRoute(
+            currentId,
+            clientMessage.requestId,
+            clientMessage.runId,
+            clientMessage.stageKeys,
+          )
+        ) {
+          writeMessage(socket, {
+            type: "registration_failed",
+            reason: "Live workflow-stage route is owned by another active session",
+          });
+          socket.end();
+          return;
+        }
         break;
       }
 

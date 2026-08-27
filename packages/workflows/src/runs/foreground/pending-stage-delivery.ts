@@ -11,6 +11,8 @@ import { getDurableBackend } from "../../durable/factory.js";
 import type { Store } from "../../shared/store.js";
 import type { PendingStageMessage } from "../../shared/store-types.js";
 
+const pendingDeliveryClaims = new WeakMap<Store, Set<string>>();
+
 export function createWorkflowPendingStageDelivery(
 	activeStore: Store,
 	runId: string,
@@ -67,21 +69,47 @@ async function deliverPendingStageMessages(
 			(left, right) =>
 				left.queuedAt.localeCompare(right.queuedAt) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
 		);
+	const backend = getDurableBackend();
 	for (const entry of entries) {
-		if (!activeStore.markPendingStageMessageDelivered(runId, entry.stageKey, entry.id, new Date().toISOString()))
-			continue;
-		await persistPendingStageMessages(activeStore, runId);
-		await deliver(toPendingStageSender(entry), entry.message);
+		const releaseClaim = claimPendingDelivery(activeStore, runId, entry.stageKey, entry.id);
+		if (releaseClaim === undefined) continue;
+		try {
+			await deliver(toPendingStageSender(entry), entry.message);
+			if (
+				!(await activeStore.markPendingStageMessageDelivered(
+					runId,
+					entry.stageKey,
+					entry.id,
+					new Date().toISOString(),
+					backend,
+				))
+			) {
+				throw new Error(`atomic-workflows: pending-stage message ${entry.id} changed during delivery`);
+			}
+		} finally {
+			releaseClaim();
+		}
 	}
 }
 
-async function persistPendingStageMessages(activeStore: Store, runId: string): Promise<void> {
-	const backend = getDurableBackend();
-	const handle = backend.getWorkflow(runId);
-	const run = activeStore.runs().find((candidate) => candidate.id === runId);
-	if (handle === undefined || run === undefined) return;
-	backend.registerWorkflow({ ...handle, pendingStageMessages: run.pendingStageMessages ?? [] });
-	await backend.flush();
+function claimPendingDelivery(
+	store: Store,
+	runId: string,
+	stageKey: string,
+	messageId: string,
+): (() => void) | undefined {
+	let claims = pendingDeliveryClaims.get(store);
+	if (claims === undefined) {
+		claims = new Set();
+		pendingDeliveryClaims.set(store, claims);
+	}
+	const key = JSON.stringify([runId, stageKey, messageId]);
+	if (claims.has(key)) return undefined;
+	claims.add(key);
+	return () => {
+		claims?.delete(key);
+		if (claims?.size === 0) pendingDeliveryClaims.delete(store);
+	};
 }
 
 function toPendingStageSender(entry: PendingStageMessage): WorkflowPendingStageSender {
