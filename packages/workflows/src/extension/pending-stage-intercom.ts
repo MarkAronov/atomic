@@ -1,5 +1,6 @@
 import { getDurableBackend } from "../durable/factory.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
+import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import type { Store } from "../shared/store.js";
 import type { PendingStageMessageInput, PendingStageQueueResult, PendingStageSender } from "../shared/store-types.js";
 
@@ -36,6 +37,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
+				capability: workflowPendingStageRouteCapability(activeStore, run.id),
 			});
 		}
 	};

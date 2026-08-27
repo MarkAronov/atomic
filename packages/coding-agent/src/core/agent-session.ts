@@ -205,7 +205,19 @@ class AgentSessionBase {
 		const stageContext =
 			config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
 		this._workflowStageAdmission =
-			stageContext?.messageAdmission?.boundary ?? (stageContext ? new WorkflowStageAdmissionBoundary() : undefined);
+			stageContext?.messageAdmission?.boundary ??
+			(stageContext
+				? new WorkflowStageAdmissionBoundary(
+						undefined,
+						this.sessionManager
+							.getBranch()
+							.flatMap((entry) =>
+								entry.type === "custom_message" && typeof entry.stageAdmissionKey === "string"
+									? [entry.stageAdmissionKey]
+									: [],
+							),
+					)
+				: undefined);
 		if (this._workflowStageAdmission && stageContext && stageContext.messageAdmission === undefined) {
 			(
 				stageContext as {

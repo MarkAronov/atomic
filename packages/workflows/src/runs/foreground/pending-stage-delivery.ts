@@ -8,6 +8,7 @@ type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
 type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 
 import { getDurableBackend } from "../../durable/factory.js";
+import { workflowPendingStageRouteCapability } from "../../shared/pending-stage-route-capability.js";
 import type { Store } from "../../shared/store.js";
 import type { PendingStageMessage } from "../../shared/store-types.js";
 
@@ -27,6 +28,7 @@ export function createWorkflowPendingStageDelivery(
 	});
 	let drainPromise: Promise<void> | undefined;
 	return {
+		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
 		deliverPending(deliver) {
 			drainPromise ??= deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver).then(
 				() => resolveReady(),

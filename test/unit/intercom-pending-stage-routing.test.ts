@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
 import { afterEach, describe, test } from "vitest";
+import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import {
 	type BrokerConnectedSession,
@@ -371,4 +372,93 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 	);
 	assert.equal(retries, 1);
 	assert.equal(fresh.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "delivered");
+});
+
+test("durable acknowledgement failure replays through the recipient idempotency key without duplicate visibility", async () => {
+	const persistedSdk = createMockSdk();
+	let failNextMetadataWrite = false;
+	const sdk = {
+		...persistedSdk,
+		async recordStepOutput(...args: Parameters<typeof persistedSdk.recordStepOutput>) {
+			if (failNextMetadataWrite) {
+				failNextMetadataWrite = false;
+				throw new Error("simulated durable delivery acknowledgement failure");
+			}
+			await persistedSdk.recordStepOutput(...args);
+		},
+	};
+	const writer = new DbosDurableBackend(sdk, { executorId: "pending-delivery-ack-writer" });
+	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.flush();
+	setDurableBackend(writer);
+	const store = createStore();
+	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	await store.queueStageMessage(
+		{
+			runId: RUN_ID,
+			stageKey: "reviewer",
+			from: sender({} as net.Socket).info,
+			message: message("retry-after-ack-failure"),
+			queuedAt: "2026-08-27T12:00:00.000Z",
+		},
+		GROUP,
+		GROUP,
+		writer,
+	);
+
+	let senderVisibleDeliveries = 0;
+	const firstRecipient = new WorkflowStageAdmissionBoundary();
+	const deliverThroughRecipient = (recipient: WorkflowStageAdmissionBoundary) => {
+		const pending = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer");
+		const ready = pending.ready();
+		assert.ok(ready !== undefined);
+		return Promise.all([
+			pending.deliverPending(async (_from, entryMessage) => {
+				await recipient.admit(
+					`intercom:${entryMessage.id}`,
+					() => {
+						senderVisibleDeliveries++;
+					},
+					() => {
+						throw new Error("unexpected late route");
+					},
+				).completion;
+			}),
+			ready,
+		]).then(() => undefined);
+	};
+	failNextMetadataWrite = true;
+	await assert.rejects(deliverThroughRecipient(firstRecipient), /simulated durable delivery acknowledgement failure/);
+	assert.equal(senderVisibleDeliveries, 1);
+
+	const reader = new DbosDurableBackend(sdk, { executorId: "pending-delivery-ack-reader" });
+	await reader.hydrateWorkflow(RUN_ID);
+	assert.equal(reader.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "queued");
+	const reloadedStore = createStore();
+	reloadedStore.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: 1,
+		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+	});
+	setDurableBackend(reader);
+	const reloadedRecipient = new WorkflowStageAdmissionBoundary(undefined, ["intercom:retry-after-ack-failure"]);
+	await createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "reviewer-id", "reviewer").deliverPending(
+		async (_from, entryMessage) => {
+			await reloadedRecipient.admit(
+				`intercom:${entryMessage.id}`,
+				() => {
+					senderVisibleDeliveries++;
+				},
+				() => {
+					throw new Error("unexpected late route");
+				},
+			).completion;
+		},
+	);
+	assert.equal(senderVisibleDeliveries, 1);
+	assert.equal(reader.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "delivered");
 });

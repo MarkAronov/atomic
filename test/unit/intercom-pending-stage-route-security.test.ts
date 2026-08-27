@@ -17,6 +17,7 @@ const socketPath = getBrokerSocketPath(process.platform, agentDir);
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const TARGET = `${RUN_ID}:reviewer`;
 const VICTIM_GROUP = `workflow:${RUN_ID}`;
+const ROUTE_CAPABILITY = "victim-workflow-route-capability";
 const clients = new Set<WireClient>();
 let broker: ChildProcess | undefined;
 let brokerOutput = "";
@@ -134,7 +135,12 @@ test("broker rejects cross-group pending-route impersonation before route mutati
 	await register(attacker, "attacker", "attacker-group");
 	await register(sender, "victim-sender", VICTIM_GROUP);
 
-	attacker.send({ type: "register_pending_stage_route", runId: RUN_ID, group: VICTIM_GROUP });
+	attacker.send({
+		type: "register_pending_stage_route",
+		runId: RUN_ID,
+		group: VICTIM_GROUP,
+		capability: "attacker-capability",
+	});
 	assert.equal(await registrationOutcome(attacker, "attacker-route-processed"), "closed");
 
 	const canary = "cross-group-security-canary-content";
@@ -159,19 +165,128 @@ test("broker rejects cross-group pending-route impersonation before route mutati
 	assert.equal(brokerOutput.includes(canary), false);
 });
 
-test("broker rejects a different active session taking over a live composite route", async () => {
+test("broker rejects same-group replacement of an active pending route owner", async () => {
+	const runId = "eaf2d23d-e52f-44a4-95b0-91c2109cbf34";
+	const group = `workflow:${runId}`;
+	const target = `${runId}:reviewer`;
 	const legitimate = new WireClient();
 	const attacker = new WireClient();
 	const sender = new WireClient();
+	await register(legitimate, "legitimate-owner", group);
+	await register(attacker, "same-group-pending-attacker", group);
+	await register(sender, "same-group-pending-sender", group);
+
+	legitimate.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "pending-owner-route-capability",
+	});
+	assert.equal(await registrationOutcome(legitimate, "legitimate-pending-owner-processed"), "acknowledged");
+	attacker.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "same-group-attacker-capability",
+	});
+	assert.equal(await registrationOutcome(attacker, "pending-takeover-processed"), "closed");
+
+	const canary = "pending-route-takeover-security-canary";
+	sender.send({
+		type: "send",
+		to: target,
+		message: { id: "after-pending-takeover", timestamp: 2, content: { text: canary } },
+	});
+	const request = await legitimate.next("pending_stage_message");
+	assert.equal(request.message.content.text, canary);
+	legitimate.send({
+		type: "pending_stage_message_result",
+		requestId: request.requestId,
+		outcome: "queued",
+		position: 1,
+	});
+	assert.equal((await sender.next("queued")).messageId, "after-pending-takeover");
+	assert.equal(
+		attacker.received.some((frame) => frame.type === "pending_stage_message"),
+		false,
+	);
+	assert.equal(brokerOutput.includes(canary), false);
+});
+
+test("broker rejects an attacker-first live route without the workflow capability", async () => {
+	const runId = "78c47adc-8cab-466f-a902-5d9ca2521c2c";
+	const group = `workflow:${runId}`;
+	const target = `${runId}:reviewer`;
+	const owner = new WireClient();
+	const attacker = new WireClient();
+	const legitimate = new WireClient();
+	const sender = new WireClient();
+	await register(owner, "workflow-owner", group);
+	await register(attacker, "attacker-first-stage", group);
+	await register(legitimate, "legitimate-stage-after-attacker", group);
+	await register(sender, "attacker-first-sender", group);
+	owner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "attacker-first-owner-capability",
+	});
+	assert.equal(await registrationOutcome(owner, "capability-owner-processed"), "acknowledged");
+
+	attacker.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "attacker-first-route",
+		runId,
+		stageKeys: ["reviewer"],
+		capability: "attacker-live-capability",
+	});
+	assert.equal(await registrationOutcome(attacker, "attacker-first-route-processed"), "closed");
+	legitimate.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "legitimate-after-attacker-route",
+		runId,
+		stageKeys: ["reviewer", "reviewer-id"],
+		capability: "attacker-first-owner-capability",
+	});
+	await legitimate.next(
+		"live_workflow_stage_route_registered",
+		(frame) => frame.requestId === "legitimate-after-attacker-route",
+	);
+	sender.send({
+		type: "send",
+		to: target,
+		message: { id: "attacker-first-live-send", timestamp: 3, content: { text: "legitimate recipient only" } },
+	});
+	assert.equal((await sender.next("delivered")).messageId, "attacker-first-live-send");
+	assert.equal((await legitimate.next("message")).message.content.text, "legitimate recipient only");
+	assert.equal(
+		attacker.received.some((frame) => frame.type === "message"),
+		false,
+	);
+});
+test("broker rejects a different active session taking over a live composite route", async () => {
+	const owner = new WireClient();
+	const legitimate = new WireClient();
+	const attacker = new WireClient();
+	const sender = new WireClient();
+	await register(owner, "live-route-owner", VICTIM_GROUP);
 	await register(legitimate, "legitimate-stage", VICTIM_GROUP);
 	await register(attacker, "same-group-attacker", VICTIM_GROUP);
 	await register(sender, "same-group-sender", VICTIM_GROUP);
+	owner.send({
+		type: "register_pending_stage_route",
+		runId: RUN_ID,
+		group: VICTIM_GROUP,
+		capability: ROUTE_CAPABILITY,
+	});
+	assert.equal(await registrationOutcome(owner, "live-route-owner-processed"), "acknowledged");
 
 	legitimate.send({
 		type: "register_live_workflow_stage_route",
 		requestId: "legitimate-route",
 		runId: RUN_ID,
 		stageKeys: ["reviewer", "reviewer-id"],
+		capability: ROUTE_CAPABILITY,
 	});
 	await legitimate.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "legitimate-route");
 
@@ -180,6 +295,7 @@ test("broker rejects a different active session taking over a live composite rou
 		requestId: "takeover-route",
 		runId: RUN_ID,
 		stageKeys: ["reviewer"],
+		capability: ROUTE_CAPABILITY,
 	});
 	assert.equal(await registrationOutcome(attacker, "takeover-route-processed"), "closed");
 
@@ -204,18 +320,28 @@ test("broker rejects a different active session taking over a live composite rou
 test("live composite route replacement requires the old owner to disconnect", async () => {
 	const transitionRunId = "7f684570-74ec-4f17-a09f-2df742f1c911";
 	const transitionGroup = `workflow:${transitionRunId}`;
+	const owner = new WireClient();
 	const oldOwner = new WireClient();
 	const nextAttempt = new WireClient();
 	const sender = new WireClient();
+	await register(owner, "transition-owner", transitionGroup);
 	const oldOwnerId = await register(oldOwner, "stage-attempt-1", transitionGroup);
 	await register(nextAttempt, "stage-attempt-2", transitionGroup);
 	await register(sender, "transition-sender", transitionGroup);
+	owner.send({
+		type: "register_pending_stage_route",
+		runId: transitionRunId,
+		group: transitionGroup,
+		capability: "transition-route-capability",
+	});
+	assert.equal(await registrationOutcome(owner, "transition-owner-processed"), "acknowledged");
 
 	oldOwner.send({
 		type: "register_live_workflow_stage_route",
 		requestId: "old-attempt-route",
 		runId: transitionRunId,
 		stageKeys: ["reviewer", "reviewer-id"],
+		capability: "transition-route-capability",
 	});
 	await oldOwner.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "old-attempt-route");
 	oldOwner.socket.destroy();
@@ -226,6 +352,7 @@ test("live composite route replacement requires the old owner to disconnect", as
 		requestId: "next-attempt-route",
 		runId: transitionRunId,
 		stageKeys: ["reviewer-id", "reviewer"],
+		capability: "transition-route-capability",
 	});
 	await nextAttempt.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "next-attempt-route");
 	sender.send({

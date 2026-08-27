@@ -29,6 +29,7 @@ const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 interface PendingStageRouteRegistration {
   readonly sessionId: string;
   readonly group: string;
+  readonly capability: string;
 }
 
 interface PendingStageAcknowledgment {
@@ -43,6 +44,7 @@ interface PendingStageAcknowledgment {
 
 interface LiveWorkflowStageRouteRegistration {
   readonly sessionId: string;
+  readonly capability: string;
 }
 
 interface LiveWorkflowStageRouteActivation {
@@ -159,6 +161,12 @@ class IntercomBroker {
   private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
     const registration = this.liveWorkflowStageRoutes.get(target);
     if (registration === undefined) return undefined;
+    const parsedTarget = parsePendingStageTarget(target);
+    const currentOwner = parsedTarget === undefined ? undefined : this.pendingStageRoutes.get(parsedTarget.runId);
+    if (currentOwner !== undefined && currentOwner.capability !== registration.capability) {
+      this.liveWorkflowStageRoutes.delete(target);
+      return undefined;
+    }
     const session = this.sessions.get(registration.sessionId);
     if (session !== undefined) return session;
     this.liveWorkflowStageRoutes.delete(target);
@@ -185,6 +193,7 @@ class IntercomBroker {
     requestId: string,
     runId: string,
     stageKeys: readonly string[],
+    capability: string,
   ): boolean {
     const uniqueStageKeys = [...new Set(stageKeys)];
     const targets = uniqueStageKeys.map((stageKey) => `${runId}:${stageKey}`);
@@ -199,7 +208,7 @@ class IntercomBroker {
       }
     }
     for (const target of targets) {
-      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId });
+      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability });
     }
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]
@@ -426,18 +435,32 @@ class IntercomBroker {
       }
 
       case "register_pending_stage_route": {
-        if (typeof clientMessage.runId !== "string" || !clientMessage.runId || typeof clientMessage.group !== "string") {
+        if (
+          typeof clientMessage.runId !== "string" ||
+          !clientMessage.runId ||
+          typeof clientMessage.group !== "string" ||
+          typeof clientMessage.capability !== "string" ||
+          !clientMessage.capability
+        ) {
           throw new Error("Invalid pending-stage route registration");
         }
         const owner = this.sessions.get(currentId);
-        if (owner === undefined || normalizeGroup(clientMessage.group) !== normalizeGroup(owner.info.group)) {
-          writeMessage(socket, { type: "registration_failed", reason: "Pending-stage route group is not authorized" });
+        const existing = this.pendingStageRoutes.get(clientMessage.runId);
+        if (
+          owner === undefined ||
+          normalizeGroup(clientMessage.group) !== normalizeGroup(owner.info.group) ||
+          (existing !== undefined &&
+            (existing.sessionId !== currentId || existing.capability !== clientMessage.capability) &&
+            this.sessions.has(existing.sessionId))
+        ) {
+          writeMessage(socket, { type: "registration_failed", reason: "Pending-stage route is not authorized" });
           socket.end();
           return;
         }
         this.pendingStageRoutes.set(clientMessage.runId, {
           sessionId: currentId,
           group: normalizeGroup(owner.info.group),
+          capability: clientMessage.capability,
         });
         break;
       }
@@ -446,6 +469,8 @@ class IntercomBroker {
         if (
           typeof clientMessage.requestId !== "string" ||
           typeof clientMessage.runId !== "string" ||
+          typeof clientMessage.capability !== "string" ||
+          !clientMessage.capability ||
           !Array.isArray(clientMessage.stageKeys) ||
           clientMessage.stageKeys.length < 1 ||
           clientMessage.stageKeys.length > 2 ||
@@ -458,12 +483,19 @@ class IntercomBroker {
         ) {
           throw new Error("Invalid live workflow-stage route registration");
         }
+        const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
+        const registeringSession = this.sessions.get(currentId);
         if (
+          ownerRegistration === undefined ||
+          registeringSession === undefined ||
+          ownerRegistration.capability !== clientMessage.capability ||
+          normalizeGroup(ownerRegistration.group) !== normalizeGroup(registeringSession.info.group) ||
           !this.registerLiveWorkflowStageRoute(
             currentId,
             clientMessage.requestId,
             clientMessage.runId,
             clientMessage.stageKeys,
+            clientMessage.capability,
           )
         ) {
           writeMessage(socket, {

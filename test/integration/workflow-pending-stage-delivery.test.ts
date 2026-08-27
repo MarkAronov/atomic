@@ -324,6 +324,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			releaseDrain = resolveRelease;
 		});
 		const heldPendingStageDelivery: ReturnType<typeof createWorkflowPendingStageDelivery> = {
+			routeCapability: pendingStageDelivery.routeCapability,
 			async deliverPending(deliver) {
 				signalDrainEntered();
 				await drainRelease;

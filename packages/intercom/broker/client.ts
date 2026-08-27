@@ -549,11 +549,11 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  registerPendingStageRoute(runId: string, group: string): void {
-    writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group });
+  registerPendingStageRoute(runId: string, group: string, capability: string): void {
+    writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group, capability });
   }
 
-  registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[]): Promise<void> {
+  registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -569,6 +569,7 @@ export class IntercomClient extends EventEmitter {
           requestId,
           runId,
           stageKeys: [...stageKeys],
+          capability,
         });
       } catch (error) {
         this.pendingLiveWorkflowStageRoutes.delete(requestId);

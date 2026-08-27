@@ -85,6 +85,8 @@ export interface WorkflowPendingStageMessage {
 }
 
 export interface WorkflowPendingStageDelivery {
+	/** Process-private authority proving this stage belongs to the workflow run route. */
+	readonly routeCapability: string;
 	deliverPending(
 		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 	): Promise<void>;

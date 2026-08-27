@@ -15,15 +15,16 @@ export interface WorkflowStageAdmissionResult {
  */
 export class WorkflowStageAdmissionBoundary {
 	private open = true;
-	private readonly completed = new Set<string>();
+	private readonly completed: Set<string>;
 	private readonly inFlight = new Map<string, Promise<void>>();
 	private readonly pending = new Set<Promise<void>>();
 	private readonly invocationContext = new AsyncLocalStorage<string>();
 	private closePromise: Promise<void> | undefined;
 	private readonly drainAdmittedWork: () => Promise<void>;
 
-	constructor(drainAdmittedWork: () => Promise<void> = async () => {}) {
-		this.drainAdmittedWork = drainAdmittedWork;
+	constructor(drainAdmittedWork: (() => Promise<void>) | undefined = undefined, completedKeys: Iterable<string> = []) {
+		this.drainAdmittedWork = drainAdmittedWork ?? (async () => {});
+		this.completed = new Set(completedKeys);
 	}
 
 	admit(

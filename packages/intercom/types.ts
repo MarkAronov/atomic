@@ -48,8 +48,14 @@ export type ClientMessage =
   | { type: "list"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
-  | { type: "register_pending_stage_route"; runId: string; group: string }
-  | { type: "register_live_workflow_stage_route"; requestId: string; runId: string; stageKeys: string[] }
+  | { type: "register_pending_stage_route"; runId: string; group: string; capability: string }
+  | {
+      type: "register_live_workflow_stage_route";
+      requestId: string;
+      runId: string;
+      stageKeys: string[];
+      capability: string;
+    }
   | {
       type: "pending_stage_message_result";
       requestId: string;

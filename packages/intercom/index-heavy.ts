@@ -47,6 +47,7 @@ const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 interface PendingStageRouteRegistrationEvent {
   readonly runId: string;
   readonly group: string;
+  readonly capability: string;
 }
 
 interface PendingStageMessageEvent extends PendingStageMessageRequest {
@@ -57,7 +58,13 @@ interface PendingStageMessageEvent extends PendingStageMessageRequest {
 function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingStageRouteRegistrationEvent {
   if (typeof value !== "object" || value === null) return false;
   const event = value as Partial<PendingStageRouteRegistrationEvent>;
-  return typeof event.runId === "string" && event.runId.length > 0 && typeof event.group === "string";
+  return (
+    typeof event.runId === "string" &&
+    event.runId.length > 0 &&
+    typeof event.group === "string" &&
+    typeof event.capability === "string" &&
+    event.capability.length > 0
+  );
 }
 export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
@@ -94,7 +101,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
-  const pendingStageRoutes = new Map<string, string>();
+  const pendingStageRoutes = new Map<string, { readonly group: string; readonly capability: string }>();
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void { replyWaiters.rejectAll(error); }
@@ -483,13 +490,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           readSubagentMessageSource(runtimeContext?.subagentPolicy),
         );
         await supervisorAuthorizations.restore(nextClient);
-        for (const [runId, group] of pendingStageRoutes) nextClient.registerPendingStageRoute(runId, group);
+        for (const [runId, route] of pendingStageRoutes) {
+          nextClient.registerPendingStageRoute(runId, route.group, route.capability);
+        }
         const orchestration = contextAtStart.orchestrationContext;
         if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
-          await nextClient.registerLiveWorkflowStageRoute(orchestration.workflowRunId, [
-            orchestration.workflowStageId,
-            orchestration.workflowStageName,
-          ]);
+          await nextClient.registerLiveWorkflowStageRoute(
+            orchestration.workflowRunId,
+            [orchestration.workflowStageId, orchestration.workflowStageName],
+            orchestration.pendingStageDelivery.routeCapability,
+          );
         }
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
@@ -522,9 +532,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   pi.events.on(PENDING_STAGE_ROUTE_EVENT, (payload) => {
     if (!isPendingStageRouteRegistrationEvent(payload)) return;
-    pendingStageRoutes.set(payload.runId, payload.group);
+    pendingStageRoutes.set(payload.runId, { group: payload.group, capability: payload.capability });
     void ensureConnected("background")
-      .then((activeClient) => activeClient.registerPendingStageRoute(payload.runId, payload.group))
+      .then((activeClient) =>
+        activeClient.registerPendingStageRoute(payload.runId, payload.group, payload.capability),
+      )
       .catch(() => {});
   });
 
