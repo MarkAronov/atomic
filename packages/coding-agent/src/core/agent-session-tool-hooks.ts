@@ -1,9 +1,19 @@
-import type { PrepareNextTurnContext, ShouldStopAfterTurnContext } from "@earendil-works/pi-agent-core";
+import type {
+	AgentContext,
+	AgentLoopConfig,
+	AgentLoopTurnUpdate,
+	PrepareNextTurnContext,
+	ShouldStopAfterTurnContext,
+} from "@earendil-works/pi-agent-core";
 
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
+
+interface LegacyAgentLoopConfigDoor {
+	createLoopConfig(options?: { skipInitialSteeringPoll?: boolean }): AgentLoopConfig;
+}
 
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ toolCall, args }) => {
@@ -141,36 +151,14 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		assertToolPairingInvariant(guarded);
 		return guarded;
 	};
-	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
-		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
-		const terminatingBatch =
-			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
-		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
 
-		const shouldStop = await cacheStopResult(turn, signal);
-		if (shouldStop) {
-			await settleFallbackAfterTurn(this, turn, terminatingBatch);
-			return undefined;
-		}
-
-		const continuingToolTurn = turn.toolResults.length > 0 && !terminatingBatch;
-		let settledBeforePreparation = false;
-		// Event and fallback settlement can admit steering or follow-up work. Re-check
-		// after the await so the request that drains it receives preparation once.
-		if (!continuingToolTurn && !this.agent.hasQueuedMessages()) {
-			await settleFallbackAfterTurn(this, turn, terminatingBatch);
-			settledBeforePreparation = true;
-			if (!this.agent.hasQueuedMessages()) return undefined;
-		}
-
+	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {
 		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 		const previousContext = previousSnapshot?.context ?? turn.context;
 		const messages =
 			turn.toolResults.length > 0
 				? await this._preflightPostToolContext(previousContext.messages, signal)
 				: previousContext.messages;
-
-		if (!settledBeforePreparation) await settleFallbackAfterTurn(this, turn, terminatingBatch);
 
 		return {
 			...previousSnapshot,
@@ -183,6 +171,89 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 			model: this.agent.state.model,
 			thinkingLevel: this.agent.state.thinkingLevel,
 		};
+	};
+
+	let deferredPreparation:
+		| {
+				turn: PrepareNextTurnContext;
+				signal?: AbortSignal;
+				loopContext: AgentContext;
+		  }
+		| undefined;
+
+	const prepareDeferredTurn = async (loopConfig: AgentLoopConfig): Promise<void> => {
+		const deferred = deferredPreparation;
+		if (!deferred) return;
+		// Queue polls are serial in pi-agent-core. Clear first so a failing callback
+		// cannot be retried by a later poll in the same run.
+		deferredPreparation = undefined;
+		const snapshot = await prepareTurn(deferred.turn, deferred.signal);
+		const nextContext = snapshot.context ?? deferred.turn.context;
+		deferred.loopContext.systemPrompt = nextContext.systemPrompt;
+		deferred.loopContext.messages = nextContext.messages;
+		deferred.loopContext.tools = nextContext.tools;
+		loopConfig.model = snapshot.model ?? loopConfig.model;
+		loopConfig.reasoning =
+			snapshot.thinkingLevel === undefined
+				? loopConfig.reasoning
+				: snapshot.thinkingLevel === "off"
+					? undefined
+					: snapshot.thinkingLevel;
+	};
+
+	// pi-agent-core 0.84.3 polls these queues after its premature preparation
+	// callback. Intercept the poll itself: a non-empty result is the first point
+	// at which a final or terminating turn is known to continue. The regular
+	// function deliberately receives the loop's current copied config as `this`.
+	const agentLoopDoor = this.agent as unknown as LegacyAgentLoopConfigDoor;
+	const previousCreateLoopConfig = agentLoopDoor.createLoopConfig.bind(this.agent);
+	agentLoopDoor.createLoopConfig = (options) => {
+		deferredPreparation = undefined;
+		const loopConfig = previousCreateLoopConfig(options);
+		const wrapQueuePoll = (
+			poll: AgentLoopConfig["getSteeringMessages"] | AgentLoopConfig["getFollowUpMessages"],
+		): NonNullable<AgentLoopConfig["getSteeringMessages"]> =>
+			async function (this: AgentLoopConfig) {
+				const messages = (await poll?.()) ?? [];
+				if (messages.length > 0) await prepareDeferredTurn(this);
+				return messages;
+			};
+		loopConfig.getSteeringMessages = wrapQueuePoll(loopConfig.getSteeringMessages);
+		loopConfig.getFollowUpMessages = wrapQueuePoll(loopConfig.getFollowUpMessages);
+		return loopConfig;
+	};
+
+	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
+		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
+		const terminatingBatch =
+			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
+		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
+
+		const shouldStop = await cacheStopResult(turn, signal);
+		if (shouldStop) {
+			deferredPreparation = undefined;
+			await settleFallbackAfterTurn(this, turn, terminatingBatch);
+			return undefined;
+		}
+
+		if (turn.toolResults.length > 0 && !terminatingBatch) {
+			deferredPreparation = undefined;
+			const snapshot = await prepareTurn(turn, signal);
+			await settleFallbackAfterTurn(this, turn, terminatingBatch);
+			return snapshot;
+		}
+
+		await settleFallbackAfterTurn(this, turn, terminatingBatch);
+		const loopContext: AgentContext = {
+			...turn.context,
+			messages: turn.context.messages.slice(),
+			tools: turn.context.tools?.slice(),
+		};
+		deferredPreparation = { turn, signal, loopContext };
+		// Returning a placeholder moves the stale loop away from the completed
+		// context without running user preparation. If a queue poll yields work,
+		// the poll door replaces its fields before that message is injected.
+		return { context: loopContext };
 	};
 }
 
