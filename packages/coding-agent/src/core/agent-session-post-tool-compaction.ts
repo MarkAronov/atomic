@@ -4,7 +4,12 @@ import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { serializeRetainedTranscript } from "./compaction/transcript-serialization.ts";
-import { convertToLlm, createVerbatimCompactionMessage, isVerbatimCompactionMessage } from "./messages.ts";
+import {
+	convertToLlm,
+	createVerbatimCompactionMessage,
+	isVerbatimCompactionMessage,
+	messageIsLlmVisible,
+} from "./messages.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 
 function postToolFailureMessage(error: unknown): string {
@@ -27,10 +32,13 @@ function rebuildPreparedCompactionContext(
 	const boundary = persistedMessages[boundaryIndex];
 	if (boundaryIndex < 0 || boundary?.role !== "custom") return persistedMessages;
 
+	const visiblePreparedMessages = preparedMessages.filter((message) => messageIsLlmVisible(message));
 	const keptTail =
 		result.firstKeptEntryId === null
 			? []
-			: preparedMessages.slice(Math.max(0, preparedMessages.length - result.parameters.preserve_recent));
+			: visiblePreparedMessages.slice(
+					Math.max(0, visiblePreparedMessages.length - result.parameters.preserve_recent),
+				);
 	const retainedTail = serializeRetainedTranscript(convertToLlm(keptTail));
 	const separator =
 		retainedTail.length > 0 && result.compactedText.length > 0 ? [{ type: "text" as const, text: "\n\n" }] : [];

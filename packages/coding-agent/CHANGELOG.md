@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `AgentSession` now invokes a caller-supplied `Agent.shouldStopAfterTurn` callback before `prepareNextTurn` or `prepareNextTurnWithContext`. Preparation runs only after the loop or a non-empty steering/follow-up queue establishes that another assistant turn will start; it no longer runs after final responses, terminating tool batches without queued work, or a stop callback that returns `true`. Callers that used preparation as an after-every-turn notification must move that work to `shouldStopAfterTurn` or session events ([#6879](https://github.com/earendil-works/pi/issues/6879)).
+
 ### Fixed
 
 - Fixed large tool results crossing the auto-compaction threshold being sent to the provider before compaction. Atomic compacts between tool execution and the next assistant response in the same run, and restores interactive progress when that run resumes ([#6879](https://github.com/earendil-works/pi/issues/6879)).

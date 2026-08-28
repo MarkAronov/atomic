@@ -118,15 +118,17 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				shouldStop: boolean;
 		  }
 		| undefined;
-	// A completed-turn result remains authoritative until the next preparation
-	// supersedes it. Unrelated public stop checks must not consume that handoff.
+	// The dependency consumes a matching completed-turn result once. Unrelated
+	// public stop checks delegate without invalidating that pending handoff.
 	this.agent.shouldStopAfterTurn = async (turn, signal) => {
+		const pending = pendingStopResult;
 		if (
-			pendingStopResult?.message === turn.message &&
-			pendingStopResult.toolResults === turn.toolResults &&
-			pendingStopResult.newMessages === turn.newMessages
+			pending?.message === turn.message &&
+			pending.toolResults === turn.toolResults &&
+			pending.newMessages === turn.newMessages
 		) {
-			return pendingStopResult.shouldStop;
+			pendingStopResult = undefined;
+			return pending.shouldStop;
 		}
 		return (await previousShouldStopAfterTurn?.(turn, signal)) ?? false;
 	};

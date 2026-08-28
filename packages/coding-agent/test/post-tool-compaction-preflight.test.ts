@@ -642,6 +642,84 @@ describe("post-tool compaction preflight", () => {
 		expect(JSON.stringify(originalTurnContext?.messages)).not.toContain(preparedContextSentinel);
 	});
 
+	it("keeps the context-visible prepared tool pair when an excluded message trails it", async () => {
+		const preparedTailSentinel = "[prepared visible tool result]";
+		const excludedTailSentinel = "[excluded prepared tail]";
+		let originalTurnContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let compactionInput = "";
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-visible-tail", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after visible-tail compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [compactOffline],
+			configureAgent: (agent) => {
+				agent.prepareNextTurnWithContext = (context) => {
+					originalTurnContext = context.context;
+					const originalToolResult = context.context.messages.at(-1);
+					expect(originalToolResult?.role).toBe("toolResult");
+					if (originalToolResult?.role !== "toolResult") throw new Error("expected a tool result");
+					const preparedToolResult = {
+						...originalToolResult,
+						content: originalToolResult.content.map((part) =>
+							part.type === "text" ? { ...part, text: `${part.text}\n${preparedTailSentinel}` } : part,
+						),
+					};
+					return {
+						context: {
+							...context.context,
+							messages: [
+								...context.context.messages.slice(0, -1),
+								preparedToolResult,
+								{
+									role: "custom",
+									customType: "excluded-prepared-tail",
+									content: excludedTailSentinel,
+									display: false,
+									excludeFromContext: true,
+									timestamp: 1,
+								},
+							],
+						},
+					};
+				};
+			},
+		});
+		const internal = harness.session as unknown as {
+			_preflightPostToolContext(
+				messages: import("@earendil-works/pi-agent-core").AgentMessage[],
+				signal?: AbortSignal,
+			): Promise<import("@earendil-works/pi-agent-core").AgentMessage[]>;
+		};
+		const originalPreflight = internal._preflightPostToolContext.bind(harness.session);
+		internal._preflightPostToolContext = async (messages, signal) => {
+			compactionInput = JSON.stringify(messages);
+			return originalPreflight(messages, signal);
+		};
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt(longPrompt);
+
+		expect(compactionInput).toContain(preparedTailSentinel);
+		expect(compactionInput).toContain(excludedTailSentinel);
+		const resumedText = JSON.stringify(harness.faux.contexts[1]?.messages);
+		expect(resumedText).toContain("[Assistant tool calls]: large_result()");
+		expect(resumedText).toContain("[Tool result]: ");
+		expect(resumedText).toContain(preparedTailSentinel);
+		expect(resumedText).not.toContain(excludedTailSentinel);
+		expect(JSON.stringify(originalTurnContext?.messages)).not.toContain(preparedTailSentinel);
+		expect(JSON.stringify(originalTurnContext?.messages)).not.toContain(excludedTailSentinel);
+	});
+
 	it("skips preparation when the stop callback ends the run", async () => {
 		let stopCalls = 0;
 		let prepareCalls = 0;
@@ -692,6 +770,31 @@ describe("post-tool compaction preflight", () => {
 		expect(stopCalls).toBe(1);
 		expect(prepareCalls).toBe(0);
 		expect(harness.faux.callCount).toBe(1);
+	});
+
+	it("consumes the completed-turn stop cache at the dependency handoff", async () => {
+		let stopCalls = 0;
+		let completedTurn: import("@earendil-works/pi-agent-core").ShouldStopAfterTurnContext | undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: ["finished"],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					stopCalls++;
+					completedTurn = context;
+					return stopCalls > 1;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("finish and consume the cached stop result");
+
+		expect(stopCalls).toBe(1);
+		expect(completedTurn).toBeDefined();
+		const freshResult = await harness.agent.shouldStopAfterTurn?.(completedTurn!);
+		expect(freshResult).toBe(true);
+		expect(stopCalls).toBe(2);
 	});
 
 	it("prepares a final response only when queued steering creates another turn", async () => {
