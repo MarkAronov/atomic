@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Updated Baseten's default model from `zai-org/GLM-5.2` to the directly selectable `zai-org/GLM-5.3`; GLM-5.2 remains available for image input or fully disabled reasoning.
+- Updated Baseten's default model from `zai-org/GLM-5.2` to the directly selectable `zai-org/GLM-5.3`; GLM-5.2 remains available when fully disabled reasoning is required, while GLM-5.3 Flash provides multimodal input.
 
 ### Fixed
 

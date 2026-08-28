@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Added the full and Flash GLM-5.3 Baseten and OpenRouter mirrors to every built-in subagent fallback chain.
+
 ## [0.9.16-alpha.7] - 2026-08-26
 
 ### Added

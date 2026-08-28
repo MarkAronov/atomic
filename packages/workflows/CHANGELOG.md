@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Added the full and Flash GLM-5.3 Baseten and OpenRouter mirrors to every built-in Goal, Ralph, and Open Claude Design fallback chain.
+
 ### Fixed
 
 - Workflow heartbeat and routing guidance now tells agents to discover a stage's `workflow:<rootRunId>` invocation group with the Intercom `groups` action and join it before steering the stage.
