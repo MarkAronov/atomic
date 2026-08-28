@@ -434,6 +434,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_postToolCompactionPreflightError: string | undefined;
 	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
 	_terminatingToolCallIds: Set<string>;
+	_stopAfterTurnBlockedContinuation: boolean;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_queuedMessagesPaused: boolean;

@@ -222,6 +222,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 	const previousCreateLoopConfig = agentLoopDoor.createLoopConfig.bind(this.agent);
 	agentLoopDoor.createLoopConfig = (options) => {
 		deferredPreparation = undefined;
+		this._stopAfterTurnBlockedContinuation = false;
 		const loopConfig = previousCreateLoopConfig(options);
 		const wrapQueuePoll = (
 			poll: AgentLoopConfig["getSteeringMessages"] | AgentLoopConfig["getFollowUpMessages"],
@@ -246,6 +247,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		try {
 			if (shouldStop) {
 				deferredPreparation = undefined;
+				this._stopAfterTurnBlockedContinuation = true;
 				await settleFallbackAfterTurn(this, turn, terminatingBatch);
 				return undefined;
 			}

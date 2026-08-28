@@ -137,6 +137,8 @@ class AgentSessionBase {
 	protected _postToolCompactionPreflightError: string | undefined = undefined;
 	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
 	protected _terminatingToolCallIds = new Set<string>();
+	/** A positive stop callback keeps queued work pending until an explicit new run. */
+	protected _stopAfterTurnBlockedContinuation = false;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	protected _sessionSummaryAbortController: AbortController | undefined = undefined;

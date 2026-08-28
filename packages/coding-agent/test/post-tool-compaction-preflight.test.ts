@@ -754,6 +754,51 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.faux.callCount).toBe(1);
 	});
 
+	it.each(["steer", "followUp"] as const)(
+		"preserves queued %s work without continuing after the stop callback ends the run",
+		async (delivery) => {
+			let signalStopStarted!: () => void;
+			const stopStarted = new Promise<void>((resolve) => {
+				signalStopStarted = resolve;
+			});
+			let releaseStop!: () => void;
+			const stopReleased = new Promise<void>((resolve) => {
+				releaseStop = resolve;
+			});
+			let stopCalls = 0;
+			const harness = await createHarnessWithExtensions({
+				responses: ["finished", "explicit run completed", "follow-up completed"],
+				configureAgent: (agent) => {
+					agent.shouldStopAfterTurn = async () => {
+						stopCalls++;
+						if (stopCalls > 1) return false;
+						signalStopStarted();
+						await stopReleased;
+						return true;
+					};
+				},
+			});
+			harnesses.push(harness);
+			await wireHarness(harness);
+
+			const prompt = harness.session.prompt("finish at the stop boundary");
+			await stopStarted;
+			await harness.session[delivery]("queued during the stop callback");
+			releaseStop();
+			await prompt;
+
+			expect(harness.faux.callCount).toBe(1);
+			const queuedMessages = () =>
+				delivery === "steer" ? harness.session.getSteeringMessages() : harness.session.getFollowUpMessages();
+			expect(queuedMessages()).toEqual(["queued during the stop callback"]);
+
+			await harness.session.prompt("explicitly start a new run");
+
+			expect(harness.faux.callCount).toBe(delivery === "steer" ? 2 : 3);
+			expect(queuedMessages()).toEqual([]);
+		},
+	);
+
 	it("checks stop once and skips preparation after a final response with no queued work", async () => {
 		let stopCalls = 0;
 		let prepareCalls = 0;

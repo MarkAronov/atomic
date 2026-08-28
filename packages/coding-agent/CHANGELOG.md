@@ -13,6 +13,7 @@
 ### Fixed
 
 - Fixed large tool results crossing the auto-compaction threshold being sent to the provider before compaction. Atomic compacts between tool execution and the next assistant response in the same run, and restores interactive progress when that run resumes ([#6879](https://github.com/earendil-works/pi/issues/6879)).
+- Prevented steering or follow-up messages queued while `shouldStopAfterTurn` resolves `true` from automatically starting another provider request. The stopped run now leaves that work pending for a later explicit prompt or continuation.
 
 ## [0.9.16-alpha.9] - 2026-08-27
 
