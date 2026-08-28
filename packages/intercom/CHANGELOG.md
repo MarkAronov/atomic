@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Extended ordinary `send` delivery to known workflow stages whose sessions have not initialized, with durable FIFO queueing, a distinct `queued` acknowledgment, same-group enforcement, bounded per-stage capacity, structured pre-start `ask` refusal, and delivery through the existing Intercom path before the stage's first model turn. ([#2717](https://github.com/bastani-inc/atomic/issues/2717))
+
 ## [0.9.16-alpha.5] - 2026-08-26
 
 ### Added

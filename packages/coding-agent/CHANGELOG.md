@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Removed the public `workflow send` action. Use `workflow answer` for pending workflow prompts and ordinary Intercom for workflow-stage communication.
 - Workflow source that typechecks against the legacy bare `@bastani/workflows` specifier must migrate to `@bastani/atomic/workflows`; removing the broken ambient declaration bridge intentionally removes TypeScript resolution for the legacy name. Runtime loading remains backward compatible because Atomic continues to alias `@bastani/workflows` to the in-memory SDK. ([#2716](https://github.com/bastani-inc/atomic/issues/2716))
 
 ### Added
