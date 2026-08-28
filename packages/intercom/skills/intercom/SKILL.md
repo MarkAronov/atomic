@@ -81,6 +81,8 @@ Live sessions accept an exact full session ID or exact case-insensitive name. Or
 
 Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages for known pending stages and delivers them when their sessions initialize:
 
+Before steering a stage, join its invocation group. Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`.
+
 ```typescript
 intercom({
   action: "send",

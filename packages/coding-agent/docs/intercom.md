@@ -173,6 +173,8 @@ Sent and received messages are recorded in session history as `intercom_sent` / 
 
 Live-session lookup accepts only an exact full session ID or an exact case-insensitive session name. Ordinary `send` also accepts the exact `<runId>:<stageKey>` identity of a known workflow stage whose session has not initialized. The run ID is the full UUID, and the authored stage key is case-sensitive. Unknown runs and stages retain the ordinary unknown-target failure. Targeting is **group-scoped** — see [Groups](#groups) below.
 
+Before steering a stage, join its invocation group. Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`.
+
 ### Deferred delivery to pending stages
 
 Send material updates through Intercom to every affected workflow stage, including stages that have not started. Atomic queues messages for known pending stages and delivers them when their sessions initialize. A deferred send returns `queued`, including its FIFO position, rather than claiming the message was `delivered`; live delivery remains immediate and returns `delivered`.
