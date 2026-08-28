@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Intercom sessions can now hold multiple group memberships. Runtime `join` is additive, targeted `leave` removes one membership, bare `leave` resets to the startup home group, and the new `groups` action discovers every available group with session counts and membership markers. `list` remains session discovery, `status` reports the complete membership set, legacy single-group clients retain their existing behavior, and `contact_supervisor` keeps its capability-based cross-group route.
+
 ## [0.9.16-alpha.8] - 2026-08-27
 
 ### Added

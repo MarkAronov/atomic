@@ -10,9 +10,9 @@ description: "Direct messaging between Atomic sessions on the same machine"
 Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messaging between Atomic sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate. Connections are lazy and tool-driven: the extension registers its commands and tools at startup, but a session does not connect until you or the model actually invoke Intercom. No separate install is needed.
 
 **Key capabilities:**
-- **Session messaging** - `send`, `ask` (blocking, 10-minute timeout), `reply`, `pending`, `list`, and `status` via the `intercom` tool
-- **Runtime groups** - `join` or `leave` named groups without restarting; joined sessions keep their broker IDs and subagents inherit the joined group
-- **Session discovery** - List connected sessions with name, full session ID, working directory, model, and live status
+- **Session messaging** - `send`, `ask` (blocking, 10-minute timeout), `reply`, `pending`, `list`, `groups`, and `status` via the `intercom` tool
+- **Runtime groups** - Add or remove named memberships without restarting; joined sessions keep their broker IDs and later subagents inherit the most recently joined membership
+- **Session and group discovery** - List connected sessions or every available group, including session counts and membership markers
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
@@ -138,33 +138,34 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `action` | string | `"list"`, `"groups"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
 | `to` | string | Exact session name/full session ID, or `<runId>:<stageKey>` for `send` to a not-yet-started workflow stage (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
-| `group` | string | Group name for `join`; read-only group filter for `list`/`status`. `send`/`ask` stay locked to the current group. |
+| `group` | string | Group name for `join` or an optional targeted `leave`; read-only group filter for `list`/`status`. `send`/`ask` remain limited to shared memberships. |
 
 ### Actions
 
 | Action | Behavior |
 |--------|----------|
-| `join` | Moves the session into a trimmed named group and creates it if needed. The action waits for broker acknowledgement before changing local inheritance state. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
-| `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
-| `list` | Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed full session ID is a valid target. |
+| `join` | Adds a trimmed named group membership and creates the group if needed. The action waits for broker acknowledgement and reports the complete resulting membership set. `default` is shared; `true` and `auto` are reserved for subagent auto-groups. |
+| `leave` | With `group`, removes only that membership and keeps all others. Without `group`, resets the session to its resolved startup home group. Both forms report the resulting membership set. |
+| `groups` | Lists every group represented by a connected session, with its session count and a marker for each group this session belongs to. Use it to discover names rather than guessing. |
+| `list` | Keeps session-listing semantics: returns the current session plus every active session sharing at least one membership, with name, full session ID, working directory, model, and live status. Pass `group` for a read-only view of one group. |
 | `send` | Fire-and-forget delivery through ordinary Intercom. A live workflow-stage session receives the message immediately and returns `delivered`. A known workflow stage whose session has not initialized is addressed as `<runId>:<stageKey>`; Atomic persists the message and returns the distinct `queued` result with its FIFO position. Unknown stage identities retain the ordinary unknown-target failure. Requires `to` and `message`; cannot message the current session. |
 | `ask` | Sends a message and blocks until a live recipient replies (10-minute timeout). An ask to a known workflow stage whose session has not initialized is refused with `pending_stage_ask_unsupported` and recommends ordinary `send`; holding a waiter until a stage eventually starts would be unbounded. A live recipient disconnect fails promptly. From a foreground child to its launching parent, the existing fresh-subagent handoff path remains unchanged. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. |
-| `status` | Shows connection status, session ID, current group, and the count of active sessions in that group. A `group` filter remains a read-only peek. |
+| `status` | Shows connection status, session ID, every group this session belongs to, and the count of active sessions visible through those memberships. A `group` filter remains a read-only peek. |
 
-To put two plain chat sessions in a private named group, have both call:
+To give two plain chat sessions a private shared membership, have both call:
 
 ```typescript
 intercom({ action: "join", group: "api-review" })
 ```
 
-The broker updates presence in place and sends a `session_left` event to the old group and a `session_joined` event to the new one. Session IDs do not change. A session that stays in `default` cannot list, resolve, or message the joined peers. Use `intercom({ action: "leave" })` to return to the home group resolved at startup; rejected or unacknowledged changes leave the local membership state unchanged. Joining a group does not widen isolation; `contact_supervisor` remains the only capability-based cross-group path.
+Joining is additive: existing memberships remain active, and the broker updates presence without changing the session ID. Use `intercom({ action: "groups" })` to discover all available names and membership markers. `intercom({ action: "leave", group: "api-review" })` removes only that membership; `intercom({ action: "leave" })` resets to the home group resolved at startup. Rejected or unacknowledged changes leave client and inheritance state unchanged. Ordinary delivery requires a shared membership, while `contact_supervisor` retains its capability-based cross-group path.
 
 Sent and received messages are recorded in session history as `intercom_sent` / `intercom_received` entries.
 
@@ -182,13 +183,16 @@ Only a session in the workflow run's Intercom group can queue a message; a cross
 
 ### Groups
 
-Every session belongs to exactly one intercom **group**. Sessions with no group configured share the implicit `"default"` group (so ungrouped sessions all see and message each other, exactly as before). A session in group G can **only** message sessions in group G — cross-group sends are rejected by the broker, not merely hidden from discovery:
+Every session belongs to a non-empty set of intercom **groups**. Sessions with no group configured retain exactly the legacy behavior: they belong only to the implicit `"default"` group and can see and message each other. A session can ordinarily discover, resolve, and message another session when their membership sets intersect; exact-ID sends with no shared membership are rejected by the broker.
 
-- A cross-group target name is unresolvable (`list`/targeting only consider your own group), and a cross-group send by exact session ID is rejected with `"Target session is in a different intercom group"`.
-- `list`/`status` show your own group and only same-group peers. Pass `group: "name"` to `list`/`status` for a **read-only** peek at another group's membership. `send`/`ask` are always locked to your own group and error if you pass a different `group`.
-- `session_joined`/`session_left`/`presence_update` are group-scoped, so you never see peers outside your group appear or disappear.
+- `list` still lists sessions. Without a filter it returns the union of sessions visible through any of your memberships; with `group`, it gives a read-only view of that one group.
+- `groups` lists every currently available group, its connected-session count, and whether this session is a member.
+- `join` adds one membership. `leave` removes the named membership, while bare `leave` resets the complete set to the startup home group.
+- `status` reports the complete membership set. `session_joined`/`session_left`/`presence_update` events are delivered whenever a membership change affects visibility.
 
-A session's home group is resolved with this precedence: explicit stage/task/subagent group > runtime-owned workflow invocation group or inherited launching-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > Intercom `config.json` `"group"` > `"default"`. Each top-level workflow invocation gets a stable non-default group from its persistent run identity; Intercom-capable stages, nested workflows, and their delegated subagents inherit it without authors threading IDs. Explicit `group: "default"` opts back into the shared group. Boolean `true` and the trimmed, case-insensitive strings `"true"`/`"auto"` request an automatically generated subgroup; those string names are reserved. Stages and children without Intercom access receive no group. See [workflows.md](/workflows) for workflow-stage rules. The subagent-only `contact_supervisor` path can cross groups only after a broker capability binds the registered child socket to the issuing supervisor session. The broker, not the client, marks validated traffic as `supervisor`; ordinary `send` frames remain isolated even if a raw client forges that flag, and replies cross back only through an exact broker-recorded `replyTo` match. Parent-held authorization state is restored after broker reconnects. Before an Intercom-enabled foreground child first runs, the parent wrapper may lazy-load and connect the broker provider to mint that exact child's capability; queued children request no capability. The child still connects only when it uses an Intercom delivery path, and claimed decisions or interviews terminally hand off before child send or waiter admission. A claimed provider failure aborts launch, while runtimes with no provider omit supervisor metadata and do not expose a broken channel.
+A session's home group is resolved with this precedence: explicit stage/task/subagent group > runtime-owned workflow invocation group or inherited launching-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > Intercom `config.json` `"group"` > `"default"`. Each top-level workflow invocation gets a stable non-default group from its persistent run identity; Intercom-capable stages, nested workflows, and their delegated subagents inherit it without authors threading IDs. Explicit `group: "default"` opts into the shared group. Boolean `true` and the trimmed, case-insensitive strings `"true"`/`"auto"` request an automatically generated subgroup; those string names are reserved. Stages and children without Intercom access receive no group. See [workflows.md](/workflows) for workflow-stage rules. The subagent-only `contact_supervisor` path remains capability-based and can cross group boundaries; ordinary `send`, `ask`, and replies cannot use it as a bypass.
+
+The broker, not the client, marks validated supervisor traffic. Ordinary `send` frames remain membership-isolated even if a raw client forges a supervisor marker, and replies cross back only through an exact broker-recorded `replyTo` match. Parent-held authorization state is restored after reconnects. Before an Intercom-enabled foreground child first runs, the parent wrapper may lazy-load and connect the broker provider to mint that exact child's capability; queued children request no capability. The child still connects only when it uses an Intercom delivery path, and claimed decisions or interviews terminally hand off before child send or waiter admission. A claimed provider failure aborts launch, while runtimes with no provider omit supervisor metadata and do not expose a broken channel.
 
 ### send vs ask vs reply
 
@@ -381,7 +385,7 @@ The `subagent` tool's `control` options select which control events notify the p
 - **`notifyOn`** — defaults to `["active_long_running", "needs_attention"]`
 - **`notifyChannels`** — defaults to `["event", "intercom"]` (all that are available)
 
-Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `intercom({ action: "status" })` reports connection state and the resolved group for the current session.
+Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `intercom({ action: "status" })` reports connection state and every membership for the current session.
 
 If live peer coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first ordinary Intercom call. A claimed `contact_supervisor` decision or interview can yield before child broker connection because typed admission already identifies the launching parent. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
 
