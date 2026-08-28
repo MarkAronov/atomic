@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Added the full and Flash GLM-5.3 Baseten and OpenRouter mirrors to every built-in Goal, Ralph, and Open Claude Design fallback chain.
+- Added the full and Flash GLM-5.3 direct Z.AI, Z.AI Coding Plan, Baseten, and OpenRouter routes to every built-in Goal, Ralph, and Open Claude Design fallback chain.
 
 ### Fixed
 

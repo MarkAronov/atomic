@@ -122,6 +122,8 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "github-copilot/grok-4.6:xhigh",
       "zai/glm-5.3:high",
       "zai-coding-cn/glm-5.3:high",
+      "zai/glm-5.3-flash:high",
+      "zai-coding-cn/glm-5.3-flash:high",
       "baseten/zai-org/GLM-5.3:high",
       "baseten/zai-org/GLM-5.3-Flash:high",
       "openrouter/anthropic/claude-opus-5:high",

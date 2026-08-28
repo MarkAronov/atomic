@@ -37,6 +37,8 @@ const workflowConfigs = [
 const EXPECTED_GLM_FALLBACKS = [
 	"zai/glm-5.3:high",
 	"zai-coding-cn/glm-5.3:high",
+	"zai/glm-5.3-flash:high",
+	"zai-coding-cn/glm-5.3-flash:high",
 	"baseten/zai-org/GLM-5.3:high",
 	"baseten/zai-org/GLM-5.3-Flash:high",
 	"openrouter/z-ai/glm-5.3:high",
@@ -183,8 +185,12 @@ test("direct Z.AI GLM-5.3 resolves through ModelRuntime with the catalog-support
 	assert.equal(runtime.getModel("zai-coding-cn", "glm-5.3")?.id, "glm-5.3");
 });
 
-test("OpenRouter and Baseten catalogs expose full and Flash GLM-5.3 entries", () => {
+test("every GLM provider catalog exposes full and Flash GLM-5.3 entries", () => {
 	const variants = [
+		["zai", "glm-5.3"],
+		["zai", "glm-5.3-flash"],
+		["zai-coding-cn", "glm-5.3"],
+		["zai-coding-cn", "glm-5.3-flash"],
 		["openrouter", "z-ai/glm-5.3"],
 		["openrouter", "z-ai/glm-5.3-flash"],
 		["baseten", "zai-org/GLM-5.3"],
