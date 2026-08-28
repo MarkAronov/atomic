@@ -163,18 +163,21 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {
-		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
-		const previousContext = previousSnapshot?.context ?? turn.context;
-		const messages =
+		const compactedMessages =
 			turn.toolResults.length > 0
-				? await this._preflightPostToolContext(previousContext.messages, signal)
-				: previousContext.messages;
+				? await this._preflightPostToolContext(turn.context.messages, signal)
+				: turn.context.messages;
+		const compactedContext =
+			compactedMessages === turn.context.messages ? turn.context : { ...turn.context, messages: compactedMessages };
+		const preparedTurn = compactedContext === turn.context ? turn : { ...turn, context: compactedContext };
+		const previousSnapshot = await previousPrepareNextTurnWithContext?.(preparedTurn, signal);
+		const previousContext = previousSnapshot?.context ?? compactedContext;
 
 		return {
 			...previousSnapshot,
 			context: {
 				...previousContext,
-				messages,
+				messages: previousContext.messages,
 				systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
 				tools: this.agent.state.tools.slice(),
 			},

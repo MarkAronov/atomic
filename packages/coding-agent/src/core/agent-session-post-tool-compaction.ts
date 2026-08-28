@@ -3,13 +3,6 @@ import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } fr
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
-import { serializeRetainedTranscript } from "./compaction/transcript-serialization.ts";
-import {
-	convertToLlm,
-	createVerbatimCompactionMessage,
-	isVerbatimCompactionMessage,
-	messageIsLlmVisible,
-} from "./messages.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 
 function postToolFailureMessage(error: unknown): string {
@@ -19,37 +12,6 @@ function postToolFailureMessage(error: unknown): string {
 
 function hardLimitMessage(projectedTokens: number, hardInputLimit: number): string {
 	return `Post-tool context remains over the provider hard input limit after compaction (${projectedTokens} > ${hardInputLimit} tokens); the next provider request was not sent.`;
-}
-
-function rebuildPreparedCompactionContext(
-	preparedMessages: AgentMessage[],
-	result: VerbatimCompactionResult,
-	persistedMessages: AgentMessage[],
-): AgentMessage[] {
-	const boundaryIndex = persistedMessages.findIndex(
-		(message) => message.role === "custom" && isVerbatimCompactionMessage(message),
-	);
-	const boundary = persistedMessages[boundaryIndex];
-	if (boundaryIndex < 0 || boundary?.role !== "custom") return persistedMessages;
-
-	const visiblePreparedMessages = preparedMessages.filter((message) => messageIsLlmVisible(message));
-	const keptTail =
-		result.firstKeptEntryId === null
-			? []
-			: visiblePreparedMessages.slice(
-					Math.max(0, visiblePreparedMessages.length - result.parameters.preserve_recent),
-				);
-	const retainedTail = serializeRetainedTranscript(convertToLlm(keptTail));
-	const separator =
-		retainedTail.length > 0 && result.compactedText.length > 0 ? [{ type: "text" as const, text: "\n\n" }] : [];
-	const replacement = createVerbatimCompactionMessage(
-		result.compactedText,
-		result.tokensBefore,
-		new Date(boundary.timestamp).toISOString(),
-		boundary.details,
-		[...separator, ...retainedTail],
-	);
-	return [...persistedMessages.slice(0, boundaryIndex), replacement, ...persistedMessages.slice(boundaryIndex + 1)];
 }
 
 /** Compact tool-expanded context without scheduling a second Agent continuation. */
@@ -134,13 +96,10 @@ export async function _preflightPostToolContext(
 		}
 
 		this._pendingPostToolCompactionGuard = { hardInputLimit, result };
-		// `AgentState.messages` has an asymmetric accessor pair: the setter copies, the
-		// getter hands back the live internal array. Return a separate array so the loop
-		// and reducer cannot append the next message twice. The durable boundary is based
-		// on persisted entries, while a caller-supplied prepare callback may have returned
-		// a distinct next-turn context; rebuild its protected tail into the provider-bound
-		// boundary without persisting that transient context rewrite.
-		return rebuildPreparedCompactionContext(messages, result, this.agent.state.messages.slice());
+		// `AgentState.messages` has an asymmetric accessor pair: the setter copies,
+		// while the getter returns the live internal array. Return a separate array
+		// so the loop and reducer cannot append the next message twice.
+		return this.agent.state.messages.slice();
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		const aborted =

@@ -541,13 +541,18 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.faux.callCount).toBe(2);
 	});
 
-	it("checks stop once before preparing and compacting a continuing tool turn", async () => {
-		const preparedContextSentinel = "[prepared context sentinel]";
+	it("compacts before caller preparation and preserves the caller's complete replacement context", async () => {
+		const preparedEarlierSentinel = "[caller-prepared earlier context]";
+		const preparedTailOne = "[caller-prepared tail one]";
+		const preparedTailTwo = "[caller-prepared tail two]";
 		const order: string[] = [];
 		let toolTurnStopCalls = 0;
 		let finalTurnStopCalls = 0;
 		let prepareCalls = 0;
-		let originalTurnContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let completedTurnContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let completedTurnSnapshot = "";
+		let callerInputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let callerOutputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
 		let compactionInput = "";
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
@@ -574,6 +579,8 @@ describe("post-tool compaction preflight", () => {
 				agent.shouldStopAfterTurn = (context) => {
 					if (context.toolResults.length > 0) {
 						toolTurnStopCalls++;
+						completedTurnContext = context.context;
+						completedTurnSnapshot = JSON.stringify(context.context.messages);
 						order.push("shouldStopAfterTurn");
 					} else {
 						finalTurnStopCalls++;
@@ -583,20 +590,32 @@ describe("post-tool compaction preflight", () => {
 				agent.prepareNextTurnWithContext = (context) => {
 					prepareCalls++;
 					order.push("prepareNextTurnWithContext");
-					originalTurnContext = context.context;
-					const originalToolResult = context.context.messages.at(-1);
-					expect(originalToolResult?.role).toBe("toolResult");
-					if (originalToolResult?.role !== "toolResult") throw new Error("expected a tool result");
-					const preparedToolResult = {
-						...originalToolResult,
-						content: originalToolResult.content.map((part) =>
-							part.type === "text" ? { ...part, text: `${part.text}\n${preparedContextSentinel}` } : part,
-						),
-					};
-					const preparedMessages = [...context.context.messages.slice(0, -1), preparedToolResult];
+					callerInputContext = context.context;
+					const compactedInput = JSON.stringify(context.context.messages);
+					expect(compactedInput).toContain("[User]: retained");
+					expect(compactedInput).not.toContain(preparedEarlierSentinel);
+					const preparedMessages: import("@earendil-works/pi-agent-core").AgentMessage[] = [
+						{
+							role: "user",
+							content: [{ type: "text", text: preparedEarlierSentinel }],
+							timestamp: 1,
+						},
+						...context.context.messages,
+						{
+							role: "user",
+							content: [{ type: "text", text: preparedTailOne }],
+							timestamp: 2,
+						},
+						{
+							role: "user",
+							content: [{ type: "text", text: preparedTailTwo }],
+							timestamp: 3,
+						},
+					];
+					callerOutputContext = { ...context.context, messages: preparedMessages };
+					expect(callerOutputContext).not.toBe(context.context);
 					expect(preparedMessages).not.toBe(context.context.messages);
-					expect(preparedToolResult).not.toBe(originalToolResult);
-					return { context: { ...context.context, messages: preparedMessages } };
+					return { context: callerOutputContext };
 				};
 			},
 		});
@@ -616,36 +635,27 @@ describe("post-tool compaction preflight", () => {
 
 		await harness.session.prompt(longPrompt);
 
-		expect(order).toEqual(["shouldStopAfterTurn", "prepareNextTurnWithContext", "compaction", "provider"]);
-		expect(compactionInput).toContain(preparedContextSentinel);
+		expect(order).toEqual(["shouldStopAfterTurn", "compaction", "prepareNextTurnWithContext", "provider"]);
+		expect(compactionInput).not.toContain(preparedEarlierSentinel);
 		expect(toolTurnStopCalls).toBe(1);
 		expect(finalTurnStopCalls).toBe(1);
 		expect(prepareCalls).toBe(1);
-		expect(harness.faux.contexts[1]?.messages).toEqual([
-			expect.objectContaining({
-				role: "user",
-				content: [
-					expect.objectContaining({
-						type: "text",
-						text: expect.stringContaining("[Tool result]: "),
-					}),
-				],
-			}),
-		]);
-		expect(harness.faux.contexts[1]?.messages[0]).toMatchObject({
-			role: "user",
-			content: [{ type: "text", text: expect.stringContaining("[User]: retained") }],
-		});
 		const resumedText = JSON.stringify(harness.faux.contexts[1]?.messages);
-		expect(resumedText).toContain(preparedContextSentinel);
-		expect(resumedText.indexOf("[Tool result]: ")).toBeLessThan(resumedText.indexOf(preparedContextSentinel));
-		expect(JSON.stringify(originalTurnContext?.messages)).not.toContain(preparedContextSentinel);
+		expect(resumedText).toContain(preparedEarlierSentinel);
+		expect(resumedText).toContain("[User]: retained");
+		expect(resumedText).toContain(preparedTailOne);
+		expect(resumedText).toContain(preparedTailTwo);
+		expect(resumedText.indexOf(preparedEarlierSentinel)).toBeLessThan(resumedText.indexOf(preparedTailOne));
+		expect(JSON.stringify(completedTurnContext?.messages)).toBe(completedTurnSnapshot);
+		expect(JSON.stringify(completedTurnContext?.messages)).not.toContain(preparedEarlierSentinel);
+		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(preparedEarlierSentinel);
+		expect(JSON.stringify(callerOutputContext?.messages)).toContain(preparedEarlierSentinel);
 	});
 
-	it("keeps the context-visible prepared tool pair when an excluded message trails it", async () => {
-		const preparedTailSentinel = "[prepared visible tool result]";
+	it("passes the compacted visible tool pair through caller preparation while excluding hidden additions", async () => {
+		const preparedVisibleSentinel = "[caller prepared visible message]";
 		const excludedTailSentinel = "[excluded prepared tail]";
-		let originalTurnContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let callerInputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
 		let compactionInput = "";
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
@@ -663,29 +673,27 @@ describe("post-tool compaction preflight", () => {
 			extensionFactories: [compactOffline],
 			configureAgent: (agent) => {
 				agent.prepareNextTurnWithContext = (context) => {
-					originalTurnContext = context.context;
-					const originalToolResult = context.context.messages.at(-1);
-					expect(originalToolResult?.role).toBe("toolResult");
-					if (originalToolResult?.role !== "toolResult") throw new Error("expected a tool result");
-					const preparedToolResult = {
-						...originalToolResult,
-						content: originalToolResult.content.map((part) =>
-							part.type === "text" ? { ...part, text: `${part.text}\n${preparedTailSentinel}` } : part,
-						),
-					};
+					callerInputContext = context.context;
+					const compactedText = JSON.stringify(context.context.messages);
+					expect(compactedText).toContain("[Assistant tool calls]: large_result()");
+					expect(compactedText).toContain("[Tool result]: ");
 					return {
 						context: {
 							...context.context,
 							messages: [
-								...context.context.messages.slice(0, -1),
-								preparedToolResult,
+								...context.context.messages,
+								{
+									role: "user",
+									content: [{ type: "text", text: preparedVisibleSentinel }],
+									timestamp: 1,
+								},
 								{
 									role: "custom",
 									customType: "excluded-prepared-tail",
 									content: excludedTailSentinel,
 									display: false,
 									excludeFromContext: true,
-									timestamp: 1,
+									timestamp: 2,
 								},
 							],
 						},
@@ -709,15 +717,15 @@ describe("post-tool compaction preflight", () => {
 
 		await harness.session.prompt(longPrompt);
 
-		expect(compactionInput).toContain(preparedTailSentinel);
-		expect(compactionInput).toContain(excludedTailSentinel);
+		expect(compactionInput).not.toContain(preparedVisibleSentinel);
+		expect(compactionInput).not.toContain(excludedTailSentinel);
 		const resumedText = JSON.stringify(harness.faux.contexts[1]?.messages);
 		expect(resumedText).toContain("[Assistant tool calls]: large_result()");
 		expect(resumedText).toContain("[Tool result]: ");
-		expect(resumedText).toContain(preparedTailSentinel);
+		expect(resumedText).toContain(preparedVisibleSentinel);
 		expect(resumedText).not.toContain(excludedTailSentinel);
-		expect(JSON.stringify(originalTurnContext?.messages)).not.toContain(preparedTailSentinel);
-		expect(JSON.stringify(originalTurnContext?.messages)).not.toContain(excludedTailSentinel);
+		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(preparedVisibleSentinel);
+		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(excludedTailSentinel);
 	});
 
 	it("skips preparation when the stop callback ends the run", async () => {
