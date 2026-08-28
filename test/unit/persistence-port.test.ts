@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.ts";
+import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 import { makePersistencePort } from "../../packages/workflows/src/extension/index.js";
 

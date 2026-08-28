@@ -7,12 +7,12 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
-import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
-import { createExtensionAPI } from "../../packages/coding-agent/src/core/extensions/loader-api.ts";
-import { createExtensionRuntime as createHostExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
-import { ExtensionRunner, emitSessionShutdownEvent } from "../../packages/coding-agent/src/core/extensions/runner.ts";
-import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.ts";
-import type { Extension } from "../../packages/coding-agent/src/core/extensions/types.ts";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { createExtensionAPI } from "../../packages/coding-agent/src/core/extensions/loader-api.js";
+import { createExtensionRuntime as createHostExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.js";
+import { ExtensionRunner, emitSessionShutdownEvent } from "../../packages/coding-agent/src/core/extensions/runner.js";
+import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.js";
+import type { Extension } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 import { makePersistencePort } from "../../packages/workflows/src/extension/index.js";
@@ -23,7 +23,7 @@ import type { RunResult } from "../../packages/workflows/src/runs/foreground/exe
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
-import { sleep } from "../helpers/runtime.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const WAIT_FOR_RUN_MS = 5_000;
 
