@@ -137,6 +137,37 @@ describe("post-tool compaction preflight", () => {
 		assert.equal(harness.session.compactionReason, undefined);
 	});
 
+	it("includes steering queued during post-tool compaction in the resumed request", async () => {
+		const gate = createPostToolCompactionGate();
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-post-tool-steering", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after steering",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [gate.factory],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const prompt = harness.session.prompt(longPrompt);
+		await gate.started;
+		await harness.session.steer("change direction");
+		gate.release();
+		await prompt;
+
+		expect(harness.eventsOfType("agent_start")).toHaveLength(1);
+		expect(JSON.stringify(harness.faux.contexts[1]?.messages)).toContain("change direction");
+		expect(harness.faux.callCount).toBe(2);
+	});
+
 	it("lets manual compaction take over a gated post-tool preflight", async () => {
 		const gate = createPostToolCompactionGate();
 		const harness = await createHarnessWithExtensions({
@@ -430,6 +461,214 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.faux.callCount).toBe(1);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
 		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
+
+	it("checks stop before skipping preparation for a terminating tool batch", async () => {
+		const order: string[] = [];
+		let stopContext:
+			| Parameters<NonNullable<import("@earendil-works/pi-agent-core").Agent["shouldStopAfterTurn"]>>[0]
+			| undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: [{ toolCalls: [{ id: "call-terminate-order", name: "large_result", args: {} }] }],
+			baseToolsOverride: { large_result: terminatingLargeResultTool },
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					order.push("shouldStopAfterTurn");
+					stopContext = context;
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					order.push("prepareNextTurnWithContext");
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("terminate after the tool");
+
+		expect(order).toEqual(["shouldStopAfterTurn"]);
+		expect(harness.faux.callCount).toBe(1);
+		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
+		expect(stopContext?.message.content).toEqual([
+			expect.objectContaining({ type: "toolCall", id: "call-terminate-order" }),
+		]);
+		expect(stopContext?.toolResults).toHaveLength(1);
+		expect(stopContext?.context.messages.at(-1)).toMatchObject({
+			role: "toolResult",
+			toolCallId: "call-terminate-order",
+		});
+	});
+
+	it("checks stop once before preparing and compacting a continuing tool turn", async () => {
+		const order: string[] = [];
+		let toolTurnStopCalls = 0;
+		let finalTurnStopCalls = 0;
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-continue-order", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				{ text: "completed after preparation", beforeEmit: () => order.push("provider") },
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", () => {
+						order.push("compaction");
+						return { compactedText: "[User]: retained" };
+					});
+				},
+			],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					if (context.toolResults.length > 0) {
+						toolTurnStopCalls++;
+						order.push("shouldStopAfterTurn");
+					} else {
+						finalTurnStopCalls++;
+					}
+					return false;
+				};
+				agent.prepareNextTurnWithContext = (context) => {
+					prepareCalls++;
+					order.push("prepareNextTurnWithContext");
+					return { context: context.context };
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt(longPrompt);
+
+		expect(order).toEqual(["shouldStopAfterTurn", "prepareNextTurnWithContext", "compaction", "provider"]);
+		expect(toolTurnStopCalls).toBe(1);
+		expect(finalTurnStopCalls).toBe(1);
+		expect(prepareCalls).toBe(1);
+		expect(harness.faux.contexts[1]?.messages).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining("[Tool result]: "),
+					}),
+				],
+			}),
+		]);
+		expect(harness.faux.contexts[1]?.messages[0]).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: expect.stringContaining("[User]: retained") }],
+		});
+	});
+
+	it("skips preparation when the stop callback ends the run", async () => {
+		let stopCalls = 0;
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: ["finished"],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					stopCalls++;
+					return true;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("finish without a tool");
+
+		expect(stopCalls).toBe(1);
+		expect(prepareCalls).toBe(0);
+		expect(harness.faux.callCount).toBe(1);
+	});
+
+	it("checks stop once and skips preparation after a final response with no queued work", async () => {
+		let stopCalls = 0;
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: ["finished"],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					stopCalls++;
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("finish without queued work");
+
+		expect(stopCalls).toBe(1);
+		expect(prepareCalls).toBe(0);
+		expect(harness.faux.callCount).toBe(1);
+	});
+
+	it("prepares a final response only when queued steering creates another turn", async () => {
+		let markResponseStarted!: () => void;
+		const responseStarted = new Promise<void>((resolve) => {
+			markResponseStarted = resolve;
+		});
+		let releaseResponse!: () => void;
+		const responseReleased = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
+		});
+		const order: string[] = [];
+		let prepareCalls = 0;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{
+					text: "first response",
+					beforeEmit: async () => {
+						markResponseStarted();
+						await responseReleased;
+					},
+				},
+				"response after steering",
+			],
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = () => {
+					order.push("shouldStopAfterTurn");
+					return false;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					order.push("prepareNextTurnWithContext");
+					return undefined;
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const prompt = harness.session.prompt("finish, unless steering is queued");
+		await responseStarted;
+		await harness.session.steer("continue with this direction");
+		releaseResponse();
+		await prompt;
+
+		expect(order).toEqual(["shouldStopAfterTurn", "prepareNextTurnWithContext", "shouldStopAfterTurn"]);
+		expect(prepareCalls).toBe(1);
+		expect(harness.faux.callCount).toBe(2);
+		expect(JSON.stringify(harness.faux.contexts[1]?.messages)).toContain("continue with this direction");
 	});
 
 	it("does not compact an all-blocked terminating batch", async () => {
