@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `ui_prompt_start` and `ui_prompt_end` extension events around blocking `ctx.ui` prompts so integrations can distinguish active agent work from waiting for user input. Nested and overlapping prompts form one balanced outer span, and prompt failures or UI-context replacement still emit the matching end notification without delaying the prompt UI. ([#5329](https://github.com/earendil-works/pi/issues/5329))
+
 ## [0.9.16-alpha.8] - 2026-08-27
 
 ### Breaking Changes
