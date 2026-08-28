@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.8] - 2026-08-27
+
 ### Breaking Changes
 
 - Removed the public `workflow send` action. Use `workflow answer` for pending workflow prompts and ordinary Intercom for workflow-stage communication.
