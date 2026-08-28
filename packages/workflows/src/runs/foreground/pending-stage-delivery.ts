@@ -8,6 +8,7 @@ type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
 type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 
 import { getDurableBackend } from "../../durable/factory.js";
+import { durableBackendForRun } from "../../durable/run-owner-backend.js";
 import { workflowPendingStageRouteCapability } from "../../shared/pending-stage-route-capability.js";
 import type { Store } from "../../shared/store.js";
 import type { PendingStageMessage } from "../../shared/store-types.js";
@@ -75,21 +76,26 @@ async function deliverPendingStageMessages(
 	stageName: string,
 	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 ): Promise<void> {
-	const stageKeys = new Set(stageId === stageName ? [stageId] : [stageId, stageName]);
+	const candidateIds = new Set(
+		[
+			...activeStore.pendingStageMessagesFor(runId, stageId),
+			...activeStore.pendingStageMessagesFor(runId, stageName),
+		].map((entry) => entry.id),
+	);
 	const entries = (activeStore.runs().find((run) => run.id === runId)?.pendingStageMessages ?? [])
 		.map((entry, index) => ({ entry, index }))
-		.filter(
-			({ entry }) =>
-				entry.status === "queued" &&
-				(entry.stageId === stageId || (entry.stageId === undefined && stageKeys.has(entry.stageKey))),
-		)
+		.filter(({ entry }) => candidateIds.has(entry.id))
 		.sort(
 			(left, right) =>
 				(left.entry.admissionOrder ?? left.index + 1) - (right.entry.admissionOrder ?? right.index + 1) ||
 				left.index - right.index,
 		)
 		.map(({ entry }) => entry);
-	const backend = getDurableBackend();
+	const rootBackend = getDurableBackend();
+	const backend = durableBackendForRun(rootBackend, activeStore.runs(), runId);
+	if (backend === undefined) {
+		throw new Error(`atomic-workflows: workflow run ${runId} has no durable owner for pending-stage delivery`);
+	}
 	for (const entry of entries) {
 		const releaseClaim = claimPendingDelivery(activeStore, runId, entry.stageKey, entry.id);
 		if (releaseClaim === undefined) continue;

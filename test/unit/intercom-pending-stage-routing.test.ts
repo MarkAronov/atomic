@@ -292,6 +292,140 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "reviewer"), []);
 		dispose();
 	});
+	test("queues a known nested child stage through its root durable owner", async () => {
+		const childRunId = "22222222-2222-4222-8222-222222222222";
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "root-reviewer-id",
+					name: "root-reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "stage:root-reviewer:1",
+					pendingStageDeliveryAvailable: true,
+				},
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: RUN_ID,
+			parentStageId: "child-boundary",
+			rootRunId: RUN_ID,
+			stages: [
+				{
+					id: "child-reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "stage:reviewer:1",
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 2,
+		});
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		const rootMessage = message("root-existing", 100);
+		assert.equal(
+			(
+				await store.queueStageMessage(
+					{
+						runId: RUN_ID,
+						stageKey: "root-reviewer",
+						from: sender({} as net.Socket).info,
+						message: rootMessage,
+						queuedAt: "2026-08-27T17:00:00.000Z",
+					},
+					GROUP,
+					GROUP,
+					backend,
+				)
+			)?.ok,
+			true,
+		);
+		const listeners = new Map<string, (payload: unknown) => void>();
+		const dispose = registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit() {},
+					on(event: string, listener: (payload: unknown) => void) {
+						listeners.set(event, listener);
+						return () => listeners.delete(event);
+					},
+				},
+			},
+			store,
+		);
+		const nestedMessage = message("nested-child", 200);
+		const payload: {
+			handled: boolean;
+			completion?: Promise<{ readonly outcome: "queued"; readonly position: number }>;
+			from: SessionInfo;
+			runId: string;
+			stageKey: string;
+			message: Message;
+		} = {
+			handled: false,
+			from: sender({} as net.Socket).info,
+			runId: childRunId,
+			stageKey: "reviewer",
+			message: nestedMessage,
+		};
+
+		listeners.get("atomic:workflow-pending-stage-message")?.(payload);
+
+		assert.equal(payload.handled, true);
+		assert.deepEqual(await payload.completion, { outcome: "queued", position: 1 });
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, "root-reviewer")[0]?.message.id, rootMessage.id);
+		assert.equal(store.pendingStageMessagesFor(childRunId, "reviewer")[0]?.message.id, nestedMessage.id);
+		assert.equal(backend.getWorkflow(childRunId), undefined);
+		assert.deepEqual(
+			backend.getWorkflow(RUN_ID)?.pendingStageMessages?.map((entry) => [entry.runId, entry.message.id]),
+			[
+				[RUN_ID, rootMessage.id],
+				[childRunId, nestedMessage.id],
+			],
+		);
+		const deliveries: Array<{ readonly id: string; readonly senderId: string; readonly senderName?: string }> = [];
+		const drain = async () =>
+			await createWorkflowPendingStageDelivery(store, childRunId, "child-reviewer-id", "reviewer").deliverPending(
+				async (from, entryMessage) => {
+					deliveries.push({ id: entryMessage.id, senderId: from.id, senderName: from.name });
+				},
+			);
+		await drain();
+		await drain();
+		assert.deepEqual(deliveries, [{ id: nestedMessage.id, senderId: "sender-id", senderName: "planner" }]);
+		assert.deepEqual(
+			backend.getWorkflow(RUN_ID)?.pendingStageMessages?.map((entry) => [entry.runId, entry.status]),
+			[
+				[RUN_ID, "queued"],
+				[childRunId, "delivered"],
+			],
+		);
+		dispose();
+	});
 });
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {

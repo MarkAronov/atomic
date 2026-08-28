@@ -1,4 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
+import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import type { Store } from "../shared/store.js";
@@ -36,8 +37,10 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	let disposed = false;
 	const announceOwners = (): void => {
 		if (disposed) return;
-		for (const run of activeStore.runs()) {
-			const rootRunId = run.rootRunId ?? run.id;
+		const runs = activeStore.runs();
+		for (const run of runs) {
+			const rootRunId = durableRootRunIdForRun(runs, run.id);
+			if (rootRunId === undefined) continue;
 			pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
@@ -49,8 +52,11 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	announceOwners();
 	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
-		const run = activeStore.runs().find((candidate) => candidate.id === payload.runId);
+		const runs = activeStore.runs();
+		const run = runs.find((candidate) => candidate.id === payload.runId);
 		if (run === undefined) return;
+		const rootRunId = durableRootRunIdForRun(runs, run.id);
+		if (rootRunId === undefined) return;
 		if (payload.live === true) {
 			if (knownLiveStage(run, payload.stageKey) === undefined) return;
 			payload.handled = true;
@@ -63,7 +69,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		payload.completion = queueAndPersist(
 			activeStore,
 			payload,
-			workflowInvocationIntercomGroup(run.rootRunId ?? run.id),
+			workflowInvocationIntercomGroup(rootRunId),
 			stage.pendingStageDeliveryAvailable === true,
 		);
 	});
@@ -160,7 +166,9 @@ async function queueAndPersist(
 		message: event.message,
 		queuedAt: new Date().toISOString(),
 	};
-	const backend = getDurableBackend();
+	const rootBackend = getDurableBackend();
+	const backend = durableBackendForRun(rootBackend, activeStore.runs(), event.runId);
+	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const result: PendingStageQueueResult | undefined = await activeStore.queueStageMessage(
 		request,
 		event.from.group,

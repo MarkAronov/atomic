@@ -117,11 +117,25 @@ async function waitForBroker(): Promise<void> {
 	throw new Error(`Broker socket did not become ready: ${brokerOutput}`);
 }
 
-async function register(client: WireClient, name: string, group: string): Promise<string> {
+async function register(
+	client: WireClient,
+	name: string | undefined,
+	group: string,
+	returnAddress?: string,
+): Promise<string> {
 	await client.connected();
 	client.send({
 		type: "register",
-		session: { name, group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+		session: {
+			...(name === undefined ? {} : { name }),
+			group,
+			cwd: "/repo",
+			model: "test",
+			pid: 1,
+			startedAt: 1,
+			lastActivity: 1,
+		},
+		...(returnAddress === undefined ? {} : { returnAddress }),
 	});
 	return (await client.next("registered")).sessionId;
 }
@@ -140,7 +154,8 @@ async function forwardNextLiveMessage(owner: WireClient): Promise<BrokerMessage 
 	return request;
 }
 
-beforeAll(async () => {
+async function startBroker(): Promise<void> {
+	brokerOutput = "";
 	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: ["ignore", "pipe", "pipe"],
@@ -152,15 +167,23 @@ beforeAll(async () => {
 		brokerOutput += String(data);
 	});
 	await waitForBroker();
-});
+}
+
+async function stopBroker(): Promise<void> {
+	if (broker?.exitCode === null) {
+		const stopped = new Promise<void>((resolveExit) => broker?.once("exit", () => resolveExit()));
+		broker.kill("SIGTERM");
+		await stopped;
+	}
+	broker = undefined;
+}
+
+beforeAll(startBroker);
 
 afterAll(async () => {
 	for (const client of realClients) await client.disconnect();
 	for (const client of clients) client.socket.destroy();
-	if (broker?.exitCode === null) {
-		broker.kill("SIGTERM");
-		await new Promise<void>((resolveExit) => broker?.once("exit", () => resolveExit()));
-	}
+	await stopBroker();
 	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 	rmSync(agentDir, { recursive: true, force: true });
@@ -224,8 +247,16 @@ test("broker flushes registration_failed before an orderly close and ignores lat
 	assert.equal(brokerOutput.includes("write after end"), false, brokerOutput);
 });
 
-function productionRegistration(name: string, group: string) {
-	return { name, group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 };
+function productionRegistration(name: string | undefined, group: string) {
+	return {
+		...(name === undefined ? {} : { name }),
+		group,
+		cwd: "/repo",
+		model: "test",
+		pid: 1,
+		startedAt: 1,
+		lastActivity: 1,
+	};
 }
 
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
@@ -329,6 +360,366 @@ test("production clients keep the pending owner and live stage connected when a 
 	assert.equal(sender.isConnected(), true);
 	await Promise.all([owner.listSessions(), stage.listSessions(), sender.listSessions()]);
 	assert.equal(brokerOutput.includes("write after end"), false);
+});
+
+test("pending-stage notifications prefer an exact live UUID and fail closed across reconnect alias trust controls", async () => {
+	const runId = "a366bf54-90e2-4238-8013-62324967aa85";
+	const group = `workflow:${runId}`;
+	const capability = "notification-route-capability";
+	const owner = new IntercomClient();
+	const original = new IntercomClient();
+	const crossGroup = new IntercomClient();
+	const joinedFromAnotherGroup = new IntercomClient();
+	const mutableName = new IntercomClient();
+	const duplicateA = new IntercomClient();
+	const duplicateB = new IntercomClient();
+	const unauthorized = new IntercomClient();
+	const scenarioClients = [
+		owner,
+		original,
+		crossGroup,
+		joinedFromAnotherGroup,
+		mutableName,
+		duplicateA,
+		duplicateB,
+		unauthorized,
+	];
+	for (const client of scenarioClients) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("notification-owner", group));
+	owner.registerPendingStageRoute(runId, group, capability);
+	await owner.listSessions();
+
+	const visible = new Map<InstanceType<typeof IntercomClient>, Message[]>();
+	const acknowledge = (client: InstanceType<typeof IntercomClient>): void => {
+		visible.set(client, []);
+		client.on("pending_stage_notification", (request: { requestId: string; message: Message }) => {
+			visible.get(client)?.push(request.message);
+			client.respondPendingStageNotification(request.requestId, true);
+		});
+	};
+	for (const client of scenarioClients.slice(1)) acknowledge(client);
+
+	await original.connect(productionRegistration("exact-original", group));
+	assert.equal(
+		(
+			await owner.sendPendingStageNotification(
+				runId,
+				capability,
+				original.sessionId ?? "missing",
+				"ignored-alias-while-exact-is-live",
+				{ text: "exact path", messageId: "notification-exact" },
+			)
+		).delivered,
+		true,
+	);
+	assert.equal(visible.get(original)?.length, 1);
+
+	await crossGroup.connect(productionRegistration("planner", "other-workflow-group"));
+	const crossGroupResult = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-cross-group-id",
+		"planner",
+		{ text: "must stay in workflow group", messageId: "notification-cross-group" },
+	);
+	assert.equal(crossGroupResult.delivered, false);
+	assert.equal(crossGroupResult.reason, "Session not found");
+	assert.equal(visible.get(crossGroup)?.length, 0);
+
+	await joinedFromAnotherGroup.connect(productionRegistration("joined-planner", "outside-at-registration"));
+	assert.equal(await joinedFromAnotherGroup.updatePresenceAcked({ group }), group);
+	const joinedResult = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-joined-id",
+		"joined-planner",
+		{ text: "mutable group is not authority", messageId: "notification-joined-group" },
+	);
+	assert.equal(joinedResult.delivered, false);
+	assert.equal(visible.get(joinedFromAnotherGroup)?.length, 0);
+
+	await mutableName.connect(productionRegistration("different-registration-name", group));
+	assert.equal(mutableName.updatePresence({ name: "mutated-planner" }), true);
+	await mutableName.listSessions();
+	const mutableNameResult = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-mutated-name-id",
+		"mutated-planner",
+		{ text: "mutable name is not authority", messageId: "notification-mutated-name" },
+	);
+	assert.equal(mutableNameResult.delivered, false);
+	assert.equal(visible.get(mutableName)?.length, 0);
+
+	await duplicateA.connect(productionRegistration("duplicate-planner", group));
+	await duplicateB.connect(productionRegistration("duplicate-planner", group));
+	const ambiguousResult = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-ambiguous-id",
+		"duplicate-planner",
+		{ text: "ambiguous aliases fail closed", messageId: "notification-ambiguous" },
+	);
+	assert.equal(ambiguousResult.delivered, false);
+	assert.equal(visible.get(duplicateA)?.length, 0);
+	assert.equal(visible.get(duplicateB)?.length, 0);
+
+	assert.equal(await duplicateB.updatePresenceAcked({ group: "presence-moved-out" }), "presence-moved-out");
+	const stillAmbiguousResult = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-still-ambiguous-id",
+		"duplicate-planner",
+		{ text: "mutable group cannot resolve immutable ambiguity", messageId: "notification-still-ambiguous" },
+	);
+	assert.equal(stillAmbiguousResult.delivered, false);
+	assert.equal(visible.get(duplicateA)?.length, 0);
+	assert.equal(visible.get(duplicateB)?.length, 0);
+
+	await unauthorized.connect(productionRegistration("unauthorized-notifier", group));
+	const unauthorizedResult = await unauthorized.sendPendingStageNotification(
+		runId,
+		capability,
+		original.sessionId ?? "missing",
+		"exact-original",
+		{ text: "only the route owner may notify", messageId: "notification-unauthorized" },
+	);
+	assert.equal(unauthorizedResult.delivered, false);
+	assert.equal(unauthorizedResult.reason, "Pending-stage notification is not authorized");
+	assert.equal(visible.get(original)?.length, 1);
+});
+
+test("a recipient disconnect before notification admission leaves the stable delivery retryable", async () => {
+	const runId = "ee635682-0de7-4e0a-8750-957b3efbeb76";
+	const group = `workflow:${runId}`;
+	const capability = "notification-crash-capability";
+	const crashReturnAddress = "host-session-crash-planner";
+	const owner = new IntercomClient();
+	const crashingRecipient = new IntercomClient(crashReturnAddress);
+	for (const client of [owner, crashingRecipient]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("notification-crash-owner", group));
+	owner.registerPendingStageRoute(runId, group, capability);
+	await owner.listSessions();
+	await crashingRecipient.connect(productionRegistration("crash-planner", group));
+	crashingRecipient.once("pending_stage_notification", () => {
+		void crashingRecipient.disconnect();
+	});
+	const notification = {
+		text: "correlated terminal failure",
+		replyTo: "queued-message-before-crash",
+		replyError: "stage skipped before startup",
+		messageId: "stable-notification-after-crash",
+	};
+	const failedAttempt = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-before-crash",
+		"crash-planner",
+		notification,
+		crashReturnAddress,
+	);
+	assert.equal(failedAttempt.delivered, false);
+	assert.equal(failedAttempt.reason, "Recipient disconnected before acknowledging the pending-stage notification");
+
+	const restartedRecipient = new IntercomClient(crashReturnAddress);
+	realClients.add(restartedRecipient);
+	restartedRecipient.on("error", () => {});
+	const visibleIds: string[] = [];
+	restartedRecipient.on("pending_stage_notification", (request: { requestId: string; message: Message }) => {
+		visibleIds.push(request.message.id);
+		restartedRecipient.respondPendingStageNotification(request.requestId, true);
+	});
+	await restartedRecipient.connect(productionRegistration("crash-planner", group));
+	const deliveredRetry = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-before-crash",
+		"crash-planner",
+		notification,
+		crashReturnAddress,
+	);
+	assert.equal(deliveredRetry.delivered, true);
+	assert.deepEqual(visibleIds, [notification.messageId]);
+
+	const acknowledgedReplay = await owner.sendPendingStageNotification(
+		runId,
+		capability,
+		"obsolete-before-crash",
+		"crash-planner",
+		notification,
+		crashReturnAddress,
+	);
+	assert.equal(acknowledgedReplay.delivered, true);
+	assert.deepEqual(visibleIds, [notification.messageId]);
+});
+
+test("stable return addresses restore nameless and duplicate-name recipients across broker restart", async () => {
+	const runId = "99cce476-8f65-4d40-b188-f47b78132257";
+	const group = `workflow:${runId}`;
+	const capability = "return-address-route-capability";
+	const addresses = {
+		nameless: "host-session-nameless",
+		duplicateA: "host-session-duplicate-a",
+		duplicateB: "host-session-duplicate-b",
+	} as const;
+	const ownerBefore = new IntercomClient("host-session-owner-before");
+	const beforeRecipients = [
+		{ key: "nameless", name: undefined, client: new IntercomClient(addresses.nameless) },
+		{ key: "duplicateA", name: "duplicate-planner", client: new IntercomClient(addresses.duplicateA) },
+		{ key: "duplicateB", name: "duplicate-planner", client: new IntercomClient(addresses.duplicateB) },
+	] as const;
+	for (const client of [ownerBefore, ...beforeRecipients.map(({ client }) => client)]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await ownerBefore.connect(productionRegistration("return-address-owner", group));
+	ownerBefore.registerPendingStageRoute(runId, group, capability);
+	await ownerBefore.listSessions();
+	for (const recipient of beforeRecipients)
+		await recipient.client.connect(productionRegistration(recipient.name, group));
+
+	const durableRequests: PendingStageMessageRequest[] = [];
+	for (const recipient of beforeRecipients) {
+		const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+			ownerBefore.once("pending_stage_message", resolveRequest);
+		});
+		const send = recipient.client.send(`${runId}:reviewer`, {
+			text: `queued by ${recipient.key}`,
+			messageId: `return-address-${recipient.key}`,
+		});
+		const request = await pendingRequest;
+		ownerBefore.respondPendingStageMessage(request.requestId, {
+			outcome: "queued",
+			position: durableRequests.length + 1,
+		});
+		assert.equal((await send).queued, true);
+		durableRequests.push(request);
+	}
+	assert.deepEqual(
+		durableRequests.map(({ senderReturnAddress, senderRegistrationName }) => ({
+			senderReturnAddress,
+			senderRegistrationName,
+		})),
+		[
+			{ senderReturnAddress: addresses.nameless, senderRegistrationName: undefined },
+			{ senderReturnAddress: addresses.duplicateA, senderRegistrationName: "duplicate-planner" },
+			{ senderReturnAddress: addresses.duplicateB, senderRegistrationName: "duplicate-planner" },
+		],
+	);
+
+	await stopBroker();
+	await startBroker();
+	const ownerAfter = new IntercomClient("host-session-owner-after");
+	const afterRecipients = [
+		{ key: "nameless", name: undefined, address: addresses.nameless, client: new IntercomClient(addresses.nameless) },
+		{
+			key: "duplicateA",
+			name: "duplicate-planner",
+			address: addresses.duplicateA,
+			client: new IntercomClient(addresses.duplicateA),
+		},
+		{
+			key: "duplicateB",
+			name: "duplicate-planner",
+			address: addresses.duplicateB,
+			client: new IntercomClient(addresses.duplicateB),
+		},
+	] as const;
+	for (const client of [ownerAfter, ...afterRecipients.map(({ client }) => client)]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await ownerAfter.connect(productionRegistration("return-address-owner", group));
+	ownerAfter.registerPendingStageRoute(runId, group, capability);
+	await ownerAfter.listSessions();
+
+	const visible = new Map<string, string[]>();
+	for (const recipient of afterRecipients) {
+		visible.set(recipient.key, []);
+		recipient.client.on("pending_stage_notification", (request: { requestId: string; message: Message }) => {
+			visible.get(recipient.key)?.push(request.message.id);
+			recipient.client.respondPendingStageNotification(request.requestId, true);
+		});
+		await recipient.client.connect(productionRegistration(recipient.name, group));
+	}
+
+	const rawNameless = new WireClient();
+	const rawSameName = new WireClient();
+	const rawPresence = new WireClient();
+	const rawCrossGroup = new WireClient();
+	await register(rawNameless, undefined, group);
+	await register(rawSameName, "duplicate-planner", group);
+	await register(rawPresence, "different-registration-name", group);
+	rawPresence.sendBatch([
+		{
+			type: "presence",
+			name: "duplicate-planner",
+			returnAddress: addresses.duplicateB,
+			requestId: "return-address-presence",
+		},
+	]);
+	await rawPresence.next("presence_ack", (frame) => frame.requestId === "return-address-presence");
+	await register(rawCrossGroup, "duplicate-planner", "other-workflow-group", addresses.duplicateA);
+
+	const ambiguous = new IntercomClient(addresses.nameless);
+	realClients.add(ambiguous);
+	ambiguous.on("error", () => {});
+	await ambiguous.connect(productionRegistration(undefined, group));
+	const ambiguousResult = await ownerAfter.sendPendingStageNotification(
+		runId,
+		capability,
+		durableRequests[0]?.from.id ?? "missing",
+		undefined,
+		{ text: "ambiguous capability", messageId: "return-address-ambiguous" },
+		addresses.nameless,
+	);
+	assert.equal(ambiguousResult.delivered, false);
+	assert.equal(ambiguousResult.reason, "Session not found");
+	assert.deepEqual(visible.get("nameless"), []);
+	await ambiguous.disconnect();
+	await ownerAfter.listSessions();
+
+	for (const [index, request] of durableRequests.entries()) {
+		const notification = {
+			text: `terminal notice for ${request.message.id}`,
+			replyTo: request.message.id,
+			replyError: "stage skipped before startup",
+			messageId: `notice-${request.message.id}`,
+		};
+		const delivered = await ownerAfter.sendPendingStageNotification(
+			runId,
+			capability,
+			request.from.id,
+			request.senderRegistrationName,
+			notification,
+			request.senderReturnAddress,
+		);
+		assert.equal(delivered.delivered, true);
+		const recipient = afterRecipients[index]!;
+		assert.deepEqual(visible.get(recipient.key), [notification.messageId]);
+		const replay = await ownerAfter.sendPendingStageNotification(
+			runId,
+			capability,
+			request.from.id,
+			request.senderRegistrationName,
+			notification,
+			request.senderReturnAddress,
+		);
+		assert.equal(replay.delivered, true);
+		assert.deepEqual(visible.get(recipient.key), [notification.messageId]);
+	}
+	for (const hostile of [rawNameless, rawSameName, rawPresence, rawCrossGroup]) {
+		assert.equal(
+			hostile.received.some((frame) => frame.type === "pending_stage_notification"),
+			false,
+		);
+	}
 });
 
 test("immutable workflow authority rejects a default-group attacker that presence-switches before attacker-first pending/live registration", async () => {

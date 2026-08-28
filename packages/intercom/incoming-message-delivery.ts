@@ -38,6 +38,11 @@ export function createIncomingMessageSender(input: {
   };
 }
 
+export function framePendingStageTimestamp(timestamp: number): string {
+	const date = new Date(timestamp);
+	return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
+}
+
 export function buildIncomingCustomMessage(entry: InboundMessageEntry) {
   const senderDisplay = entry.from.name || entry.from.id;
   const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";

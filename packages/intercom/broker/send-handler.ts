@@ -18,6 +18,10 @@ export interface BrokerConnectedSession {
    * The local broker trusts initial registration metadata, matching all existing session fields.
    */
   readonly registrationGroup?: string;
+	/** Immutable registration-time name; mutable presence names never rewrite this reconnect alias. */
+	readonly registrationName?: string;
+	/** Opaque host-owned return identity; immutable after initial registration. */
+	readonly registrationReturnAddress?: string;
   /** Broker-bound supervisor relationship established by a capability. */
   supervisorId?: string;
   /** Private issuer identity used to restore child capabilities after reconnects. */

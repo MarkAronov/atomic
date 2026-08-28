@@ -8,6 +8,8 @@ import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
 import type { SessionInfo, Message, BrokerMessage, SupervisorRegistration } from "../types.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
+import { isMessage } from "./client-message-validation.js";
+import { buildMessageSendSignature } from "./send-signature.js";
 import {
   handleBrokerSend,
   parsePendingStageTarget,
@@ -44,6 +46,16 @@ interface PendingStageAcknowledgment {
 	readonly liveTargetId?: string;
 	readonly signature?: string;
   readonly timeout: NodeJS.Timeout;
+}
+
+interface PendingStageNotificationAcknowledgment {
+	readonly ownerSessionId: string;
+	readonly recipientSessionId: string;
+	readonly senderSocket: net.Socket;
+	readonly messageId: string;
+	readonly attemptId?: string;
+	readonly signature: string;
+	readonly timeout: NodeJS.Timeout;
 }
 
 interface LiveWorkflowStageRouteRegistration {
@@ -102,6 +114,7 @@ class IntercomBroker {
   private pendingQuestions = new PendingQuestionIndex();
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
+	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
   private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
 
@@ -274,6 +287,10 @@ class IntercomBroker {
       type: "pending_stage_message",
       requestId,
       from: route.from.info,
+		...(route.from.registrationName === undefined ? {} : { senderRegistrationName: route.from.registrationName }),
+		...(route.from.registrationReturnAddress === undefined
+			? {}
+			: { senderReturnAddress: route.from.registrationReturnAddress }),
       runId: route.runId,
       stageKey: route.stageKey,
       message: route.message,
@@ -373,6 +390,162 @@ class IntercomBroker {
 	}
 
 
+	private failPendingStageNotification(
+		socket: net.Socket,
+		messageId: string,
+		attemptId: string | undefined,
+		reason: string,
+		reasonCode?: "message_id_conflict",
+	): void {
+		writeMessage(socket, {
+			type: "delivery_failed",
+			messageId,
+			...(attemptId === undefined ? {} : { attemptId }),
+			reason,
+			...(reasonCode === undefined ? {} : { reasonCode }),
+		});
+	}
+
+	private handlePendingStageNotificationSend(
+		socket: net.Socket,
+		clientMessage: Record<string, unknown>,
+		currentId: string,
+	): void {
+		const message = clientMessage.message;
+		const messageId = typeof message === "object" && message !== null && typeof (message as { id?: unknown }).id === "string"
+			? (message as { id: string }).id
+			: "unknown";
+		const attemptId = typeof clientMessage.attemptId === "string" ? clientMessage.attemptId : undefined;
+		if (
+			typeof clientMessage.runId !== "string" ||
+			typeof clientMessage.capability !== "string" ||
+			typeof clientMessage.to !== "string" ||
+			(clientMessage.senderRegistrationName !== undefined && typeof clientMessage.senderRegistrationName !== "string") ||
+			(clientMessage.senderReturnAddress !== undefined &&
+				(typeof clientMessage.senderReturnAddress !== "string" || clientMessage.senderReturnAddress.length === 0)) ||
+			(clientMessage.attemptId !== undefined && typeof clientMessage.attemptId !== "string") ||
+			!isMessage(message)
+		) {
+			this.failPendingStageNotification(socket, messageId, attemptId, "Invalid pending-stage notification format");
+			return;
+		}
+		const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
+		const owner = this.sessions.get(currentId);
+		const routeGroup = normalizeGroup(ownerRegistration?.group);
+		if (
+			ownerRegistration === undefined ||
+			owner === undefined ||
+			ownerRegistration.sessionId !== currentId ||
+			ownerRegistration.capability !== clientMessage.capability ||
+			normalizeGroup(owner.registrationGroup) !== routeGroup
+		) {
+			this.failPendingStageNotification(socket, message.id, attemptId, "Pending-stage notification is not authorized");
+			return;
+		}
+		const logicalTarget = [
+			clientMessage.runId,
+			clientMessage.to,
+			clientMessage.senderReturnAddress ?? "",
+			clientMessage.senderRegistrationName ?? "",
+			routeGroup,
+		].join(":");
+		const signature = buildMessageSendSignature(logicalTarget, message, clientMessage.capability);
+		const deliveredMatch = this.deliveredMessages.lookup(message.id, signature);
+		if (deliveredMatch === "match") {
+			writeMessage(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
+			return;
+		}
+		if (deliveredMatch === "conflict") {
+			this.failPendingStageNotification(
+				socket,
+				message.id,
+				attemptId,
+				`Intercom message ID '${message.id}' was already delivered with a different target or payload`,
+				"message_id_conflict",
+			);
+			return;
+		}
+
+		let target = this.sessions.get(clientMessage.to);
+		if (target === undefined && clientMessage.senderReturnAddress !== undefined) {
+			const matches = [...this.sessions.values()].filter(
+				(session) =>
+					session.registrationReturnAddress === clientMessage.senderReturnAddress &&
+					normalizeGroup(session.registrationGroup) === routeGroup,
+			);
+			if (matches.length === 1) target = matches[0];
+		} else if (target === undefined && clientMessage.senderRegistrationName !== undefined) {
+			const alias = clientMessage.senderRegistrationName.trim().toLowerCase();
+			if (alias.length > 0) {
+				// Legacy durable records can only use the immutable registration name/group fallback.
+				const matches = [...this.sessions.values()].filter(
+					(session) =>
+						session.registrationName?.toLowerCase() === alias &&
+						normalizeGroup(session.registrationGroup) === routeGroup,
+				);
+				if (matches.length === 1) target = matches[0];
+			}
+		}
+		if (
+			target === undefined ||
+			target.info.id === currentId ||
+			normalizeGroup(target.registrationGroup) !== routeGroup ||
+			normalizeGroup(target.info.group) !== routeGroup
+		) {
+			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
+			return;
+		}
+
+		const requestId = randomUUID();
+		const timeout = setTimeout(() => {
+			const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
+			if (pending === undefined) return;
+			this.pendingStageNotificationAcknowledgments.delete(requestId);
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Recipient did not acknowledge the pending-stage notification",
+			);
+		}, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
+		this.pendingStageNotificationAcknowledgments.set(requestId, {
+			ownerSessionId: currentId,
+			recipientSessionId: target.info.id,
+			senderSocket: socket,
+			messageId: message.id,
+			...(attemptId === undefined ? {} : { attemptId }),
+			signature,
+			timeout,
+		});
+		writeMessage(target.socket, { type: "pending_stage_notification", requestId, from: owner.info, message });
+	}
+
+	private settlePendingStageNotification(
+		currentId: string,
+		requestId: string,
+		delivered: boolean,
+	): void {
+		const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
+		if (pending === undefined || pending.recipientSessionId !== currentId) return;
+		clearTimeout(pending.timeout);
+		this.pendingStageNotificationAcknowledgments.delete(requestId);
+		if (!delivered) {
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Recipient did not admit the pending-stage notification",
+			);
+			return;
+		}
+		this.deliveredMessages.record(pending.messageId, pending.signature);
+		writeMessage(pending.senderSocket, {
+			type: "delivered",
+			messageId: pending.messageId,
+			...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
+		});
+	}
+
   private handleMessage(
     socket: net.Socket,
     msg: unknown,
@@ -394,10 +567,14 @@ class IntercomBroker {
         if (!isSessionRegistration(clientMessage.session)) {
           throw new Error("Invalid register message");
         }
-        if (clientMessage.supervisorOwnerToken !== undefined
-          && (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
-          throw new Error("Invalid supervisor owner token");
-        }
+		if (clientMessage.returnAddress !== undefined &&
+			(typeof clientMessage.returnAddress !== "string" || clientMessage.returnAddress.length === 0)) {
+			throw new Error("Invalid return address");
+		}
+		if (clientMessage.supervisorOwnerToken !== undefined
+			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
+			throw new Error("Invalid supervisor owner token");
+		}
 
         if (currentId) {
           throw new Error("Received duplicate register message");
@@ -428,6 +605,12 @@ class IntercomBroker {
           socket,
           info,
           registrationGroup: info.group,
+			...(typeof info.name === "string" && info.name.trim().length > 0
+				? { registrationName: info.name.trim() }
+				: {}),
+			...(typeof clientMessage.returnAddress === "string"
+				? { registrationReturnAddress: clientMessage.returnAddress }
+				: {}),
           ...(supervisorId ? { supervisorId } : {}),
           ...(typeof clientMessage.supervisorOwnerToken === "string"
             ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
@@ -602,22 +785,35 @@ class IntercomBroker {
         break;
       }
 
-      case "send":
-      case "supervisor_send": {
-        handleBrokerSend(
-          socket,
-          clientMessage,
-          currentId,
-          this.sessions,
-          this.deliveredMessages,
-          writeMessage,
-          this.supervisorChannel,
-          this.pendingQuestions,
-          this.routePendingStage,
-          this.resolveLiveWorkflowStage,
-        );
-        break;
-      }
+		case "send":
+		case "supervisor_send": {
+			handleBrokerSend(
+				socket,
+				clientMessage,
+				currentId,
+				this.sessions,
+				this.deliveredMessages,
+				writeMessage,
+				this.supervisorChannel,
+				this.pendingQuestions,
+				this.routePendingStage,
+				this.resolveLiveWorkflowStage,
+			);
+			break;
+		}
+
+		case "send_pending_stage_notification": {
+			this.handlePendingStageNotificationSend(socket, clientMessage, currentId);
+			break;
+		}
+
+		case "pending_stage_notification_result": {
+			if (typeof clientMessage.requestId !== "string" || typeof clientMessage.delivered !== "boolean") {
+				throw new Error("Invalid pending-stage notification result");
+			}
+			this.settlePendingStageNotification(currentId, clientMessage.requestId, clientMessage.delivered);
+			break;
+		}
 
       case "presence": {
         handleBrokerPresence(
@@ -666,16 +862,27 @@ class IntercomBroker {
         reason: "Pending-stage route disconnected before acknowledging the message",
       });
     }
-    for (const [target, registration] of this.liveWorkflowStageRoutes) {
-      if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
-    }
-    for (const [requestId, activation] of this.liveWorkflowStageRouteActivations) {
-      if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
-    }
-    this.sessions.delete(sessionId);
-    this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
-  }
-
+	for (const [requestId, pending] of this.pendingStageNotificationAcknowledgments) {
+		if (pending.ownerSessionId !== sessionId && pending.recipientSessionId !== sessionId) continue;
+		clearTimeout(pending.timeout);
+		this.pendingStageNotificationAcknowledgments.delete(requestId);
+		if (pending.ownerSessionId === sessionId) continue;
+		this.failPendingStageNotification(
+			pending.senderSocket,
+			pending.messageId,
+			pending.attemptId,
+			"Recipient disconnected before acknowledging the pending-stage notification",
+		);
+	}
+	for (const [target, registration] of this.liveWorkflowStageRoutes) {
+		if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
+	}
+	for (const [requestId, activation] of this.liveWorkflowStageRouteActivations) {
+		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
+	}
+	this.sessions.delete(sessionId);
+	this.broadcastToGroup({ type: "session_left", sessionId }, departed.info.group, sessionId);
+	}
   /** Deliver a broadcast only to sessions in the given (normalized) group. */
   private broadcastToGroup(msg: BrokerMessage, group: string | undefined, exclude?: string): void {
     const target = normalizeGroup(group);
@@ -697,6 +904,8 @@ class IntercomBroker {
     this.pendingStageAcknowledgments.clear();
     this.liveWorkflowStageRoutes.clear();
     this.liveWorkflowStageRouteActivations.clear();
+	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
+	this.pendingStageNotificationAcknowledgments.clear();
     if (process.platform !== "win32") {
       try {
         unlinkSync(SOCKET_PATH);
@@ -704,8 +913,8 @@ class IntercomBroker {
         // The socket may already be gone if shutdown started after a disconnect.
       }
     }
-    try {
-      unlinkSync(PID_PATH);
+	try {
+		unlinkSync(PID_PATH);
     } catch {
       // The PID file may already be gone if startup never completed.
     }
