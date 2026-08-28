@@ -797,6 +797,50 @@ describe("post-tool compaction preflight", () => {
 		expect(stopCalls).toBe(2);
 	});
 
+	it("clears the completed-turn stop cache when preparation rejects before dependency handoff", async () => {
+		let stopCalls = 0;
+		let prepareCalls = 0;
+		let completedTurn: import("@earendil-works/pi-agent-core").ShouldStopAfterTurnContext | undefined;
+		const harness = await createHarnessWithExtensions({
+			responses: [
+				{ toolCalls: [{ id: "call-rejected-preparation", name: "large_result", args: {} }] },
+				"later run completed",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			configureAgent: (agent) => {
+				agent.shouldStopAfterTurn = (context) => {
+					stopCalls++;
+					completedTurn ??= context;
+					return stopCalls > 1;
+				};
+				agent.prepareNextTurnWithContext = () => {
+					prepareCalls++;
+					throw new Error("caller preparation failed");
+				};
+			},
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt("run the tool before preparation fails");
+		expect(harness.session.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: "caller preparation failed",
+		});
+
+		expect(stopCalls).toBe(1);
+		expect(prepareCalls).toBe(1);
+		expect(completedTurn).toBeDefined();
+		const freshResult = await harness.agent.shouldStopAfterTurn?.(completedTurn!);
+		expect(freshResult).toBe(true);
+		expect(stopCalls).toBe(2);
+
+		await harness.session.prompt("start a clean later run");
+		expect(harness.faux.callCount).toBe(2);
+		expect(stopCalls).toBe(3);
+	});
+
 	it("prepares a final response only when queued steering creates another turn", async () => {
 		let markResponseStarted!: () => void;
 		const responseStarted = new Promise<void>((resolve) => {

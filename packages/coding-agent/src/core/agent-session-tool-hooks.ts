@@ -118,15 +118,23 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				shouldStop: boolean;
 		  }
 		| undefined;
+	const pendingStopMatches = (turn: ShouldStopAfterTurnContext): boolean => {
+		const pending = pendingStopResult;
+		return (
+			pending?.message === turn.message &&
+			pending.toolResults === turn.toolResults &&
+			pending.newMessages === turn.newMessages
+		);
+	};
+	const clearPendingStopResult = (turn: ShouldStopAfterTurnContext): void => {
+		if (pendingStopMatches(turn)) pendingStopResult = undefined;
+	};
+
 	// The dependency consumes a matching completed-turn result once. Unrelated
 	// public stop checks delegate without invalidating that pending handoff.
 	this.agent.shouldStopAfterTurn = async (turn, signal) => {
 		const pending = pendingStopResult;
-		if (
-			pending?.message === turn.message &&
-			pending.toolResults === turn.toolResults &&
-			pending.newMessages === turn.newMessages
-		) {
+		if (pending && pendingStopMatches(turn)) {
 			pendingStopResult = undefined;
 			return pending.shouldStop;
 		}
@@ -232,30 +240,38 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
 
 		const shouldStop = await cacheStopResult(turn, signal);
-		if (shouldStop) {
-			deferredPreparation = undefined;
-			await settleFallbackAfterTurn(this, turn, terminatingBatch);
-			return undefined;
-		}
+		try {
+			if (shouldStop) {
+				deferredPreparation = undefined;
+				await settleFallbackAfterTurn(this, turn, terminatingBatch);
+				return undefined;
+			}
 
-		if (turn.toolResults.length > 0 && !terminatingBatch) {
-			deferredPreparation = undefined;
-			const snapshot = await prepareTurn(turn, signal);
-			await settleFallbackAfterTurn(this, turn, terminatingBatch);
-			return snapshot;
-		}
+			if (turn.toolResults.length > 0 && !terminatingBatch) {
+				deferredPreparation = undefined;
+				const snapshot = await prepareTurn(turn, signal);
+				await settleFallbackAfterTurn(this, turn, terminatingBatch);
+				return snapshot;
+			}
 
-		await settleFallbackAfterTurn(this, turn, terminatingBatch);
-		const loopContext: AgentContext = {
-			...turn.context,
-			messages: turn.context.messages.slice(),
-			tools: turn.context.tools?.slice(),
-		};
-		deferredPreparation = { turn, signal, loopContext };
-		// Returning a placeholder moves the stale loop away from the completed
-		// context without running user preparation. If a queue poll yields work,
-		// the poll door replaces its fields before that message is injected.
-		return { context: loopContext };
+			await settleFallbackAfterTurn(this, turn, terminatingBatch);
+			const loopContext: AgentContext = {
+				...turn.context,
+				messages: turn.context.messages.slice(),
+				tools: turn.context.tools?.slice(),
+			};
+			deferredPreparation = { turn, signal, loopContext };
+			// Returning a placeholder moves the stale loop away from the completed
+			// context without running user preparation. If a queue poll yields work,
+			// the poll door replaces its fields before that message is injected.
+			return { context: loopContext };
+		} catch (error) {
+			// The pinned loop cannot consume its cached stop decision when its
+			// premature preparation rejects. Remove only this turn's handoff; an
+			// asynchronously superseding turn remains authoritative.
+			clearPendingStopResult(turn);
+			throw error;
+		}
 	};
 }
 
