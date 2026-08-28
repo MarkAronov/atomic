@@ -108,17 +108,16 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				shouldStop: boolean;
 		  }
 		| undefined;
+	// A completed-turn result remains authoritative until the next preparation
+	// supersedes it. Unrelated public stop checks must not consume that handoff.
 	this.agent.shouldStopAfterTurn = async (turn, signal) => {
 		if (
 			pendingStopResult?.message === turn.message &&
 			pendingStopResult.toolResults === turn.toolResults &&
 			pendingStopResult.newMessages === turn.newMessages
 		) {
-			const { shouldStop } = pendingStopResult;
-			pendingStopResult = undefined;
-			return shouldStop;
+			return pendingStopResult.shouldStop;
 		}
-		pendingStopResult = undefined;
 		return (await previousShouldStopAfterTurn?.(turn, signal)) ?? false;
 	};
 
@@ -149,12 +148,19 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
 
 		const shouldStop = await cacheStopResult(turn, signal);
-		const hasNextTurn =
-			!shouldStop && ((turn.toolResults.length > 0 && !terminatingBatch) || this.agent.hasQueuedMessages());
-
-		if (!hasNextTurn) {
+		if (shouldStop) {
 			await settleFallbackAfterTurn(this, turn, terminatingBatch);
 			return undefined;
+		}
+
+		const continuingToolTurn = turn.toolResults.length > 0 && !terminatingBatch;
+		let settledBeforePreparation = false;
+		// Event and fallback settlement can admit steering or follow-up work. Re-check
+		// after the await so the request that drains it receives preparation once.
+		if (!continuingToolTurn && !this.agent.hasQueuedMessages()) {
+			await settleFallbackAfterTurn(this, turn, terminatingBatch);
+			settledBeforePreparation = true;
+			if (!this.agent.hasQueuedMessages()) return undefined;
 		}
 
 		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
@@ -164,7 +170,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				? await this._preflightPostToolContext(previousContext.messages, signal)
 				: previousContext.messages;
 
-		await settleFallbackAfterTurn(this, turn, terminatingBatch);
+		if (!settledBeforePreparation) await settleFallbackAfterTurn(this, turn, terminatingBatch);
 
 		return {
 			...previousSnapshot,
