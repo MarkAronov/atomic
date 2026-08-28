@@ -7,7 +7,9 @@ export interface SessionInfo {
   startedAt: number;
   lastActivity: number;
   status?: string;
-  /** Session's intercom group; undefined is treated as the shared "default" group. */
+  /** Session's normalized intercom group memberships. */
+  groups?: string[];
+  /** Legacy single-group membership; accepted alongside `groups` for compatibility. */
   group?: string;
 }
 
@@ -82,7 +84,16 @@ export type ClientMessage =
 		reason?: string;
 		reasonCode?: "message_id_conflict";
 	  }
-  | { type: "presence"; name?: string; status?: string; model?: string; group?: string; requestId?: string };
+  | {
+      type: "presence";
+      name?: string;
+      status?: string;
+      model?: string;
+      groups?: string[];
+      /** Legacy single-group membership; accepted alongside `groups` for compatibility. */
+      group?: string;
+      requestId?: string;
+    };
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }
