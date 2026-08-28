@@ -271,11 +271,12 @@ export async function _runAgentContinue(this: AgentSession): Promise<void> {
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
 	await this._agentEventQueue;
 
-	while (!this._queuedMessagesPaused && this.agent.hasQueuedMessages()) {
+	while (!this._stopAfterTurnBlockedContinuation && !this._queuedMessagesPaused && this.agent.hasQueuedMessages()) {
 		await this.agent.continue();
 		await this.waitForRetry();
 		await this._agentEventQueue;
 	}
+	if (this._stopAfterTurnBlockedContinuation) return;
 
 	await answerAdmittedQueuedMessage(this);
 }
