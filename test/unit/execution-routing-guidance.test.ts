@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -821,14 +822,26 @@ describe("workflow-first execution routing", () => {
 		);
 		expect(returned).toBeDefined();
 		expect(registered?.description).toBe(WORKFLOW_TOOL_DESCRIPTION);
-		expect(registered?.description).toContain("When steering or communication is useful, use Intercom.");
-		expect(registered?.description).toContain("Before steering a stage, join its invocation group");
+		assert.ok(
+			registered?.description.includes("When steering or communication is useful, use Intercom."),
+			"workflow tool description should direct communication through Intercom",
+		);
+		assert.ok(
+			registered?.description.includes("Before steering a stage, join its invocation group"),
+			"workflow tool description should require joining the invocation group before steering",
+		);
 		expect(registered?.description).toContain(
 			"Live delivery is immediate; a known stage that has not started is queued and receives the message before its first model turn.",
 		);
 		expect(registered?.description).toContain("Use `ask` only for a reply-capable live session.");
-		expect(registered?.description).toContain("Intercom `groups` action to discover it");
-		expect(registered?.description).toContain("Workflow invocation groups are named `workflow:<rootRunId>`");
+		assert.ok(
+			registered?.description.includes("Intercom `groups` action to discover it"),
+			"workflow tool description should explain invocation-group discovery",
+		);
+		assert.ok(
+			registered?.description.includes("Workflow invocation groups are named `workflow:<rootRunId>`"),
+			"workflow tool description should document invocation-group names",
+		);
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
@@ -843,7 +856,7 @@ describe("workflow-first execution routing", () => {
 			"Intercom `groups` action to discover it",
 			"Workflow invocation groups are named `workflow:<rootRunId>`",
 		]) {
-			expect(routingGuidance).toContain(phrase);
+			assert.ok(routingGuidance.includes(phrase), `workflow routing guidance should include: ${phrase}`);
 		}
 
 		for (const path of ["packages/intercom/skills/intercom/SKILL.md", "packages/coding-agent/docs/intercom.md"]) {
@@ -853,7 +866,7 @@ describe("workflow-first execution routing", () => {
 				"Intercom `groups` action to discover it",
 				"Workflow invocation groups are named `workflow:<rootRunId>`",
 			]) {
-				expect(guidance, `${path}: ${phrase}`).toContain(phrase);
+				assert.ok(guidance.includes(phrase), `${path} should include: ${phrase}`);
 			}
 		}
 	});
