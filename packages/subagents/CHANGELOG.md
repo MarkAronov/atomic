@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.10] - 2026-08-28
+
 ### Changed
 
 - Added the full and Flash GLM-5.3 direct Z.AI, Z.AI Coding Plan, Baseten, and OpenRouter routes to every built-in subagent fallback chain.
