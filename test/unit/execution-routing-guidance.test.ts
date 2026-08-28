@@ -821,18 +821,41 @@ describe("workflow-first execution routing", () => {
 		);
 		expect(returned).toBeDefined();
 		expect(registered?.description).toBe(WORKFLOW_TOOL_DESCRIPTION);
-		expect(registered?.description).toContain(
-			"When steering or communication is useful, use Intercom; address a workflow stage as `<runId>:<stageKey>`.",
-		);
+		expect(registered?.description).toContain("When steering or communication is useful, use Intercom.");
+		expect(registered?.description).toContain("Before steering a stage, join its invocation group");
 		expect(registered?.description).toContain(
 			"Live delivery is immediate; a known stage that has not started is queued and receives the message before its first model turn.",
 		);
 		expect(registered?.description).toContain("Use `ask` only for a reply-capable live session.");
+		expect(registered?.description).toContain("Intercom `groups` action to discover it");
+		expect(registered?.description).toContain("Workflow invocation groups are named `workflow:<rootRunId>`");
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
 		const readme = await readRepositoryFile("packages/workflows/README.md");
 		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
+	});
+
+	test("requires workflow-group discovery and membership before stage steering", async () => {
+		const routingGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"Before steering a stage, join its invocation group",
+			"Intercom `groups` action to discover it",
+			"Workflow invocation groups are named `workflow:<rootRunId>`",
+		]) {
+			expect(routingGuidance).toContain(phrase);
+		}
+
+		for (const path of ["packages/intercom/skills/intercom/SKILL.md", "packages/coding-agent/docs/intercom.md"]) {
+			const guidance = await readRepositoryFile(path);
+			for (const phrase of [
+				"Before steering a stage, join its invocation group",
+				"Intercom `groups` action to discover it",
+				"Workflow invocation groups are named `workflow:<rootRunId>`",
+			]) {
+				expect(guidance, `${path}: ${phrase}`).toContain(phrase);
+			}
+		}
 	});
 
 	test("keeps live workflow communication status, help, docs, and examples on supported actions", async () => {

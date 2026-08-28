@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow heartbeat and routing guidance now tells agents to discover a stage's `workflow:<rootRunId>` invocation group with the Intercom `groups` action and join it before steering the stage.
+
 ## [0.9.16-alpha.8] - 2026-08-27
 
 ### Added
