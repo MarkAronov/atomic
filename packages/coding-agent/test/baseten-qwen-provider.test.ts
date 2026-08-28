@@ -21,7 +21,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 	{
 		provider: "baseten",
 		envVar: "BASETEN_API_KEY",
-		defaultModel: "zai-org/GLM-5.2",
+		defaultModel: "zai-org/GLM-5.3",
 		modelIds: [
 			"deepseek-ai/DeepSeek-V4-Flash-0731",
 			"deepseek-ai/DeepSeek-V4-Pro",
@@ -43,7 +43,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 			"zai-org/GLM-5.3",
 			"zai-org/GLM-5.3-Flash",
 		],
-		thinkingLevels: ["off", "high", "max"],
+		thinkingLevels: ["low", "high", "max"],
 	},
 	{
 		provider: "qwen-token-plan-individual",

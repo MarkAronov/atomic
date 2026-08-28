@@ -182,15 +182,9 @@ test("no built-in chain ships an OpenRouter GLM-5.3 placeholder", () => {
 	}
 });
 
-test("Baseten retains its GLM-5.2 default as the documented provider exception", () => {
+test("Baseten defaults to its directly selectable GLM-5.3 catalog entry", () => {
 	const basetenModels = getBuiltinModels("baseten");
-	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.2");
-	// Assert only what this repository controls. An earlier version asserted that
-	// Baseten's catalog did NOT contain `zai-org/GLM-5.3`, which made an upstream
-	// publishing decision a passing condition for our suite: models.dev later added
-	// it, and every branch and main began failing with no change on our side. The
-	// durable property is that the pinned default keeps resolving, whatever else
-	// the generated catalog gains.
+	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.3");
 	assert.ok(basetenModels.some((model) => model.id === defaultModelPerProvider.baseten));
-	assert.match(read("packages/coding-agent/docs/providers.md"), /Baseten[^\n]*pinned to `zai-org\/GLM-5\.2`/iu);
+	assert.match(read("packages/coding-agent/docs/providers.md"), /Baseten defaults to `zai-org\/GLM-5\.3`/iu);
 });
