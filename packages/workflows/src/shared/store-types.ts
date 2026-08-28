@@ -236,6 +236,10 @@ export interface PendingStageMessage {
 	readonly stageId?: string;
 	/** Stable authored replay identity used to restore the canonical stage across process resume. */
 	readonly stageReplayKey?: string;
+	/** Immutable broker registration name captured separately from mutable sender display presence. */
+	readonly senderRegistrationName?: string;
+	/** Stable internal host identity used only for broker-verified durable replies. */
+	readonly senderReturnAddress?: string;
 	readonly from: PendingStageSender;
 	readonly message: PendingStageIntercomMessage;
 	readonly queuedAt: string;

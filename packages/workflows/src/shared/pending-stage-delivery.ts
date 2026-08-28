@@ -200,7 +200,7 @@ function pendingStageMessageSignature(
 	void transportTimestamp;
 	return stableJson({
 		target: storedTarget ?? stageIdentity?.replayKey ?? stageIdentity?.id ?? entry.stageKey,
-		senderId: entry.from.id,
+		sender: entry.senderReturnAddress ?? entry.from.id,
 		message: {
 			...logicalMessage,
 			expectsReply: logicalMessage.expectsReply ?? false,

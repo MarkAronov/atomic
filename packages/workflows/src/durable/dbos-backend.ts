@@ -7,6 +7,7 @@ import {
 	type DurableWorkflowCatalogEntries,
 	type DurableWorkflowHydrationResult,
 	InMemoryDurableBackend,
+	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "./backend.js";
 import { DurableNestedTopologyError } from "./boundary-topology.js";
@@ -226,6 +227,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	async persistPendingStageMessages(
 		workflowId: string,
 		messages: readonly import("../shared/store-types.js").PendingStageMessage[],
+		logicalRunId = workflowId,
 	): Promise<boolean> {
 		let persisted = false;
 		await this.enqueueWrite(async () => {
@@ -234,7 +236,11 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			const value = this.mem.toMetadata(workflowId);
 			if (handle === undefined || value === undefined) return;
 			const updatedAt = Math.max(Date.now(), handle.updatedAt + 1);
-			const pendingStageMessages = [...messages];
+			const pendingStageMessages = replacePendingStageMessagesForRun(
+				handle.pendingStageMessages ?? [],
+				logicalRunId,
+				messages,
+			);
 			const metadata = {
 				...this.promptReservations.metadata(workflowId, value),
 				pendingStageMessages,

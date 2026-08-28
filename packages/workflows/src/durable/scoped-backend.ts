@@ -75,10 +75,11 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 	}
 
 	persistPendingStageMessages(
-		_workflowId: string,
+		workflowId: string,
 		messages: readonly import("../shared/store-types.js").PendingStageMessage[],
+		logicalRunId = workflowId,
 	): Promise<boolean> {
-		return this.inner.persistPendingStageMessages(this.scope.rootWorkflowId, messages);
+		return this.inner.persistPendingStageMessages(this.scope.rootWorkflowId, messages, logicalRunId);
 	}
 
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {

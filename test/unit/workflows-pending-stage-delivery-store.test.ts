@@ -96,6 +96,7 @@ describe("workflow stage messages store", () => {
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const original = pendingMessage("presence", {
+			senderReturnAddress: "host-session-planner",
 			from: {
 				id: "stable-sender-id",
 				name: "planner",
@@ -114,7 +115,7 @@ describe("workflow stage messages store", () => {
 
 		const retry = pendingMessage("presence", {
 			from: {
-				id: "stable-sender-id",
+				id: "reconnected-broker-sender-id",
 				name: "renamed-planner",
 				group: "presence-display-group",
 				cwd: "/repo/second",
@@ -125,6 +126,7 @@ describe("workflow stage messages store", () => {
 				status: "working",
 			} as PendingStageMessageInput["from"],
 			queuedAt: "later transport attempt",
+			senderReturnAddress: "host-session-planner",
 		});
 		const restoredQueued = createStore();
 		restoredQueued.recordRunStart({
@@ -164,7 +166,11 @@ describe("workflow stage messages store", () => {
 		assert.equal(deliveredRetry.entry.status, "delivered");
 
 		const senderConflict = await restoredDelivered.queueStageMessage(
-			{ ...retry, from: { ...retry.from, id: "different-sender-id" } },
+			{
+				...retry,
+				from: { ...retry.from, id: "different-sender-id" },
+				senderReturnAddress: "different-host-session",
+			},
 			RUN_GROUP,
 			RUN_GROUP,
 			backend,
@@ -683,7 +689,12 @@ describe("durable workflow stage messages metadata", () => {
 	}
 
 	test("encode and parse restore messages verbatim", () => {
-		const accepted = queueStageMessage([], pendingMessage("durable"), RUN_GROUP, RUN_GROUP);
+		const accepted = queueStageMessage(
+			[],
+			pendingMessage("durable", { senderReturnAddress: "host-session-durable" }),
+			RUN_GROUP,
+			RUN_GROUP,
+		);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
 		const parsed = parseCurrentMetadataRecord(
@@ -691,6 +702,17 @@ describe("durable workflow stage messages metadata", () => {
 			RUN_ID,
 		);
 		assert.deepEqual(parsed?.pendingStageMessages, accepted.messages);
+	});
+
+	test("accepts legacy durable messages without a return address", () => {
+		const accepted = queueStageMessage([], pendingMessage("legacy"), RUN_GROUP, RUN_GROUP);
+		assert.equal(accepted.ok, true);
+		if (!accepted.ok) return;
+		const parsed = parseCurrentMetadataRecord(
+			{ stepName: "__atomic_metadata:2:test", output: encodeMetadata(metadata(accepted.messages)) },
+			RUN_ID,
+		);
+		assert.equal(parsed?.pendingStageMessages?.[0]?.senderReturnAddress, undefined);
 	});
 
 	test("metadata without pending messages hydrates an empty collection", () => {

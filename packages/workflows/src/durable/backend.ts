@@ -26,6 +26,35 @@ export interface DurableWorkflowCatalogEntries {
 	readonly completedAll?: readonly ResumableWorkflowEntry[];
 }
 export { durableHash } from "./durable-hash.js";
+/** Replace one logical run's bucket without mutating root or sibling run messages. */
+export function replacePendingStageMessagesForRun(
+	existing: readonly PendingStageMessage[],
+	logicalRunId: string,
+	messages: readonly PendingStageMessage[],
+): readonly PendingStageMessage[] {
+	if (messages.some((entry) => entry.runId !== logicalRunId)) {
+		throw new Error(`atomic-workflows: pending-stage persistence mixed logical run ${logicalRunId}`);
+	}
+	const firstOwnedIndex = existing.findIndex((entry) => entry.runId === logicalRunId);
+	if (firstOwnedIndex < 0) return [...existing, ...messages];
+	const merged: PendingStageMessage[] = [];
+	for (let index = 0; index < existing.length; index += 1) {
+		const entry = existing[index]!;
+		if (index === firstOwnedIndex) merged.push(...messages);
+		if (entry.runId !== logicalRunId) merged.push(entry);
+	}
+	return merged;
+}
+/** Read one logical run's bucket from its root durable metadata handle. */
+export function pendingStageMessagesForDurableRun(
+	backend: DurableWorkflowBackend,
+	logicalRunId: string,
+	rootWorkflowId = logicalRunId,
+): readonly PendingStageMessage[] {
+	return (backend.getWorkflow(rootWorkflowId)?.pendingStageMessages ?? []).filter(
+		(entry) => entry.runId === logicalRunId,
+	);
+}
 
 // ---------------------------------------------------------------------------
 // Backend interface
@@ -55,8 +84,12 @@ export interface DurableWorkflowBackend {
 	readonly persistent: boolean;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
-	/** Persist one pending-stage lifecycle transition before it becomes live-observable. */
-	persistPendingStageMessages(workflowId: string, messages: readonly PendingStageMessage[]): Promise<boolean>;
+	/** Persist one logical run's pending-stage transition under its durable owner. */
+	persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly PendingStageMessage[],
+		logicalRunId?: string,
+	): Promise<boolean>;
 
 	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
@@ -262,12 +295,20 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
 		if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
 	}
-	async persistPendingStageMessages(workflowId: string, messages: readonly PendingStageMessage[]): Promise<boolean> {
+	async persistPendingStageMessages(
+		workflowId: string,
+		messages: readonly PendingStageMessage[],
+		logicalRunId = workflowId,
+	): Promise<boolean> {
 		const handle = this.getWorkflow(workflowId);
 		if (handle === undefined) return false;
 		this.registerWorkflow({
 			...handle,
-			pendingStageMessages: [...messages],
+			pendingStageMessages: replacePendingStageMessagesForRun(
+				handle.pendingStageMessages ?? [],
+				logicalRunId,
+				messages,
+			),
 			updatedAt: nextMetadataTimestamp(handle.updatedAt),
 		});
 		return true;
