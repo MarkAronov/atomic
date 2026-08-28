@@ -10,6 +10,7 @@ import { describe, test } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { createExtensionAPI } from "../../packages/coding-agent/src/core/extensions/loader-api.ts";
 import { createExtensionRuntime as createHostExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
+import { ExtensionRunner, emitSessionShutdownEvent } from "../../packages/coding-agent/src/core/extensions/runner.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.ts";
 import type { Extension } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -39,12 +40,13 @@ function piThrowingStaleOn(types: ReadonlySet<string>): ExtensionAPI {
 	};
 }
 
-function hostExtension(): Extension {
+function hostExtension(label: string): Extension {
+	const path = `/tmp/stale-persistence-port-${label}.ts`;
 	return {
-		path: "/tmp/stale-persistence-port.ts",
-		resolvedPath: "/tmp/stale-persistence-port.ts",
+		path,
+		resolvedPath: path,
 		sourceInfo: {
-			path: "/tmp/stale-persistence-port.ts",
+			path,
 			source: "test",
 			scope: "user",
 			origin: "top-level",
@@ -60,18 +62,51 @@ function hostExtension(): Extension {
 	};
 }
 
-function boundHostPersistence(): {
+function createHostGeneration(label: string): {
+	readonly runner: ExtensionRunner;
 	readonly persistence: WorkflowPersistencePort | undefined;
-	readonly invalidate: () => void;
 } {
-	const hostRuntime = createHostExtensionRuntime();
-	hostRuntime.appendEntry = () => {};
-	hostRuntime.setLabel = () => {};
-	const { api } = createExtensionAPI(hostExtension(), hostRuntime, "/tmp", createEventBus());
+	const runtime = createHostExtensionRuntime();
+	runtime.appendEntry = () => {};
+	runtime.setLabel = () => {};
+	const extension = hostExtension(label);
+	const { api } = createExtensionAPI(extension, runtime, "/tmp", createEventBus());
+	api.on("session_shutdown", () => {});
+	api.on("session_start", () => {});
 	return {
+		runner: new ExtensionRunner([extension], runtime, "/tmp", {} as never, {} as never),
 		persistence: makePersistencePort(api as unknown as ExtensionAPI, true),
-		invalidate: () => hostRuntime.invalidate(),
 	};
+}
+
+function recordingPersistence(inner: WorkflowPersistencePort | undefined): {
+	readonly persistence: WorkflowPersistencePort | undefined;
+	readonly attempted: string[];
+} {
+	const attempted: string[] = [];
+	if (inner === undefined) return { persistence: undefined, attempted };
+	return {
+		attempted,
+		persistence: {
+			appendEntry(type, payload) {
+				attempted.push(type);
+				return inner.appendEntry(type, payload);
+			},
+			setLabel: inner.setLabel,
+			appendCustomMessageEntry: inner.appendCustomMessageEntry,
+		},
+	};
+}
+
+async function drivePreservingReloadBoundary(
+	predecessor: ExtensionRunner,
+	invalidatePredecessor: boolean,
+): Promise<void> {
+	const shutdown = await emitSessionShutdownEvent(predecessor, { type: "session_shutdown", reason: "reload" });
+	assert.equal(shutdown, true);
+	if (invalidatePredecessor) predecessor.invalidate();
+	const successor = createHostGeneration("successor");
+	await successor.runner.emit({ type: "session_start", reason: "reload" });
 }
 
 function gatedWorkflow(): {
@@ -198,10 +233,11 @@ describe("advisory persistence after a preserving session boundary", () => {
 		assert.equal(raw.ok, true, describeOutcome(store, runId, raw));
 	});
 
-	test("real host invalidate after a preserving boundary does not fail the run", async () => {
-		const host = boundHostPersistence();
-		const { store, runId, release, waitForSettlement } = await runGatedWithPersistence(host.persistence);
-		host.invalidate();
+	test("real preserving reload boundary does not fail the run", async () => {
+		const predecessor = createHostGeneration("predecessor");
+		const recorded = recordingPersistence(predecessor.persistence);
+		const { store, runId, release, waitForSettlement } = await runGatedWithPersistence(recorded.persistence);
+		await drivePreservingReloadBoundary(predecessor.runner, true);
 		release();
 		const raw = await waitForSettlement();
 		const run = store.runs().find((candidate) => candidate.id === runId);
@@ -212,16 +248,22 @@ describe("advisory persistence after a preserving session boundary", () => {
 		);
 		assert.equal(run?.stages[0]?.status, "completed");
 		assert.equal(raw.ok, true, describeOutcome(store, runId, raw));
+		assert.equal(recorded.attempted.includes("workflow.stage.end"), true, recorded.attempted.join(","));
+		assert.equal(recorded.attempted.includes("workflow.run.end"), true, recorded.attempted.join(","));
 	});
 
 	test("preserving boundary without invalidating still completes", async () => {
-		const host = boundHostPersistence();
-		const { store, runId, release, waitForSettlement } = await runGatedWithPersistence(host.persistence);
+		const predecessor = createHostGeneration("live-predecessor");
+		const recorded = recordingPersistence(predecessor.persistence);
+		const { store, runId, release, waitForSettlement } = await runGatedWithPersistence(recorded.persistence);
+		await drivePreservingReloadBoundary(predecessor.runner, false);
 		release();
 		const raw = await waitForSettlement();
 		const run = store.runs().find((candidate) => candidate.id === runId);
 		assert.equal(run?.status, "completed", describeOutcome(store, runId, raw));
 		assert.equal(raw.ok, true, describeOutcome(store, runId, raw));
+		assert.equal(recorded.attempted.includes("workflow.stage.end"), true, recorded.attempted.join(","));
+		assert.equal(recorded.attempted.includes("workflow.run.end"), true, recorded.attempted.join(","));
 	});
 
 	test("a non-stale stage.end persistence error still fails the run", async () => {
