@@ -40,7 +40,7 @@ const { setDurableBackend } = await import("../../packages/workflows/src/durable
 const { WorkflowStageAdmissionBoundary: StageAdmissionBoundary } = await import(
 	"../../packages/coding-agent/src/core/workflow-stage-admission.ts"
 );
-const { registerPendingStageIntercomBridge } = await import(
+const { registerPendingStageIntercomBridge, settleUndeliverablePendingStageMessages } = await import(
 	"../../packages/workflows/src/extension/pending-stage-intercom.js"
 );
 const { workflow } = await import("../../packages/workflows/src/authoring/workflow.js");
@@ -130,6 +130,10 @@ function extensionFixture(
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const eventCompletions = new Map<string, Promise<void>>();
+	const eventCompletionWaiters = new Map<
+		string,
+		Array<{ resolve(completion: Promise<void>): void; reject(error: Error): void }>
+	>();
 	const tools = new Map<string, CapturedTool>();
 	const injectedMessages: InjectedMessage[] = [];
 	const injectedOptions: Array<InjectedMessageOptions | undefined> = [];
@@ -230,7 +234,10 @@ function extensionFixture(
 			emit(name: string, payload: object) {
 				for (const handler of eventHandlers.get(name) ?? []) void handler(payload);
 				const completion = (payload as { completion?: Promise<void> }).completion;
-				if (completion !== undefined) eventCompletions.set(name, completion);
+				if (completion === undefined) return;
+				eventCompletions.set(name, completion);
+				for (const waiter of eventCompletionWaiters.get(name) ?? []) waiter.resolve(completion);
+				eventCompletionWaiters.delete(name);
 			},
 		},
 	};
@@ -247,10 +254,25 @@ function extensionFixture(
 			if (injectedMessages.length >= count) return Promise.resolve();
 			return new Promise((resolveWaiter) => injectedWaiters.push({ count, resolve: resolveWaiter }));
 		},
-		waitForEventCompletion(name: string): Promise<void> {
-			const completion = eventCompletions.get(name);
-			assert.ok(completion, `Expected ${name} to expose a completion promise`);
-			return completion;
+		async waitForEventCompletion(name: string): Promise<void> {
+			const existing = eventCompletions.get(name);
+			if (existing !== undefined) return await existing;
+			const completion = await new Promise<Promise<void>>((resolveCompletion, reject) => {
+				const waiters = eventCompletionWaiters.get(name) ?? [];
+				const waiter = { resolve: resolveCompletion, reject };
+				waiters.push(waiter);
+				eventCompletionWaiters.set(name, waiters);
+				setTimeout(() => {
+					const active = eventCompletionWaiters.get(name) ?? [];
+					if (!active.includes(waiter)) return;
+					eventCompletionWaiters.set(
+						name,
+						active.filter((candidate) => candidate !== waiter),
+					);
+					reject(new Error(`Timed out waiting for event completion ${name}`));
+				}, STORE_EVENT_TIMEOUT_MS);
+			});
+			await completion;
 		},
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
@@ -1825,5 +1847,220 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 		disposeBridge();
 		await sender.shutdown();
 		await owner.shutdown();
+	}
+});
+
+test("a reconnected logical sender receives its durable undeliverable notice after a broker restart", async () => {
+	const runId = "33333333-3333-4333-8333-333333333333";
+	const group = `workflow:${runId}`;
+	const nestedSenderRunId = "44444444-4444-4444-8444-444444444444";
+	const nestedSenderContext: TestContext["orchestrationContext"] = {
+		intercomGroup: group,
+		kind: "workflow-stage",
+		workflowRunId: nestedSenderRunId,
+		workflowStageId: "nested-planner-id",
+		workflowStageName: "nested-planner",
+	};
+	const sdk = createMockSdk();
+	const writer = new DbosDurableBackend(sdk, { executorId: "sender-reconnect-writer" });
+	writer.registerWorkflow({
+		workflowId: runId,
+		name: "sender-reconnect",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	await writer.flush();
+	setDurableBackend(writer);
+	const writerStore = createStore();
+	writerStore.recordRunStart({
+		id: runId,
+		name: "sender-reconnect",
+		inputs: {},
+		status: "running",
+		stages: [
+			{
+				id: "reviewer-id",
+				name: "reviewer",
+				status: "pending",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			},
+		],
+		startedAt: 1,
+	});
+	const ownerBefore = extensionFixture(
+		"sender-reconnect-owner-before",
+		"sender-reconnect-owner",
+		undefined,
+		"default",
+	);
+	const senderBefore = extensionFixture(
+		"sender-reconnect-session-before",
+		"planner",
+		undefined,
+		group,
+		nestedSenderContext,
+	);
+	intercomHeavy(ownerBefore.pi as never);
+	let disposeBefore = (): void => {};
+	intercomHeavy(senderBefore.pi as never);
+	let ownerAfter: ReturnType<typeof extensionFixture> | undefined;
+	let senderAfter: ReturnType<typeof extensionFixture> | undefined;
+	let disposeAfter = (): void => {};
+	try {
+		await ownerBefore.start();
+		await senderBefore.start();
+		disposeBefore = registerPendingStageIntercomBridge(ownerBefore.pi as never, writerStore);
+		await ownerBefore.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		const queued = await executeIntercom(senderBefore, {
+			action: "send",
+			to: `${runId}:reviewer`,
+			message: "scope changed before the broker restart",
+		});
+		assert.equal(queued.details.queued, true);
+		assert.ok(queued.details.messageId);
+		const storedBeforeRestart = writerStore.pendingStageMessagesFor(runId, "reviewer")[0];
+		assert.ok(storedBeforeRestart);
+		assert.equal(storedBeforeRestart.from.name, "planner");
+		assert.equal(storedBeforeRestart.from.group, group);
+		assert.equal(storedBeforeRestart.senderRegistrationName, "planner");
+		assert.equal(storedBeforeRestart.senderReturnAddress, "sender-reconnect-session-before");
+		await writer.flush();
+
+		disposeBefore();
+		await senderBefore.shutdown();
+		await ownerBefore.shutdown();
+		await stopBroker();
+		await startBroker();
+
+		const reader = new DbosDurableBackend(sdk, { executorId: "sender-reconnect-reader" });
+		await reader.hydrateWorkflow(runId);
+		const reloadedStore = createStore();
+		reloadedStore.recordRunStart({
+			id: runId,
+			name: "sender-reconnect",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+			pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
+		});
+		setDurableBackend(reader);
+		ownerAfter = extensionFixture("sender-reconnect-owner-after", "sender-reconnect-owner", undefined, "default");
+		senderAfter = extensionFixture(
+			"sender-reconnect-session-before",
+			"planner",
+			undefined,
+			group,
+			nestedSenderContext,
+		);
+		intercomHeavy(ownerAfter.pi as never);
+		intercomHeavy(senderAfter.pi as never);
+		await ownerAfter.start();
+		await senderAfter.start();
+		disposeAfter = registerPendingStageIntercomBridge(ownerAfter.pi as never, reloadedStore);
+		await ownerAfter.waitForEventCompletion("atomic:workflow-pending-stage-route");
+
+		const senderAfterStatus = await executeIntercom(senderAfter, { action: "status" });
+		const senderAfterId = /Session ID: ([0-9a-f-]+)/i.exec(senderAfterStatus.content[0]?.text ?? "")?.[1];
+		assert.ok(senderAfterId);
+		assert.notEqual(senderAfterId, storedBeforeRestart.from.id);
+
+		reloadedStore.recordStageEnd(runId, {
+			id: "reviewer-id",
+			name: "reviewer",
+			status: "skipped",
+			parentIds: [],
+			toolEvents: [],
+			skippedReason: "branch not taken",
+		});
+		await ownerAfter.waitForEventCompletion("atomic:workflow-pending-stage-undeliverable");
+		await waitForStoreState(
+			reloadedStore,
+			() => reloadedStore.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt !== undefined,
+		);
+
+		const storedAfterRestart = reloadedStore.runs()[0]?.pendingStageMessages?.[0];
+		assert.ok(storedAfterRestart);
+		assert.equal(storedAfterRestart.from.id, storedBeforeRestart.from.id);
+		assert.equal(storedAfterRestart.from.name, storedBeforeRestart.from.name);
+		assert.equal(storedAfterRestart.from.group, storedBeforeRestart.from.group);
+		assert.equal(storedAfterRestart.senderRegistrationName, storedBeforeRestart.senderRegistrationName);
+		assert.equal(storedAfterRestart.senderReturnAddress, storedBeforeRestart.senderReturnAddress);
+		assert.equal(senderAfter.injectedMessages.length, 1);
+		assert.equal(typeof storedAfterRestart.undeliverableNotifiedAt, "string");
+		const notice = senderAfter.injectedMessages[0];
+		assert.equal(notice?.details?.message?.replyTo, queued.details.messageId);
+		assert.match(notice?.details?.message?.replyError ?? "", /branch not taken/);
+
+		const notificationId = storedAfterRestart.undeliverableNotificationId;
+		const notifiedAt = storedAfterRestart.undeliverableNotifiedAt;
+		assert.ok(notificationId);
+		assert.equal(notice?.details?.message?.id, notificationId);
+		assert.equal(storedAfterRestart.message.id, queued.details.messageId);
+		assert.equal(storedAfterRestart.message.content.text, "scope changed before the broker restart");
+		assert.ok(notifiedAt);
+		disposeAfter();
+		disposeAfter = (): void => {};
+		await senderAfter.shutdown();
+		await ownerAfter.shutdown();
+		await stopBroker();
+		await startBroker();
+
+		const receiptReader = new DbosDurableBackend(sdk, { executorId: "sender-reconnect-receipt-reader" });
+		await receiptReader.hydrateWorkflow(runId);
+		const restartedStore = createStore();
+		restartedStore.recordRunStart({
+			id: runId,
+			name: "sender-reconnect",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "skipped",
+					parentIds: [],
+					toolEvents: [],
+					skippedReason: "branch not taken",
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+			pendingStageMessages: [...(receiptReader.getWorkflow(runId)?.pendingStageMessages ?? [])],
+		});
+		setDurableBackend(receiptReader);
+		let retryNotifications = 0;
+		assert.equal(
+			await settleUndeliverablePendingStageMessages(restartedStore, async () => {
+				retryNotifications += 1;
+				return true;
+			}),
+			0,
+		);
+		const receiptAfterRestart = restartedStore.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(retryNotifications, 0);
+		assert.equal(receiptAfterRestart?.undeliverableNotificationId, notificationId);
+		assert.equal(receiptAfterRestart?.undeliverableNotifiedAt, notifiedAt);
+		assert.equal(senderAfter.injectedMessages.length, 1);
+	} finally {
+		disposeAfter();
+		if (senderAfter !== undefined) await senderAfter.shutdown();
+		if (ownerAfter !== undefined) await ownerAfter.shutdown();
+		disposeBefore();
+		await senderBefore.shutdown();
+		await ownerBefore.shutdown();
+		if (broker === undefined) await startBroker();
 	}
 });

@@ -51,6 +51,8 @@ interface PendingStageUndeliverableRelay {
 	completion?: Promise<boolean>;
 	runId?: string;
 	senderId?: string;
+	senderRegistrationName?: string;
+	senderReturnAddress?: string;
 	messageId?: string;
 	notificationId?: string;
 	reason?: string;
@@ -63,6 +65,8 @@ function isPendingStageUndeliverableRelay(value: unknown): value is PendingStage
 	return (
 		typeof event.runId === "string" &&
 		typeof event.senderId === "string" &&
+		(event.senderRegistrationName === undefined || typeof event.senderRegistrationName === "string") &&
+		(event.senderReturnAddress === undefined || typeof event.senderReturnAddress === "string") &&
 		typeof event.messageId === "string" &&
 		typeof event.notificationId === "string" &&
 		typeof event.reason === "string"

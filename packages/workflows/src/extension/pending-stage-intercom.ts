@@ -34,6 +34,8 @@ interface PendingStageMessageEvent {
 		| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" }
 	>;
 	readonly requestId?: string;
+	readonly senderRegistrationName?: string;
+	readonly senderReturnAddress?: string;
 	readonly from?: PendingStageSender;
 	readonly runId?: string;
 	readonly stageKey?: string;
@@ -45,6 +47,8 @@ interface PendingStageUndeliverableEvent extends Record<string, unknown> {
 	completion?: Promise<boolean>;
 	readonly runId: string;
 	readonly senderId: string;
+	readonly senderRegistrationName?: string;
+	readonly senderReturnAddress?: string;
 	readonly messageId: string;
 	readonly notificationId: string;
 	readonly reason: string;
@@ -62,6 +66,10 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			handled: false,
 			runId: entry.runId,
 			senderId: entry.from.id,
+			...(entry.senderRegistrationName === undefined
+				? {}
+				: { senderRegistrationName: entry.senderRegistrationName }),
+			...(entry.senderReturnAddress === undefined ? {} : { senderReturnAddress: entry.senderReturnAddress }),
 			messageId: entry.message.id,
 			notificationId,
 			reason,
@@ -133,6 +141,8 @@ function isPendingStageMessageEvent(value: unknown): value is PendingStageMessag
 		typeof event.stageKey === "string" &&
 		typeof event.from?.id === "string" &&
 		(event.from.name === undefined || typeof event.from.name === "string") &&
+		(event.senderRegistrationName === undefined || typeof event.senderRegistrationName === "string") &&
+		(event.senderReturnAddress === undefined || typeof event.senderReturnAddress === "string") &&
 		typeof event.message?.id === "string" &&
 		typeof event.message.timestamp === "number" &&
 		typeof event.message.content?.text === "string"
@@ -201,6 +211,8 @@ async function queueAndPersist(
 		runId: event.runId,
 		stageKey: event.stageKey,
 		from: event.from,
+		...(event.senderRegistrationName === undefined ? {} : { senderRegistrationName: event.senderRegistrationName }),
+		...(event.senderReturnAddress === undefined ? {} : { senderReturnAddress: event.senderReturnAddress }),
 		message: event.message,
 		queuedAt: new Date().toISOString(),
 	};
@@ -309,8 +321,12 @@ export async function settleUndeliverablePendingStageMessages(
 		return 0;
 	}
 	let settled = 0;
-	const backend = getDurableBackend();
+	const rootBackend = getDurableBackend();
 	for (const run of runs) {
+		const backend = durableBackendForRun(rootBackend, runs, run.id);
+		if (backend === undefined) {
+			throw new Error(`atomic-workflows: workflow run ${run.id} has no durable owner for pending-stage settlement`);
+		}
 		for (const snapshotEntry of run.pendingStageMessages ?? []) {
 			let entry = snapshotEntry;
 			if (entry.status === "queued") {

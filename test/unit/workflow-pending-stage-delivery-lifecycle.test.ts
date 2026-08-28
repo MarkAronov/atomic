@@ -13,6 +13,7 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import {
 	registerPendingStageIntercomBridge,
 	settleUndeliverablePendingStageMessages,
@@ -229,6 +230,111 @@ describe("pending workflow stage delivery lifecycle", () => {
 		assert.equal(activeStore.runs()[0]?.pendingStageMessages?.[0]?.status, "undeliverable");
 	});
 
+	test("keeps the stable notification outbox pending until recipient acknowledgement", async () => {
+		const { activeStore, backend } = await lifecycleFixture("running", "skipped");
+		const attempts: string[] = [];
+		const reject = async (_entry: PendingStageMessage, _reason: string, notificationId: string) => {
+			attempts.push(notificationId);
+			return false;
+		};
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, reject), 1);
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, reject), 0);
+		const pendingReceipt = activeStore.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(pendingReceipt?.status, "undeliverable");
+		assert.equal(pendingReceipt?.undeliverableNotifiedAt, undefined);
+		assert.equal(
+			backend.getWorkflow(activeStore.runs()[0]!.id)?.pendingStageMessages?.[0]?.undeliverableNotifiedAt,
+			undefined,
+		);
+		assert.equal(attempts.length, 2);
+		assert.equal(attempts[0], attempts[1]);
+
+		assert.equal(
+			await settleUndeliverablePendingStageMessages(activeStore, async (_entry, _reason, notificationId) => {
+				attempts.push(notificationId);
+				return true;
+			}),
+			0,
+		);
+		const acknowledgedReceipt = activeStore.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(typeof acknowledgedReceipt?.undeliverableNotifiedAt, "string");
+		assert.equal(attempts[2], attempts[0]);
+		assert.equal(
+			backend.getWorkflow(activeStore.runs()[0]!.id)?.pendingStageMessages?.[0]?.undeliverableNotifiedAt,
+			acknowledgedReceipt?.undeliverableNotifiedAt,
+		);
+	});
+
+	test("settles and notifies a terminal nested child through the root durable owner exactly once", async () => {
+		const rootRunId = testRunId("pending-delivery-nested-root");
+		const childRunId = testRunId("pending-delivery-nested-child");
+		const group = `workflow:${rootRunId}`;
+		const activeStore = createStore();
+		activeStore.recordRunStart({
+			id: rootRunId,
+			name: "root",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+				},
+			],
+			startedAt: 1,
+		});
+		activeStore.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "completed",
+			parentRunId: rootRunId,
+			parentStageId: "child-boundary",
+			rootRunId,
+			stages: [
+				{
+					id: "child-review-stage",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "stage:reviewer:1",
+				},
+			],
+			startedAt: 2,
+		});
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: rootRunId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		const childBackend = new ScopedDurableBackend(backend, {
+			rootWorkflowId: rootRunId,
+			scopePrefix: "workflow:child:1",
+		});
+		const input = pendingMessage(childRunId, "child-review-stage");
+		assert.equal(
+			(await activeStore.queueStageMessage({ ...input, from: { ...input.from, group } }, group, group, childBackend))
+				?.ok,
+			true,
+		);
+		const notifications: string[] = [];
+		const notify = async (entry: PendingStageMessage, reason: string, notificationId: string) => {
+			notifications.push(`${entry.runId}:${notificationId}:${reason}`);
+			return true;
+		};
+
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 1);
+		assert.equal(await settleUndeliverablePendingStageMessages(activeStore, notify), 0);
+		assert.equal(notifications.length, 1);
+		assert.match(notifications[0] ?? "", new RegExp(`^${childRunId}:.*completed`));
+		assert.equal(backend.getWorkflow(childRunId), undefined);
+		assert.equal(backend.getWorkflow(rootRunId)?.pendingStageMessages?.[0]?.status, "undeliverable");
+		assert.equal(typeof backend.getWorkflow(rootRunId)?.pendingStageMessages?.[0]?.undeliverableNotifiedAt, "string");
+	});
 	test("settles a name-addressed skipped destination by canonical identity after durable reload and rename", async () => {
 		const runId = testRunId("pending-delivery-canonical-rename");
 		const group = `workflow:${runId}`;

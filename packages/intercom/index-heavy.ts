@@ -1,6 +1,11 @@
 import { APP_NAME, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
-import { IntercomClient, type PendingStageMessageRequest, type PendingStageMessageResult } from "./broker/client.js";
+import {
+	IntercomClient,
+	type PendingStageMessageRequest,
+	type PendingStageMessageResult,
+	type PendingStageNotificationRequest,
+} from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.ts";
@@ -72,6 +77,8 @@ interface PendingStageUndeliverableEvent {
   completion?: Promise<boolean>;
   readonly runId: string;
   readonly senderId: string;
+	readonly senderRegistrationName?: string;
+	readonly senderReturnAddress?: string;
   readonly messageId: string;
   readonly notificationId: string;
   readonly reason: string;
@@ -84,6 +91,8 @@ function isPendingStageUndeliverableEvent(value: unknown): value is PendingStage
     typeof event.runId === "string" &&
     typeof event.handled === "boolean" &&
     typeof event.senderId === "string" &&
+		(event.senderRegistrationName === undefined || typeof event.senderRegistrationName === "string") &&
+		(event.senderReturnAddress === undefined || typeof event.senderReturnAddress === "string") &&
     typeof event.messageId === "string" &&
     typeof event.notificationId === "string" &&
     typeof event.reason === "string"
@@ -452,6 +461,104 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         }),
     );
   }
+	async function admitPendingStageNotification(
+		nextClient: IntercomClient,
+		request: PendingStageNotificationRequest,
+	): Promise<boolean> {
+		const messageGeneration = runtimeGeneration;
+		const liveContext = client === nextClient ? getLiveContext() : null;
+		if (liveContext === null) return false;
+		const attachmentText = request.message.content.attachments?.length
+			? formatAttachments(request.message.content.attachments)
+			: "";
+		const bodyText = `${request.message.content.text}${attachmentText}`;
+		const replyCommand = config.replyHint && request.message.expectsReply
+			? `intercom({ action: "reply", message: "..." })`
+			: undefined;
+		const entry = { from: request.from, message: request.message, replyCommand, bodyText };
+		const admission = inboundDeliveries.admit(request.from, request.message);
+		if (admission.kind === "duplicate") return true;
+		if (admission.kind === "pending") {
+			return admission.completion.then(() => true, () => false);
+		}
+		const reservation = admission.reservation;
+		const commit = (): void => { inboundDeliveries.commit(reservation); };
+		replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
+		if (routeIncomingReply(replyWaiters.pending(), request.from, request.message)) {
+			commit();
+			return true;
+		}
+		const replyContext = replyTracker.recordIncomingMessage(request.from, request.message);
+		const release = createWorkflowStageDeliveryFailureHandler({
+			entry,
+			admission: inboundDeliveries,
+			reservation,
+			tracker: replyTracker,
+			replyContext,
+			currentClient: () => client,
+			commit,
+		});
+		const reject = async (error: unknown): Promise<false> => {
+			await release(error);
+			return false;
+		};
+		const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
+			&& liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
+		if (stageClosed) return reject(new Error("Workflow stage is closed before notification admission"));
+		const stageDelivery = admitWorkflowStageInbound(
+			liveContext,
+			(admissionBarrier) => {
+				replyTracker.queueTurnContext(replyContext);
+				return retryStableDelivery({
+					deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false, undefined, admissionBarrier),
+					isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+				});
+			},
+			() => foregroundDetachHandoff.claim(
+				request.from,
+				request.message,
+				messageGeneration,
+				() => Boolean(getLiveContext(liveContext, messageGeneration)),
+			),
+			release,
+		);
+		if (stageDelivery !== false) {
+			try {
+				await stageDelivery;
+				commit();
+				return true;
+			} catch (error) {
+				return reject(error);
+			}
+		}
+		try {
+			const activeContext = getLiveContext(liveContext, messageGeneration);
+			if (activeContext === null || !activeContext.isIdle()) {
+				return reject(new Error("Intercom session is not ready for acknowledged notification delivery"));
+			}
+			replyTracker.queueTurnContext(replyContext);
+			await retryStableDelivery({
+				deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
+				isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+			});
+			commit();
+			return true;
+		} catch (error) {
+			return reject(error);
+		}
+	}
+	function handlePendingStageNotification(nextClient: IntercomClient, request: PendingStageNotificationRequest): void {
+		void admitPendingStageNotification(nextClient, request)
+			.catch(() => false)
+			.then((delivered) => {
+				if (client !== nextClient || !nextClient.isConnected()) return;
+				try {
+					nextClient.respondPendingStageNotification(request.requestId, delivered);
+				} catch {
+					// Broker disconnect keeps the durable sender outbox pending for retry.
+				}
+			});
+	}
   function attachClientHandlers(nextClient: IntercomClient): void {
     nextClient.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
       const liveContext = getLiveContext();
@@ -463,6 +570,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
       handlePendingStageMessage(nextClient, request, () => client === nextClient);
     });
+		nextClient.on("pending_stage_notification", (request: PendingStageNotificationRequest) => {
+			handlePendingStageNotification(nextClient, request);
+		});
     nextClient.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
       if (client !== nextClient) {
         return;
@@ -582,7 +692,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 
     const promise = (async () => {
       await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
-      const nextClient = new IntercomClient();
+		const nextClient = new IntercomClient(`${currentSessionId}:pending-stage-route:${runId}`);
       state.client = nextClient;
       attachPendingStageRouteClientHandlers(runId, state, nextClient);
       await nextClient.connect(
@@ -662,7 +772,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return reconnectPromise;
     }
     const nextReconnectPromise = (async () => {
-      const nextClient = new IntercomClient();
+		const nextClient = new IntercomClient(currentSessionId);
       const registration = buildRegistration();
       client = nextClient;
       attachClientHandlers(nextClient);
@@ -740,17 +850,26 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!isPendingStageUndeliverableEvent(payload) || payload.handled) return;
     payload.handled = true;
     const actionable = `Pending workflow stage could not receive intercom message: ${payload.reason}`;
-    payload.completion = pendingStageNotificationClient(payload.runId)
-      .then((activeClient) =>
-        activeClient.send(payload.senderId, {
-          text: actionable,
-          replyTo: payload.messageId,
-          replyError: actionable,
-          messageId: payload.notificationId,
-        }),
-      )
-      .then((result) => result.delivered)
-      .catch(() => false);
+		payload.completion = pendingStageNotificationClient(payload.runId)
+			.then((activeClient) => {
+				const route = pendingStageRoutes.get(payload.runId);
+				if (route === undefined) throw new Error("Pending workflow route is unavailable");
+				return activeClient.sendPendingStageNotification(
+					payload.runId,
+					route.capability,
+					payload.senderId,
+					payload.senderRegistrationName,
+					{
+						text: actionable,
+						replyTo: payload.messageId,
+						replyError: actionable,
+						messageId: payload.notificationId,
+					},
+					payload.senderReturnAddress,
+				);
+			})
+			.then((result) => result.delivered)
+			.catch(() => false);
   });
 
   registerSubagentRelay(pi, {
