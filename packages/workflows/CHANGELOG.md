@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Workflow heartbeat and routing guidance now tells agents to discover a stage's `workflow:<rootRunId>` invocation group with the Intercom `groups` action and join it before steering the stage.
+- An in-flight workflow run no longer fails after a preserving `/reload` when the predecessor persistence port becomes stale. Advisory `workflow.stage.end` and `workflow.run.end` transcript appends swallow exactly `isStaleExtensionContextError` and rethrow every other error. ([#2749](https://github.com/bastani-inc/atomic/issues/2749))
 
 ## [0.9.16-alpha.8] - 2026-08-27
 
