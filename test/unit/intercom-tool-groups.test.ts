@@ -45,12 +45,14 @@ function fixture(homeGroup = "default") {
 	let cleared = 0;
 	const leaveCalls: Array<string | undefined> = [];
 	const homeResetCalls: string[][] = [];
+	const listSessionCalls: Array<string | undefined> = [];
 	const client = {
 		sessionId: current.id,
 		get groups(): string[] {
 			return [...(current.groups ?? [current.group ?? "default"])];
 		},
 		async listSessions(group?: string): Promise<SessionInfo[]> {
+			listSessionCalls.push(group);
 			const peer = (id: string, membership: string): SessionInfo => ({
 				...current,
 				id,
@@ -124,6 +126,7 @@ function fixture(homeGroup = "default") {
 		tool,
 		joinedGroups,
 		leaveCalls,
+		listSessionCalls,
 		homeResetCalls,
 		get cleared() {
 			return cleared;
@@ -167,10 +170,46 @@ test("join is additive and leave without a group returns home", async () => {
 
 	const left = await current.tool.execute("leave", { action: "leave" }, undefined, undefined, context);
 	assert.equal(left.isError, false, left.content[0]?.text);
+	assert.equal(left.details?.group, "default");
 	assert.deepEqual(current.current.groups, ["default"]);
 	assert.deepEqual(current.leaveCalls, []);
 	assert.deepEqual(current.homeResetCalls, [["default"]]);
 	assert.equal(current.cleared, 1);
+});
+
+test("status treats a single membership's own group as an unfiltered status request", async () => {
+	const current = fixture();
+
+	const result = await current.tool.execute(
+		"status",
+		{ action: "status", group: "default" },
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(result.isError, false, result.content[0]?.text);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /Selected group/);
+	assert.deepEqual(result.details, { group: "default", groups: ["default"] });
+	assert.deepEqual(current.listSessionCalls, [undefined]);
+});
+
+test("list treats a single membership's own group as the unfiltered session list", async () => {
+	const current = fixture();
+
+	const result = await current.tool.execute(
+		"list",
+		{ action: "list", group: "default" },
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(result.isError, false, result.content[0]?.text);
+	assert.match(result.content[0]?.text ?? "", /Current session/);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /read-only peek/);
+	assert.deepEqual(result.details, { group: "default", groups: ["default"] });
+	assert.deepEqual(current.listSessionCalls, [undefined]);
 });
 
 test("status applies a group filter even when the session belongs to that group", async () => {

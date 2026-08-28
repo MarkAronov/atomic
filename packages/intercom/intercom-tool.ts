@@ -118,6 +118,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         const self = sessions?.find((session) => session.id === connectedClient.sessionId);
         return [...normalizeGroups(self?.groups, self?.group)];
       };
+      const isOnlyOwnGroup = (candidate: string | undefined, ownGroups: readonly string[]): boolean =>
+        candidate !== undefined && ownGroups.length === 1 && ownGroups[0] === candidate;
       const requestedGroup = typeof group === "string" && group.trim() ? normalizeGroup(group) : undefined;
       if ((action === "send" || action === "ask") && requestedGroup) {
         const ownGroups = resolveOwnGroups();
@@ -191,7 +193,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             return {
               content: [{ type: "text", text }],
               isError: false,
-              details: { groups },
+              details: targetGroup === undefined ? { group: homeGroup, groups } : { groups },
             };
           } catch (error) {
             return {
@@ -235,7 +237,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             const ownGroups = resolveOwnGroups(ownSessions);
-            if (requestedGroup) {
+            if (requestedGroup && !isOnlyOwnGroup(requestedGroup, ownGroups)) {
               const peeked = await connectedClient.listSessions(requestedGroup);
               const section = peeked.length === 0
                 ? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions in this group.`
@@ -598,12 +600,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
             const ownGroups = resolveOwnGroups(sessions);
-            const selectedGroupSessions = requestedGroup === undefined
+            const selectedGroup = isOnlyOwnGroup(requestedGroup, ownGroups) ? undefined : requestedGroup;
+            const selectedGroupSessions = selectedGroup === undefined
               ? undefined
-              : await connectedClient.listSessions(requestedGroup);
+              : await connectedClient.listSessions(selectedGroup);
             const selectedSection = selectedGroupSessions === undefined
               ? ""
-              : `\nSelected group [${requestedGroup}]: ${selectedGroupSessions.length} session(s)`;
+              : `\nSelected group [${selectedGroup}]: ${selectedGroupSessions.length} session(s)`;
             return {
               content: [{
                 type: "text",
@@ -613,9 +616,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: {
                 group: ownGroups.at(-1),
                 groups: ownGroups,
-                ...(requestedGroup === undefined
+                ...(selectedGroup === undefined
                   ? {}
-                  : { selectedGroup: requestedGroup, selectedGroupSessionCount: selectedGroupSessions?.length ?? 0 }),
+                  : { selectedGroup, selectedGroupSessionCount: selectedGroupSessions?.length ?? 0 }),
               },
             };
           } catch (error) {
