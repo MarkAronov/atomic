@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.16-alpha.11] - 2026-08-28
+
 ### Added
 
 - Added JSON-only terminal capability overrides for hyperlinks, Kitty/iTerm2 images, and truecolor, plus a live `fullscreenCopyOnSelect` setting. With automatic selection copying disabled, Ctrl+X copies the retained fullscreen selection before falling back to the last assistant message, while `/copy` keeps its last-message behavior and workflow/scoped-selector hierarchy transitions retain precedence.

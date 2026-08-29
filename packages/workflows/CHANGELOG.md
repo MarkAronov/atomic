@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.16-alpha.11] - 2026-08-28
+
 ### Changed
 
 - Every workflow model stage now retains ordinary `intercom` and its invocation group through `tools`, `excludedTools`, `noTools`, extension restrictions, and reload. Restrictions on every other tool and workflow group isolation are unchanged.
