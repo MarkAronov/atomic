@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-08-29
+
+Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Fixed
+
+- Idle intercom brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before register. An evicted incumbent does not delete a successor's socket or pid file ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+
 ## [0.9.17-alpha.1] - 2026-08-29
 
 ### Fixed
