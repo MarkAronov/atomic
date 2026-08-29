@@ -1490,7 +1490,7 @@ Register a custom tool callable by the LLM. See [Custom Tools](#custom-tools) fo
 
 `pi.registerTool()` works both during extension load and after startup. You can call it inside `session_start`, command handlers, or other event handlers. New tools are refreshed immediately in the same session, so they appear in `pi.getAllTools()` and are callable by the LLM without `/reload`.
 
-Use `pi.setActiveTools()` to enable or disable tools (including dynamically added tools) at runtime.
+Use `pi.setActiveTools()` to enable or disable tools (including dynamically added tools) at runtime. Atomic always restores mandatory ordinary `intercom`; other tool behavior is unchanged.
 
 Use `promptSnippet` to opt a custom tool into a one-line entry in `Available tools`, and `promptGuidelines` to append tool-specific bullets to the default `Guidelines` section when the tool is active.
 

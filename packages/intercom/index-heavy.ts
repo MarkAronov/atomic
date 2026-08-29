@@ -763,9 +763,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
-    if (!config.enabled) {
-      throw new Error("Intercom disabled");
-    }
     if (disposed || shuttingDown) {
       throw new Error("Intercom shutting down");
     }

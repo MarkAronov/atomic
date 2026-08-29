@@ -119,14 +119,15 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients never need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Atomic session history.
 
+Atomic treats ordinary `intercom` as a mandatory runtime tool in main chat and every workflow model stage. Tool allowlists, exclusions, `noTools`, optional-extension restrictions, and reloads cannot unload or deactivate it. Restrictions on every other tool are unchanged, and `contact_supervisor` remains subagent-only. Tool registration is lightweight; broker connection and heavy initialization remain lazy until an Intercom surface is used.
+
 ## How Connection Works
 
-Intercom connections are normally tool-driven. Ordinary sessions and delegated children keep the lightweight wrapper unloaded until an Intercom tool, `/intercom`, or the ALT+M overlay is invoked. One exception is supervisor authorization: launching an Intercom-enabled subagent connects the parent runtime long enough to request a broker capability for that child; the child's own connection remains lazy until it invokes `contact_supervisor`. The parent restores issued capabilities across reconnects, and the child uses the broker-confirmed current supervisor ID. Concurrent callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+Intercom connections are normally tool-driven. Ordinary sessions and delegated children load and register the lightweight wrapper at startup, while broker connection and heavy initialization wait until an Intercom tool, `/intercom`, or the ALT+M overlay is invoked. One exception is supervisor authorization: launching an Intercom-enabled subagent connects the parent runtime long enough to request a broker capability for that child; the child's own connection remains lazy until it invokes `contact_supervisor`. The parent restores issued capabilities across reconnects, and the child uses the broker-confirmed current supervisor ID. Concurrent callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 A session becomes intercom-connected when all of these are true:
 
-- the intercom extension is loaded in that session
-- `enabled` is not set to `false` in `~/.atomic/agent/intercom/config.json` (or the legacy `~/.pi/agent/intercom/config.json` fallback)
+- the mandatory bundled Intercom extension is loaded in that Atomic model session
 - the model or user has invoked an Intercom surface in that session, **or** the parent runtime is authorizing an Intercom-enabled child supervisor relationship
 - the local broker is running or can be auto-started
 
@@ -389,7 +390,7 @@ The `subagent` tool's `control` options select which control events notify the p
 
 Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `intercom({ action: "status" })` reports connection state and every membership for the current session.
 
-If live peer coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first ordinary Intercom call. A claimed `contact_supervisor` decision or interview can yield before child broker connection because typed admission already identifies the launching parent. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
+If live peer coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first ordinary Intercom call. A claimed `contact_supervisor` decision or interview can yield before child broker connection because typed admission already identifies the launching parent. Fresh child sessions always receive the mandatory bundled Intercom wrapper, including when an explicit `extensions` allowlist is empty or omits it.
 
 ### Delivery Ordering
 
@@ -406,7 +407,6 @@ Create `~/.atomic/agent/intercom/config.json`. The legacy `~/.pi/agent/intercom/
   "brokerCommand": "npx",
   "brokerArgs": ["--no-install", "tsx"],
   "confirmSend": false,
-  "enabled": true,
   "replyHint": true,
   "status": "researching",
   "group": "default"
@@ -418,7 +418,6 @@ Create `~/.atomic/agent/intercom/config.json`. The legacy `~/.pi/agent/intercom/
 | `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
 | `confirmSend` | `false` | Show a confirmation dialog before non-reply sends from an interactive session with UI |
-| `enabled` | `true` | Enable/disable intercom entirely |
 | `replyHint` | `true` | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 | `group` | `"default"` | Home intercom group for this session (see [Groups](#groups)). Overridden by env `ATOMIC_INTERCOM_GROUP` / `PI_INTERCOM_GROUP` and by workflow/orchestrator per-session injection. |
@@ -471,7 +470,7 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits 5 seconds after the last connected session disconnects; clients reconnect automatically if the broker restarts. A spawn lock keyed by PID and timestamp prevents duplicate brokers when multiple sessions start at once.
+The broker is a standalone process that manages session registration and message routing. It auto-spawns when the first session that invokes Intercom needs it and exits 5 seconds after the last connected session disconnects; clients reconnect automatically if the broker restarts. A spawn lock keyed by PID and timestamp prevents duplicate brokers when multiple sessions start at once.
 
 Transport is local IPC only — a Unix domain socket on macOS/Linux or a named pipe on Windows — using length-prefixed JSON (4-byte length + payload) with request correlation for session listing, explicit delivery failures, and validation of malformed or out-of-order messages. `ask` stays client-side: the broker routes plain messages, and the client waits for the matching reply before returning it as the tool result.
 

@@ -8,6 +8,7 @@ import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin
 interface BuiltinPackageDescriptor {
 	readonly packageName: string;
 	readonly distDirName: BuiltinPackageDirName;
+	readonly mandatory: boolean;
 	readonly requiredEntries: readonly string[];
 	readonly sourceCandidates: (context: BuiltinPackageCandidateContext) => string[];
 }
@@ -24,18 +25,19 @@ interface WorkspaceBuiltinSpec {
 	readonly distDirName: BuiltinPackageDirName;
 }
 
-const WORKSPACE_BUILTINS: readonly WorkspaceBuiltinSpec[] = [
+const WORKSPACE_BUILTINS: readonly (WorkspaceBuiltinSpec & { mandatory?: boolean })[] = [
 	{ packageName: "@bastani/workflows", workspaceDirName: "workflows", distDirName: "workflows" },
 	{ packageName: "@bastani/subagents", workspaceDirName: "subagents", distDirName: "subagents" },
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp", distDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access", distDirName: "web-access" },
-	{ packageName: "@bastani/intercom", workspaceDirName: "intercom", distDirName: "intercom" },
+	{ packageName: "@bastani/intercom", workspaceDirName: "intercom", distDirName: "intercom", mandatory: true },
 ];
 
 const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS.map(
 	(spec): BuiltinPackageDescriptor => ({
 		packageName: spec.packageName,
 		distDirName: spec.distDirName,
+		mandatory: spec.mandatory === true,
 		requiredEntries: requiredEntriesForBuiltin(spec.distDirName),
 		sourceCandidates: ({ here, packageDir, isSourceCheckout }) =>
 			isSourceCheckout
@@ -122,5 +124,34 @@ export function getBuiltinPackagePaths(): string[] {
 			descriptor,
 		);
 		return packageDir ? [packageDir] : [];
+	});
+}
+
+/** Built-in package roots whose extensions Atomic must load in every model session. */
+export function getMandatoryBuiltinPackagePaths(): string[] {
+	const context = getBuiltinPackageCandidateContext();
+	return BUILTIN_PACKAGES.filter((descriptor) => descriptor.mandatory).flatMap((descriptor) => {
+		const packageDir = firstExistingPackageDir(
+			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
+			descriptor,
+		);
+		return packageDir ? [packageDir] : [];
+	});
+}
+
+/** Trusted extension entries resolved from Atomic's mandatory bundled packages. */
+export function getMandatoryBuiltinExtensionPaths(): string[] {
+	return getMandatoryBuiltinPackagePaths().flatMap((packageDir) => {
+		try {
+			const manifest = JSON.parse(stripBom(readFileSync(join(packageDir, "package.json"), "utf-8"))) as {
+				atomic?: { extensions?: string[] };
+				pi?: { extensions?: string[] };
+			};
+			return (manifest.atomic?.extensions ?? manifest.pi?.extensions ?? []).map((entry) =>
+				resolve(packageDir, entry),
+			);
+		} catch {
+			return [];
+		}
 	});
 }

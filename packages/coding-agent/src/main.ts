@@ -49,6 +49,7 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
@@ -567,6 +568,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
 		});
+		if (isolateInteractiveHost) limitMandatoryIntercomToTool(services.resourceLoader);
 		const { settingsManager, modelRuntime, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...services.diagnostics,

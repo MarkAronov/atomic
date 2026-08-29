@@ -4,6 +4,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import {
 	DefaultResourceLoader,
@@ -153,14 +154,16 @@ export async function createAgentSessionServices(
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	endTimingSpan(settingsSpan);
-	const resourceLoader = new DefaultResourceLoader({
-		...(options.resourceLoaderOptions ?? {}),
+	const resourceLoaderOptions = options.resourceLoaderOptions ?? {};
+	const defaultResourceLoader = new DefaultResourceLoader({
+		...resourceLoaderOptions,
 		cwd,
 		agentDir,
 		settingsManager,
 	});
 	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
-	await resourceLoader.reload(options.resourceLoaderReloadOptions);
+	await defaultResourceLoader.reload(options.resourceLoaderReloadOptions);
+	const resourceLoader = await withMandatoryResourceLoader(defaultResourceLoader, cwd);
 	endTimingSpan(reloadSpan);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];

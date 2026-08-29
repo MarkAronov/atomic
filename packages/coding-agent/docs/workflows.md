@@ -1571,7 +1571,7 @@ Pick and document one policy before the run:
 
 Use `block` for risky public contracts, data changes, security behavior, releases, or publication. `warn` is a practical default when a boundary review can replace live steering. Never degrade silently from `block` to `warn` or from guarded execution to `off`.
 
-Intercom capability is tool-gated. A stage with `noTools: "all"`, a `tools` allowlist that omits `intercom`, or `excludedTools: ["intercom"]` cannot use live steering. Use a boundary task or the selected fallback policy for that stage.
+Ordinary `intercom` is mandatory in every workflow model stage. `noTools: "all"`, restrictive `tools` allowlists, and `excludedTools` continue to restrict every other tool but cannot remove Intercom, so live steering remains available.
 
 ### Lifecycle, topology, and context rules
 
@@ -2425,7 +2425,7 @@ Sets the stage session's [Intercom](/intercom) home group. Every top-level workf
 
 `group` is accepted on `stage`/`task` options, on `ctx.parallel(...)` options, and per parallel step. Explicit values override the workflow invocation group; a step-level value also overrides its parallel-set value. A named string joins that group, including `group: "default"` to opt into the shared default group. Boolean `true` auto-generates one shared UUID group **per `ctx.parallel(...)` set** (minted once for every item in that set), while `true` on a non-parallel stage creates a fresh stage-only group. The trimmed, case-insensitive string sentinels `"true"` and `"auto"` have the same automatic behavior and are reserved.
 
-The full precedence is: explicit stage/task/parallel group > workflow invocation group > `ATOMIC_INTERCOM_GROUP` (or legacy `PI_INTERCOM_GROUP`) > Intercom config > `"default"`. Group assignment is **capability-gated**: a stage with `noTools: "all"`, a `tools` allowlist that omits `intercom`, or `excludedTools` containing `intercom` receives no group. `noTools: "builtin"` still keeps extension tools such as Intercom, so those stages inherit the workflow group unless they exclude Intercom. Subagents inherit their launching stage's resolved group by default (see [subagents.md](/subagents)). The subagent-only `contact_supervisor` channel keeps its broker-authorized cross-group route; ordinary client sends remain group-bound.
+The full precedence is: explicit stage/task/parallel group > workflow invocation group > `ATOMIC_INTERCOM_GROUP` (or legacy `PI_INTERCOM_GROUP`) > Intercom config > `"default"`. Every workflow model stage receives its workflow invocation group because ordinary Intercom is mandatory. Tool restrictions do not suppress that group; explicit `group` values retain their existing precedence. Subagents inherit their launching stage's resolved group by default (see [subagents.md](/subagents)). The subagent-only `contact_supervisor` channel keeps its broker-authorized cross-group route; ordinary client sends remain group-bound.
 
 Authors do not need to generate or pass a group through ordinary stages, tasks, parallel steps, nested workflows, or delegated subagents. Use an explicit named group or `group: true` only to create an intentional subgroup, such as isolating one reviewer level from another.
 
@@ -2489,7 +2489,7 @@ readonly noTools?: "all" | "builtin";
 readonly excludedTools?: readonly string[];
 ```
 
-`tools` is an allowlist across built-in and bundled extension tools; list every tool the stage should see. `excludedTools` and `noTools: "all"` still win.
+`tools` is an allowlist across built-in and bundled extension tools. `excludedTools` and `noTools: "all"` still win for every tool except mandatory ordinary `intercom`, which remains registered and active.
 
 The bundled `subagent` tool is available by default on the same terms as main chat. A workflow stage is a top-level session, so it may delegate once; the children it launches may not delegate or control another child. Delegation is exactly one level deep and nothing configures it — there is no config option, agent frontmatter field, or tool parameter for the level. The in-process admission door carries each child's issued depth in its typed child policy, the executor refuses any launch or `interrupt` from a session that was itself admitted as a child, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. That depth is never carried through process environment. Bundled subagent definitions from `@bastani/subagents` are available to that tool. Explicitly list tools such as `subagent`, `web_search`, `fetch_content`, or `intercom` when using an allowlist; in-process child sessions load the bundled resources while suppressing the workflow extension lifecycle.
 

@@ -24,6 +24,7 @@ import {
 } from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
+import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
@@ -141,6 +142,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
+	resourceLoader = await withMandatoryResourceLoader(resourceLoader, cwd);
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();

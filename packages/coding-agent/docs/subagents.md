@@ -149,7 +149,7 @@ For adversarial review or research, prefer fresh context so the specialist inspe
 
 For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
 
-Fresh child sessions use normal Atomic package discovery when an agent omits `extensions`, so bundled lightweight MCP, web-access, and Intercom wrappers are available just as they are in the parent. An explicit `extensions` field (including an empty list) intentionally switches the child to extension-allowlist mode and excludes unlisted builtins; it does not inherit the parent's normal discovery set.
+Fresh child sessions use normal Atomic package discovery when an agent omits `extensions`, so bundled lightweight MCP and web-access wrappers are available just as they are in the parent. An explicit `extensions` field, including an empty list, switches optional extensions to allowlist mode and excludes unlisted optional builtins; mandatory bundled Intercom remains loaded. The child does not inherit the parent's normal optional discovery set.
 
 Top-level parallel calls support up to 50 subagents after expanding each task's optional `count`. The extension's `parallel.maxTasks` setting defaults to 50 and can enforce a lower task limit; `parallel.concurrency` independently controls how many of those children run at once, while the Rust turn limiter admits at most four running turns per parent.
 

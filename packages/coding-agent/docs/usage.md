@@ -270,12 +270,12 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific built-in, extension, and custom tools |
-| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools |
+| `--tools <list>`, `-t <list>` | Allowlist specific built-in, extension, and custom tools; mandatory `intercom` remains available |
+| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools; mandatory `intercom` cannot be excluded |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
-| `--no-tools`, `-nt` | Disable all tools |
+| `--no-tools`, `-nt` | Disable every tool except mandatory `intercom` |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with; `--tools` replaces that default with a strict allowlist over built-in, custom, and extension tools; `--no-builtin-tools` removes only built-ins; `--no-tools` removes all tools. `ls` remains available as an SDK compatibility tool but is not enabled by default.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more non-mandatory tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`. The `defaultTools` setting selects which built-in tools a session starts with; `--tools` replaces that default with a strict allowlist over non-mandatory built-in, custom, and extension tools; `--no-builtin-tools` removes only built-ins; `--no-tools` removes every tool except ordinary bundled `intercom`. `ls` remains available as an SDK compatibility tool but is not enabled by default.
 
 ### Project Trust Options
 
@@ -291,7 +291,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load an extension from path, npm, or git; repeatable |
-| `--no-extensions`, `-ne` | Disable extension discovery |
+| `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
 | `--skill <path>` | Load a skill; repeatable |
 | `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load a prompt template; repeatable |

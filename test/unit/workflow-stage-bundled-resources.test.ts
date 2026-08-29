@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
@@ -87,10 +87,19 @@ class StageDefaultResourceLoader extends DefaultResourceLoader implements PiSdkR
 	}
 }
 
-function makeSdk(agentDir: string): PiCodingAgentSdk {
+const STAGE_FIXTURE_BUILTINS = ["subagents", "intercom"] as const;
+
+function selectBuiltinPackagePaths(names: readonly string[]): string[] {
+	const selected = getBuiltinPackagePaths().filter((path) => names.includes(basename(path)));
+	assert.equal(selected.length, names.length, `expected built-ins: ${names.join(", ")}`);
+	return selected;
+}
+
+function makeSdk(agentDir: string, builtinPackageNames: readonly string[] = STAGE_FIXTURE_BUILTINS): PiCodingAgentSdk {
+	const builtinPackagePaths = selectBuiltinPackagePaths(builtinPackageNames);
 	return {
 		getAgentDir: () => agentDir,
-		getBuiltinPackagePaths,
+		getBuiltinPackagePaths: () => builtinPackagePaths,
 		SettingsManager,
 		DefaultResourceLoader: StageDefaultResourceLoader,
 		async createAgentSession(options) {
@@ -108,6 +117,7 @@ async function createWorkflowStageSession(options: {
 	readonly excludedTools?: readonly string[];
 	readonly model?: Model<Api>;
 	readonly modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
+	readonly builtinPackageNames?: readonly string[];
 }) {
 	const model = options.model ?? getModel("anthropic", "claude-sonnet-4-5");
 	assert.notEqual(model, undefined);
@@ -135,7 +145,7 @@ async function createWorkflowStageSession(options: {
 			...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
 			orchestrationContext,
 		},
-		makeSdk(options.agentDir),
+		makeSdk(options.agentDir, options.builtinPackageNames),
 	);
 	if (sessionOptions === undefined) {
 		throw new Error("prepareAtomicStageSessionOptions returned undefined.");
@@ -350,7 +360,7 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 
-	test("keeps explicit workflow stage tool allowlists authoritative", async () => {
+	test("keeps explicit workflow stage tool allowlists authoritative except for mandatory Intercom", async () => {
 		const cwd = tempDir("atomic-workflow-stage-explicit-tools-cwd-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
@@ -363,9 +373,9 @@ describe("workflow stage bundled resources", () => {
 		try {
 			assert.deepEqual(
 				session.getAllTools().map((tool) => tool.name),
-				["read"],
+				["read", "intercom"],
 			);
-			assert.deepEqual(session.getActiveToolNames(), ["read"]);
+			assert.deepEqual(session.getActiveToolNames(), ["read", "intercom"]);
 		} finally {
 			session.dispose();
 		}
@@ -391,8 +401,8 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 
-	test("honors noTools all over workflow default subagent", async () => {
-		const cwd = tempDir("atomic-workflow-stage-no-tools-cwd-");
+	test("honors noTools all except for mandatory Intercom", async () => {
+		const cwd = tempDir("iw-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 
@@ -404,15 +414,30 @@ describe("workflow stage bundled resources", () => {
 		try {
 			assert.deepEqual(
 				session.getAllTools().map((tool) => tool.name),
-				[],
+				["intercom"],
 			);
-			assert.deepEqual(session.getActiveToolNames(), []);
+			assert.deepEqual(session.getActiveToolNames(), ["intercom"]);
+			const toolInfo = session.getAllTools()[0];
+			assert.equal(toolInfo?.sourceInfo.configurationOrigin, "bundled");
+			assert.equal(session.getToolDefinition("intercom")?.label, "Intercom");
+			assert.equal(session.getToolDefinition("contact_supervisor"), undefined);
+			await session.bindExtensions({});
+			const result = await session
+				.getToolDefinition("intercom")!
+				.execute(
+					"workflow-status",
+					{ action: "status" } as never,
+					undefined,
+					undefined,
+					session.extensionRunner.createContext(),
+				);
+			assert.match((result.content[0] as { text: string }).text, /Intercom Status:[\s\S]*Groups: workflow-test:/);
 		} finally {
 			session.dispose();
 		}
 	});
 
-	test("keeps explicitly allowlisted bundled subagent tool in workflow stages launched by subagents", async () => {
+	test("keeps allowlisted subagent and mandatory Intercom in workflow stages launched by subagents", async () => {
 		const snapshot = snapshotEnv();
 		const cwd = tempDir("atomic-workflow-stage-subagent-tool-cwd-");
 		const agentDir = join(cwd, "agent");
@@ -426,9 +451,9 @@ describe("workflow stage bundled resources", () => {
 			try {
 				assert.deepEqual(
 					session.getAllTools().map((tool) => tool.name),
-					["subagent"],
+					["subagent", "intercom"],
 				);
-				assert.deepEqual(session.getActiveToolNames(), ["subagent"]);
+				assert.deepEqual(session.getActiveToolNames(), ["subagent", "intercom"]);
 			} finally {
 				session.dispose();
 			}
@@ -446,6 +471,7 @@ describe("workflow stage bundled resources", () => {
 			cwd,
 			agentDir,
 			tools: ["web_search", "fetch_content", "intercom"],
+			builtinPackageNames: ["web-access", "intercom"],
 		});
 		try {
 			const allToolNames = session
@@ -528,7 +554,8 @@ describe("workflow stage bundled resources", () => {
 					const activeToolNames = session.getActiveToolNames();
 					assert.ok(allToolNames.includes("package_tool_alpha"), `registered tools: ${allToolNames.join(", ")}`);
 					assert.ok(allToolNames.includes("package_tool_beta"), `registered tools: ${allToolNames.join(", ")}`);
-					assert.deepEqual(activeToolNames.sort(), ["package_tool_alpha", "package_tool_beta"]);
+					assert.ok(allToolNames.includes("intercom"), `registered tools: ${allToolNames.join(", ")}`);
+					assert.deepEqual(activeToolNames.sort(), ["intercom", "package_tool_alpha", "package_tool_beta"]);
 				} finally {
 					session.dispose();
 				}

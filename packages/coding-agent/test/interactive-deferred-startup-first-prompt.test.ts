@@ -108,6 +108,11 @@ describe("interactive deferred startup first prompt readiness", () => {
 		});
 		try {
 			expect(session.getActiveToolNames()).not.toContain("startup_tool");
+			expect(session.getActiveToolNames()).toContain("intercom");
+			expect(session.getAllTools().find((tool) => tool.name === "intercom")?.sourceInfo.configurationOrigin).toBe(
+				"bundled",
+			);
+			expect(session.getToolDefinition("contact_supervisor")).toBeUndefined();
 			expect(session.resourceLoader.getSkills().skills.map((skill) => skill.name)).not.toContain("startup-skill");
 
 			let observedPromptText: string | undefined;
@@ -155,6 +160,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			expect(order).toEqual(["spinner", "deferred", "prompt"]);
 			expect(observedPromptText).toBe("hello");
 			expect(observedTools).toContain("startup_tool");
+			expect(observedTools).toContain("intercom");
 			expect(observedSkills).toContain("startup-skill");
 			expect(observedBaseUrl).toBe(deferredBaseUrl);
 		} finally {
