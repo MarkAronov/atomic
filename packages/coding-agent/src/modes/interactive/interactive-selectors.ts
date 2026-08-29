@@ -47,7 +47,7 @@ InteractiveModeBase.prototype.showSelector = function (
 
 InteractiveModeBase.prototype.showFastModeSelector = function (this: InteractiveModeBase): void {
 	if (!this.hasCodexFastModeSupportedModels()) {
-		this.showWarning("Codex fast mode requires a supported OpenAI or shared ChatGPT Codex transport model.");
+		this.showWarning("Fast mode isn't available for any configured model.");
 		return;
 	}
 
