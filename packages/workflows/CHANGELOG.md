@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Every workflow model stage now retains ordinary `intercom` and its invocation group through `tools`, `excludedTools`, `noTools`, extension restrictions, and reload. Restrictions on every other tool and workflow group isolation are unchanged.
+
 ### Fixed
 
 - Fixed Git-installed workflow discovery when production-only package installs omit local TypeBox by resolving `typebox/compile`, `typebox/value`, and supported legacy `@sinclair/typebox` aliases through the host loader for workflow files and their helpers.

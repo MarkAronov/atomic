@@ -22,6 +22,7 @@ export interface ResourceLoaderInternals {
 	additionalPromptTemplatePaths: string[];
 	additionalThemePaths: string[];
 	builtinPackagePaths: PackageSource[];
+	mandatoryBuiltinPackagePaths: PackageSource[];
 	extensionFactories: InlineExtension[];
 	noExtensions: boolean;
 	noSkills: boolean;

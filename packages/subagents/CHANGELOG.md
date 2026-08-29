@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Explicit child extension allowlists and legacy `enabled: false` Intercom config no longer remove ordinary `intercom` or suppress authorized subagent supervisor bridging. `contact_supervisor` remains admitted only to delegated children.
+
 ## [0.9.16-alpha.10] - 2026-08-28
 
 ### Changed

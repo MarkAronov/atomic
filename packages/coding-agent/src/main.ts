@@ -47,7 +47,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
-import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
+import { getBuiltinPackagePaths, getMandatoryBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
@@ -452,6 +452,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
 	const builtinPackagePaths = options?.builtinPackagePaths ?? getBuiltinPackagePaths();
+	const mandatoryBuiltinPackagePaths = getMandatoryBuiltinPackagePaths();
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
@@ -557,6 +558,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
 				additionalThemePaths: resolvedThemePaths,
 				builtinPackagePaths,
+				mandatoryBuiltinPackagePaths: isolateInteractiveHost ? [] : mandatoryBuiltinPackagePaths,
 				noExtensions: isolateInteractiveHost || parsed.noExtensions,
 				noSkills: parsed.noSkills,
 				noPromptTemplates: parsed.noPromptTemplates,

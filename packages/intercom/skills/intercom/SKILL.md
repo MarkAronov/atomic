@@ -477,7 +477,7 @@ if (!result.delivered) {
 
 ### Session not appearing in list
 
-1. Check intercom is enabled: `intercom({ action: "status" })`
+1. Check Intercom connection status: `intercom({ action: "status" })`
 2. Verify the target session has loaded pi-intercom
 3. Ensure both sessions are on the same machine (intercom is same-machine only)
 

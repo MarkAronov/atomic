@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Intercom can no longer be disabled with `enabled: false`; Atomic always loads and registers the lightweight ordinary `intercom` tool while keeping broker connection and heavy initialization lazy. `contact_supervisor` remains subagent-only.
+
 ## [0.9.16-alpha.10] - 2026-08-28
 
 ### Added

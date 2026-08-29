@@ -56,6 +56,19 @@ function getEnabledPaths(
 	return getEnabledResources(resources, metadataByPath).map((r) => r.path);
 }
 
+function getBuiltinExtensionPaths(
+	resources: Array<{ path: string; enabled: boolean; metadata: PathMetadata }>,
+	metadataByPath: Map<string, PathMetadata>,
+	noExtensions: boolean,
+): string[] {
+	for (const resource of resources) {
+		if (!metadataByPath.has(resource.path)) metadataByPath.set(resource.path, resource.metadata);
+	}
+	return resources
+		.filter((resource) => resource.metadata.mandatory === true || (!noExtensions && resource.enabled))
+		.map((resource) => resource.path);
+}
+
 function mapSkillPath(
 	resource: { path: string; metadata: PathMetadata },
 	metadataByPath: Map<string, PathMetadata>,
@@ -104,16 +117,20 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	const metadataByPath = new Map<string, PathMetadata>();
 	const cliEnabledExtensions = getEnabledPaths(cliExtensionPaths.extensions, metadataByPath);
 	const enabledExtensions = getEnabledPaths(resolvedPaths.extensions, metadataByPath);
-	const builtinEnabledExtensions = state.noExtensions
-		? []
-		: getEnabledPaths(builtinPackagePaths.extensions, metadataByPath);
+	const builtinEnabledExtensions = getBuiltinExtensionPaths(
+		builtinPackagePaths.extensions,
+		metadataByPath,
+		state.noExtensions,
+	);
 	const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
-	const extensionPaths = state.noExtensions
-		? cliEnabledExtensions
-		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+	const extensionPaths = mergeResourcePaths(
+		state.cwd,
+		cliEnabledExtensions,
+		state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+	);
 	const extensionsResult = await loadExtensionsCached(
 		extensionPaths,
 		state.cwd,
@@ -228,9 +245,11 @@ export async function reloadDefaultResourceLoader(
 	const enabledPrompts = getEnabledPaths(resolvedPaths.prompts, metadataByPath);
 	const enabledThemes = getEnabledPaths(resolvedPaths.themes, metadataByPath);
 
-	const builtinEnabledExtensions = state.noExtensions
-		? []
-		: getEnabledPaths(builtinPackagePaths.extensions, metadataByPath);
+	const builtinEnabledExtensions = getBuiltinExtensionPaths(
+		builtinPackagePaths.extensions,
+		metadataByPath,
+		state.noExtensions,
+	);
 	const builtinEnabledSkillResources = state.noSkills
 		? []
 		: getEnabledResources(builtinPackagePaths.skills, metadataByPath);
@@ -252,9 +271,11 @@ export async function reloadDefaultResourceLoader(
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 
-	const extensionPaths = state.noExtensions
-		? cliEnabledExtensions
-		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+	const extensionPaths = mergeResourcePaths(
+		state.cwd,
+		cliEnabledExtensions,
+		state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+	);
 
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	const extensionsResult: LoadExtensionsResult = options?.deferExtensions

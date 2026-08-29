@@ -350,7 +350,7 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 
-	test("keeps explicit workflow stage tool allowlists authoritative", async () => {
+	test("keeps explicit workflow stage tool allowlists authoritative except for mandatory Intercom", async () => {
 		const cwd = tempDir("atomic-workflow-stage-explicit-tools-cwd-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
@@ -363,9 +363,9 @@ describe("workflow stage bundled resources", () => {
 		try {
 			assert.deepEqual(
 				session.getAllTools().map((tool) => tool.name),
-				["read"],
+				["read", "intercom"],
 			);
-			assert.deepEqual(session.getActiveToolNames(), ["read"]);
+			assert.deepEqual(session.getActiveToolNames(), ["read", "intercom"]);
 		} finally {
 			session.dispose();
 		}
@@ -391,7 +391,7 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 
-	test("honors noTools all over workflow default subagent", async () => {
+	test("honors noTools all except for mandatory Intercom", async () => {
 		const cwd = tempDir("atomic-workflow-stage-no-tools-cwd-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
@@ -404,15 +404,15 @@ describe("workflow stage bundled resources", () => {
 		try {
 			assert.deepEqual(
 				session.getAllTools().map((tool) => tool.name),
-				[],
+				["intercom"],
 			);
-			assert.deepEqual(session.getActiveToolNames(), []);
+			assert.deepEqual(session.getActiveToolNames(), ["intercom"]);
 		} finally {
 			session.dispose();
 		}
 	});
 
-	test("keeps explicitly allowlisted bundled subagent tool in workflow stages launched by subagents", async () => {
+	test("keeps allowlisted subagent and mandatory Intercom in workflow stages launched by subagents", async () => {
 		const snapshot = snapshotEnv();
 		const cwd = tempDir("atomic-workflow-stage-subagent-tool-cwd-");
 		const agentDir = join(cwd, "agent");
@@ -426,9 +426,9 @@ describe("workflow stage bundled resources", () => {
 			try {
 				assert.deepEqual(
 					session.getAllTools().map((tool) => tool.name),
-					["subagent"],
+					["subagent", "intercom"],
 				);
-				assert.deepEqual(session.getActiveToolNames(), ["subagent"]);
+				assert.deepEqual(session.getActiveToolNames(), ["subagent", "intercom"]);
 			} finally {
 				session.dispose();
 			}

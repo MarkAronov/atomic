@@ -51,8 +51,7 @@ Coordinate with other local Atomic/pi sessions on related codebases. Use `/skill
 ```
 
 A session becomes intercom-connected when all of these are true:
-- the intercom extension is installed/bundled and loaded in that session
-- `enabled` is not set to `false` in `~/.atomic/agent/intercom/config.json` (Atomic) or the legacy `~/.pi/agent/intercom/config.json` fallback
+- the mandatory bundled Intercom extension is loaded in that Atomic model session
 - the model or user has invoked an Intercom tool, `/intercom`, or the `ALT+M` overlay in that session
 - the local broker is running or can be auto-started
 
@@ -400,7 +399,6 @@ Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible i
   "brokerCommand": "npx",
   "brokerArgs": ["--no-install", "tsx"],
   "confirmSend": false,
-  "enabled": true,
   "replyHint": true,
   "status": "researching"
 }
@@ -413,7 +411,6 @@ The default `npx --no-install tsx` pair is a compatibility sentinel: intercom re
 | `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
-| `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 
@@ -454,7 +451,7 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
+The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first session that invokes Intercom needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
 
 Messages use length-prefixed JSON over a local socket/pipe transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 

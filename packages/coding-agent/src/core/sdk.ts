@@ -13,6 +13,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
+import { getBuiltinPackagePaths, getMandatoryBuiltinPackagePaths } from "./builtin-packages.ts";
 import {
 	isGitHubCopilotModel,
 	shouldApplyCodexFastMode,
@@ -137,6 +138,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cwd,
 			agentDir,
 			settingsManager,
+			builtinPackagePaths: getBuiltinPackagePaths(),
+			mandatoryBuiltinPackagePaths: getMandatoryBuiltinPackagePaths(),
 		});
 		await resourceLoader.reload();
 		time("resourceLoader.reload");

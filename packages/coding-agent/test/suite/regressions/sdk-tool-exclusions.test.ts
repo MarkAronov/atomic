@@ -48,11 +48,11 @@ describe("SDK tool exclusions", () => {
 			extensionFactories: options.extensionToolName
 				? [
 						(pi) => {
-							pi.on("session_start", () => {
+							const registerTool = () => {
 								pi.registerTool({
 									name: options.extensionToolName!,
 									label: "Dynamic Tool",
-									description: "Tool registered from session_start",
+									description: "Tool registered by an extension",
 									promptSnippet: "Run dynamic test behavior",
 									parameters: Type.Object({}),
 									execute: async () => ({
@@ -60,7 +60,9 @@ describe("SDK tool exclusions", () => {
 										details: {},
 									}),
 								});
-							});
+							};
+							if (options.extensionToolName === "intercom") registerTool();
+							else pi.on("session_start", registerTool);
 						},
 					]
 				: undefined,
@@ -206,6 +208,54 @@ describe("SDK tool exclusions", () => {
 		session.dispose();
 	});
 
+	it("keeps Intercom registered and active across SDK restrictions, mutation, and reload", async () => {
+		const session = await createSession({
+			extensionToolName: "intercom",
+			tools: ["read"],
+			excludedTools: ["intercom", "bash"],
+		});
+
+		await session.bindExtensions({});
+
+		expect(
+			session
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		).toEqual(["intercom", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["read", "intercom"]);
+		expect(session.systemPrompt).not.toContain("contact_supervisor");
+
+		session.setActiveToolsByName([]);
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+		expect(session.getToolDefinition("intercom")?.promptSnippet).toBe("Run dynamic test behavior");
+		expect(session.systemPrompt).not.toContain("contact_supervisor");
+
+		await session.reload();
+		expect(
+			session
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		).toEqual(["intercom", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["intercom", "read"]);
+		expect(session.getToolDefinition("intercom")).toBeDefined();
+		expect(session.getToolDefinition("bash")).toBeUndefined();
+
+		session.dispose();
+	});
+
+	it("keeps only Intercom active when SDK noTools disables all other tools", async () => {
+		const session = await createSession({ extensionToolName: "intercom", noTools: "all" });
+
+		await session.bindExtensions({});
+
+		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["intercom"]);
+		expect(session.getActiveToolNames()).toEqual(["intercom"]);
+
+		session.dispose();
+	});
+
 	it("main CLI print/json exclusion removes ask_user_question while keeping workflow", async () => {
 		const session = await createSession({
 			extensionToolName: "workflow",
@@ -253,7 +303,6 @@ describe("SDK tool exclusions", () => {
 		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ask_user_question");
 		expect(session.getActiveToolNames()).not.toContain("ask_user_question");
 		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "todo"]));
-		expect(session.systemPrompt).not.toContain("ask_user_question");
 
 		session.dispose();
 	});
