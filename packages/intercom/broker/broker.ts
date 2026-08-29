@@ -146,6 +146,7 @@ class IntercomBroker {
     this.server.listen(SOCKET_PATH, () => {
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      this.scheduleShutdownCheck();
     });
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
@@ -166,10 +167,8 @@ class IntercomBroker {
     socket.on("data", reader);
 
     socket.on("close", () => {
-      if (sessionId) {
-        this.disconnectSession(sessionId);
-        this.scheduleShutdownCheck();
-      }
+      if (sessionId) this.disconnectSession(sessionId);
+      this.scheduleShutdownCheck();
     });
 
     socket.on("error", (error) => {

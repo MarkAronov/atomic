@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Idle intercom brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before register ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+
 ## [0.9.16] - 2026-08-29
 
 Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
