@@ -1,10 +1,10 @@
 import {
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
-	isCodexFastModeCandidateModelId,
 	SettingsManager,
 	shouldApplyCodexFastModeForScope,
 } from "@bastani/atomic";
+import type { Credential } from "@bastani/pi-ai";
 import { splitKnownThinkingSuffix } from "./model-info.js";
 
 export interface ResolveSubagentModelFastModeInput {
@@ -12,6 +12,7 @@ export interface ResolveSubagentModelFastModeInput {
 	cwd: string;
 	settings?: CodexFastModeResolvedSettings;
 	scope?: CodexFastModeScope;
+	copilotCredential?: Credential;
 }
 
 export interface ResolveSubagentModelFastModeMapInput {
@@ -19,6 +20,7 @@ export interface ResolveSubagentModelFastModeMapInput {
 	cwd: string;
 	settings?: CodexFastModeResolvedSettings;
 	scope?: CodexFastModeScope;
+	copilotCredential?: Credential;
 }
 
 export interface ResolveSubagentModelFastModeMetadataInput {
@@ -27,6 +29,7 @@ export interface ResolveSubagentModelFastModeMetadataInput {
 	cwd: string;
 	settings?: CodexFastModeResolvedSettings;
 	scope?: CodexFastModeScope;
+	copilotCredential?: Credential;
 }
 
 export interface SubagentModelFastModeMetadata {
@@ -42,22 +45,25 @@ export function getSubagentCodexFastModeSettings(cwd: string): CodexFastModeReso
 	}
 }
 
-function providerFromModelId(model: string | undefined): string | undefined {
+function modelIdentityFromModelId(model: string | undefined): { provider: string; id: string } | undefined {
 	if (!model) return undefined;
 	const { baseModel } = splitKnownThinkingSuffix(model);
-	if (!isCodexFastModeCandidateModelId(baseModel)) return undefined;
-	return baseModel.split("/", 1)[0];
+	const slash = baseModel.indexOf("/");
+	if (slash <= 0 || slash === baseModel.length - 1) return undefined;
+	return { provider: baseModel.slice(0, slash), id: baseModel.slice(slash + 1) };
 }
 
-export function resolveSubagentCodexFastModeScope(workflowStageSubagentGuard: boolean | undefined): CodexFastModeScope {
-	return workflowStageSubagentGuard ? "workflow" : "chat";
+export function resolveSubagentCodexFastModeScope(
+	orchestrationContext: { kind?: string } | undefined,
+): CodexFastModeScope {
+	return orchestrationContext?.kind === "workflow-stage" ? "workflow" : "chat";
 }
 
 export function resolveSubagentModelFastMode(input: ResolveSubagentModelFastModeInput): boolean {
-	const provider = providerFromModelId(input.model);
-	if (!provider) return false;
+	const model = modelIdentityFromModelId(input.model);
+	if (!model) return false;
 	const settings = input.settings ?? getSubagentCodexFastModeSettings(input.cwd);
-	return shouldApplyCodexFastModeForScope({ provider }, settings, input.scope ?? "chat");
+	return shouldApplyCodexFastModeForScope(model, settings, input.scope ?? "chat", input.copilotCredential);
 }
 
 export function resolveSubagentModelFastModeMap(input: ResolveSubagentModelFastModeMapInput): Record<string, boolean> {
@@ -65,7 +71,13 @@ export function resolveSubagentModelFastModeMap(input: ResolveSubagentModelFastM
 	const fastModes: Record<string, boolean> = {};
 	for (const model of input.models) {
 		if (!model || Object.hasOwn(fastModes, model)) continue;
-		fastModes[model] = resolveSubagentModelFastMode({ model, cwd: input.cwd, settings, scope: input.scope });
+		fastModes[model] = resolveSubagentModelFastMode({
+			model,
+			cwd: input.cwd,
+			settings,
+			scope: input.scope,
+			copilotCredential: input.copilotCredential,
+		});
 	}
 	return fastModes;
 }
@@ -74,7 +86,13 @@ export function resolveSubagentModelFastModeMetadata(
 	input: ResolveSubagentModelFastModeMetadataInput,
 ): SubagentModelFastModeMetadata {
 	const settings = input.settings ?? getSubagentCodexFastModeSettings(input.cwd);
-	const fastMode = resolveSubagentModelFastMode({ model: input.model, cwd: input.cwd, settings, scope: input.scope });
+	const fastMode = resolveSubagentModelFastMode({
+		model: input.model,
+		cwd: input.cwd,
+		settings,
+		scope: input.scope,
+		copilotCredential: input.copilotCredential,
+	});
 	return {
 		...(fastMode ? { fastMode: true as const } : {}),
 		modelFastModes: resolveSubagentModelFastModeMap({
@@ -82,6 +100,7 @@ export function resolveSubagentModelFastModeMetadata(
 			cwd: input.cwd,
 			settings,
 			scope: input.scope,
+			copilotCredential: input.copilotCredential,
 		}),
 	};
 }

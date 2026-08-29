@@ -4050,11 +4050,11 @@ Workflow stages can use faster inference on supported OpenAI and GitHub Copilot 
 
 ### Fast mode
 
-Use `/fast` to manage fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
+Use `/fast` to manage fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; main-chat subagents use the chat scope, while workflow stages use the workflow scope. A stage inside a nested `ctx.workflow(...)` call keeps that workflow scope, and subagents launched by the stage inherit it.
 
 Fast mode is eligible for supported `openai/*` and `openai-codex/*` providers, provider aliases that use the shared `openai-codex-responses` transport, and GitHub Copilot models whose OAuth account catalog advertises a fast variant. OpenAI requests use the priority service tier. GitHub Copilot requests use the account-supported fast variant without adding the OpenAI service-tier field. Azure OpenAI, OpenRouter, and generic OpenAI-compatible providers are not eligible.
 
-Atomic resolves eligibility for the effective model on every fallback attempt. A supported fallback can use fast mode even when the primary failed, while an unsupported fallback keeps its normal request behavior. Workflow stage model labels and stage-launched subagent result labels keep the raw model ID and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
+Atomic resolves eligibility for the effective model on every fallback attempt. A supported fallback can use fast mode even when the primary failed, while an unsupported fallback keeps its normal request behavior. Workflow stage model labels and all subagent result labels keep the raw model ID and append a separate `fast` marker; for an entitled Copilot child, the marker appears exactly when the request uses the account-advertised `<model-id>-fast` variant. Graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
 
 Enable workflow fast mode deliberately for broad workflows. Parallel fan-out and fallback attempts can multiply fast provider requests and usage.
 

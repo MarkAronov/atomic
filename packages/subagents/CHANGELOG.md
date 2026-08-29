@@ -6,6 +6,10 @@
 
 - Explicit child extension allowlists and legacy `enabled: false` Intercom config no longer remove ordinary `intercom` or suppress authorized subagent supervisor bridging. `contact_supervisor` remains admitted only to delegated children.
 
+### Fixed
+
+- Entitled GitHub Copilot subagents now inherit the launching chat or workflow-stage fast-mode scope for both dispatch and model labels, including thinking-suffixed models, fallbacks, and parallel foreground runs. Copilot labels append `fast` exactly when the request uses the account-advertised fast sibling; disabled or ineligible attempts keep the base model without a stale marker.
+
 ## [0.9.16-alpha.10] - 2026-08-28
 
 ### Changed

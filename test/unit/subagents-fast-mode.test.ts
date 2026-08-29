@@ -45,6 +45,111 @@ describe("subagent fast-mode scope", () => {
 		);
 	});
 
+	test("requires an entitled Copilot fast sibling for chat fast-mode markers", () => {
+		const settings = { chat: true, workflow: false };
+		const entitledCredential = {
+			type: "oauth" as const,
+			access: "test-access-token",
+			refresh: "test-refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			fastModelIds: ["gpt-5.6-sol-fast"],
+		};
+		const input = { model: "github-copilot/gpt-5.6-sol", cwd, settings, scope: "chat" as const };
+
+		assert.equal(resolveSubagentModelFastMode({ ...input, copilotCredential: entitledCredential }), true);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				...input,
+				model: "github-copilot/gpt-5.6-sol:xhigh",
+				copilotCredential: entitledCredential,
+			}),
+			true,
+		);
+		assert.equal(resolveSubagentModelFastMode(input), false);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				...input,
+				copilotCredential: { ...entitledCredential, fastModelIds: ["different-model-fast"] },
+			}),
+			false,
+		);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				...input,
+				settings: { chat: false, workflow: true },
+				copilotCredential: entitledCredential,
+			}),
+			false,
+		);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				...input,
+				copilotCredential: { type: "api_key", key: "test-api-key" },
+			}),
+			false,
+		);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				...input,
+				model: "anthropic/claude-sonnet-4",
+				copilotCredential: entitledCredential,
+			}),
+			false,
+		);
+	});
+
+	test("keeps Copilot chat and workflow fast-mode scopes separate", () => {
+		const copilotCredential = {
+			type: "oauth" as const,
+			access: "test-access-token",
+			refresh: "test-refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			fastModelIds: ["gpt-5.6-sol-fast"],
+		};
+		const model = "github-copilot/gpt-5.6-sol";
+
+		assert.equal(
+			resolveSubagentModelFastMode({
+				model,
+				cwd,
+				settings: { chat: true, workflow: false },
+				scope: "chat",
+				copilotCredential,
+			}),
+			true,
+		);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				model,
+				cwd,
+				settings: { chat: true, workflow: false },
+				scope: "workflow",
+				copilotCredential,
+			}),
+			false,
+		);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				model,
+				cwd,
+				settings: { chat: false, workflow: true },
+				scope: "chat",
+				copilotCredential,
+			}),
+			false,
+		);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				model,
+				cwd,
+				settings: { chat: false, workflow: true },
+				scope: "workflow",
+				copilotCredential,
+			}),
+			true,
+		);
+	});
+
 	test("builds scoped metadata for primary and fallback candidates", () => {
 		const metadata = resolveSubagentModelFastModeMetadata({
 			model: "openai/gpt-5.1-codex",
@@ -61,9 +166,9 @@ describe("subagent fast-mode scope", () => {
 		});
 	});
 
-	test("derives scope from workflow-stage guard", () => {
-		assert.equal(resolveSubagentCodexFastModeScope(false), "chat");
+	test("derives scope only from workflow-stage orchestration context", () => {
 		assert.equal(resolveSubagentCodexFastModeScope(undefined), "chat");
-		assert.equal(resolveSubagentCodexFastModeScope(true), "workflow");
+		assert.equal(resolveSubagentCodexFastModeScope({ kind: "other-context" }), "chat");
+		assert.equal(resolveSubagentCodexFastModeScope({ kind: "workflow-stage" }), "workflow");
 	});
 });
