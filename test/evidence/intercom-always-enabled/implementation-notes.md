@@ -43,8 +43,17 @@ Keep the ordinary `intercom` tool loaded, registered, active, and usable in the 
 
 ## Documentation reading log
 
-Pending. Record each relevant repository document after reading it in full.
+- Read in full: `AGENTS.md`, `packages/coding-agent/docs/intercom.md`, `packages/coding-agent/docs/workflows.md`, `packages/coding-agent/docs/extensions.md`, `packages/coding-agent/docs/sdk.md`, `packages/coding-agent/docs/usage.md`, `packages/intercom/README.md`, `packages/intercom/skills/intercom/SKILL.md`, `packages/workflows/README.md`, and the relevant linked workflow authoring sections used by the implementation and E2E fixture.
+- Inspected relevant current source, tests, build/package manifests, and recent repository history for bundled extension loading, session construction/mutation/reload, workflow stage option/group assignment, Intercom config/lifecycle, and signed commit conventions.
 
 ## Validation log
 
-Pending. Record exact commands and outcomes as implementation proceeds.
+- Setup: `npm ci --ignore-scripts` and `npm run hooks:install` completed successfully before source edits.
+- Focused coding-agent regressions: `npx vitest --run test/mandatory-intercom-extension.test.ts test/suite/regressions/sdk-tool-exclusions.test.ts` passed (13 tests).
+- Focused root behavior: Intercom config/laziness, workflow group assignment, invocation groups, bundled stage resources, and default-tools tests passed (50 tests).
+- `npm run check` passed, including Biome, both TypeScript checks, and shrinkwrap verification.
+- `npm run build` and `npm --workspace=@bastani/atomic run build` passed; the latter emitted the changed CLI and bundled Intercom at `packages/coding-agent/dist/`.
+- `npm run test:integration` passed (40 files, 506 tests) after updating the pending-stage delivery expectation for mandatory Intercom.
+- `npm run test:unit` ran 716 files: 709 files passed, 24 tests were pre-existing skips, and seven files failed. Two missing-build failures passed after the documented coding-agent build. One affected shortcut-catalog expectation was updated and passed. Remaining real-engine timeout/flaky failures are recorded in the handoff rather than hidden: `interactive-engine-default-main`, `interactive-engine-isolation`, `interactive-engine-shortcut-reload`, and `interactive-mode-keybinding-lifecycle`; the routing failure also passed after build. No skip or bypass was added.
+- Real credentialed tmux E2E passed for two restrictive main-chat invocations and one restrictive workflow stage; exact commands and genuine pane captures are in this directory. The workflow stage returned its non-default `workflow:<runId>` group.
+- Signed implementation commit: `acda760220`; a final signed evidence commit follows.
