@@ -1,4 +1,4 @@
-import { workflow } from "@bastani/atomic/workflows";
+import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
 
 export default workflow({
