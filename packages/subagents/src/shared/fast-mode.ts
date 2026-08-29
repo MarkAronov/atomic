@@ -7,8 +7,16 @@ import {
 import type { Credential } from "@bastani/pi-ai";
 import { splitKnownThinkingSuffix } from "./model-info.js";
 
+export interface SubagentFastModeModelIdentity {
+	provider: string;
+	id?: string;
+	api?: string;
+}
+
 export interface ResolveSubagentModelFastModeInput {
 	model?: string;
+	resolvedModel?: SubagentFastModeModelIdentity;
+	resolveModel?: (modelId: string) => SubagentFastModeModelIdentity | undefined;
 	cwd: string;
 	settings?: CodexFastModeResolvedSettings;
 	scope?: CodexFastModeScope;
@@ -17,6 +25,8 @@ export interface ResolveSubagentModelFastModeInput {
 
 export interface ResolveSubagentModelFastModeMapInput {
 	models: readonly (string | undefined)[];
+	resolvedModel?: SubagentFastModeModelIdentity;
+	resolveModel?: (modelId: string) => SubagentFastModeModelIdentity | undefined;
 	cwd: string;
 	settings?: CodexFastModeResolvedSettings;
 	scope?: CodexFastModeScope;
@@ -26,6 +36,8 @@ export interface ResolveSubagentModelFastModeMapInput {
 export interface ResolveSubagentModelFastModeMetadataInput {
 	model?: string;
 	modelCandidates: readonly (string | undefined)[];
+	resolvedModel?: SubagentFastModeModelIdentity;
+	resolveModel?: (modelId: string) => SubagentFastModeModelIdentity | undefined;
 	cwd: string;
 	settings?: CodexFastModeResolvedSettings;
 	scope?: CodexFastModeScope;
@@ -53,6 +65,29 @@ function modelIdentityFromModelId(model: string | undefined): { provider: string
 	return { provider: baseModel.slice(0, slash), id: baseModel.slice(slash + 1) };
 }
 
+function resolvedIdentityMatches(resolved: SubagentFastModeModelIdentity, model: string | undefined): boolean {
+	if (!model) return true;
+	const parsed = modelIdentityFromModelId(model);
+	if (!parsed) return false;
+	if (parsed.provider !== resolved.provider) return false;
+	return resolved.id === undefined || parsed.id === resolved.id;
+}
+
+function identityForFastMode(input: {
+	model?: string;
+	resolvedModel?: SubagentFastModeModelIdentity;
+	resolveModel?: (modelId: string) => SubagentFastModeModelIdentity | undefined;
+}): SubagentFastModeModelIdentity | undefined {
+	if (input.resolvedModel && resolvedIdentityMatches(input.resolvedModel, input.model)) {
+		return input.resolvedModel;
+	}
+	if (input.model) {
+		const resolved = input.resolveModel?.(input.model);
+		if (resolved) return resolved;
+	}
+	return modelIdentityFromModelId(input.model);
+}
+
 export function resolveSubagentCodexFastModeScope(
 	orchestrationContext: { kind?: string } | undefined,
 ): CodexFastModeScope {
@@ -60,7 +95,7 @@ export function resolveSubagentCodexFastModeScope(
 }
 
 export function resolveSubagentModelFastMode(input: ResolveSubagentModelFastModeInput): boolean {
-	const model = modelIdentityFromModelId(input.model);
+	const model = identityForFastMode(input);
 	if (!model) return false;
 	const settings = input.settings ?? getSubagentCodexFastModeSettings(input.cwd);
 	return shouldApplyCodexFastModeForScope(model, settings, input.scope ?? "chat", input.copilotCredential);
@@ -73,6 +108,8 @@ export function resolveSubagentModelFastModeMap(input: ResolveSubagentModelFastM
 		if (!model || Object.hasOwn(fastModes, model)) continue;
 		fastModes[model] = resolveSubagentModelFastMode({
 			model,
+			resolvedModel: input.resolvedModel,
+			resolveModel: input.resolveModel,
 			cwd: input.cwd,
 			settings,
 			scope: input.scope,
@@ -88,6 +125,8 @@ export function resolveSubagentModelFastModeMetadata(
 	const settings = input.settings ?? getSubagentCodexFastModeSettings(input.cwd);
 	const fastMode = resolveSubagentModelFastMode({
 		model: input.model,
+		resolvedModel: input.resolvedModel,
+		resolveModel: input.resolveModel,
 		cwd: input.cwd,
 		settings,
 		scope: input.scope,
@@ -97,6 +136,8 @@ export function resolveSubagentModelFastModeMetadata(
 		...(fastMode ? { fastMode: true as const } : {}),
 		modelFastModes: resolveSubagentModelFastModeMap({
 			models: input.modelCandidates,
+			resolvedModel: input.resolvedModel,
+			resolveModel: input.resolveModel,
 			cwd: input.cwd,
 			settings,
 			scope: input.scope,

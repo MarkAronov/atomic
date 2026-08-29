@@ -9,6 +9,7 @@
 ### Fixed
 
 - Entitled GitHub Copilot subagents now inherit the launching chat or workflow-stage fast-mode scope for both dispatch and model labels, including thinking-suffixed models, fallbacks, and parallel foreground runs. Copilot labels append `fast` exactly when the request uses the account-advertised fast sibling; disabled or ineligible attempts keep the base model without a stale marker.
+- Subagent fast-mode metadata now keeps the resolved model API for provider aliases on the Codex Responses transport, so live and completed labels match dispatch for those aliases.
 
 ## [0.9.16-alpha.10] - 2026-08-28
 

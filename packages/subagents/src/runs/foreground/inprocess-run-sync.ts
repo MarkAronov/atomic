@@ -222,9 +222,12 @@ export async function runSingleInProcess(
 	const copilotCredential = readStoredCredential("github-copilot");
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const fastModeScope = resolveSubagentCodexFastModeScope(orchestrationContext);
+	const resolveModel = (modelId: string) => options.resolveCandidateModel?.(modelId)?.model;
 	const fastModeForModel = (model: string | undefined): boolean =>
 		resolveSubagentModelFastMode({
 			model,
+			resolvedModel: resolvedCandidate?.model,
+			resolveModel,
 			cwd,
 			settings: fastModeSettings,
 			scope: fastModeScope,

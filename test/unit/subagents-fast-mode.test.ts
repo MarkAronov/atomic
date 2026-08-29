@@ -166,6 +166,45 @@ describe("subagent fast-mode scope", () => {
 		});
 	});
 
+	test("preserves resolved Codex-transport alias API for selected and fallback metadata", () => {
+		const alias = "codex-alias/gpt-5.1-codex";
+		const resolvedAlias = { provider: "codex-alias", id: "gpt-5.1-codex", api: "openai-codex-responses" };
+		const settings = { chat: true, workflow: false };
+		const resolveModel = (modelId: string) => {
+			if (modelId === alias || modelId.startsWith(`${alias}:`)) return resolvedAlias;
+			return undefined;
+		};
+
+		assert.equal(resolveSubagentModelFastMode({ model: alias, cwd, settings, scope: "chat" }), false);
+		assert.equal(
+			resolveSubagentModelFastMode({
+				model: `${alias}:medium`,
+				resolvedModel: resolvedAlias,
+				cwd,
+				settings,
+				scope: "chat",
+			}),
+			true,
+		);
+
+		const metadata = resolveSubagentModelFastModeMetadata({
+			model: alias,
+			modelCandidates: [alias, "anthropic/claude-sonnet-4", "openai/gpt-5.1-codex"],
+			resolvedModel: resolvedAlias,
+			resolveModel,
+			cwd,
+			settings,
+			scope: "chat",
+		});
+
+		assert.equal(metadata.fastMode, true);
+		assert.deepEqual(metadata.modelFastModes, {
+			[alias]: true,
+			"anthropic/claude-sonnet-4": false,
+			"openai/gpt-5.1-codex": true,
+		});
+	});
+
 	test("derives scope only from workflow-stage orchestration context", () => {
 		assert.equal(resolveSubagentCodexFastModeScope(undefined), "chat");
 		assert.equal(resolveSubagentCodexFastModeScope({ kind: "other-context" }), "chat");

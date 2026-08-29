@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage, ENV_CODEX_FAST_MODE, getEnvNames, ModelRuntime } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.ts";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
-import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
+import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
+import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import {
 	runSync as runInProcessSync,
 	runSingleInProcess,
-} from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
-import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.ts";
-import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
-import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.ts";
-import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.ts";
+} from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
+import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
+import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
+import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
+import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 
 const fastModeEnvNames = getEnvNames(ENV_CODEX_FAST_MODE);
 const agentDirEnvNames = getEnvNames(ENV_AGENT_DIR);
@@ -25,6 +25,7 @@ const tempRoots: string[] = [];
 const CODEX_MODEL = "openai/gpt-5.1-codex";
 const ANTHROPIC_MODEL = "anthropic/claude-sonnet-4";
 const COPILOT_MODEL = "github-copilot/gpt-5.6-sol";
+const ALIAS_MODEL = "codex-alias/gpt-5.1-codex";
 // Structural cost (AGENTS.md per-test timeout policy): the real-session test
 // below (`testSession: false`) bootstraps a full builtin-package loader load
 // for the in-process child. On Windows CI the child's cwd differs from the
@@ -45,6 +46,29 @@ function agent(): AgentConfig {
 		filePath: "/tmp/fast-mode-worker.md",
 	};
 }
+
+function aliasCodexModel() {
+	return {
+		id: "gpt-5.1-codex",
+		name: "GPT-5.1 Codex",
+		api: "openai-codex-responses" as const,
+		provider: "codex-alias",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		input: ["text"] as ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 4096,
+	};
+}
+
+function resolveAliasCandidate(candidateId: string) {
+	if (candidateId === ALIAS_MODEL || candidateId.startsWith(`${ALIAS_MODEL}:`)) {
+		return { model: aliasCodexModel() };
+	}
+	return undefined;
+}
+
 async function requestBody(init: RequestInit | undefined): Promise<Record<string, unknown> | undefined> {
 	const text = await new Response(init?.body).text();
 	return text.trim() ? (JSON.parse(text) as Record<string, unknown>) : undefined;
@@ -292,6 +316,64 @@ test("fallback transitions clear and gain entitled Copilot fast markers independ
 	assert.equal(gained.model, COPILOT_MODEL);
 	assert.equal(gained.fastMode, true);
 	assert.ok(liveResults.some((result) => result.model === COPILOT_MODEL && result.fastMode === true));
+});
+
+test("Codex-transport alias children keep resolved API fast markers through fallback", async () => {
+	const root = setupRoot();
+	writeFastModeSettings(root, { chat: true, workflow: false });
+	const liveResults: Array<{ model?: string; fastMode?: boolean }> = [];
+	const onUpdate = (update: { details?: { results: Array<{ model?: string; fastMode?: boolean }> } }) => {
+		const liveResult = update.details?.results[0];
+		if (liveResult) liveResults.push(liveResult);
+	};
+
+	const selected = await runSingleInProcess(root, agent(), "alias selected", {
+		cwd: root,
+		runId: "alias-selected-fast-mode",
+		modelOverride: ALIAS_MODEL,
+		resolveCandidateModel: resolveAliasCandidate,
+		testSession: { output: "alias selected" },
+		onUpdate,
+	});
+	assert.equal(selected.model, ALIAS_MODEL);
+	assert.equal(selected.fastMode, true);
+	assert.ok(liveResults.some((result) => result.model === ALIAS_MODEL && result.fastMode === true));
+
+	liveResults.length = 0;
+	const gained = await runSingleInProcess(
+		root,
+		{ ...agent(), fallbackModels: [ALIAS_MODEL] },
+		"fall back onto alias",
+		{
+			cwd: root,
+			runId: "alias-fallback-gain",
+			modelOverride: ANTHROPIC_MODEL,
+			resolveCandidateModel: resolveAliasCandidate,
+			testSession: { output: "gained", fallbackModel: ALIAS_MODEL },
+			onUpdate,
+		},
+	);
+	assert.equal(gained.model, ALIAS_MODEL);
+	assert.equal(gained.fastMode, true);
+	assert.ok(liveResults.some((result) => result.model === ALIAS_MODEL && result.fastMode === true));
+
+	liveResults.length = 0;
+	const cleared = await runSingleInProcess(
+		root,
+		{ ...agent(), fallbackModels: [ANTHROPIC_MODEL] },
+		"fall back away from alias",
+		{
+			cwd: root,
+			runId: "alias-fallback-clear",
+			modelOverride: ALIAS_MODEL,
+			resolveCandidateModel: resolveAliasCandidate,
+			testSession: { output: "cleared", fallbackModel: ANTHROPIC_MODEL },
+			onUpdate,
+		},
+	);
+	assert.equal(cleared.model, ANTHROPIC_MODEL);
+	assert.equal(cleared.fastMode, undefined);
+	assert.ok(liveResults.some((result) => result.model === ANTHROPIC_MODEL && result.fastMode === undefined));
 });
 
 test("foreground parallel launches retain independent eligible and ineligible fast markers", async () => {
