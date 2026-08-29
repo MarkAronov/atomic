@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.16-alpha.11] - 2026-08-28
+
 ### Added
 
 - Added the Meta Muse Image and Recraft V4 Styles, V4 Styles Pro, V4 Styles Pro Vector, and V4 Styles Vector image models to the generated OpenRouter catalog.
