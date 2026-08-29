@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, loadExtensions } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
@@ -11,49 +9,40 @@ function hasTrustedIntercom(extension: Extension): boolean {
 	const registration = extension.tools.get("intercom");
 	return registration !== undefined && isTrustedMandatoryRuntimeTool(registration);
 }
-function trustMandatoryExtension(extension: Extension): void {
-	extension.sourceInfo = { ...extension.sourceInfo, configurationOrigin: "bundled" };
-	for (const registration of extension.tools.values()) registration.sourceInfo = extension.sourceInfo;
-	for (const command of extension.commands.values()) command.sourceInfo = extension.sourceInfo;
-	markTrustedMandatoryRuntimeExtension(extension);
-}
 
-async function restoreMandatoryExtensions(loader: ResourceLoader, cwd: string): Promise<void> {
-	const target = loader.getExtensions();
-	if (target.extensions.some(hasTrustedIntercom)) return;
-
-	const mandatoryPaths = getMandatoryBuiltinExtensionPaths();
-	const mandatoryPathSet = new Set(mandatoryPaths.map((path) => resolve(path)));
-	const alreadyLoaded = target.extensions.find((extension) => mandatoryPathSet.has(resolve(extension.resolvedPath)));
-	if (alreadyLoaded) {
-		trustMandatoryExtension(alreadyLoaded);
-		return;
-	}
+async function restoreMandatoryExtensions(target: LoadExtensionsResult, cwd: string): Promise<LoadExtensionsResult> {
+	if (target.extensions.some(hasTrustedIntercom)) return target;
 
 	const loaded = await loadExtensions(
-		mandatoryPaths,
+		getMandatoryBuiltinExtensionPaths(),
 		cwd,
 		getExtensionRuntimeEventBus(target.runtime),
 		undefined,
 		target.runtime,
 	);
-	for (const extension of loaded.extensions) trustMandatoryExtension(extension);
-	target.extensions.push(...loaded.extensions);
-	target.errors.push(...loaded.errors);
-	if (!target.extensions.some(hasTrustedIntercom)) {
+	for (const extension of loaded.extensions) markTrustedMandatoryRuntimeExtension(extension);
+	const restored: LoadExtensionsResult = {
+		...target,
+		extensions: [...target.extensions, ...loaded.extensions],
+		errors: [...target.errors, ...loaded.errors],
+	};
+	if (!restored.extensions.some(hasTrustedIntercom)) {
 		const detail = loaded.errors.map(({ error }) => error).join("; ") || "extension did not register intercom";
 		throw new Error(`Mandatory bundled Intercom is unavailable: ${detail}`);
 	}
+	return restored;
 }
 
 class MandatoryResourceLoader implements ResourceLoader {
 	private readonly delegate: ResourceLoader;
 	private readonly cwd: string;
+	private extensionsResult: LoadExtensionsResult;
 	private toolOnly = false;
 
-	constructor(delegate: ResourceLoader, cwd: string) {
+	constructor(delegate: ResourceLoader, cwd: string, extensionsResult: LoadExtensionsResult) {
 		this.delegate = delegate;
 		this.cwd = cwd;
+		this.extensionsResult = extensionsResult;
 	}
 
 	limitToTool(): void {
@@ -62,13 +51,13 @@ class MandatoryResourceLoader implements ResourceLoader {
 	}
 
 	private removeLocalInteractionSurfaces(): void {
-		const extension = this.delegate.getExtensions().extensions.find(hasTrustedIntercom);
+		const extension = this.extensionsResult.extensions.find(hasTrustedIntercom);
 		extension?.commands.delete("intercom");
 		extension?.shortcuts.delete("alt+m");
 	}
 
 	getExtensions(): LoadExtensionsResult {
-		return this.delegate.getExtensions();
+		return this.extensionsResult;
 	}
 
 	getSkills(): ReturnType<ResourceLoader["getSkills"]> {
@@ -113,7 +102,7 @@ class MandatoryResourceLoader implements ResourceLoader {
 
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
 		await this.delegate.reload(options);
-		await restoreMandatoryExtensions(this.delegate, this.cwd);
+		this.extensionsResult = await restoreMandatoryExtensions(this.delegate.getExtensions(), this.cwd);
 		if (this.toolOnly) this.removeLocalInteractionSurfaces();
 	}
 }
@@ -121,8 +110,8 @@ class MandatoryResourceLoader implements ResourceLoader {
 /** Preserve caller-owned resources while restoring Atomic's mandatory bundled extension. */
 export async function withMandatoryResourceLoader(loader: ResourceLoader, cwd: string): Promise<ResourceLoader> {
 	if (loader instanceof MandatoryResourceLoader) return loader;
-	await restoreMandatoryExtensions(loader, cwd);
-	return new MandatoryResourceLoader(loader, cwd);
+	const extensionsResult = await restoreMandatoryExtensions(loader.getExtensions(), cwd);
+	return new MandatoryResourceLoader(loader, cwd, extensionsResult);
 }
 
 /** Keep a non-model interactive host from shadowing the engine's command and shortcut proxies. */

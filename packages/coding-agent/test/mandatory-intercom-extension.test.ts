@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { getMandatoryBuiltinPackagePaths } from "../src/core/builtin-packages.ts";
+import { withMandatoryResourceLoader } from "../src/core/mandatory-resource-loader.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("mandatory bundled Intercom extension", () => {
@@ -38,5 +40,24 @@ describe("mandatory bundled Intercom extension", () => {
 		expect(extensions[0]?.sourceInfo.configurationOrigin).toBe("bundled");
 		expect(process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED).toBeUndefined();
 		expect([...extensions[0]!.tools.keys()]).toContain("intercom");
+	});
+
+	it("reuses the bundled Intercom instance loaded by DefaultResourceLoader", async () => {
+		tempDir = join(tmpdir(), `ic-owner-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const loader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager: SettingsManager.create(tempDir, agentDir),
+			builtinPackagePaths: getMandatoryBuiltinPackagePaths(),
+		});
+		await loader.reload();
+		const loaded = loader.getExtensions().extensions;
+		expect(loaded).toHaveLength(1);
+
+		const wrapped = await withMandatoryResourceLoader(loader, tempDir);
+		expect(wrapped.getExtensions().extensions).toEqual([loaded[0]]);
+		expect(wrapped.getExtensions().extensions[0]?.sourceInfo.configurationOrigin).toBe("bundled");
 	});
 });

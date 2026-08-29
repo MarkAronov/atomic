@@ -5,6 +5,9 @@ import { getModel } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
+import { getMandatoryBuiltinExtensionPaths } from "../src/core/builtin-packages.ts";
+import { createEventBus } from "../src/core/event-bus.ts";
+import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -31,9 +34,12 @@ function fakeIntercomTool() {
 	};
 }
 
-function asCustomLoader(loader: DefaultResourceLoader): ResourceLoader {
+function asCustomLoader(
+	loader: DefaultResourceLoader,
+	getExtensions: ResourceLoader["getExtensions"] = () => loader.getExtensions(),
+): ResourceLoader {
 	return {
-		getExtensions: () => loader.getExtensions(),
+		getExtensions,
 		getSkills: () => loader.getSkills(),
 		getSkillCatalog: () => loader.getSkillCatalog(),
 		getPrompts: () => loader.getPrompts(),
@@ -267,4 +273,108 @@ describe("mandatory ordinary Intercom sessions", () => {
 		},
 		120_000,
 	);
+
+	it("keeps bundled Intercom when a supplied loader returns a fresh extension result", async () => {
+		const cwd = createTempDir("ic-fresh-loader-");
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const baseLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.create(cwd, agentDir),
+			builtinPackagePaths: [],
+		});
+		await baseLoader.reload();
+		const runtime = baseLoader.getExtensions().runtime;
+		const suppliedLoader = asCustomLoader(baseLoader, () => ({ extensions: [], errors: [], runtime }));
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader: suppliedLoader,
+			tools: ["read", "bash"],
+		});
+		try {
+			expect(session.getActiveToolNames()).toEqual(["read", "bash", "intercom"]);
+			expect(session.getAllTools().map((tool) => tool.name)).toEqual(["read", "bash", "intercom"]);
+			expect(session.getToolDefinition("intercom")?.label).toBe("Intercom");
+			expect(session.getToolDefinition("intercom")?.parameters).toHaveProperty("properties.action");
+			expect(session.getToolDefinition("edit")).toBeUndefined();
+			expect(session.getToolDefinition("contact_supervisor")).toBeUndefined();
+			const result = await session
+				.getToolDefinition("intercom")!
+				.execute(
+					"status-call",
+					{ action: "status" } as never,
+					undefined,
+					undefined,
+					session.extensionRunner.createContext(),
+				);
+			expect(result.content).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ type: "text", text: expect.stringContaining("Intercom Status") }),
+				]),
+			);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("does not trust a supplied extension that forges the bundled Intercom path", async () => {
+		const cwd = createTempDir("ic-forged-path-");
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const baseLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.create(cwd, agentDir),
+			builtinPackagePaths: [],
+		});
+		await baseLoader.reload();
+		const runtime = createExtensionRuntime();
+		const forged = await loadExtensionFromFactory(
+			(pi) => pi.registerTool(fakeIntercomTool()),
+			cwd,
+			createEventBus(),
+			runtime,
+			getMandatoryBuiltinExtensionPaths()[0],
+		);
+		const extensionsResult = { extensions: [forged], errors: [], runtime };
+		const suppliedLoader = asCustomLoader(baseLoader, () => extensionsResult);
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader: suppliedLoader,
+			noTools: "all",
+		});
+		try {
+			const intercom = session.getAllTools().find((tool) => tool.name === "intercom");
+			expect(intercom?.sourceInfo.configurationOrigin).toBe("bundled");
+			expect(session.getActiveToolNames()).toEqual(["intercom"]);
+			expect(session.getToolDefinition("intercom")?.label).toBe("Intercom");
+			expect(session.getToolDefinition("intercom")?.parameters).toHaveProperty("properties.action");
+			const result = await session
+				.getToolDefinition("intercom")!
+				.execute(
+					"status-call",
+					{ action: "status" } as never,
+					undefined,
+					undefined,
+					session.extensionRunner.createContext(),
+				);
+			expect(result.content).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ type: "text", text: expect.stringContaining("Intercom Status") }),
+				]),
+			);
+			expect(result.content).not.toEqual(expect.arrayContaining([expect.objectContaining({ text: "spoofed" })]));
+		} finally {
+			session.dispose();
+		}
+	});
 });

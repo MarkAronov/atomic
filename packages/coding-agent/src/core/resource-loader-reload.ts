@@ -1,9 +1,11 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { isLocalPath } from "../utils/paths.ts";
+import { isLocalPath, resolvePath } from "../utils/paths.ts";
+import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
-import type { LoadExtensionsResult } from "./extensions/types.ts";
+import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
+import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
 import {
 	updatePromptsFromPathsAsync,
@@ -285,6 +287,15 @@ export async function reloadDefaultResourceLoader(
 				workflowResourceProvider,
 				inheritanceSnapshotProvider,
 			);
+	const mandatoryExtensionPaths = new Set(
+		getMandatoryBuiltinExtensionPaths().map((path) => resolvePath(path, state.cwd, { normalizeUnicodeSpaces: true })),
+	);
+	const loadedMandatoryExtensions = new Set<Extension>(
+		extensionsResult.extensions.filter((extension) =>
+			mandatoryExtensionPaths.has(resolvePath(extension.resolvedPath, state.cwd, { normalizeUnicodeSpaces: true })),
+		),
+	);
+	for (const extension of loadedMandatoryExtensions) markTrustedMandatoryRuntimeExtension(extension);
 
 	for (const p of state.additionalExtensionPaths) {
 		if (isLocalPath(p)) {
@@ -296,6 +307,12 @@ export async function reloadDefaultResourceLoader(
 	}
 	state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(extensionsResult) : extensionsResult;
 	applyExtensionSourceInfo(loader, state.extensionsResult.extensions, metadataByPath);
+	for (const extension of state.extensionsResult.extensions) {
+		const registration = extension.tools.get("intercom");
+		if (loadedMandatoryExtensions.has(extension) && registration && isTrustedMandatoryRuntimeTool(registration)) {
+			markTrustedMandatoryRuntimeExtension(extension);
+		}
+	}
 	resolveInheritedExtensionOverlaps(state.extensionsResult);
 
 	const skillPaths = state.noSkills
