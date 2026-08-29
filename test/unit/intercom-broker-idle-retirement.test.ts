@@ -5,7 +5,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, test } from "vitest";
-import { writeMessage } from "../../packages/intercom/broker/framing.js";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { sleep } from "../helpers/runtime.ts";
@@ -19,6 +19,8 @@ const BROKER_IDLE_SHUTDOWN_WINDOW_MS = BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHU
 /** Real broker child, jiti startup, and the idle shutdown window. */
 const REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS = 30_000;
 const BROKER_STARTUP_MS = 10_000;
+/** Unix unlink-and-rebind is the only eviction path; a live Windows named pipe returns EADDRINUSE. */
+const unixEvictionTest = process.platform === "win32" ? test.skip : test;
 
 const fixtures: Array<{ agentDir: string; broker: ChildProcess }> = [];
 
@@ -95,6 +97,25 @@ async function connect(agentDir: string): Promise<net.Socket> {
 	return socket;
 }
 
+async function waitRegistered(socket: net.Socket): Promise<void> {
+	await new Promise<void>((resolveRegistered, reject) => {
+		const timer = setTimeout(() => reject(new Error("timed out waiting for registered")), BROKER_STARTUP_MS);
+		const reader = createMessageReader(
+			(message) => {
+				if (typeof message === "object" && message !== null && "type" in message && message.type === "registered") {
+					clearTimeout(timer);
+					resolveRegistered();
+				}
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+		socket.on("data", reader);
+	});
+}
+
 // #2765
 test(
 	"a broker that receives no connection exits within the idle shutdown window",
@@ -168,7 +189,7 @@ test(
 );
 
 // #2765
-test(
+unixEvictionTest(
 	"an evicted idle broker does not unlink a successor's socket or pid",
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-evict-"));
@@ -178,6 +199,7 @@ test(
 		const successorPid = await waitForBrokerPid(agentDir, successor);
 		assert.notEqual(successorPid, incumbentPid);
 		const live = await connect(agentDir);
+		const registered = waitRegistered(live);
 		writeMessage(live, {
 			type: "register",
 			session: {
@@ -189,11 +211,16 @@ test(
 				name: "evict-live",
 			},
 		});
+		await registered;
 
 		const code = await waitForExit(incumbent, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
 		assert.equal(code, 0);
 		assert.equal(isBrokerAlive(successor), true, "successor broker exited when the incumbent shut down");
 		assert.equal(Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10), successorPid);
+		const socketPath = getBrokerSocketPath(process.platform, agentDir);
+		assert.equal(existsSync(socketPath), true, "incumbent shutdown unlinked the successor socket");
+		const probe = await connect(agentDir);
+		probe.end();
 		live.end();
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,

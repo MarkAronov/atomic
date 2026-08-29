@@ -926,16 +926,8 @@ class IntercomBroker {
     }
   }
 
-  /** Unlink socket/pid only while this process still owns PID_PATH. */
+  /** Unlink the pid file only while this process still owns PID_PATH. */
   private unlinkRuntimeFilesIfOwned(): void {
-    if (this.readPidFile() !== process.pid) return;
-    if (process.platform !== "win32") {
-      try {
-        unlinkSync(SOCKET_PATH);
-      } catch {
-        // The socket may already be gone if shutdown started after a disconnect.
-      }
-    }
     if (this.readPidFile() !== process.pid) return;
     try {
       unlinkSync(PID_PATH);
@@ -957,8 +949,14 @@ class IntercomBroker {
     this.liveWorkflowStageRouteActivations.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
+    const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
-    this.server.close();
+    // Node unlinks a Unix socket path on server.close() even after a successor
+    // rebound that path. Skip close when we no longer own the pid; process.exit
+    // still closes our fd. Windows named pipes are not path-unlinked this way.
+    if (process.platform === "win32" || ownsRuntime) {
+      this.server.close();
+    }
     process.exit(0);
   }
 }
