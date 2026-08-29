@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Idle intercom brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before register ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
+- Idle intercom brokers now exit after the 5-second shutdown window even when no session ever registered, including sockets that close before register. An evicted incumbent does not delete a successor's socket or pid file ([#2765](https://github.com/bastani-inc/atomic/issues/2765)).
 
 ## [0.9.16] - 2026-08-29
 

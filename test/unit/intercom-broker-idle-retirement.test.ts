@@ -53,9 +53,9 @@ async function waitForBrokerPid(agentDir: string, broker: ChildProcess): Promise
 		if (broker.exitCode !== null || broker.signalCode !== null) {
 			throw new Error(`Broker exited during startup with code ${broker.exitCode} signal ${broker.signalCode}`);
 		}
-		if (existsSync(pidPath)) {
+		if (existsSync(pidPath) && broker.pid !== undefined) {
 			const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-			if (Number.isFinite(pid)) return pid;
+			if (pid === broker.pid) return pid;
 		}
 		await sleep(20);
 	}
@@ -163,6 +163,38 @@ test(
 		await sleep(BROKER_IDLE_SHUTDOWN_WINDOW_MS);
 		assert.equal(isBrokerAlive(broker), true, "registered broker exited while a live session was still connected");
 		socket.end();
+	},
+	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+);
+
+// #2765
+test(
+	"an evicted idle broker does not unlink a successor's socket or pid",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-evict-"));
+		const incumbent = spawnBroker(agentDir);
+		const incumbentPid = await waitForBrokerPid(agentDir, incumbent);
+		const successor = spawnBroker(agentDir);
+		const successorPid = await waitForBrokerPid(agentDir, successor);
+		assert.notEqual(successorPid, incumbentPid);
+		const live = await connect(agentDir);
+		writeMessage(live, {
+			type: "register",
+			session: {
+				cwd: agentDir,
+				model: "test-model",
+				pid: process.pid,
+				startedAt: 1,
+				lastActivity: 1,
+				name: "evict-live",
+			},
+		});
+
+		const code = await waitForExit(incumbent, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
+		assert.equal(code, 0);
+		assert.equal(isBrokerAlive(successor), true, "successor broker exited when the incumbent shut down");
+		assert.equal(Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10), successorPid);
+		live.end();
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
