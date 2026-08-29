@@ -582,12 +582,12 @@ Specify which tools to expose by name:
 ```typescript
 import { createAgentSession } from "@bastani/atomic";
 
-// Read-only mode
+// Read-only mode. `tools` selects optional tools; ordinary Intercom remains active.
 const { session } = await createAgentSession({
   tools: ["read", "search", "find", "ls"],
 });
 
-// Pick specific tools
+// Pick specific optional tools. Ordinary Intercom remains active even when omitted.
 const { session } = await createAgentSession({
   tools: ["read", "bash", "search"],
 });
@@ -600,7 +600,7 @@ const { session } = await createAgentSession({
 // Allowlist first, then subtract exclusions
 const { session } = await createAgentSession({
   tools: ["read", "bash", "ask_user_question"],
-  excludedTools: ["ask_user_question"], // final tools: read, bash
+  excludedTools: ["ask_user_question"], // optional tools: read, bash; ordinary Intercom remains active
 });
 ```
 

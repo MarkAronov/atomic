@@ -208,7 +208,7 @@ async function reloadInteractiveMode(driver: InteractiveModeDriver, expectedBind
 		(report) => report.type === "reload_done" && report.expandKeys?.[0] === expectedBinding,
 		12_000,
 	);
-	await driver.waitUntilShortcutReady(expectedBinding === "ctrl+x" ? "ctrl+y" : "ctrl+x", from);
+	await driver.waitUntilShortcutReady(expectedBinding === "ctrl+u" ? "ctrl+y" : "ctrl+u", from);
 }
 
 async function reloadThroughExtensionContext(

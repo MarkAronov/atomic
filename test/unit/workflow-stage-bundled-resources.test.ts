@@ -554,7 +554,8 @@ describe("workflow stage bundled resources", () => {
 					const activeToolNames = session.getActiveToolNames();
 					assert.ok(allToolNames.includes("package_tool_alpha"), `registered tools: ${allToolNames.join(", ")}`);
 					assert.ok(allToolNames.includes("package_tool_beta"), `registered tools: ${allToolNames.join(", ")}`);
-					assert.deepEqual(activeToolNames.sort(), ["package_tool_alpha", "package_tool_beta"]);
+					assert.ok(allToolNames.includes("intercom"), `registered tools: ${allToolNames.join(", ")}`);
+					assert.deepEqual(activeToolNames.sort(), ["intercom", "package_tool_alpha", "package_tool_beta"]);
 				} finally {
 					session.dispose();
 				}
