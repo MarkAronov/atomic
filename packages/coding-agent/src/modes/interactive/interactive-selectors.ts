@@ -109,6 +109,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 				fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
+				fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 				editorPaddingX: this.settingsManager.getEditorPaddingX(),
 				outputPad: this.settingsManager.getOutputPad(),
 				showCacheMissNotices: this.settingsManager.getShowCacheMissNotices(),
@@ -226,6 +227,10 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 				onFullscreenExitOutputChange: (output) => {
 					this.settingsManager.setFullscreenExitOutput(output);
+				},
+				onFullscreenCopyOnSelectChange: (enabled) => {
+					this.settingsManager.setFullscreenCopyOnSelect(enabled);
+					this.setFullscreenCopyOnSelect(enabled);
 				},
 				onEditorPaddingXChange: (padding) => {
 					this.settingsManager.setEditorPaddingX(padding);

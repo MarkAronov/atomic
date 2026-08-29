@@ -374,13 +374,16 @@ declare module "./interactive-mode-base.ts" {
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;
 		handleImportCommand(text: string): Promise<void>;
 		handleShareCommand(): Promise<void>;
-		handleCopyCommand(): Promise<void>;
+		handleCopyCommand(options?: { preferSelection?: boolean }): Promise<void>;
 		handleNameCommand(text: string): void;
 		handleSessionCommand(): void;
 		handleChangelogCommand(): void;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
 		jumpToTranscriptEnd(): void;
+		setFullscreenCopyOnSelect(enabled: boolean): void;
+		getFullscreenCopyOnSelect(): boolean | undefined;
+		copyActiveFullscreenSelection(): Promise<boolean | undefined>;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
 		handleDebugCommand(): void;

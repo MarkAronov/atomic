@@ -51,6 +51,15 @@ interface TuiAltScreenViewportDeferral {
 	shouldDeferViewportInputToOverlay?(): boolean;
 }
 
+interface TuiAltScreenSelectionInternals {
+	selectionAnchor?: unknown;
+	selectionFocus?: unknown;
+	selectionInitialRange?: unknown;
+	selectionPressActive: boolean;
+	selectionDragged: boolean;
+	lastClick?: unknown;
+}
+
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
 
 export function isOverlayMounted(tui: TUI, component: Component): boolean {
@@ -83,6 +92,7 @@ export interface InteractiveTuiOptions {
 	showHardwareCursor: boolean;
 	logDirectory: string;
 	terminal?: Terminal;
+	copyOnSelect?: boolean;
 	onRightClickPaste?: () => void;
 	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
 	onInternalUiAction?: (url: string) => InternalUiActionResult;
@@ -177,6 +187,8 @@ const viewportInputGates = new WeakMap<AtomicTuiAltScreen, ViewportInputGate>();
 const overlayUnhandledInputHandlers = new WeakMap<AtomicTuiAltScreen, (data: string) => boolean>();
 /** Instances currently replaying overlay-declined input into pi-tui's viewport listener. */
 const viewportInputReplays = new WeakSet<AtomicTuiAltScreen>();
+/** Selections begun over Atomic overlays must never trigger or survive into main-chat clipboard actions. */
+const overlayOwnedSelections = new WeakSet<AtomicTuiAltScreen>();
 interface ViewportInputSubscription {
 	viewportUnsubscribe: () => void;
 	routeListener: TuiInputListener;
@@ -321,7 +333,19 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	 * so removing it after cursor extraction cannot move a column.
 	 */
 	protected override applyLineResets(lines: string[]): string[] {
+		if (overlayOwnedSelections.has(this) && !this.isFocusedOverlay()) this.clearOverlayOwnedSelection();
 		return stripOverlayActiveRowMarker(super.applyLineResets(lines));
+	}
+
+	private clearOverlayOwnedSelection(): void {
+		const selection = this as unknown as TuiAltScreenSelectionInternals;
+		selection.selectionAnchor = undefined;
+		selection.selectionFocus = undefined;
+		selection.selectionInitialRange = undefined;
+		selection.selectionPressActive = false;
+		selection.selectionDragged = false;
+		selection.lastClick = undefined;
+		overlayOwnedSelections.delete(this);
 	}
 
 	/**
@@ -407,6 +431,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		for (const sequence of parseMouseSequences(data) ?? []) {
 			if (isLeftMouseButton(sequence)) viewportListener(sequence.data);
 		}
+		overlayOwnedSelections.add(this);
 	}
 	/**
 	 * Replay input the focused overlay declined. pi-tui's native overlay
@@ -538,6 +563,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 					openUrl: openBrowser,
 				}),
 			onRightClickPaste: options.onRightClickPaste,
+			copyOnSelect: options.copyOnSelect,
 			copySelection: options.copySelection ?? copySelectionToHostClipboard,
 		},
 		options.shouldHandleViewportInput,

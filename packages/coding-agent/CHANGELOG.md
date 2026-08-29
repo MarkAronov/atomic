@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added JSON-only terminal capability overrides for hyperlinks, Kitty/iTerm2 images, and truecolor, plus a live `fullscreenCopyOnSelect` setting. With automatic selection copying disabled, Ctrl+X copies the retained fullscreen selection before falling back to the last assistant message, while `/copy` keeps its last-message behavior and workflow/scoped-selector hierarchy transitions retain precedence.
+
+### Changed
+
+- Updated the external Pi runtime dependencies to 0.84.4, inheriting nested autocomplete ordering, surrogate-safe chunked terminal writes above 1 MiB, and slash/kebab double-click selection.
+
 ### Fixed
 
 - Fixed workflow discovery helpers from Git-installed production-only packages by making the workflow module loader resolve the same supported TypeBox runtime aliases as extension loading, including `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` subpaths.

@@ -29,6 +29,7 @@ type PromptTurnContext = {
 	settingsManager: { getClearOnShrink: () => boolean };
 	themeController: { applyFromSettings: () => Promise<void> };
 	bindCurrentSessionExtensions: () => Promise<void>;
+	applyRuntimeSettings: () => void;
 	setupAutocompleteProvider: () => void;
 	setupExtensionShortcuts: (runner: unknown) => void;
 	retryDeferredModelRestore: (container?: Container) => Promise<void>;
@@ -99,6 +100,7 @@ function createContext(overrides: {
 			}),
 		},
 		bindCurrentSessionExtensions: vi.fn(async () => {}),
+		applyRuntimeSettings: vi.fn(),
 		setupAutocompleteProvider: vi.fn(),
 		setupExtensionShortcuts: vi.fn(),
 		retryDeferredModelRestore: vi.fn(async () => {}),
