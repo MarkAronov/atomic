@@ -57,7 +57,6 @@ export interface DefaultResourceLoaderInheritanceSnapshot {
 	readonly additionalPromptTemplatePaths?: readonly string[];
 	readonly additionalThemePaths?: readonly string[];
 	readonly builtinPackagePaths?: readonly PackageSource[];
-	readonly mandatoryBuiltinPackagePaths?: readonly PackageSource[];
 	readonly extensionFactories?: readonly InlineExtension[];
 	readonly noExtensions?: boolean;
 	readonly noSkills?: boolean;
@@ -80,7 +79,6 @@ export interface DefaultResourceLoaderOptions {
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
 	builtinPackagePaths?: PackageSource[];
-	mandatoryBuiltinPackagePaths?: PackageSource[];
 	extensionFactories?: InlineExtension[];
 	noExtensions?: boolean;
 	noSkills?: boolean;

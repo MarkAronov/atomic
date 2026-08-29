@@ -402,7 +402,7 @@ describe("workflow stage bundled resources", () => {
 	});
 
 	test("honors noTools all except for mandatory Intercom", async () => {
-		const cwd = tempDir("atomic-workflow-stage-no-tools-cwd-");
+		const cwd = tempDir("iw-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 
@@ -417,6 +417,21 @@ describe("workflow stage bundled resources", () => {
 				["intercom"],
 			);
 			assert.deepEqual(session.getActiveToolNames(), ["intercom"]);
+			const toolInfo = session.getAllTools()[0];
+			assert.equal(toolInfo?.sourceInfo.configurationOrigin, "bundled");
+			assert.equal(session.getToolDefinition("intercom")?.label, "Intercom");
+			assert.equal(session.getToolDefinition("contact_supervisor"), undefined);
+			await session.bindExtensions({});
+			const result = await session
+				.getToolDefinition("intercom")!
+				.execute(
+					"workflow-status",
+					{ action: "status" } as never,
+					undefined,
+					undefined,
+					session.extensionRunner.createContext(),
+				);
+			assert.match((result.content[0] as { text: string }).text, /Intercom Status:[\s\S]*Groups: workflow-test:/);
 		} finally {
 			session.dispose();
 		}

@@ -9,8 +9,6 @@ export interface PathMetadata {
 	origin: "package" | "top-level";
 	baseDir?: string;
 	configurationOrigin?: ResourceConfigurationOrigin;
-	/** Bundled extension code required in every Atomic model session. */
-	mandatory?: true;
 	/** True for project-local resources borrowed from an explicit temporary extension source. */
 	borrowedProjectLocal?: true;
 }

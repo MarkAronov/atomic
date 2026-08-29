@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { getMandatoryBuiltinPackagePaths } from "../src/core/builtin-packages.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("mandatory bundled Intercom extension", () => {
@@ -16,24 +16,24 @@ describe("mandatory bundled Intercom extension", () => {
 	});
 
 	it("loads Intercom despite extension discovery and package filters while keeping heavy state lazy", async () => {
-		tempDir = join(tmpdir(), `atomic-mandatory-intercom-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `ic-loader-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		const agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		const mandatoryPaths = getMandatoryBuiltinPackagePaths();
 		expect(mandatoryPaths).toHaveLength(1);
 		process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL = "1";
 
-		const loader = new DefaultResourceLoader({
+		const services = await createAgentSessionServices({
 			cwd: tempDir,
 			agentDir,
 			settingsManager: SettingsManager.create(tempDir, agentDir),
-			builtinPackagePaths: mandatoryPaths.map((source) => ({ source, autoload: false, extensions: [] })),
-			mandatoryBuiltinPackagePaths: mandatoryPaths,
-			noExtensions: true,
+			resourceLoaderOptions: {
+				builtinPackagePaths: mandatoryPaths.map((source) => ({ source, autoload: false, extensions: [] })),
+				noExtensions: true,
+			},
 		});
-		await loader.reload();
 
-		const extensions = loader.getExtensions().extensions;
+		const extensions = services.resourceLoader.getExtensions().extensions;
 		expect(extensions).toHaveLength(1);
 		expect(extensions[0]?.sourceInfo.configurationOrigin).toBe("bundled");
 		expect(process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED).toBeUndefined();

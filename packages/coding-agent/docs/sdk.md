@@ -102,7 +102,7 @@ The factory requires `ExecutionEnv.renameFile()` and does not add a fallback fil
 
 The main factory function for a single `AgentSession`.
 
-`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
+`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with normal user, project, and configured-package discovery. The SDK does not add optional bundled workflow, subagent, MCP, or web-access extensions by default. It always adds the lightweight ordinary Intercom extension at the model-session boundary.
 
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
@@ -759,6 +759,8 @@ await loader.reload();
 
 const { session } = await createAgentSession({ resourceLoader: loader });
 ```
+
+`createAgentSession()` preserves resources from a supplied loader but restores Atomic's mandatory bundled Intercom extension after loader overrides, deferred reloads, and same-name extension or `customTools` collisions. The supplied loader still controls every optional extension.
 
 Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 

@@ -64,9 +64,7 @@ function getBuiltinExtensionPaths(
 	for (const resource of resources) {
 		if (!metadataByPath.has(resource.path)) metadataByPath.set(resource.path, resource.metadata);
 	}
-	return resources
-		.filter((resource) => resource.metadata.mandatory === true || (!noExtensions && resource.enabled))
-		.map((resource) => resource.path);
+	return noExtensions ? [] : resources.filter((resource) => resource.enabled).map((resource) => resource.path);
 }
 
 function mapSkillPath(

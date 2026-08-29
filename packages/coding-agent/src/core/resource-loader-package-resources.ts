@@ -36,40 +36,23 @@ export async function resolvePackageResourcePaths(
 			options.trustedBorrowedProjectLocalSources,
 		);
 	}
-	const resolvedBuiltinPackagePaths =
+	const builtinPackagePaths =
 		state.builtinPackagePaths.length > 0
-			? await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true })
+			? markBundledResources(
+					await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true }),
+				)
 			: emptyResolvedPaths();
-	const mandatoryBuiltinPackagePaths =
-		state.mandatoryBuiltinPackagePaths.length > 0
-			? await state.packageManager.resolveExtensionSources(state.mandatoryBuiltinPackagePaths, { temporary: true })
-			: emptyResolvedPaths();
-	const builtinPackagePaths = markBundledResources(resolvedBuiltinPackagePaths, mandatoryBuiltinPackagePaths);
 	return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
 }
 
-function markBundledResources(paths: ResolvedPaths, mandatoryPaths: ResolvedPaths): ResolvedPaths {
-	const mandatoryExtensionPaths = new Set(mandatoryPaths.extensions.map((resource) => resource.path));
+function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
 	const mark = (resources: ResolvedResource[]): ResolvedResource[] =>
 		resources.map((resource) => ({
 			...resource,
-			metadata: {
-				...resource.metadata,
-				configurationOrigin: "bundled",
-				...(mandatoryExtensionPaths.has(resource.path) ? { mandatory: true as const } : {}),
-			},
+			metadata: { ...resource.metadata, configurationOrigin: "bundled" },
 		}));
-	const extensions = mark(paths.extensions);
-	const knownExtensionPaths = new Set(extensions.map((resource) => resource.path));
-	for (const resource of mandatoryPaths.extensions) {
-		if (knownExtensionPaths.has(resource.path)) continue;
-		extensions.push({
-			...resource,
-			metadata: { ...resource.metadata, configurationOrigin: "bundled", mandatory: true },
-		});
-	}
 	return {
-		extensions,
+		extensions: mark(paths.extensions),
 		skills: mark(paths.skills),
 		prompts: mark(paths.prompts),
 		themes: mark(paths.themes),

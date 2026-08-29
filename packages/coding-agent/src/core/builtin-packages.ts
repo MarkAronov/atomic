@@ -138,3 +138,20 @@ export function getMandatoryBuiltinPackagePaths(): string[] {
 		return packageDir ? [packageDir] : [];
 	});
 }
+
+/** Trusted extension entries resolved from Atomic's mandatory bundled packages. */
+export function getMandatoryBuiltinExtensionPaths(): string[] {
+	return getMandatoryBuiltinPackagePaths().flatMap((packageDir) => {
+		try {
+			const manifest = JSON.parse(stripBom(readFileSync(join(packageDir, "package.json"), "utf-8"))) as {
+				atomic?: { extensions?: string[] };
+				pi?: { extensions?: string[] };
+			};
+			return (manifest.atomic?.extensions ?? manifest.pi?.extensions ?? []).map((entry) =>
+				resolve(packageDir, entry),
+			);
+		} catch {
+			return [];
+		}
+	});
+}

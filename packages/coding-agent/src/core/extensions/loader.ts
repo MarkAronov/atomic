@@ -2,7 +2,12 @@
  * Extension loader - loads TypeScript extension modules using jiti.
  */
 
-export { loadExtensionFromFactory, loadExtensions, loadExtensionsCached } from "./loader-core.ts";
+export {
+	getExtensionRuntimeEventBus,
+	loadExtensionFromFactory,
+	loadExtensions,
+	loadExtensionsCached,
+} from "./loader-core.ts";
 export { discoverAndLoadExtensions } from "./loader-discovery.ts";
 export type {
 	ResourceLoaderInheritanceSnapshotProvider,

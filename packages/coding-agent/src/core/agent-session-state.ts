@@ -2,7 +2,7 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.ts";
-import { appendRegisteredMandatoryTools } from "./mandatory-runtime-tools.ts";
+import { appendRegisteredMandatoryTools, isMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
@@ -119,7 +119,9 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): s
 		customPrompt: loaderSystemPrompt,
 		appendSystemPrompt,
 		selectedTools: validToolNames,
-		excludedTools: this._excludedToolNames ? Array.from(this._excludedToolNames) : undefined,
+		excludedTools: this._excludedToolNames
+			? Array.from(this._excludedToolNames).filter((name) => !isMandatoryRuntimeTool(name))
+			: undefined,
 		toolSnippets,
 		promptGuidelines,
 	};

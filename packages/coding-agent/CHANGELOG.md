@@ -9,7 +9,7 @@
 ### Changed
 
 - Updated the external Pi runtime dependencies to 0.84.4, inheriting nested autocomplete ordering, surrogate-safe chunked terminal writes above 1 MiB, and slash/kebab double-click selection.
-- Ordinary `intercom` is now a mandatory runtime tool in main chat and SDK-created model sessions. Tool and extension allowlists, exclusions, no-tool modes, runtime active-tool mutation, and reload preserve it without changing restrictions on any other tool.
+- Ordinary bundled `intercom` is now a mandatory runtime tool in main chat and SDK-created model sessions. Tool and extension allowlists, exclusions, no-tool and deferred-resource modes, supplied loaders, overrides, same-name custom/project collisions, runtime active-tool mutation, and reload preserve its trusted definition without changing restrictions on any other tool. Fresh SDK sessions do not load optional bundled workflow, subagent, MCP, or web-access extensions unless configured.
 
 ### Fixed
 

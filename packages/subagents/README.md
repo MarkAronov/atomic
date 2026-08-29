@@ -360,7 +360,7 @@ Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-a
 ```yaml
 # Omitted: all normal extensions load
 
-# Empty: no extensions
+# Empty: no optional extensions; mandatory ordinary Intercom still loads
 extensions:
 
 # Allowlist

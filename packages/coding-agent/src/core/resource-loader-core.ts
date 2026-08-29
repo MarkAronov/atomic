@@ -43,7 +43,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
 	private builtinPackagePaths: PackageSource[];
-	private mandatoryBuiltinPackagePaths: PackageSource[];
 	private extensionFactories: InlineExtension[];
 	private noExtensions: boolean;
 	private noSkills: boolean;
@@ -130,10 +129,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 			options.builtinPackagePaths !== undefined
 				? clonePackageSources(options.builtinPackagePaths)
 				: clonePackageSources(inheritanceSnapshot?.builtinPackagePaths);
-		this.mandatoryBuiltinPackagePaths =
-			options.mandatoryBuiltinPackagePaths !== undefined
-				? clonePackageSources(options.mandatoryBuiltinPackagePaths)
-				: clonePackageSources(inheritanceSnapshot?.mandatoryBuiltinPackagePaths);
 		this.extensionFactories = [
 			...(inheritanceSnapshot?.extensionFactories ?? []),
 			...(options.extensionFactories ?? []),
@@ -240,7 +235,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 			additionalPromptTemplatePaths: [...this.additionalPromptTemplatePaths],
 			additionalThemePaths: [...this.additionalThemePaths],
 			builtinPackagePaths: clonePackageSources(this.builtinPackagePaths),
-			mandatoryBuiltinPackagePaths: clonePackageSources(this.mandatoryBuiltinPackagePaths),
 			extensionFactories: [...this.extensionFactories],
 			noExtensions: this.noExtensions,
 			noSkills: this.noSkills,
