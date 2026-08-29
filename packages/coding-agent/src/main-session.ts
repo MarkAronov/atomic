@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { ProcessTerminal, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
@@ -206,6 +206,7 @@ export async function createSessionManager(
 			const selectedPath = await selectSession(
 				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
 				(onProgress) => SessionManager.listAll(sessionDir, onProgress),
+				settingsManager,
 			);
 			if (!selectedPath) {
 				console.log(chalk.dim("No session selected"));
@@ -236,6 +237,7 @@ export async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
+	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	initTheme(settingsManager.getTheme());
 	setKeybindings(KeybindingsManager.create());
 

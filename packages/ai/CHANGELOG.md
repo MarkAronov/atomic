@@ -1,8 +1,12 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`8fa7eebd235355522c8104166b4f1f959b4e2f10`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/8fa7eebd235355522c8104166b4f1f959b4e2f10/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`5ce4afbd95ec10104c0e73866a745f602b592392`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/5ce4afbd95ec10104c0e73866a745f602b592392/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+### Added
+
+- Added the Meta Muse Image and Recraft V4 Styles, V4 Styles Pro, V4 Styles Pro Vector, and V4 Styles Vector image models to the generated OpenRouter catalog.
 
 ## [0.9.16-alpha.10] - 2026-08-28
 

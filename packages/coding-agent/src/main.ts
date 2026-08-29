@@ -1,3 +1,4 @@
+import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
 import {
@@ -397,6 +398,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
+	setCapabilityOverrides(startupSettingsManager.getTerminalCapabilityOverrides());
 	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager, "startup session lookup");
 
 	// --use-theme steers this run only: the override lives in the startup
@@ -653,6 +655,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
+	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 	if (parsed.help) {

@@ -73,6 +73,7 @@ async function renderStartupWithEarlyNotify(
 		});
 		Object.assign(mode, {
 			bindCurrentSessionExtensions: async () => emitNotify(),
+			applyRuntimeSettings() {},
 			promptTurnWorkingLoaderActive: false,
 			stopWorkingLoader() {},
 			themeController: { applyFromSettings: async () => {} },
@@ -131,6 +132,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 	});
 	Object.assign(mode, {
 		bindCurrentSessionExtensions: async () => {},
+		applyRuntimeSettings() {},
 		promptTurnWorkingLoaderActive: false,
 		stopWorkingLoader() {},
 		themeController: { applyFromSettings: async () => {} },

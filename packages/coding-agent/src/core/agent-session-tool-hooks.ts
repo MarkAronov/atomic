@@ -1,19 +1,9 @@
-import type {
-	AgentContext,
-	AgentLoopConfig,
-	AgentLoopTurnUpdate,
-	PrepareNextTurnContext,
-	ShouldStopAfterTurnContext,
-} from "@earendil-works/pi-agent-core";
+import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
-
-interface LegacyAgentLoopConfigDoor {
-	createLoopConfig(options?: { skipInitialSteeringPoll?: boolean }): AgentLoopConfig;
-}
 
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ toolCall, args }) => {
@@ -106,49 +96,17 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		(this.agent.prepareNextTurn
 			? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
 			: undefined);
-	// pi-agent-core 0.84.3 invokes preparation before its stop hook. Run the
-	// captured stop hook here, then replay that result when the dependency asks.
 
 	const previousShouldStopAfterTurn = this.agent.shouldStopAfterTurn;
-	let pendingStopResult:
-		| {
-				message: PrepareNextTurnContext["message"];
-				toolResults: PrepareNextTurnContext["toolResults"];
-				newMessages: PrepareNextTurnContext["newMessages"];
-				shouldStop: boolean;
-		  }
-		| undefined;
-	const pendingStopMatches = (turn: ShouldStopAfterTurnContext): boolean => {
-		const pending = pendingStopResult;
-		return (
-			pending?.message === turn.message &&
-			pending.toolResults === turn.toolResults &&
-			pending.newMessages === turn.newMessages
-		);
-	};
-	const clearPendingStopResult = (turn: ShouldStopAfterTurnContext): void => {
-		if (pendingStopMatches(turn)) pendingStopResult = undefined;
-	};
-
-	// The dependency consumes a matching completed-turn result once. Unrelated
-	// public stop checks delegate without invalidating that pending handoff.
 	this.agent.shouldStopAfterTurn = async (turn, signal) => {
-		const pending = pendingStopResult;
-		if (pending && pendingStopMatches(turn)) {
-			pendingStopResult = undefined;
-			return pending.shouldStop;
-		}
-		return (await previousShouldStopAfterTurn?.(turn, signal)) ?? false;
-	};
+		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
+		const terminatingBatch =
+			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
+		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
 
-	const cacheStopResult = async (turn: ShouldStopAfterTurnContext, signal?: AbortSignal): Promise<boolean> => {
 		const shouldStop = (await previousShouldStopAfterTurn?.(turn, signal)) ?? false;
-		pendingStopResult = {
-			message: turn.message,
-			toolResults: turn.toolResults,
-			newMessages: turn.newMessages,
-			shouldStop,
-		};
+		this._stopAfterTurnBlockedContinuation = shouldStop;
+		await settleFallbackAfterTurn(this, turn, terminatingBatch);
 		return shouldStop;
 	};
 
@@ -186,98 +144,9 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		};
 	};
 
-	let deferredPreparation:
-		| {
-				turn: PrepareNextTurnContext;
-				signal?: AbortSignal;
-				loopContext: AgentContext;
-		  }
-		| undefined;
-
-	const prepareDeferredTurn = async (loopConfig: AgentLoopConfig): Promise<void> => {
-		const deferred = deferredPreparation;
-		if (!deferred) return;
-		// Queue polls are serial in pi-agent-core. Clear first so a failing callback
-		// cannot be retried by a later poll in the same run.
-		deferredPreparation = undefined;
-		const snapshot = await prepareTurn(deferred.turn, deferred.signal);
-		const nextContext = snapshot.context ?? deferred.turn.context;
-		deferred.loopContext.systemPrompt = nextContext.systemPrompt;
-		deferred.loopContext.messages = nextContext.messages;
-		deferred.loopContext.tools = nextContext.tools;
-		loopConfig.model = snapshot.model ?? loopConfig.model;
-		loopConfig.reasoning =
-			snapshot.thinkingLevel === undefined
-				? loopConfig.reasoning
-				: snapshot.thinkingLevel === "off"
-					? undefined
-					: snapshot.thinkingLevel;
-	};
-
-	// pi-agent-core 0.84.3 polls these queues after its premature preparation
-	// callback. Intercept the poll itself: a non-empty result is the first point
-	// at which a final or terminating turn is known to continue. The regular
-	// function deliberately receives the loop's current copied config as `this`.
-	const agentLoopDoor = this.agent as unknown as LegacyAgentLoopConfigDoor;
-	const previousCreateLoopConfig = agentLoopDoor.createLoopConfig.bind(this.agent);
-	agentLoopDoor.createLoopConfig = (options) => {
-		deferredPreparation = undefined;
-		this._stopAfterTurnBlockedContinuation = false;
-		const loopConfig = previousCreateLoopConfig(options);
-		const wrapQueuePoll = (
-			poll: AgentLoopConfig["getSteeringMessages"] | AgentLoopConfig["getFollowUpMessages"],
-		): NonNullable<AgentLoopConfig["getSteeringMessages"]> =>
-			async function (this: AgentLoopConfig) {
-				const messages = (await poll?.()) ?? [];
-				if (messages.length > 0) await prepareDeferredTurn(this);
-				return messages;
-			};
-		loopConfig.getSteeringMessages = wrapQueuePoll(loopConfig.getSteeringMessages);
-		loopConfig.getFollowUpMessages = wrapQueuePoll(loopConfig.getFollowUpMessages);
-		return loopConfig;
-	};
-
-	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
-		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
-		const terminatingBatch =
-			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
-		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
-
-		const shouldStop = await cacheStopResult(turn, signal);
-		try {
-			if (shouldStop) {
-				deferredPreparation = undefined;
-				this._stopAfterTurnBlockedContinuation = true;
-				await settleFallbackAfterTurn(this, turn, terminatingBatch);
-				return undefined;
-			}
-
-			if (turn.toolResults.length > 0 && !terminatingBatch) {
-				deferredPreparation = undefined;
-				const snapshot = await prepareTurn(turn, signal);
-				await settleFallbackAfterTurn(this, turn, terminatingBatch);
-				return snapshot;
-			}
-
-			await settleFallbackAfterTurn(this, turn, terminatingBatch);
-			const loopContext: AgentContext = {
-				...turn.context,
-				messages: turn.context.messages.slice(),
-				tools: turn.context.tools?.slice(),
-			};
-			deferredPreparation = { turn, signal, loopContext };
-			// Returning a placeholder moves the stale loop away from the completed
-			// context without running user preparation. If a queue poll yields work,
-			// the poll door replaces its fields before that message is injected.
-			return { context: loopContext };
-		} catch (error) {
-			// The pinned loop cannot consume its cached stop decision when its
-			// premature preparation rejects. Remove only this turn's handoff; an
-			// asynchronously superseding turn remains authoritative.
-			clearPendingStopResult(turn);
-			throw error;
-		}
-	};
+	// pi-agent-core 0.84.4 runs the stop hook before queue polling and invokes
+	// preparation only after that polling establishes that another turn will run.
+	this.agent.prepareNextTurnWithContext = prepareTurn;
 }
 
 async function settleFallbackAfterTurn(
