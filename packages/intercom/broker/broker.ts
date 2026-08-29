@@ -2,7 +2,7 @@
 // only position from which the stderr cap covers the other modules' own initialization.
 import "./bounded-stderr-install.js";
 import net from "net";
-import { writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
@@ -146,6 +146,7 @@ class IntercomBroker {
     this.server.listen(SOCKET_PATH, () => {
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      this.scheduleShutdownCheck();
     });
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
@@ -166,10 +167,8 @@ class IntercomBroker {
     socket.on("data", reader);
 
     socket.on("close", () => {
-      if (sessionId) {
-        this.disconnectSession(sessionId);
-        this.scheduleShutdownCheck();
-      }
+      if (sessionId) this.disconnectSession(sessionId);
+      this.scheduleShutdownCheck();
     });
 
     socket.on("error", (error) => {
@@ -918,6 +917,25 @@ class IntercomBroker {
     }
   }
 
+  private readPidFile(): number | undefined {
+    try {
+      const pid = Number.parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10);
+      return Number.isFinite(pid) ? pid : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Unlink the pid file only while this process still owns PID_PATH. */
+  private unlinkRuntimeFilesIfOwned(): void {
+    if (this.readPidFile() !== process.pid) return;
+    try {
+      unlinkSync(PID_PATH);
+    } catch {
+      // The PID file may already be gone if startup never completed.
+    }
+  }
+
   private shutdown(): void {
     console.log("Broker shutting down");
 
@@ -931,19 +949,14 @@ class IntercomBroker {
     this.liveWorkflowStageRouteActivations.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
-    if (process.platform !== "win32") {
-      try {
-        unlinkSync(SOCKET_PATH);
-      } catch {
-        // The socket may already be gone if shutdown started after a disconnect.
-      }
+    const ownsRuntime = this.readPidFile() === process.pid;
+    this.unlinkRuntimeFilesIfOwned();
+    // Node unlinks a Unix socket path on server.close() even after a successor
+    // rebound that path. Skip close when we no longer own the pid; process.exit
+    // still closes our fd. Windows named pipes are not path-unlinked this way.
+    if (process.platform === "win32" || ownsRuntime) {
+      this.server.close();
     }
-	try {
-		unlinkSync(PID_PATH);
-    } catch {
-      // The PID file may already be gone if startup never completed.
-    }
-    this.server.close();
     process.exit(0);
   }
 }
