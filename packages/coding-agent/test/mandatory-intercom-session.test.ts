@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/pi-ai/compat";
@@ -21,6 +21,18 @@ function createTempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function stopBrokerUnder(root: string): void {
+	const pidPath = join(root, "agent", "intercom", "broker.pid");
+	if (!existsSync(pidPath)) return;
+	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+	if (!Number.isFinite(pid)) return;
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch {
+		// The detached broker already exited.
+	}
 }
 
 function fakeIntercomTool() {
@@ -63,7 +75,13 @@ describe("mandatory ordinary Intercom sessions", () => {
 		if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 		else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 		for (const dir of tempDirs.splice(0)) {
-			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			stopBrokerUnder(dir);
+			if (!existsSync(dir)) continue;
+			try {
+				rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			} catch {
+				// Windows can keep a detached broker log handle briefly; the OS reclaims the temp dir.
+			}
 		}
 	});
 
