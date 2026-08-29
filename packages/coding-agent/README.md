@@ -578,7 +578,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load extension from path, npm, or git (repeatable) |
-| `--no-extensions`, `-ne` | Disable extension discovery |
+| `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
 | `--skill <path>` | Load skill (repeatable) |
 | `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load prompt template (repeatable) |
