@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
@@ -87,10 +87,19 @@ class StageDefaultResourceLoader extends DefaultResourceLoader implements PiSdkR
 	}
 }
 
-function makeSdk(agentDir: string): PiCodingAgentSdk {
+const STAGE_FIXTURE_BUILTINS = ["subagents", "intercom"] as const;
+
+function selectBuiltinPackagePaths(names: readonly string[]): string[] {
+	const selected = getBuiltinPackagePaths().filter((path) => names.includes(basename(path)));
+	assert.equal(selected.length, names.length, `expected built-ins: ${names.join(", ")}`);
+	return selected;
+}
+
+function makeSdk(agentDir: string, builtinPackageNames: readonly string[] = STAGE_FIXTURE_BUILTINS): PiCodingAgentSdk {
+	const builtinPackagePaths = selectBuiltinPackagePaths(builtinPackageNames);
 	return {
 		getAgentDir: () => agentDir,
-		getBuiltinPackagePaths,
+		getBuiltinPackagePaths: () => builtinPackagePaths,
 		SettingsManager,
 		DefaultResourceLoader: StageDefaultResourceLoader,
 		async createAgentSession(options) {
@@ -108,6 +117,7 @@ async function createWorkflowStageSession(options: {
 	readonly excludedTools?: readonly string[];
 	readonly model?: Model<Api>;
 	readonly modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
+	readonly builtinPackageNames?: readonly string[];
 }) {
 	const model = options.model ?? getModel("anthropic", "claude-sonnet-4-5");
 	assert.notEqual(model, undefined);
@@ -135,7 +145,7 @@ async function createWorkflowStageSession(options: {
 			...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
 			orchestrationContext,
 		},
-		makeSdk(options.agentDir),
+		makeSdk(options.agentDir, options.builtinPackageNames),
 	);
 	if (sessionOptions === undefined) {
 		throw new Error("prepareAtomicStageSessionOptions returned undefined.");
@@ -446,6 +456,7 @@ describe("workflow stage bundled resources", () => {
 			cwd,
 			agentDir,
 			tools: ["web_search", "fetch_content", "intercom"],
+			builtinPackageNames: ["web-access", "intercom"],
 		});
 		try {
 			const allToolNames = session

@@ -86,6 +86,11 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 				noThemes: true,
 			},
 		});
+		assert.equal(
+			services.resourceLoader.getExtensions().extensions.length,
+			extensionFactory ? 2 : 1,
+			"service creation must load mandatory Intercom and explicit factories without optional built-ins",
+		);
 		return {
 			...(await createAgentSessionFromServices({
 				services,

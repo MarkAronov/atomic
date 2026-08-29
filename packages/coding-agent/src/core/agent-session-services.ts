@@ -3,7 +3,7 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { getBuiltinPackagePaths, getMandatoryBuiltinPackagePaths } from "./builtin-packages.ts";
+import { getMandatoryBuiltinPackagePaths } from "./builtin-packages.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import {
@@ -160,7 +160,6 @@ export async function createAgentSessionServices(
 		cwd,
 		agentDir,
 		settingsManager,
-		builtinPackagePaths: resourceLoaderOptions.builtinPackagePaths ?? getBuiltinPackagePaths(),
 		mandatoryBuiltinPackagePaths:
 			resourceLoaderOptions.mandatoryBuiltinPackagePaths ?? getMandatoryBuiltinPackagePaths(),
 	});
