@@ -15,8 +15,9 @@ const extensionDir = join(repoRoot, "packages/intercom");
 /** Documented idle window before a broker with no registered sessions exits. */
 const BROKER_IDLE_SHUTDOWN_MS = 5_000;
 const BROKER_IDLE_SHUTDOWN_GRACE_MS = 2_000;
-/** Real broker child plus the idle shutdown window. */
-const BROKER_IDLE_RETIREMENT_TIMEOUT_MS = 15_000;
+const BROKER_IDLE_SHUTDOWN_WINDOW_MS = BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS;
+/** Real broker child, jiti startup, and the idle shutdown window. */
+const REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS = 30_000;
 const BROKER_STARTUP_MS = 10_000;
 
 const fixtures: Array<{ agentDir: string; broker: ChildProcess }> = [];
@@ -100,17 +101,17 @@ test(
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-none-"));
 		const broker = spawnBroker(agentDir);
-		const startedAt = Date.now();
 		await waitForBrokerPid(agentDir, broker);
+		const armedAt = Date.now();
 
-		const code = await waitForExit(broker, BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS);
+		const code = await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
 		assert.equal(code, 0);
 		assert.ok(
-			Date.now() - startedAt <= BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS,
-			"idle broker exceeded the shutdown window",
+			Date.now() - armedAt <= BROKER_IDLE_SHUTDOWN_WINDOW_MS,
+			"idle broker exceeded the shutdown window after listen armed the check",
 		);
 	},
-	BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
 // #2765
@@ -128,14 +129,14 @@ test(
 		});
 
 		const closedAt = Date.now();
-		const code = await waitForExit(broker, BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS);
+		const code = await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
 		assert.equal(code, 0);
 		assert.ok(
-			Date.now() - closedAt <= BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS,
+			Date.now() - closedAt <= BROKER_IDLE_SHUTDOWN_WINDOW_MS,
 			"pre-register disconnect exceeded the shutdown window",
 		);
 	},
-	BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
 // #2765
@@ -159,9 +160,9 @@ test(
 			},
 		});
 
-		await sleep(BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS);
+		await sleep(BROKER_IDLE_SHUTDOWN_WINDOW_MS);
 		assert.equal(isBrokerAlive(broker), true, "registered broker exited while a live session was still connected");
 		socket.end();
 	},
-	BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
