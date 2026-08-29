@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { getMandatoryBuiltinExtensionPaths } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
@@ -15,7 +15,21 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 const tempDirs: string[] = [];
-let originalAgentDir: string | undefined;
+
+/**
+ * `spawn.ts` / `client.ts` resolve broker socket paths at import. Set a unique
+ * agent dir before any `execute()` can load those modules, and do not change it
+ * between tests. Mutating `ATOMIC_CODING_AGENT_DIR` after first import makes
+ * Windows wait on a stale pipe while the child binds the default home pipe
+ * (`EADDRINUSE` on `\\.\pipe\pi-intercom-…-atomic-agent`).
+ */
+const isolatedBrokerAgentDir = mkdtempSync(join(tmpdir(), "ic-mandatory-broker-"));
+const previousAgentDirEnv = {
+	atomic: process.env.ATOMIC_CODING_AGENT_DIR,
+	pi: process.env.PI_CODING_AGENT_DIR,
+} as const;
+process.env.ATOMIC_CODING_AGENT_DIR = isolatedBrokerAgentDir;
+delete process.env.PI_CODING_AGENT_DIR;
 
 function createTempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -23,16 +37,28 @@ function createTempDir(prefix: string): string {
 	return dir;
 }
 
-function stopBrokerUnder(root: string): void {
-	const pidPath = join(root, "agent", "intercom", "broker.pid");
+function stopBrokerAt(agentDir: string): void {
+	const pidPath = join(agentDir, "intercom", "broker.pid");
 	if (!existsSync(pidPath)) return;
 	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	if (!Number.isFinite(pid)) return;
+	if (!Number.isFinite(pid) || pid <= 0) return;
 	try {
 		process.kill(pid, "SIGTERM");
 	} catch {
 		// The detached broker already exited.
 	}
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {
+		// SIGTERM was enough, or the process was already gone.
+	}
+}
+
+function restoreAgentDirEnv(): void {
+	if (previousAgentDirEnv.atomic === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDirEnv.atomic;
+	if (previousAgentDirEnv.pi === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDirEnv.pi;
 }
 
 function fakeIntercomTool() {
@@ -67,21 +93,25 @@ function asCustomLoader(
 }
 
 describe("mandatory ordinary Intercom sessions", () => {
-	beforeEach(() => {
-		originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-	});
-
 	afterEach(() => {
-		if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-		else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 		for (const dir of tempDirs.splice(0)) {
-			stopBrokerUnder(dir);
+			stopBrokerAt(join(dir, "agent"));
 			if (!existsSync(dir)) continue;
 			try {
 				rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 			} catch {
 				// Windows can keep a detached broker log handle briefly; the OS reclaims the temp dir.
 			}
+		}
+	});
+
+	afterAll(() => {
+		stopBrokerAt(isolatedBrokerAgentDir);
+		restoreAgentDirEnv();
+		try {
+			rmSync(isolatedBrokerAgentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+		} catch {
+			// Windows can keep a detached broker log handle briefly; the OS reclaims the temp dir.
 		}
 	});
 
@@ -213,7 +243,6 @@ describe("mandatory ordinary Intercom sessions", () => {
 			const cwd = createTempDir(`ic-${loaderKind}-`);
 			const agentDir = join(cwd, "agent");
 			mkdirSync(agentDir, { recursive: true });
-			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 			const extensionPath =
 				sourceKind === "cli" ? join(cwd, "spoof-intercom.ts") : join(cwd, ".atomic", "extensions", "spoof.ts");
 			mkdirSync(join(extensionPath, ".."), { recursive: true });
