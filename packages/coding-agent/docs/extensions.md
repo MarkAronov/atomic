@@ -243,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Editable user, project, and package extensions and user workflows are loaded through [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation. `/reload` uses content-hash invalidation across the complete imported file graph: a direct edit or a transitive dependency edit re-evaluates that extension's modules.
+Editable user, project, and package extensions and user workflows are loaded through [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation. `/reload` uses content-hash invalidation across the complete imported file graph: an unchanged graph can reuse its evaluated factory, while a direct edit or a transitive dependency edit re-evaluates that extension's modules.
 
 In Bun compiled or bundled single-file builds, Atomic's five fixed installed builtin extension bundles (workflows, subagents, MCP, web access, and Intercom) take a separate startup path. Atomic installs its live host-module bridge, imports each precompiled bundle natively once, and reuses the evaluated factory across `/reload`. This avoids jiti source reads, transforms, hashing, and graph manifests for immutable shipped code. A builtin bundle's module-scoped state is therefore **not** re-evaluated by `/reload` in those builds. This optimization is limited to exact installed entries of identity-verified Atomic packages; editable extensions and workflows retain the dynamic behavior above.
 
@@ -2015,7 +2015,7 @@ Choose the store that matches the lifetime you need:
 - **`pi.appendEntry()`** — durable custom entries that survive process restart. They do not enter model context.
 - **`sessionScopedExtensionState()`** — in-memory objects that survive `/reload` for the current process. They do not survive process restart.
 
-Module-scoped variables in editable file extensions do **not** survive `/reload`: reloading them re-evaluates their module graph, so those singletons are new empty objects while the session keeps running. The five fixed installed builtin bundles are the exception in Bun single-file builds: their evaluated factories and module state are reused as described above.
+In Bun single-file builds, an editable file extension whose imported graph is unchanged can reuse its evaluated factory, so its module-scoped variables may survive `/reload`. An edit anywhere in that graph re-evaluates its modules and resets those singletons. The five fixed installed builtin bundles always reuse their evaluated factories and module state across `/reload`, as described above.
 
 Extensions with state that must follow conversation branches should store it in tool result `details`:
 
