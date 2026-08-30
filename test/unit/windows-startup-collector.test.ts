@@ -131,7 +131,13 @@ test("required tool schemas must match exact property and required-name contract
 	const mcp = absentEmptyRequired.tools.find((tool) => tool.function.name === "mcp")!;
 	delete mcp.function.parameters.required;
 	validation = validateProviderRequest(JSON.stringify(absentEmptyRequired), "expected");
-	assert.ok(validation.errors.some((error) => error.includes("inexact required tool schema: mcp")));
+	assert.ok(!validation.errors.some((error) => error.includes("inexact required tool schema: mcp")));
+
+	const absentNonEmptyRequired = JSON.parse(requestBody("expected")) as typeof body;
+	const readTool = absentNonEmptyRequired.tools.find((tool) => tool.function.name === "read")!;
+	delete readTool.function.parameters.required;
+	validation = validateProviderRequest(JSON.stringify(absentNonEmptyRequired), "expected");
+	assert.ok(validation.errors.some((error) => error.includes("inexact required tool schema: read")));
 
 	const duplicateTool = JSON.parse(requestBody("expected")) as typeof body;
 	duplicateTool.tools.push(duplicateTool.tools.find((tool) => tool.function.name === "read")!);

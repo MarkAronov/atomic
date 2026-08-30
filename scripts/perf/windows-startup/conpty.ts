@@ -25,6 +25,7 @@ interface NativePtySession {
 		onChunk: (error: Error | null, chunk: string) => void,
 	): Promise<NativePtyRunResult>;
 	write(data: string): void;
+	resize(cols: number, rows: number): void;
 	kill(): void;
 }
 
@@ -39,6 +40,7 @@ export interface ConptyProcess {
 		readonly cancelled: boolean;
 	}>;
 	write(data: string): void;
+	resize(cols: number, rows: number): void;
 	kill(): void;
 }
 
@@ -83,6 +85,7 @@ export function startConpty(options: StartConptyOptions): ConptyProcess {
 	return {
 		exited,
 		write: (data) => session.write(data),
+		resize: (cols, rows) => session.resize(cols, rows),
 		kill: () => session.kill(),
 	};
 }

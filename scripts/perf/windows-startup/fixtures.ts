@@ -47,6 +47,9 @@ export async function createAgentTemplate(directory: string, port: number): Prom
 				lastChangelogVersion: "0.0.0",
 				firstRunOnboardingStartedVersion: "0.0.0",
 				onboardedVersion: "0.0.0",
+				// Quit-time session summarization issues a second provider request,
+				// which would break the collector's single-request invariant.
+				sessionSummary: { enabled: false },
 			},
 			null,
 			2,
@@ -83,11 +86,20 @@ export function benchmarkEnvironment(
 	executableDirectory: string,
 	baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
+	const inheritedPath = Object.entries(baseEnvironment).find(
+		(entry): entry is [string, string] => entry[0].toUpperCase() === "PATH" && entry[1] !== undefined,
+	)?.[1];
 	const environment: Record<string, string> = {
 		...Object.fromEntries(
-			Object.entries(baseEnvironment).filter((entry): entry is [string, string] => entry[1] !== undefined),
+			Object.entries(baseEnvironment).filter(
+				(entry): entry is [string, string] => entry[1] !== undefined && entry[0].toUpperCase() !== "PATH",
+			),
 		),
 		ATOMIC_CODING_AGENT_DIR: agentDir,
+		// ConPTY re-synthesizes output and only reproduces the application's final
+		// cursor position while the cursor is visible; the screen tracker asserts
+		// the cursor location, so keep the hardware cursor shown.
+		ATOMIC_HARDWARE_CURSOR: "1",
 		ATOMIC_OFFLINE: "1",
 		ATOMIC_REDUCED_MOTION: "0",
 		ATOMIC_SKIP_VERSION_CHECK: "1",
@@ -95,7 +107,7 @@ export function benchmarkEnvironment(
 		CI: "0",
 		NO_COLOR: "1",
 		TERM: "xterm-256color",
-		PATH: `${executableDirectory}${delimiter}${baseEnvironment.PATH ?? ""}`,
+		PATH: `${executableDirectory}${delimiter}${inheritedPath ?? ""}`,
 	};
 	delete environment.ATOMIC_STARTUP_BENCHMARK;
 	delete environment.ATOMIC_TIMING;

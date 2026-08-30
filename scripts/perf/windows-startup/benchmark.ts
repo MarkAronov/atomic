@@ -44,7 +44,14 @@ interface BenchmarkOptions {
 }
 
 function quoteArgument(value: string): string {
-	return `"${value.replaceAll('"', '""')}"`;
+	// The command line is quoted once by the native PTY layer (MSVC rules) and then
+	// re-parsed by `cmd /d /s /c`, the launcher shim, and the launcher itself, so any
+	// quote inserted here survives as a literal character in the argument. Pass the
+	// value bare and reject characters that would require quoting.
+	if (/["\s]/.test(value)) {
+		throw new Error(`argument must not contain quotes or whitespace: ${value}`);
+	}
+	return value;
 }
 
 function timeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
@@ -57,21 +64,33 @@ function timeout<T>(promise: Promise<T>, milliseconds: number, label: string): P
 }
 
 async function waitForScreen(
-	tracker: StartupScreenTracker,
-	flush: () => Promise<void>,
+	observe: () => Promise<ScreenObservation>,
 	predicate: (observation: ScreenObservation) => boolean,
 	timeoutMs: number,
 	label: string,
+	nudge?: () => void,
 ): Promise<ScreenObservation> {
 	const deadline = Date.now() + timeoutMs;
+	let nudgeAt = Date.now() + NUDGE_INTERVAL_MS;
 	while (Date.now() < deadline) {
-		await flush();
-		const observation = tracker.observe(process.hrtime.bigint());
+		const observation = await observe();
 		if (predicate(observation)) return observation;
+		if (nudge && Date.now() >= nudgeAt) {
+			nudge();
+			nudgeAt = Date.now() + NUDGE_INTERVAL_MS;
+		}
 		await delay(10);
 	}
 	throw new Error(`${label} timed out after ${timeoutMs} ms`);
 }
+
+// ConPTY on Windows Server 2022 can withhold an already-written frame from the
+// output pipe until the next console event (verified: the same frame renders
+// immediately in an interactive console). A rows toggle forces conhost to
+// re-emit the screen. Only post-measurement waits may nudge: every headline
+// metric mark is taken before the first nudged wait, so repaints triggered
+// here cannot affect timing.
+const NUDGE_INTERVAL_MS = 1_000;
 
 function shuffleBit(seed: number): number {
 	let state = seed >>> 0;
@@ -301,9 +320,21 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 			},
 		});
 		launchStarted = true;
+		// Serialize explicit observations behind pending chunk writes. The timestamp
+		// is captured synchronously before enqueueing, so every write already queued
+		// carries an earlier callback timestamp and later callbacks enqueue after the
+		// observation, keeping the tracker's clock monotonic.
+		const observeQueued = (): Promise<ScreenObservation> => {
+			const atNs = process.hrtime.bigint();
+			const pending = screenQueue.then(() => tracker.observe(atNs));
+			screenQueue = pending.then(
+				() => undefined,
+				() => undefined,
+			);
+			return pending;
+		};
 		const completed = await waitForScreen(
-			tracker,
-			() => screenQueue,
+			observeQueued,
 			(observation) => observation.complete,
 			options.timeoutMs,
 			"strict startup paint",
@@ -311,33 +342,36 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 		completeSnapshot = completed;
 		marks.startupComplete = completed.atNs;
 		child.write(nonce);
-		await waitForScreen(
-			tracker,
-			() => screenQueue,
-			(observation) => observation.text.includes(nonce),
-			5_000,
-			"nonce echo",
-		);
+		await waitForScreen(observeQueued, (observation) => observation.text.includes(nonce), 5_000, "nonce echo");
 		const enterAt = process.hrtime.bigint();
 		marks.enter = enterAt.toString();
 		child.write("\r");
 		const request = await timeout(collector.waitForRequest(), options.timeoutMs, "provider dispatch");
 		marks.providerFirstByte = request.firstByteNs;
+		const live = child;
+		const nudgeRepaint = (): void => {
+			live.resize(120, 41);
+			live.resize(120, 40);
+		};
 		await waitForScreen(
-			tracker,
-			() => screenQueue,
+			observeQueued,
 			(observation) => observation.text.includes("benchmark-ok") && observation.coherent,
 			options.timeoutMs,
 			"provider response",
+			nudgeRepaint,
 		);
 		child.write("/workflow list\r");
+		// The bundled workflow list is taller than the 40-row viewport, so its
+		// earliest (alphabetical) entries scroll off the visible screen. Assert
+		// on markers that remain in the settled viewport: a bundled workflow
+		// name near the end of the list and the command help footer.
 		await waitForScreen(
-			tracker,
-			() => screenQueue,
+			observeQueued,
 			(observation) =>
-				observation.text.includes("adversarial-verification") || observation.text.includes("classify-and-act"),
+				observation.text.includes("loop-until-done") && observation.text.includes("inspect input schema"),
 			options.timeoutMs,
 			"/workflow list",
+			nudgeRepaint,
 		);
 		workflowListSucceeded = true;
 		if (chunkError) throw new Error(`ConPTY output callback failed: ${chunkError.message}`);

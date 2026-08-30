@@ -286,7 +286,13 @@ export function validateProviderRequest(body: string, nonce: string): ProviderVa
 			properties && typeof properties === "object" && !Array.isArray(properties)
 				? objectRecord(properties)
 				: undefined;
-		const requiredArray = Array.isArray(schemaRequired) ? schemaRequired : undefined;
+		// JSON Schema treats an absent `required` keyword as "no required
+		// properties", so accept a missing array when the contract is empty.
+		const requiredArray = Array.isArray(schemaRequired)
+			? schemaRequired
+			: schemaRequired === undefined
+				? []
+				: undefined;
 		const requiredNames = requiredArray?.filter((name): name is string => typeof name === "string");
 		if (
 			schema?.type !== "object" ||
