@@ -11,6 +11,14 @@
 </p>
 
 <p align="center">
+  Atomic trades speed for quality. Complex runs can take hours, days, or weeks because Atomic researches, implements, and verifies the work that quick coding-agent passes tend to leave to you.
+</p>
+
+<p align="center">
+  Engineers using Atomic tell us this means less babysitting and less stress. The end result is work built and verified for production review, backed by evidence instead of another round of manual prompting.
+</p>
+
+<p align="center">
   <a href="#get-started"><b>Get started →</b></a>
   &nbsp;·&nbsp;
   <a href="#how-atomic-works">How it works</a>
@@ -25,6 +33,7 @@
 <p align="center">
   <a href="https://docs.bastani.ai/"><img src="https://img.shields.io/badge/docs-atomic-blue" alt="Docs"></a>
   <a href="https://discord.gg/9CvdXUGXR4"><img src="https://img.shields.io/badge/join%20community-discord-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://bastani.ai/case-studies/gridd/"><img src="https://img.shields.io/badge/case%20study-GRiDD-7C3AED" alt="GRiDD case study"></a>
   <a href="https://deepwiki.com/bastani-inc/atomic"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
