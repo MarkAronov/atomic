@@ -276,10 +276,19 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	if (reason === "reload") {
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 	}
-	oldRunner.invalidate();
+	if (!options?.failOnExtensionErrors) oldRunner.invalidate();
 	await this.settingsManager.reload();
 	resetApiProviders();
 	await this._resourceLoader.reload();
+	if (options?.failOnExtensionErrors) {
+		const errors = this._resourceLoader.getExtensions().errors;
+		if (errors.length > 0) {
+			throw new Error(
+				`Failed to load extensions: ${errors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,
+			);
+		}
+		oldRunner.invalidate();
+	}
 	this._buildRuntime({
 		activeToolNames: this.getActiveToolNames(),
 		flagValues: previousFlagValues,

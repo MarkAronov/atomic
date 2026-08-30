@@ -73,7 +73,7 @@ export type RpcCommand =
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
-	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
 	| { id?: string; type: "save_provider_credential"; provider: string; credential: Credential }
 	| { id?: string; type: "cancel_login_provider"; provider: string; loginId?: string }

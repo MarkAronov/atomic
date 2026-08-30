@@ -74,6 +74,7 @@ import {
 } from "./main-app-mode.ts";
 import {
 	computeDeferExtensions,
+	computeInteractiveEngineResourceDeferral,
 	computeStartupInputCaptureEnabled,
 	formatScopedModelList,
 } from "./main-deferred-startup.ts";
@@ -457,6 +458,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
+	let forceEagerInteractiveEngineResources = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -472,9 +474,26 @@ export async function main(argv: string[], options?: MainOptions) {
 		const shouldResolveProjectTrust =
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
-		const deferExtensions = isolateInteractiveHost
-			? false
-			: computeDeferExtensions({
+		const resolvedExtensionPathCount = resolvedExtensionPaths?.length ?? 0;
+		const hasSystemPromptInput = parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0;
+		const resolvedResourcePathCount =
+			(resolvedSkillPaths?.length ?? 0) +
+			(resolvedPromptTemplatePaths?.length ?? 0) +
+			(resolvedThemePaths?.length ?? 0);
+		const deferInteractiveEngineResources = computeInteractiveEngineResourceDeferral({
+			interactiveEngineChild: engineEnv.child === "1" && !forceEagerInteractiveEngineResources,
+			hasSessionStartEvent: sessionStartEvent !== undefined,
+			shouldResolveProjectTrust,
+			storedProjectTrust,
+			resolvedExtensionPathCount,
+			resolvedResourcePathCount,
+			hasSystemPromptInput,
+			unknownFlagCount: parsed.unknownFlags.size,
+		});
+		const deferExtensions =
+			!isolateInteractiveHost &&
+			(deferInteractiveEngineResources ||
+				computeDeferExtensions({
 					appMode,
 					stdinIsTTY: process.stdin.isTTY === true,
 					hasSessionStartEvent: sessionStartEvent !== undefined,
@@ -482,20 +501,17 @@ export async function main(argv: string[], options?: MainOptions) {
 					listModels: parsed.listModels,
 					shouldResolveProjectTrust,
 					storedProjectTrust,
-					resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
-					resolvedResourcePathCount:
-						(resolvedSkillPaths?.length ?? 0) +
-						(resolvedPromptTemplatePaths?.length ?? 0) +
-						(resolvedThemePaths?.length ?? 0),
-					hasSystemPromptInput: parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0,
+					resolvedExtensionPathCount,
+					resolvedResourcePathCount,
+					hasSystemPromptInput,
 					unknownFlagCount: parsed.unknownFlags.size,
 					provider: parsed.provider,
 					model: parsed.model,
-				});
+				}));
 		if (sessionStartEvent === undefined) {
 			deferredExtensionLoad = deferExtensions;
 			startupEarlyInputCapture ??= startEarlyInputCapture({
-				enabled: deferExtensions && deprecationWarnings.length === 0,
+				enabled: appMode === "interactive" && deferExtensions && deprecationWarnings.length === 0,
 			});
 		}
 		const getProjectTrustContext = () =>
@@ -627,6 +643,11 @@ export async function main(argv: string[], options?: MainOptions) {
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});
+		if (deferInteractiveEngineResources && !created.session.model) {
+			created.session.dispose();
+			forceEagerInteractiveEngineResources = true;
+			return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
+		}
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
@@ -740,7 +761,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			void modelRuntime.refresh().catch(() => {});
 		}
 		printTimings();
-		await runRpcMode(runtime);
+		await runRpcMode(runtime, { deferInteractiveEngineResources: deferredExtensionLoad });
 	} else if (appMode === "interactive") {
 		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));

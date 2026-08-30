@@ -167,4 +167,48 @@ describe("interactive deferred startup first prompt readiness", () => {
 			session.dispose();
 		}
 	});
+	it("keeps the minimal tool registry when a deferred extension set fails", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) => {
+					pi.registerTool({
+						name: "partial_startup_tool",
+						label: "Partial Startup Tool",
+						description: "Must not publish when another deferred extension fails",
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "unexpected" }], details: {} }),
+					});
+				},
+				() => {
+					throw new Error("deferred extension failed");
+				},
+			],
+		});
+		await resourceLoader.reload({ deferExtensions: true, deferResources: true });
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(),
+			resourceLoader,
+		});
+		try {
+			expect(session.getActiveToolNames()).toContain("intercom");
+			expect(session.getActiveToolNames()).not.toContain("partial_startup_tool");
+
+			await expect(session.reload({ reason: "startup", failOnExtensionErrors: true })).rejects.toThrow(
+				"deferred extension failed",
+			);
+			expect(session.getActiveToolNames()).toContain("intercom");
+			expect(session.getActiveToolNames()).not.toContain("partial_startup_tool");
+		} finally {
+			session.dispose();
+		}
+	});
 });

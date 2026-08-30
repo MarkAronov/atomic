@@ -9,6 +9,9 @@ export class InteractiveEngineMonitor {
 	private readonly bound: Promise<void>;
 	private resolveBound!: () => void;
 	private rejectBound!: (error: Error) => void;
+	private readonly resourcesReady: Promise<void>;
+	private resolveResourcesReady!: () => void;
+	private rejectResourcesReady!: (error: Error) => void;
 	private readonly failure: Promise<never>;
 	private rejectFailure!: (error: Error) => void;
 	private readonly onMessage: (message: InteractiveEngineMessage) => void;
@@ -27,6 +30,11 @@ export class InteractiveEngineMonitor {
 			this.rejectBound = reject;
 		});
 		this.bound.catch(() => {});
+		this.resourcesReady = new Promise((resolve, reject) => {
+			this.resolveResourcesReady = resolve;
+			this.rejectResourcesReady = reject;
+		});
+		this.resourcesReady.catch(() => {});
 		this.failure = new Promise((_, reject) => {
 			this.rejectFailure = reject;
 		});
@@ -38,6 +46,7 @@ export class InteractiveEngineMonitor {
 	}
 	fail(error: Error): void {
 		this.rejectBound(error);
+		this.rejectResourcesReady(error);
 		this.rejectFailure(error);
 	}
 
@@ -54,6 +63,10 @@ export class InteractiveEngineMonitor {
 		return this.bound;
 	}
 
+	waitUntilResourcesReady(): Promise<void> {
+		return this.resourcesReady;
+	}
+
 	handleLine(line: string): boolean {
 		const message = parseInteractiveEngineMessage(line);
 		if (!message) return false;
@@ -68,6 +81,12 @@ export class InteractiveEngineMonitor {
 			case "engine_bound":
 				markLifecycleTiming("engine-bound");
 				this.resolveBound();
+				break;
+			case "engine_resources_ready":
+				this.resolveResourcesReady();
+				break;
+			case "engine_resources_failed":
+				this.rejectResourcesReady(new Error(`Interactive engine resource loading failed: ${message.message}`));
 				break;
 			case "engine_heartbeat":
 				this.watchdog.heartbeat();

@@ -43,14 +43,27 @@ export type {
 	RpcSessionState,
 } from "./rpc-types.ts";
 
+export interface RpcModeOptions {
+	deferInteractiveEngineResources?: boolean;
+}
+
 /**
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
-export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
+export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcModeOptions = {}): Promise<never> {
 	takeOverStdout();
 
 	const interactiveEngineChild = isInteractiveEngineChild();
+	const deferInteractiveEngineResources = interactiveEngineChild && options.deferInteractiveEngineResources === true;
+	let resolveResourcesReady!: () => void;
+	let rejectResourcesReady!: (error: Error) => void;
+	const resourcesReady = new Promise<void>((resolve, reject) => {
+		resolveResourcesReady = resolve;
+		rejectResourcesReady = reject;
+	});
+	resourcesReady.catch(() => {});
+	let resourcesAvailable = false;
 	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
 	if (keybindings) setKeybindings(keybindings);
 
@@ -109,6 +122,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		reloadCoordinator,
 		inputForm,
 		pendingExtensionRequests,
+		waitForResources: interactiveEngineChild ? () => (resourcesAvailable ? undefined : resourcesReady) : undefined,
 	});
 
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
@@ -197,8 +211,32 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	registerSignalHandlers();
 	engineLiveness.ready();
 	await sessionBinding.rebindSession();
-	if (interactiveEngineChild) markLifecycleTiming("engine-resources-ready");
-	engineLiveness.bound();
+	if (!interactiveEngineChild) {
+		resolveResourcesReady();
+	} else if (deferInteractiveEngineResources) {
+		// RPC control and the mandatory minimal session are usable now. Prompt
+		// handling remains generation-gated until the transactional reload commits.
+		engineLiveness.bound();
+		void sessionBinding.loadDeferredResources().then(
+			() => {
+				markLifecycleTiming("engine-resources-ready");
+				resourcesAvailable = true;
+				resolveResourcesReady();
+				engineLiveness.resourcesReady();
+			},
+			(error: unknown) => {
+				const resourceError = error instanceof Error ? error : new Error(String(error));
+				rejectResourcesReady(resourceError);
+				engineLiveness.resourcesFailed(resourceError);
+			},
+		);
+	} else {
+		engineLiveness.bound();
+		resourcesAvailable = true;
+		markLifecycleTiming("engine-resources-ready");
+		resolveResourcesReady();
+		engineLiveness.resourcesReady();
+	}
 
 	// Keep process alive forever
 	return new Promise(() => {});

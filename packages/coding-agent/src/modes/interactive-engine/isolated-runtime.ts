@@ -97,6 +97,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private disposePromise: Promise<void> | undefined;
 	private readonly remoteModelCatalog: RemoteModelCatalog;
 	private resourceOverlaps: ResourceOverlap[] = [];
+	private resourcesInitializedGeneration = 0;
+	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
 
 	constructor(localRuntime: AgentSessionRuntime, createRuntime: CreateAgentSessionRuntimeFactory, client: RpcClient) {
 		super(
@@ -128,6 +130,22 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		this.client.onEvent((event) => this.observeEvent(event));
 		this.client.onGenerationEnded((event) => this.health.handleGenerationEnded(event));
+		// Production RpcClient instances expose engine lifecycle messages. Keep the
+		// subscription optional so focused runtime test doubles that exercise only
+		// session/model/bash behavior do not need to implement unrelated transport
+		// surfaces.
+		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type !== "engine_resources_ready") return;
+			void this.waitUntilResourcesReady().catch((error: Error) => {
+				if (this.health.isRecovering()) return;
+				this.emitDiagnostic({
+					activity: undefined,
+					elapsedMs: 0,
+					level: "unresponsive",
+					message: error.message,
+				});
+			});
+		});
 	}
 
 	override get session(): AgentSession {
@@ -139,7 +157,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.disposed) return;
 		try {
 			const state = await this.client.getState();
-			const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
+			const catalog = await this.client.requestInternal<RpcModelCatalog>({
+				type: "get_available_models",
+				allowPartialResources: true,
+			});
 			if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
 				await super.switchSession(state.sessionFile);
 			}
@@ -221,6 +242,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (this.disposed && isRpcTransportFailure(error)) return;
 			throw error;
 		}
+	}
+	async waitUntilResourcesReady(): Promise<void> {
+		const generation = this.client.getGeneration();
+		await this.client.waitForInteractiveEngineResources();
+		if (generation !== this.client.getGeneration()) {
+			return this.waitUntilResourcesReady();
+		}
+		if (this.resourcesInitializedGeneration === generation) return;
+		if (this.resourceInitialization?.generation === generation) {
+			return this.resourceInitialization.promise;
+		}
+
+		const promise = this.initializeFromEngine()
+			.then(() => {
+				if (generation === this.client.getGeneration()) this.resourcesInitializedGeneration = generation;
+			})
+			.finally(() => {
+				if (this.resourceInitialization?.generation === generation) this.resourceInitialization = undefined;
+			});
+		this.resourceInitialization = { generation, promise };
+		return promise;
 	}
 	getEnginePid(): number | undefined {
 		return this.client.getEnginePid();
@@ -392,6 +434,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			prompt: {
 				configurable: true,
 				value: async (text: string, options?: PromptOptions) => {
+					await this.waitUntilResourcesReady();
 					await this.client.prompt(text, options?.images, options?.streamingBehavior);
 					options?.preflightResult?.(true);
 				},

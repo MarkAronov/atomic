@@ -351,12 +351,18 @@ function invocationPids(logPath: string, name: string): number[] {
  * in the editor. Tolerate both paths: submit with Enter once the editor shows
  * the draft, or accept the replay-executed invocation directly.
  */
+// The real host and engine run beside hundreds of root-suite workers. Under
+// full file parallelism either child can be descheduled beyond the ordinary
+// in-process RPC budget even after autocomplete proves the command catalog is
+// ready. Keep the invocation diagnostic below the suite's structural timeout.
+const ENGINE_COMMAND_INVOCATION_TIMEOUT_MS = 15_000;
+
 async function invokeSlashCommand(
 	driver: DefaultMainDriver,
 	logPath: string,
 	name: string,
 	text: string,
-	timeoutMs = 8_000,
+	timeoutMs = ENGINE_COMMAND_INVOCATION_TIMEOUT_MS,
 ): Promise<number> {
 	const before = invocationPids(logPath, name).length;
 	const from = driver.reports.length;
