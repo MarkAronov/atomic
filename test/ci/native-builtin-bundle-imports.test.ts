@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { builtinModules } from "node:module";
+import { isBuiltin } from "node:module";
 import { extname, join, relative } from "node:path";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
@@ -14,7 +14,6 @@ import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const BUILTIN_BUNDLE_BUILD_TIMEOUT_MS = 120_000;
-const nodeBuiltinSpecifiers = new Set(builtinModules.flatMap((specifier) => [specifier, `node:${specifier}`]));
 
 function isBareSpecifier(specifier: string): boolean {
 	return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:");
@@ -45,6 +44,12 @@ function listJavaScriptArtifacts(rootDir: string): string[] {
 	});
 }
 
+test("Node builtin detection accepts prefix-only builtins without accepting third-party packages", () => {
+	assert.equal(isBuiltin("node:sqlite"), true);
+	assert.equal(isBuiltin("node:fs"), true);
+	assert.equal(isBuiltin("acorn"), false);
+});
+
 test(
 	"installed builtin bundles retain only node builtins and registered host imports",
 	async () => {
@@ -63,7 +68,9 @@ test(
 		for (const artifactPath of emittedArtifacts) {
 			const source = readFileSync(artifactPath, "utf8");
 			for (const specifier of collectImportSpecifiers(source)) {
-				if (isBareSpecifier(specifier) && !nodeBuiltinSpecifiers.has(specifier) && !hostSpecifiers.has(specifier)) {
+				// `builtinModules` omits prefix-only builtins such as `node:sqlite` on Node 22;
+				// `isBuiltin` recognizes them on every supported Node version.
+				if (isBareSpecifier(specifier) && !isBuiltin(specifier) && !hostSpecifiers.has(specifier)) {
 					unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
 				}
 			}
