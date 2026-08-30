@@ -1,5 +1,5 @@
 import { isBunBinary, isBundledBuild } from "../../config.js";
-import { getVirtualModules } from "./loader-virtual-modules.js";
+import { getVirtualModules } from "./loader-host-modules.js";
 
 export interface HostModuleBridgeInstallResult {
 	installed: boolean;
@@ -40,10 +40,7 @@ export function createHostModuleBridgePlugin(modules: Record<string, object>): H
 
 let installPromise: Promise<HostModuleBridgeInstallResult> | null = null;
 
-/**
- * Register live host module objects for external precompiled ESM bundles.
- * Production extension routing does not call this seam yet.
- */
+/** Register live host module objects before native builtin imports. */
 export function installHostModuleBridge(): Promise<HostModuleBridgeInstallResult> {
 	const bun = getBunRuntime();
 	if (!(isBunBinary || isBundledBuild) || !bun || typeof bun.plugin !== "function") {

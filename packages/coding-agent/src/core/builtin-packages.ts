@@ -19,6 +19,12 @@ interface BuiltinPackageCandidateContext {
 	readonly isSourceCheckout: boolean;
 }
 
+export interface BuiltinPackageLocation {
+	readonly packageName: string;
+	readonly distDirName: BuiltinPackageDirName;
+	readonly packageDir: string;
+}
+
 interface WorkspaceBuiltinSpec {
 	readonly packageName: string;
 	readonly workspaceDirName: BuiltinPackageDirName;
@@ -103,6 +109,20 @@ function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
 	};
 }
 
+/** Atomic-owned builtin package roots paired with their verified descriptors. */
+export function getBuiltinPackageLocations(): BuiltinPackageLocation[] {
+	const context = getBuiltinPackageCandidateContext();
+	return BUILTIN_PACKAGES.flatMap((descriptor) => {
+		const packageDir = firstExistingPackageDir(
+			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
+			descriptor,
+		);
+		return packageDir
+			? [{ packageName: descriptor.packageName, distDirName: descriptor.distDirName, packageDir }]
+			: [];
+	});
+}
+
 /**
  * Built-in pi package roots shipped with this Atomic distribution.
  *
@@ -116,15 +136,7 @@ function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
  *   process executable dir -> builtin/<package>
  */
 export function getBuiltinPackagePaths(): string[] {
-	const context = getBuiltinPackageCandidateContext();
-
-	return BUILTIN_PACKAGES.flatMap((descriptor) => {
-		const packageDir = firstExistingPackageDir(
-			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
-			descriptor,
-		);
-		return packageDir ? [packageDir] : [];
-	});
+	return getBuiltinPackageLocations().map(({ packageDir }) => packageDir);
 }
 
 /** Built-in package roots whose extensions Atomic must load in every model session. */
