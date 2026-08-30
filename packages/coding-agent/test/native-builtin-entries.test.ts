@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import {
 	BUILTIN_PACKAGE_DIR_NAMES,
 	INSTALLED_EXTENSION_ENTRIES,
@@ -56,7 +55,7 @@ test("trusts exactly the five identity-verified installed builtin entries", () =
 		resolve(packageDir, "builtin", dirName, INSTALLED_EXTENSION_ENTRIES[dirName]),
 	);
 
-	assert.deepEqual([...getNativeBuiltinExtensionEntries()], expected);
+	expect([...getNativeBuiltinExtensionEntries()]).toEqual(expected);
 });
 
 test("does not infer builtin trust from suffixes, filenames, manifests, or source entries", () => {
@@ -67,28 +66,28 @@ test("does not infer builtin trust from suffixes, filenames, manifests, or sourc
 	const sibling = join(workflowsDir, "sibling.mjs");
 	writeFileSync(sibling, "export default function register() {}\n");
 
-	assert.equal(isNativeBuiltinExtensionPath(arbitrary), false);
-	assert.equal(isNativeBuiltinExtensionPath(join(workflowsDir, "manifest-only.bundle.mjs")), false);
-	assert.equal(isNativeBuiltinExtensionPath(sibling), false);
-	assert.equal(isNativeBuiltinExtensionPath(join(workflowsDir, SOURCE_EXTENSION_ENTRIES.workflows)), false);
+	expect(isNativeBuiltinExtensionPath(arbitrary)).toBe(false);
+	expect(isNativeBuiltinExtensionPath(join(workflowsDir, "manifest-only.bundle.mjs"))).toBe(false);
+	expect(isNativeBuiltinExtensionPath(sibling)).toBe(false);
+	expect(isNativeBuiltinExtensionPath(join(workflowsDir, SOURCE_EXTENSION_ENTRIES.workflows))).toBe(false);
 });
 
 test("rejects an installed-looking entry when the package identity is not Atomic-owned", () => {
 	const packageDir = createInstall({ spoof: "workflows" });
 	const spoofedEntry = resolve(packageDir, "builtin", "workflows", INSTALLED_EXTENSION_ENTRIES.workflows);
 
-	assert.equal(isNativeBuiltinExtensionPath(spoofedEntry), false);
-	assert.equal(getNativeBuiltinExtensionEntries().size, 4);
+	expect(isNativeBuiltinExtensionPath(spoofedEntry)).toBe(false);
+	expect(getNativeBuiltinExtensionEntries().size).toBe(4);
 });
 
 test("does not retain installed builtin factories in the native cache under Node", async () => {
 	const packageDir = createInstall();
 	const entry = resolve(packageDir, "builtin", "workflows", INSTALLED_EXTENSION_ENTRIES.workflows);
 
-	assert.equal(isNativeBuiltinExtensionPath(entry), true);
+	expect(isNativeBuiltinExtensionPath(entry)).toBe(true);
 	const factory = await loadExtensionModule(entry);
-	assert.equal(typeof factory, "function");
+	expect(typeof factory).toBe("function");
 	// Under Node both .mjs routes converge behaviorally, so cache population is
 	// the faithful observable that the single-file-build guard remained inert.
-	assert.equal(extensionLoaderTestHooks.hasNativeBuiltinFactory(entry), false);
+	expect(extensionLoaderTestHooks.hasNativeBuiltinFactory(entry)).toBe(false);
 });
