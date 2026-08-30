@@ -218,7 +218,7 @@ mkdir -p "$shared_app_dir"
 echo "==> Building shared app bundle..."
 # Bun's compiled launcher cannot resolve bare packages from the dynamically loaded CJS sidecar.
 # Bundle pi-tui itself, but keep the import.meta.url-sensitive native loader payload-relative.
-bun build --target=bun --format=cjs --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
+bun build --target=bun --format=cjs --minify-syntax --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
 bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
 
 for platform in "${PLATFORMS[@]}"; do

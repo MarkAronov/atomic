@@ -8,6 +8,15 @@ import { spawnSyncCollect } from "../helpers/runtime.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const buildScriptPath = join(root, "scripts/build-binaries.sh");
+const packageManifestPath = join(root, "packages/coding-agent/package.json");
+
+function sharedAppBuildCommand(source: string): string {
+	const command = source
+		.split(/&&|\r?\n/u)
+		.find((candidate) => candidate.includes("bun build") && candidate.includes("dist/bun/cli.js"));
+	assert.ok(command, "missing shared app bundle command");
+	return command;
+}
 
 const BUN_TARGETS = {
 	"darwin-arm64": { bytecode: true, target: "bun-darwin-arm64" },
@@ -34,6 +43,23 @@ function getCompilationLoop(buildScript: string): string {
 	assert.notEqual(end, -1, "build script must finish the compilation loop before staging dependencies");
 	return buildScript.slice(start, end);
 }
+
+test("every compiled target shares the syntax-minified application sidecar", () => {
+	const buildScript = readFileSync(buildScriptPath, "utf8");
+	const manifest = JSON.parse(readFileSync(packageManifestPath, "utf8")) as { scripts: Record<string, string> };
+	const packageBuild = sharedAppBuildCommand(manifest.scripts["build:binary"] ?? "");
+	const releaseBuild = sharedAppBuildCommand(buildScript);
+
+	for (const [site, command] of [
+		["packages/coding-agent/package.json build:binary", packageBuild],
+		["scripts/build-binaries.sh", releaseBuild],
+	] as const) {
+		assert.match(command, /(?:^|\s)--minify-syntax(?:\s|$)/u, `${site} must syntax-minify the shared app`);
+		assert.doesNotMatch(command, /(?:^|\s)--minify-identifiers(?:\s|$)/u, `${site} must preserve identifiers`);
+	}
+
+	assertBuildScriptSyntax();
+});
 
 test("musl archive staging removes embedded-postgres binary leaves", () => {
 	const buildScript = readFileSync(buildScriptPath, "utf8");
