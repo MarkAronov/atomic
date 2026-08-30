@@ -182,6 +182,52 @@ The exact CI-floor runtime demonstrated the version-specific mismatch:
 }
 ```
 
+The first fast invariant test asserted Node's `isBuiltin` API directly rather than the dependency-closure guard, so reverting the guard to the old `builtinModules` set could not make that test fail. Commit `d15b73fe21` extracts `isPermittedSpecifier`, routes both the artifact scan and the fast test through it, and pins prefix-only and ordinary builtins, rejected and registered third-party bare imports, and relative imports.
+
+Temporarily restoring the old `builtinModules` predicate in `isPermittedSpecifier` proved that the focused test is now coupled to the guard. The exact Node 22 red run was:
+
+```sh
+PATH=/tmp/node-v22.19.0-darwin-arm64/bin:$PATH node -v
+PATH=/tmp/node-v22.19.0-darwin-arm64/bin:$PATH npx vitest run --project ci test/ci/native-builtin-bundle-imports.test.ts -t "specifier permits Node builtins, registered host imports, and relative imports only"
+```
+
+```text
+v22.19.0
+
+ RUN  v4.1.10 /Users/tonystark/Documents/projects/atomic-native-builtin-loader
+
+ ❯ |ci| test/ci/native-builtin-bundle-imports.test.ts (2 tests | 1 failed | 1 skipped) 3ms
+   × specifier permits Node builtins, registered host imports, and relative imports only 2ms
+
+ FAIL  |ci| test/ci/native-builtin-bundle-imports.test.ts > specifier permits Node builtins, registered host imports, and relative imports only
+AssertionError: Expected values to be strictly equal:
+
+false !== true
+
+ ❯ test/ci/native-builtin-bundle-imports.test.ts:58:9
+     58|  assert.equal(isPermittedSpecifier("node:sqlite", emptyHostSpecifiers)…
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 skipped (2)
+```
+
+After restoring `isBuiltin`, the same command passed under the same runtime:
+
+```sh
+PATH=/tmp/node-v22.19.0-darwin-arm64/bin:$PATH node -v
+PATH=/tmp/node-v22.19.0-darwin-arm64/bin:$PATH npx vitest run --project ci test/ci/native-builtin-bundle-imports.test.ts -t "specifier permits Node builtins, registered host imports, and relative imports only"
+```
+
+```text
+v22.19.0
+
+ RUN  v4.1.10 /Users/tonystark/Documents/projects/atomic-native-builtin-loader
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 1 skipped (2)
+   Duration  1.97s (transform 1.31s, setup 1.87s, import 9ms, tests 1ms, environment 0ms)
+```
+
 Final validation results for this repair round:
 
 - `npm run check`: passed Biome, both TypeScript checks, and shrinkwrap verification; Biome reported the existing informational `noUselessStringRaw` diagnostic in `test/ci/ci-workflow-contracts.test.ts`.
