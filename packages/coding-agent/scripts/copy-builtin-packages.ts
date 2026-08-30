@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -24,7 +25,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const linkedomWorkerEntry = join(dirname(require.resolve("linkedom/package.json")), "worker.js");
-
+const openXdgOpenEntry = join(dirname(require.resolve("open")), "xdg-open");
 interface BuiltinCopy {
 	label: string;
 	destinationName: BuiltinPackageDirName;
@@ -94,6 +95,9 @@ const SELF_CONTAINED_BUILTIN_PLUGINS: Bun.BunPlugin[] = [
 			// peer. Builtins use its equivalent worker entry so the shipped bundle
 			// keeps the DOM parser without an unbundleable `.node` dependency.
 			build.onResolve({ filter: /^linkedom$/ }, () => ({ path: linkedomWorkerEntry }));
+			// `open` stays bundled because unregistered bare imports cannot resolve
+			// from external files in compiled Bun. Its Linux fallback is a sibling
+			// executable, copied beside the MCP bundle below.
 		},
 	},
 ];
@@ -135,6 +139,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"LICENSE",
 		INSTALLED_EXTENSION_ENTRIES.mcp,
 		"app-bridge.bundle.js",
+		"xdg-open",
 	],
 	"web-access": [
 		"package.json",
@@ -437,6 +442,9 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "mcp", INSTALLED_EXTENSION_ENTRIES.mcp),
 	"@bastani/mcp extension",
 );
+const installedXdgOpen = join(distBuiltinDir, "mcp", "xdg-open");
+cpSync(openXdgOpenEntry, installedXdgOpen);
+chmodSync(installedXdgOpen, 0o755);
 await bundleEntrypoint(
 	join(distBuiltinDir, "web-access", "index.ts"),
 	join(distBuiltinDir, "web-access", INSTALLED_EXTENSION_ENTRIES["web-access"]),
