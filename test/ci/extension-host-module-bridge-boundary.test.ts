@@ -39,11 +39,18 @@ test(
 			writeTextSync(
 				join(fixture, "extension-entry.ts"),
 				'import lockfile, { lock } from "proper-lockfile";\n' +
+					'import { createEventBus } from "@bastani/atomic";\n' +
+					'import { StringEnum as bastaniStringEnum } from "@bastani/pi-ai";\n' +
+					'import { StringEnum as earendilStringEnum } from "@earendil-works/pi-ai";\n' +
 					"export const importedDefault = lockfile;\n" +
 					"export const importedNamed = lock;\n" +
+					"export const importedCreateEventBus = createEventBus;\n" +
+					"export const aliasesShareExport = Object.is(bastaniStringEnum, earendilStringEnum);\n" +
 					"export const namedType = typeof lock;\n" +
 					'export function readHostMutation(): string { return (lockfile as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
-					'export function mutateNamed(): void { (lock as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n',
+					'export function readAtomicHostMutation(): string { return (createEventBus as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
+					'export function mutateNamed(): void { (lock as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n' +
+					'export function mutateAtomicNamed(): void { (createEventBus as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n',
 			);
 			writeTextSync(
 				join(fixture, "app-entry.ts"),
@@ -56,14 +63,24 @@ test(
 					'  if (!firstInstall.installed || secondInstall !== firstInstall || !firstInstall.specifiers.includes("proper-lockfile")) throw new Error("host bridge did not install exactly once");\n' +
 					"  const modules = await getVirtualModules();\n" +
 					'  const host = modules["proper-lockfile"] as { default: { bridgeMarker?: string }; lock: { bridgeMarker?: string } };\n' +
+					'  const atomicHost = modules["@bastani/atomic"] as { createEventBus: { bridgeMarker?: string } };\n' +
 					"  const extension = await import(extensionPath);\n" +
-					'  if (extension.namedType !== "function") throw new Error("named export missing");\n' +
-					'  if (!Object.is(extension.importedDefault, host.default)) throw new Error("default export identity changed");\n' +
-					'  if (!Object.is(extension.importedNamed, host.lock)) throw new Error("named export identity changed");\n' +
+					'  if (extension.namedType !== "function") throw new Error("proper-lockfile named export missing");\n' +
+					'  if (!Object.is(extension.importedDefault, host.default)) throw new Error("proper-lockfile default export identity changed");\n' +
+					'  if (!Object.is(extension.importedNamed, host.lock)) throw new Error("proper-lockfile named export identity changed");\n' +
+					'  if (!Object.is(extension.importedCreateEventBus, atomicHost.createEventBus)) throw new Error("@bastani/atomic named export identity changed");\n' +
+					'  if (!extension.aliasesShareExport) throw new Error("pi-ai aliases duplicated host state");\n' +
 					'  host.default.bridgeMarker = "host-mutated";\n' +
-					'  if (extension.readHostMutation() !== "host-mutated") throw new Error("host mutation was not shared");\n' +
+					'  if (extension.readHostMutation() !== "host-mutated") throw new Error("proper-lockfile host mutation was not shared");\n' +
+					'  atomicHost.createEventBus.bridgeMarker = "host-mutated";\n' +
+					'  if (extension.readAtomicHostMutation() !== "host-mutated") throw new Error("@bastani/atomic host mutation was not shared");\n' +
 					"  extension.mutateNamed();\n" +
-					'  if (host.lock.bridgeMarker !== "external-mutated") throw new Error("extension mutation was not shared");\n' +
+					'  if (host.lock.bridgeMarker !== "external-mutated") throw new Error("proper-lockfile extension mutation was not shared");\n' +
+					"  extension.mutateAtomicNamed();\n" +
+					'  if (atomicHost.createEventBus.bridgeMarker !== "external-mutated") throw new Error("@bastani/atomic extension mutation was not shared");\n' +
+					"  delete host.default.bridgeMarker;\n" +
+					"  delete host.lock.bridgeMarker;\n" +
+					"  delete atomicHost.createEventBus.bridgeMarker;\n" +
 					'  console.log("compiled host-module bridge probe: OK");\n' +
 					"})().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); });\n",
 			);
@@ -81,6 +98,9 @@ test(
 				"--target=bun",
 				"--format=esm",
 				"--external=proper-lockfile",
+				"--external=@bastani/atomic",
+				"--external=@bastani/pi-ai",
+				"--external=@earendil-works/pi-ai",
 				join(fixture, "extension-entry.ts"),
 				"--outfile",
 				extensionPath,
@@ -88,6 +108,9 @@ test(
 			const extensionBuild = spawnSyncCollect(extensionBuildCommand, { cwd: root });
 			assert.equal(extensionBuild.exitCode, 0, extensionBuild.stderr.toString());
 			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']proper-lockfile["']/);
+			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@bastani\/atomic["']/);
+			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@bastani\/pi-ai["']/);
+			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@earendil-works\/pi-ai["']/);
 
 			const nativeFiles = readdirSync(join(root, "packages/natives/native")).filter((name) =>
 				name.endsWith(".node"),
