@@ -14,6 +14,10 @@
   - `docs(evidence): record native builtin routing validation` — the signed commit containing this document; its hash is reported by `git log` after creation because a commit cannot embed its own hash.
   - `79e29a3f6a397117908ad01da3d5cca48b5a931d` — `fix(builtin): make native extension bundles self-contained`.
   - `83a15f4fc51e876df60a7f7dd95ac7d1254bcf8b` — `test(ci): guard native builtin dependency closure`.
+  - `286031a89e` — `fix(extensions): contain missing native binding`.
+  - `3ba9519efe` — `fix(builtin): preserve MCP xdg-open fallback`.
+  - `627f11a083` — `test(ci): make native builtin guards hermetic`.
+  - `cc64ca9fa9` — `docs(extensions): clarify reload state reuse`.
 
 ## Result table
 
@@ -111,13 +115,23 @@ The final implementation was built with:
 
 The archive was extracted to `/tmp/atomic-e2e/atomic`. The checkout's `packages/coding-agent/dist/builtin` was temporarily hidden during execution so the compiled build-time `import.meta.url` could not select checkout artifacts instead of the extracted payload.
 
-`ATOMIC_AGENT_DIR=/tmp/atomic-e2e-agent ./atomic --help` exited 0 and began:
+The earlier run recorded here used `ATOMIC_AGENT_DIR`, which Atomic does not read. It therefore used the caller's default agent directory; the run proved startup and builtin discovery, but it did **not** prove agent-directory isolation. `./atomic --help` still exited 0 and began:
 
 ```text
 atomic - AI coding assistant with read, bash, edit, write, find, search, ask_user_question, todo tools
 ```
 
 An offline RPC `get_commands` request also exited 0. Its response identified builtin resources from the extracted payload for all five packages: `/workflow` and `/workflows` from workflows, subagent skills including `skill:subagent`, `/mcp` and `/mcp-auth` from MCP, `/websearch` and related commands from web-access, and `/intercom` plus `skill:intercom` from Intercom. Every `sourceInfo.path` was under `/private/tmp/atomic-e2e/atomic/builtin/...`; no checkout path or extension-load error appeared.
+
+After the review repair, the archive was rebuilt and extracted to `/tmp/atomic-review-e2e/atomic`, with the checkout's `dist/builtin` again hidden. Both commands used the real `ATOMIC_CODING_AGENT_DIR=/tmp/atomic-review-agent` override. `./atomic --help` and the offline RPC request exited 0. RPC returned 28 commands and included `workflow`, `workflows`, `skill:subagent`, `mcp`, `mcp-auth`, `websearch`, `intercom`, and `skill:intercom`. The extracted `builtin/mcp/xdg-open` existed with mode `0755`.
+
+### Review-round repairs
+
+- The compiled boundary fixture now sets `ATOMIC_CODING_AGENT_DIR`, so its jiti-cache check is hermetic and inspects the directory the product actually uses. For the liveness control, the native route was temporarily disabled, the read poison was neutralized, and the fixture exited after the jiti load. The outer assertion then failed specifically with `AssertionError: native builtin created jiti cache` and `true !== false`. The production route passed after restoration.
+- Loading `@bastani/atomic-natives` is contained. A successful require returns the exact same exports object; a failed require omits only that virtual-module registration. Removing the containment made the focused test fail with `Error: native binding unavailable` at `loadOptionalAtomicNatives`. The in-place `npm run build:binary --workspace=@bastani/atomic` artifact, which does not stage the native package under `dist/node_modules`, now runs `dist/atomic --help` successfully with exit 0.
+- The bundled MCP extension keeps `open` embedded but copies its vendored `xdg-open` beside `index.bundle.mjs` and preserves executable mode. Omitting the copy made the closure test fail with `ENOENT .../dist/builtin/mcp/xdg-open`.
+- The dependency-closure contract now checks all five installed entries, the workflow SDK bundle, and every emitted workflow builtin entry and split chunk. Restoring `packages: "external"` still failed with unregistered imports beginning `cross-spawn`, `chalk`, and `highlight.js`. Injecting a control import into a generated chunk failed with `workflows/builtin/chunk-0x6e303p.js: review-control-unregistered`.
+- The extension documentation now states the retained-factory behavior accurately: an unchanged editable graph can reuse module state in Bun single-file builds; an edit anywhere in the graph forces re-evaluation. Fixed installed builtins always reuse their factories across reloads.
 
 ### Repository checks and suites
 
@@ -130,11 +144,12 @@ npm run test:integration
 
 Observed results:
 
-- `npm run check`: passed, including Biome, `tsc --noEmit`, coding-agent tsgo build and typetests, and shrinkwrap verification.
-- Coding-agent suite: 499 files passed, 4 files skipped; 4113 tests passed, 40 tests skipped.
+- `npm run check`: passed, including Biome, `tsc --noEmit`, coding-agent tsgo build and typetests, and shrinkwrap verification. Biome reported one pre-existing informational `noUselessStringRaw` diagnostic outside this change.
+- Coding-agent suite: 499 files passed, 4 files skipped; 4115 tests passed, 40 tests skipped.
 - Root unit suite: 723 files passed; 7265 tests passed, 23 tests skipped.
 - Root integration suite: 40 files passed; 506 tests passed.
-- Final focused loader run: 4 files passed; 27 tests passed.
+- Full CI-contract suite: 15 files passed; 76 tests passed.
+- Final focused host-module run: 1 file passed; 5 tests passed.
 - Final compiled-boundary plus dependency-closure run: 2 files passed; 2 tests passed.
 
 During the repair validation, one full unit attempt had a single 32.5-second fixture-report timeout in `interactive-engine-inherited-discovery.test.ts` while all other 7,264 tests passed. That file immediately passed alone (2 tests), and the required full rerun then passed all 723 files and 7,265 tests. No product assertion failed.
