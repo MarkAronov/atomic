@@ -9,7 +9,7 @@ Implemented the first independently reviewable Bun-runtime host-module bridge la
 | Criterion | Current-checkout evidence |
 |---|---|
 | Reuse exact live host module objects without duplicate package state | `host-module-bridge.ts` imports the existing memoized `getVirtualModules()` accessor; `extensions-host-module-bridge.test.ts` proves every registered specifier matches the map and every callback's `exports` is reference-identical with `toBe`. |
-| Real compiled-launcher boundary with an external precompiled ESM bundle | `test/ci/extension-host-module-bridge-boundary.test.ts` builds `extension.mjs` via `bun build --target=bun --format=esm --external=proper-lockfile`, asserts its bare import remains, builds the CJS sidecar, compiles a bytecode split launcher, and runs it. It proves named/default exports, `Object.is` identity, and mutation in both directions. |
+| Real compiled-launcher boundary with an external precompiled ESM bundle | `test/ci/extension-host-module-bridge-boundary.test.ts` keeps bare imports for `proper-lockfile`, `@bastani/atomic`, `@bastani/pi-ai`, and `@earendil-works/pi-ai`, builds the CJS sidecar, compiles a bytecode split launcher, and runs it. It proves CommonJS default/named identity, first-party ESM named-export identity and bidirectional shared mutation, and shared identity across the two pi-ai aliases. |
 | Production routing unchanged | The only edit to `loader-virtual-modules.ts` exports `getVirtualModules`; search finds `installHostModuleBridge` only in its definition and tests. `loadExtensionModule`, `loadTransformedExtensionModule`, and `importExtensionModule` control flow are unchanged. |
 | Node/npm and source checkout unchanged | Installer returns `{ installed: false, specifiers: [] }` unless `isBunBinary || isBundledBuild` and a callable Bun plugin runtime exists. Unit coverage proves the ordinary Node test environment never invokes `Bun.plugin`. |
 | Idempotent and retryable | Unit coverage proves two installs return the same result and register once; a registration failure clears the memo and a second call succeeds. |
@@ -42,6 +42,8 @@ npx vitest --run --project ci test/ci/extension-host-module-bridge-boundary.test
 
 It exited 1. The compiled executable exited 1 with stderr `host bridge did not install exactly once`, and the Vitest assertion reported `1 !== 0` at the startup exit-code check. The source was restored from a byte-for-byte saved copy; the same focused boundary command then exited 0 with 1 test passed. This proves the executable scenario cannot pass with the bridge disabled.
 
+The broadened first-party path was also negative-controlled by temporarily comparing the external `@bastani/atomic` `createEventBus` export with a shallow copy of the host function. The focused boundary test exited 1 with `AssertionError: @bastani/atomic named export identity changed`. Restoring the source byte-for-byte made the same command exit 0 with one test passed.
+
 ## Files changed
 
 - `packages/coding-agent/src/core/extensions/host-module-bridge.ts`
@@ -50,6 +52,7 @@ It exited 1. The compiled executable exited 1 with stderr `host bridge did not i
 - `test/ci/extension-host-module-bridge-boundary.test.ts`
 - `packages/coding-agent/docs/extensions.md`
 - `research/evidence/native-builtin-host-bridge/bun-compiled-plugin-probe.md`
+- `research/evidence/native-builtin-host-bridge/implementation-validation.md`
 
 ## Risks and deferred work
 
