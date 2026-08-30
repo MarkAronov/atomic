@@ -4,9 +4,10 @@ import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../.
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
-import { isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
+import { isRpcTransportFailure, markRpcTransportFailure, rpcTransportError } from "../rpc/rpc-transport-error.ts";
 import type {
 	RpcAutocompleteItem,
 	RpcEvent,
@@ -23,6 +24,7 @@ import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngine
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
+import { InteractiveEngineResourceReadinessError } from "./resource-readiness-error.ts";
 
 type QueueSnapshot = { steering: string[]; followUp: string[] };
 
@@ -99,6 +101,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private resourceOverlaps: ResourceOverlap[] = [];
 	private resourcesInitializedGeneration = 0;
 	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
+	private readonly retiredResourceGenerations = new Set<number>();
+	private readonly reportedResourceFailureGenerations = new Set<number>();
+	private initializationTail: Promise<void> | undefined;
+	private engineRecoveryFailure: Error | undefined;
+	private promptCancellationEpoch = 0;
 
 	constructor(localRuntime: AgentSessionRuntime, createRuntime: CreateAgentSessionRuntimeFactory, client: RpcClient) {
 		super(
@@ -116,8 +123,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.health = new EngineHealthController({
 			stop: () => this.client.stop(),
 			restart: async () => {
-				await this.client.restart(this.remoteSessionFile);
-				await this.initializeFromEngine();
+				this.engineRecoveryFailure = undefined;
+				try {
+					await this.client.restart(this.remoteSessionFile);
+					await this.initializeFromEngine();
+				} catch (error) {
+					const failure = markRpcTransportFailure(error);
+					this.engineRecoveryFailure = failure;
+					throw failure;
+				}
 			},
 			clearActivity: () => {
 				this.streaming = false;
@@ -129,15 +143,22 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 		});
 		this.client.onEvent((event) => this.observeEvent(event));
-		this.client.onGenerationEnded((event) => this.health.handleGenerationEnded(event));
+		this.client.onGenerationEnded((event) => {
+			this.retiredResourceGenerations.add(event.generation);
+			this.health.handleGenerationEnded(event);
+		});
 		// Production RpcClient instances expose engine lifecycle messages. Keep the
 		// subscription optional so focused runtime test doubles that exercise only
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
-			if (message.type !== "engine_resources_ready") return;
+			if (message.type !== "engine_resources_ready" && message.type !== "engine_resources_failed") return;
+			const observedGeneration = this.client.getGeneration();
 			void this.waitUntilResourcesReady().catch((error: Error) => {
-				if (this.health.isRecovering()) return;
+				const generation =
+					error instanceof InteractiveEngineResourceReadinessError ? error.generation : observedGeneration;
+				if (this.reportedResourceFailureGenerations.has(generation)) return;
+				this.reportedResourceFailureGenerations.add(generation);
 				this.emitDiagnostic({
 					activity: undefined,
 					elapsedMs: 0,
@@ -153,16 +174,26 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSession(session);
 		return session;
 	}
-	async initializeFromEngine(): Promise<void> {
-		if (this.disposed) return;
+	async initializeFromEngine(generation = this.client.getGeneration?.()): Promise<void> {
+		const run = this.initializationTail
+			? this.initializationTail.then(() => this.initializeFromEngineGeneration(generation))
+			: this.initializeFromEngineGeneration(generation);
+		this.initializationTail = run.catch(() => {});
+		return run;
+	}
+
+	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
+		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
 			const state = await this.client.getState();
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
 				allowPartialResources: true,
 			});
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
 				await super.switchSession(state.sessionFile);
+				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			const session = super.session;
 			this.remoteModelCatalog.apply(catalog);
@@ -244,25 +275,75 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 	}
 	async waitUntilResourcesReady(): Promise<void> {
-		const generation = this.client.getGeneration();
-		await this.client.waitForInteractiveEngineResources();
-		if (generation !== this.client.getGeneration()) {
-			return this.waitUntilResourcesReady();
-		}
-		if (this.resourcesInitializedGeneration === generation) return;
-		if (this.resourceInitialization?.generation === generation) {
-			return this.resourceInitialization.promise;
-		}
+		while (true) {
+			this.throwIfUnavailable();
+			const generation = this.client.getGeneration();
+			if (this.retiredResourceGenerations.has(generation)) {
+				await this.waitForReplacementGeneration(generation);
+				continue;
+			}
+			try {
+				await this.client.waitForInteractiveEngineResources();
+			} catch (error) {
+				this.throwIfUnavailable();
+				if (!this.isCurrentResourceGeneration(generation)) {
+					await this.waitForReplacementGeneration(generation);
+					continue;
+				}
+				if (isRpcTransportFailure(error)) throw error;
+				throw new InteractiveEngineResourceReadinessError(
+					generation,
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
+			if (!this.isCurrentResourceGeneration(generation)) {
+				await this.waitForReplacementGeneration(generation);
+				continue;
+			}
+			if (this.resourcesInitializedGeneration === generation) return;
 
-		const promise = this.initializeFromEngine()
-			.then(() => {
-				if (generation === this.client.getGeneration()) this.resourcesInitializedGeneration = generation;
-			})
-			.finally(() => {
-				if (this.resourceInitialization?.generation === generation) this.resourceInitialization = undefined;
-			});
-		this.resourceInitialization = { generation, promise };
-		return promise;
+			let initialization = this.resourceInitialization;
+			if (initialization?.generation !== generation) {
+				const promise = this.initializeFromEngine(generation).finally(() => {
+					if (this.resourceInitialization?.generation === generation) this.resourceInitialization = undefined;
+				});
+				initialization = { generation, promise };
+				this.resourceInitialization = initialization;
+			}
+			try {
+				await initialization.promise;
+			} catch (error) {
+				this.throwIfUnavailable();
+				if (!this.isCurrentResourceGeneration(generation)) {
+					await this.waitForReplacementGeneration(generation);
+					continue;
+				}
+				throw error;
+			}
+			this.throwIfUnavailable();
+			if (!this.isCurrentResourceGeneration(generation)) {
+				await this.waitForReplacementGeneration(generation);
+				continue;
+			}
+			this.resourcesInitializedGeneration = generation;
+			return;
+		}
+	}
+
+	private isCurrentResourceGeneration(generation: number): boolean {
+		return generation === this.client.getGeneration() && !this.retiredResourceGenerations.has(generation);
+	}
+
+	private async waitForReplacementGeneration(generation: number): Promise<void> {
+		while (generation === this.client.getGeneration()) {
+			this.throwIfUnavailable();
+			await sleep(1);
+		}
+	}
+
+	private throwIfUnavailable(): void {
+		if (this.disposed) throw rpcTransportError("Interactive engine runtime is disposed");
+		if (this.engineRecoveryFailure) throw this.engineRecoveryFailure;
 	}
 	getEnginePid(): number | undefined {
 		return this.client.getEnginePid();
@@ -434,7 +515,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			prompt: {
 				configurable: true,
 				value: async (text: string, options?: PromptOptions) => {
+					const cancellationEpoch = this.promptCancellationEpoch;
 					await this.waitUntilResourcesReady();
+					if (cancellationEpoch !== this.promptCancellationEpoch) return;
 					await this.client.prompt(text, options?.images, options?.streamingBehavior);
 					options?.preflightResult?.(true);
 				},
@@ -646,6 +729,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * automatic consequence of pressing Escape.
 	 */
 	private async abortAndRecover(): Promise<void> {
+		this.promptCancellationEpoch += 1;
 		await this.queuePause.settleBeforeAbort();
 		this.health.markCooperativeAbortStarted();
 		try {

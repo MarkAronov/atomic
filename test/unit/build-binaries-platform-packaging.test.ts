@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import {
+	readPortableExecutableMachine,
+	WINDOWS_BYTECODE_PROBE_BUN_VERSION,
+	WINDOWS_BYTECODE_PROBE_TARGETS,
+	windowsBytecodeCompileArgs,
+} from "../../scripts/probe-windows-bytecode.ts";
 import { spawnSyncCollect } from "../helpers/runtime.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -109,6 +115,41 @@ test("x64 release binaries target Bun's baseline CPU runtime", () => {
 	}
 
 	assertBuildScriptSyntax();
+});
+
+test("the pinned Windows bytecode probe covers x64 and ARM64 without changing release policy", () => {
+	assert.equal(WINDOWS_BYTECODE_PROBE_BUN_VERSION, "1.4.0");
+	assert.deepEqual(
+		WINDOWS_BYTECODE_PROBE_TARGETS.map(({ platform, target, machine }) => ({ platform, target, machine })),
+		[
+			{ platform: "windows-x64", target: "bun-windows-x64-baseline", machine: 0x8664 },
+			{ platform: "windows-arm64", target: "bun-windows-arm64", machine: 0xaa64 },
+		],
+	);
+	for (const spec of WINDOWS_BYTECODE_PROBE_TARGETS) {
+		const args = windowsBytecodeCompileArgs(spec.target, "split-loader.js", `atomic-${spec.platform}.exe`);
+		assert.deepEqual(args.slice(0, 3), ["build", "--compile", "--bytecode"]);
+		assert.ok(args.includes(`--target=${spec.target}`));
+		assert.ok(args.includes("--no-compile-autoload-dotenv"));
+		assert.ok(args.includes("--no-compile-autoload-bunfig"));
+	}
+
+	const tempDir = mkdtempSync(join(tmpdir(), "atomic-bytecode-pe-"));
+	try {
+		const path = join(tempDir, "probe.exe");
+		const pe = Buffer.alloc(0x88);
+		pe.write("MZ", 0, "ascii");
+		pe.writeUInt32LE(0x80, 0x3c);
+		pe.write("PE\0\0", 0x80, "ascii");
+		pe.writeUInt16LE(0xaa64, 0x84);
+		writeFileSync(path, pe);
+		assert.equal(readPortableExecutableMachine(path), 0xaa64);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+
+	assert.equal(BUN_TARGETS["windows-x64"].bytecode, false);
+	assert.equal(BUN_TARGETS["windows-arm64"].bytecode, false);
 });
 
 test("tagged payload builds do not fetch unpublished natives and re-alias pi-ai after restore", () => {

@@ -16,12 +16,12 @@ import {
 } from "./samples.js";
 import { type ScreenObservation, type ScreenSnapshot, StartupScreenTracker } from "./screen.js";
 
-interface ArtifactMetadata {
+export interface ArtifactMetadata {
 	readonly artifactHashes?: Readonly<Record<string, string>>;
 	readonly runtime?: Readonly<Record<string, string>>;
 }
 
-interface BuildTarget {
+export interface BuildTarget {
 	readonly build: BenchmarkBuild;
 	readonly executableDirectory: string;
 	readonly metadata: ArtifactMetadata;
@@ -39,6 +39,8 @@ interface BenchmarkOptions {
 	readonly cwd: string;
 	readonly targets: readonly BuildTarget[];
 	readonly seed: number;
+	readonly expectedBaselineSha?: string;
+	readonly expectedCandidateSha?: string;
 }
 
 function quoteArgument(value: string): string {
@@ -86,14 +88,38 @@ export function createBalancedOrder(
 ): BenchmarkBuild[] {
 	if (targets.length === 0) throw new Error("at least one benchmark target is required");
 	if (targets.length === 1) return Array.from({ length: repeats }, () => targets[0]!);
-	if (targets.length !== 2) throw new Error("balanced startup order supports exactly baseline and candidate");
-	const [first, second] = shuffleBit(seed) === 0 ? targets : [targets[1]!, targets[0]!];
+	if (targets.length === 2) {
+		const [first, second] = shuffleBit(seed) === 0 ? targets : [targets[1]!, targets[0]!];
+		const order: BenchmarkBuild[] = [];
+		for (let pair = 0; pair < repeats; pair += 1) {
+			if (pair % 2 === 0) order.push(first!, second!);
+			else order.push(second!, first!);
+		}
+		return order;
+	}
 	const order: BenchmarkBuild[] = [];
-	for (let pair = 0; pair < repeats; pair += 1) {
-		if (pair % 2 === 0) order.push(first!, second!);
-		else order.push(second!, first!);
+	const initialOffset = (seed >>> 0) % targets.length;
+	for (let round = 0; round < repeats; round += 1) {
+		const block = targets.map((_, index) => targets[(initialOffset + round + index) % targets.length]!);
+		if (Math.floor(round / targets.length) % 2 === 1) block.reverse();
+		order.push(...block);
 	}
 	return order;
+}
+export function createBenchmarkMetrics(marks: {
+	readonly processLaunch: bigint;
+	readonly startupComplete: bigint;
+	readonly enter: bigint;
+	readonly providerFirstByte: bigint;
+}): BenchmarkSample["metricsMs"] {
+	const startupCompleteMs = elapsedMs(marks.processLaunch, marks.startupComplete);
+	const dispatchMs = elapsedMs(marks.enter, marks.providerFirstByte);
+	return {
+		startupCompleteMs,
+		dispatchMs,
+		spawnToDispatchMs: startupCompleteMs + dispatchMs,
+		launchToProviderFirstByteMs: elapsedMs(marks.processLaunch, marks.providerFirstByte),
+	};
 }
 
 async function loadMetadata(path: string, build: BenchmarkBuild): Promise<ArtifactMetadata> {
@@ -105,6 +131,50 @@ async function loadMetadata(path: string, build: BenchmarkBuild): Promise<Artifa
 		throw new Error(`${build} metadata must contain runtime identity`);
 	}
 	return metadata;
+}
+
+export function validateComparisonIdentity(
+	targets: readonly BuildTarget[],
+	expectedBaselineSha: string | undefined,
+	expectedCandidateSha: string | undefined,
+): void {
+	const byBuild = new Map(targets.map((target) => [target.build, target]));
+	const bytecode = byBuild.get("candidate-bytecode");
+	if (bytecode && (!expectedBaselineSha || !expectedCandidateSha)) {
+		throw new Error("three-arm runs require --baseline-sha and --candidate-sha");
+	}
+	if (expectedBaselineSha) {
+		const actual = byBuild.get("baseline")?.metadata.runtime?.productSha;
+		if (actual !== expectedBaselineSha)
+			throw new Error(`baseline product SHA mismatch: expected ${expectedBaselineSha}, got ${actual ?? "missing"}`);
+	}
+	if (expectedCandidateSha) {
+		for (const build of ["candidate", ...(bytecode ? (["candidate-bytecode"] as const) : [])] as const) {
+			const actual = byBuild.get(build)?.metadata.runtime?.productSha;
+			if (actual !== expectedCandidateSha)
+				throw new Error(
+					`${build} product SHA mismatch: expected ${expectedCandidateSha}, got ${actual ?? "missing"}`,
+				);
+		}
+	}
+	if (!bytecode) return;
+	const baseline = byBuild.get("baseline");
+	const candidate = byBuild.get("candidate");
+	if (!baseline || !candidate || targets.length !== 3) {
+		throw new Error("bytecode evidence requires exactly baseline, candidate, and candidate-bytecode arms");
+	}
+	if (baseline.metadata.runtime?.launcherMode !== "non-bytecode")
+		throw new Error("baseline launcherMode must be non-bytecode");
+	if (candidate.metadata.runtime?.launcherMode !== "non-bytecode")
+		throw new Error("candidate launcherMode must be non-bytecode");
+	if (bytecode.metadata.runtime?.launcherMode !== "bytecode")
+		throw new Error("candidate-bytecode launcherMode must be bytecode");
+	if (bytecode.metadata.runtime?.bun !== "1.4.0") throw new Error("candidate-bytecode must use Bun 1.4.0");
+	const candidateApp = candidate.metadata.artifactHashes?.["app.js"];
+	const bytecodeApp = bytecode.metadata.artifactHashes?.["app.js"];
+	if (!candidateApp || candidateApp !== bytecodeApp) {
+		throw new Error("optimized non-bytecode and bytecode arms must share the exact app.js hash");
+	}
 }
 
 function parseInteger(value: string | undefined, name: string, fallback: number): number {
@@ -136,7 +206,7 @@ async function parseOptions(argv: readonly string[]): Promise<BenchmarkOptions> 
 	}
 	if (lane === "node" && profile !== "warm") throw new Error("the Node lane supports the warm profile only");
 	const targets: BuildTarget[] = [];
-	for (const build of ["baseline", "candidate"] as const) {
+	for (const build of ["baseline", "candidate", "candidate-bytecode"] as const) {
 		const executableDirectory = values.get(`${build}-bin`);
 		if (!executableDirectory) continue;
 		const metadataPath = values.get(`${build}-metadata`);
@@ -147,7 +217,10 @@ async function parseOptions(argv: readonly string[]): Promise<BenchmarkOptions> 
 			metadata: await loadMetadata(metadataPath, build),
 		});
 	}
-	if (targets.length === 0) throw new Error("provide --baseline-bin and optionally --candidate-bin");
+	if (targets.length === 0) throw new Error("provide --baseline-bin and optionally candidate artifact bins");
+	const expectedBaselineSha = values.get("baseline-sha");
+	const expectedCandidateSha = values.get("candidate-sha");
+	validateComparisonIdentity(targets, expectedBaselineSha, expectedCandidateSha);
 	return {
 		outputDirectory: resolve(outputDirectory),
 		stateDirectory: resolve(values.get("state-root") ?? join(outputDirectory, "state")),
@@ -160,6 +233,8 @@ async function parseOptions(argv: readonly string[]): Promise<BenchmarkOptions> 
 		cwd: resolve(values.get("cwd") ?? process.cwd()),
 		targets,
 		seed: parseInteger(values.get("seed"), "seed", 0x41544f4d),
+		...(expectedBaselineSha ? { expectedBaselineSha } : {}),
+		...(expectedCandidateSha ? { expectedCandidateSha } : {}),
 	};
 }
 
@@ -265,8 +340,6 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 			"/workflow list",
 		);
 		workflowListSucceeded = true;
-		await delay(100);
-		collector.assertSingleValidRequest();
 		if (chunkError) throw new Error(`ConPTY output callback failed: ${chunkError.message}`);
 		child.write("/quit\r");
 		const exit = await timeout(child.exited, 5_000, "atomic exit");
@@ -275,6 +348,8 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 				`atomic did not exit cleanly: exit=${exit.exitCode ?? "null"}, timedOut=${exit.timedOut}, cancelled=${exit.cancelled}`,
 			);
 		}
+		await collector.stop();
+		collector.assertSingleValidRequest();
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		failures.push(message);
@@ -288,6 +363,8 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 		await collector.stop().catch((error) => failures.push(error instanceof Error ? error.message : String(error)));
 		tracker.dispose();
 	}
+	marks.providerFirstByte ??= collector.attempts[0]?.firstByteNs ?? "";
+	if (marks.providerFirstByte === "") delete marks.providerFirstByte;
 	if (state === "success" && failures.length > 0) state = "invalid";
 	const processLaunch = marks.processLaunch ? BigInt(marks.processLaunch) : undefined;
 	const startupComplete = marks.startupComplete ? BigInt(marks.startupComplete) : undefined;
@@ -295,11 +372,7 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 	const providerFirstByte = marks.providerFirstByte ? BigInt(marks.providerFirstByte) : undefined;
 	const metricsMs =
 		state === "success" && processLaunch && startupComplete && enter && providerFirstByte
-			? {
-					startupCompleteMs: elapsedMs(processLaunch, startupComplete),
-					dispatchMs: elapsedMs(enter, providerFirstByte),
-					spawnToDispatchMs: elapsedMs(processLaunch, providerFirstByte),
-				}
+			? createBenchmarkMetrics({ processLaunch, startupComplete, enter, providerFirstByte })
 			: undefined;
 	const command =
 		commandLine || "atomic --session-dir <uncreated> --provider benchmark-loopback --model benchmark-model";
@@ -322,7 +395,7 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 		providerValidation: {
 			nonceFound: collector.requests[0]?.nonceFound ?? false,
 			toolNames: collector.requests[0]?.toolNames ?? [],
-			requestCount: collector.requests.length,
+			requestCount: collector.attempts.length,
 		},
 		workflowListSucceeded,
 	};
@@ -331,6 +404,7 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 		receivedChunks: chunks,
 		coherentSnapshot,
 		completeSnapshot,
+		providerAttempts: collector.attempts,
 		providerRequests: collector.requests,
 	});
 	return sample;

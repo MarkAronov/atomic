@@ -2,7 +2,13 @@ import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, loadExtensions } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
-import type { ResourceExtensionPaths, ResourceLoader, ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
+import type {
+	ResourceExtensionPaths,
+	ResourceLoader,
+	ResourceLoaderReloadOptions,
+	ResourceLoaderReloadTransaction,
+} from "./resource-loader-types.ts";
+import type { SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalog } from "./skill-catalog.ts";
 
 function hasTrustedIntercom(extension: Extension): boolean {
@@ -34,7 +40,7 @@ async function restoreMandatoryExtensions(target: LoadExtensionsResult, cwd: str
 }
 
 class MandatoryResourceLoader implements ResourceLoader {
-	private readonly delegate: ResourceLoader;
+	private delegate: ResourceLoader;
 	private readonly cwd: string;
 	private extensionsResult: LoadExtensionsResult;
 	private toolOnly = false;
@@ -104,6 +110,51 @@ class MandatoryResourceLoader implements ResourceLoader {
 		await this.delegate.reload(options);
 		this.extensionsResult = await restoreMandatoryExtensions(this.delegate.getExtensions(), this.cwd);
 		if (this.toolOnly) this.removeLocalInteractionSurfaces();
+	}
+
+	supportsTransactionalReload(): boolean {
+		return this.delegate.prepareReload !== undefined && this.delegate.supportsTransactionalReload?.() !== false;
+	}
+
+	async prepareReload(
+		settingsManager: SettingsManager,
+		options?: ResourceLoaderReloadOptions,
+	): Promise<ResourceLoaderReloadTransaction> {
+		if (!this.delegate.prepareReload) {
+			throw new Error("Resource loader does not support transactional reload");
+		}
+		const delegateTransaction = await this.delegate.prepareReload(settingsManager, options);
+		const extensionsResult = await restoreMandatoryExtensions(delegateTransaction.loader.getExtensions(), this.cwd);
+		const candidate = new MandatoryResourceLoader(delegateTransaction.loader, this.cwd, extensionsResult);
+		if (this.toolOnly) candidate.limitToTool();
+		const prepareCommit = delegateTransaction.prepareCommit
+			? () => {
+					const delegateCommit = delegateTransaction.prepareCommit!();
+					let settled = false;
+					return {
+						commit: () => {
+							if (settled) return;
+							settled = true;
+							delegateCommit.commit();
+							this.extensionsResult = candidate.extensionsResult;
+						},
+						rollback: () => {
+							if (settled) return;
+							settled = true;
+							delegateCommit.rollback();
+						},
+					};
+				}
+			: undefined;
+		return {
+			loader: candidate,
+			activate: (liveSettingsManager) => delegateTransaction.activate(liveSettingsManager),
+			...(prepareCommit ? { prepareCommit } : {}),
+			commit: () => {
+				delegateTransaction.commit();
+				this.extensionsResult = candidate.extensionsResult;
+			},
+		};
 	}
 }
 

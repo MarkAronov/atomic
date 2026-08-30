@@ -9,9 +9,10 @@ export class InteractiveEngineMonitor {
 	private readonly bound: Promise<void>;
 	private resolveBound!: () => void;
 	private rejectBound!: (error: Error) => void;
-	private readonly resourcesReady: Promise<void>;
+	private resourcesReady: Promise<void>;
 	private resolveResourcesReady!: () => void;
 	private rejectResourcesReady!: (error: Error) => void;
+	private resourceState: "pending" | "ready" | "failed" = "pending";
 	private readonly failure: Promise<never>;
 	private rejectFailure!: (error: Error) => void;
 	private readonly onMessage: (message: InteractiveEngineMessage) => void;
@@ -83,9 +84,12 @@ export class InteractiveEngineMonitor {
 				this.resolveBound();
 				break;
 			case "engine_resources_ready":
-				this.resolveResourcesReady();
+				if (this.resourceState === "failed") this.resourcesReady = Promise.resolve();
+				else this.resolveResourcesReady();
+				this.resourceState = "ready";
 				break;
 			case "engine_resources_failed":
+				this.resourceState = "failed";
 				this.rejectResourcesReady(new Error(`Interactive engine resource loading failed: ${message.message}`));
 				break;
 			case "engine_heartbeat":

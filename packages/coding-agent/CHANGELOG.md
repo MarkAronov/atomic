@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Interactive package-manager and release-archive launches now paint the themed identity and focused editor before isolated-engine binding completes. The engine binds mandatory Intercom first, then transactionally loads bundled workflows, subagents, MCP, web access, provider overrides, skills, prompts, themes, and optional tools behind a generation-scoped gate; prompts, extension/model/resource commands, reload, session replacement, and tool-aware operations cannot dispatch until the complete resource set commits. Compiled archives also syntax-minify the shared application sidecar on all eight targets without identifier minification, while the Windows x64 and ARM64 no-bytecode safety fallback remains unchanged.
+- Interactive startup now paints the themed identity and focused editor before isolated-engine binding completes, while first submissions wait for the complete optional resource set. Escape cancels a submission still blocked on readiness, and `/reload` can retry after an extension failure without restarting Atomic. Failed transactional candidates do not publish host-managed settings, providers, tools, resources, event subscriptions, or system-prompt state. Compiled builds syntax-minify the shared application sidecar without identifier minification; Windows x64 and ARM64 keep launcher bytecode disabled pending target-specific smoke and stress evidence. No measured Windows speedup is claimed yet.
 
 ## [0.9.17] - 2026-08-29
 

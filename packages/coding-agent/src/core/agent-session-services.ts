@@ -171,8 +171,10 @@ export async function createAgentSessionServices(
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
+			const providerId = "provider" in registration ? registration.provider.id : registration.name;
 			if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
 			else modelRuntime.registerProvider(registration.name, registration.config);
+			extensionsResult.runtime.extensionProviderIds.add(providerId);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({ type: "error", message: `Extension "${registration.extensionPath}" error: ${message}` });

@@ -103,18 +103,14 @@ export function benchmarkEnvironment(
 }
 
 export function environmentHash(environment: Readonly<Record<string, string>>): string {
-	const pathEntries = (environment.PATH ?? "").split(delimiter);
-	if (pathEntries.length > 0) pathEntries[0] = "<executable-dir>";
-	const deterministic = [
-		`ATOMIC_CODING_AGENT_DIR=<agent-dir>`,
-		`ATOMIC_OFFLINE=${environment.ATOMIC_OFFLINE ?? ""}`,
-		`ATOMIC_REDUCED_MOTION=${environment.ATOMIC_REDUCED_MOTION ?? ""}`,
-		`ATOMIC_SKIP_VERSION_CHECK=${environment.ATOMIC_SKIP_VERSION_CHECK ?? ""}`,
-		`ATOMIC_TELEMETRY=${environment.ATOMIC_TELEMETRY ?? ""}`,
-		`CI=${environment.CI ?? ""}`,
-		`NO_COLOR=${environment.NO_COLOR ?? ""}`,
-		`TERM=${environment.TERM ?? ""}`,
-		`PATH=${pathEntries.join(delimiter)}`,
-	].join("\n");
+	const normalized = Object.entries(environment).map(([name, value]): readonly [string, string] => {
+		if (name.toUpperCase() === "ATOMIC_CODING_AGENT_DIR") return [name, "<agent-dir>"];
+		if (name.toUpperCase() !== "PATH") return [name, value];
+		const pathEntries = value.split(delimiter);
+		if (pathEntries.length > 0) pathEntries[0] = "<executable-dir>";
+		return [name, pathEntries.join(delimiter)];
+	});
+	normalized.sort(([left], [right]) => left.localeCompare(right, "en", { sensitivity: "case" }));
+	const deterministic = normalized.map(([name, value]) => `${name}=${value}`).join("\n");
 	return createHash("sha256").update(deterministic).digest("hex");
 }

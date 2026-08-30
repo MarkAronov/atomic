@@ -37,7 +37,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 	heartbeat.unref?.();
 	let readySent = false;
 	let boundSent = false;
-	let resourcesSettled = false;
+	let resourceState: "pending" | "ready" | "failed" = "pending";
 	const liveness: InteractiveEngineLiveness = {
 		ready: () => {
 			if (readySent) return;
@@ -50,13 +50,13 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 			send({ type: "engine_bound" });
 		},
 		resourcesReady: () => {
-			if (resourcesSettled) return;
-			resourcesSettled = true;
+			if (resourceState === "ready") return;
+			resourceState = "ready";
 			send({ type: "engine_resources_ready" });
 		},
 		resourcesFailed: (error) => {
-			if (resourcesSettled) return;
-			resourcesSettled = true;
+			if (resourceState === "failed") return;
+			resourceState = "failed";
 			send({ type: "engine_resources_failed", message: error.message });
 		},
 		stop: () => {

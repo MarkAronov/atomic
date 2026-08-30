@@ -1,17 +1,20 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ProviderRequestRecord } from "./collector.js";
+import type { ProviderRequestRecord, ProviderSocketAttempt } from "./collector.js";
 import type { ScreenSnapshot } from "./screen.js";
 
 export type BenchmarkLane = "release" | "node";
-export type BenchmarkBuild = "baseline" | "candidate";
+export type BenchmarkBuild = "baseline" | "candidate" | "candidate-bytecode";
 export type CacheProfile = "warm" | "atomic-state-cold";
 export type SampleState = "success" | "product-failure" | "invalid";
 
 export interface BenchmarkMetrics {
 	readonly startupCompleteMs: number;
 	readonly dispatchMs: number;
+	/** Contract metric: settled startup paint plus Enter-to-provider dispatch. */
 	readonly spawnToDispatchMs: number;
+	/** Diagnostic wall-clock mark that also includes nonce typing and echo wait. */
+	readonly launchToProviderFirstByteMs: number;
 }
 
 export interface BenchmarkSample {
@@ -43,6 +46,7 @@ export interface RawSampleArtifacts {
 	readonly receivedChunks: readonly { readonly atNs: string; readonly data: string }[];
 	readonly coherentSnapshot?: ScreenSnapshot;
 	readonly completeSnapshot?: ScreenSnapshot;
+	readonly providerAttempts: readonly ProviderSocketAttempt[];
 	readonly providerRequests: readonly ProviderRequestRecord[];
 }
 
@@ -68,6 +72,11 @@ export async function persistSample(
 		writeFile(
 			join(rawDirectory, "screens.json"),
 			`${JSON.stringify({ coherent: artifacts.coherentSnapshot, complete: artifacts.completeSnapshot }, null, 2)}\n`,
+			"utf8",
+		),
+		writeFile(
+			join(rawDirectory, "provider-attempts.json"),
+			`${JSON.stringify(artifacts.providerAttempts, null, 2)}\n`,
 			"utf8",
 		),
 		writeFile(

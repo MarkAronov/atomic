@@ -2079,7 +2079,7 @@ export default function (pi: ExtensionAPI) {
 
 **Key-versioning.** Append a version suffix and bump it when the stored shape changes, for example `"my-extension:counter:v1"` → `"my-extension:counter:v2"`. The new key declines the incompatible predecessor instead of reusing it under a new type.
 
-**Reload behavior.** `/reload` builds a new `pi.events` facade that still forwards to the same bus. Calling `sessionScopedExtensionState` again with the same namespaced key returns the existing object and does not invoke `create`. Entries live exactly as long as that bus. They are not written to the session file; use `pi.appendEntry()` when the data must survive process restart.
+**Reload behavior.** `/reload` builds a new `pi.events` facade that still forwards to the same bus. Calling `sessionScopedExtensionState` again with the same namespaced key returns the existing object and does not invoke `create`. The reload transaction does not clone this object or roll back mutations that extension factory code makes to it. Keep factory setup idempotent, and mutate durable state only after the new generation starts when failed reloads must not affect it. Entries live exactly as long as that bus. They are not written to the session file; use `pi.appendEntry()` when the data must survive process restart.
 
 **Shutdown.** `session_shutdown` still runs for resources you opened. If the object holds sockets, watchers, or timers, close them there. The next `session_start` or first use can recreate them inside the same session-scoped object.
 

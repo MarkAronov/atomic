@@ -173,6 +173,7 @@ class AgentSessionBase {
 	protected _extensionErrorListener?: ExtensionErrorListener;
 	protected _extensionErrorUnsubscriber?: () => void;
 	protected _modelRuntime: ModelRuntime;
+	protected _extensionProviderIds = new Set<string>();
 	protected _toolRegistry: Map<string, AgentTool> = new Map();
 	protected _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	protected _toolPromptSnippets: Map<string, string> = new Map();
@@ -195,6 +196,7 @@ class AgentSessionBase {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._extensionProviderIds = new Set(config.resourceLoader.getExtensions().runtime.extensionProviderIds);
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;

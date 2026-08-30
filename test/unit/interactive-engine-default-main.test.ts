@@ -348,8 +348,9 @@ function invocationPids(logPath: string, name: string): number[] {
  * Type a slash command and wait for its engine-side invocation. Text typed this
  * fast can land in the startup input-capture window, where the host replays a
  * completed slash draft as an executed command without the text ever appearing
- * in the editor. Tolerate both paths: submit with Enter once the editor shows
- * the draft, or accept the replay-executed invocation directly.
+ * in the editor. Tolerate both paths: once the editor shows the draft, dismiss
+ * any asynchronous argument autocomplete before pressing Enter; otherwise
+ * Enter can accept (for example) `list ` and leave the command unsubmitted.
  */
 // The real host and engine run beside hundreds of root-suite workers. Under
 // full file parallelism either child can be descheduled beyond the ordinary
@@ -377,6 +378,7 @@ async function invokeSlashCommand(
 			driver.reports.slice(from).some((report) => report.type === "heartbeat" && report.editorText === text)
 		) {
 			submitted = true;
+			driver.send({ type: "input", data: "\u001b" });
 			driver.send({ type: "input", data: "\r" });
 		}
 		await sleep(20);

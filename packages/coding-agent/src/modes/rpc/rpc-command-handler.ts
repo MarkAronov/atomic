@@ -30,6 +30,8 @@ interface RpcCommandHandlerOptions {
 	inputForm?: ProviderLoginInput;
 	pendingExtensionRequests?: RpcPendingExtensionRequests;
 	waitForResources?: () => Promise<void> | undefined;
+	reloadResources?: () => Promise<void>;
+	shouldRetryResources?: () => boolean;
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -66,6 +68,8 @@ export function createRpcCommandHandler({
 	inputForm,
 	pendingExtensionRequests,
 	waitForResources,
+	reloadResources,
+	shouldRetryResources,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
@@ -81,7 +85,8 @@ export function createRpcCommandHandler({
 	};
 	const handleCommand = (async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
-		if (command.type !== "prompt" && !canRunBeforeOptionalResources(command)) {
+		const retryFailedResources = command.type === "reload" && shouldRetryResources?.() === true;
+		if (command.type !== "prompt" && !retryFailedResources && !canRunBeforeOptionalResources(command)) {
 			const pendingResources = waitForResources?.();
 			if (pendingResources) await pendingResources;
 		}
@@ -474,7 +479,8 @@ export function createRpcCommandHandler({
 			}
 
 			case "reload": {
-				if (reloadCoordinator) await reloadCoordinator.reload(session);
+				if (retryFailedResources && reloadResources) await reloadResources();
+				else if (reloadCoordinator) await reloadCoordinator.reload(session);
 				else await session.reload();
 				return createRpcSuccessResponse(id, "reload");
 			}

@@ -16,6 +16,93 @@ export const REQUIRED_BENCHMARK_TOOLS = [
 	"intercom",
 ] as const;
 
+type RequiredToolSchemaContract = {
+	readonly properties: readonly string[];
+	readonly required: readonly string[];
+};
+
+export const REQUIRED_BENCHMARK_TOOL_SCHEMAS: Readonly<
+	Record<(typeof REQUIRED_BENCHMARK_TOOLS)[number], RequiredToolSchemaContract>
+> = {
+	read: { properties: ["path"], required: ["path"] },
+	bash: { properties: ["command", "env", "timeout", "cwd", "pty"], required: ["command"] },
+	edit: { properties: ["input"], required: ["input"] },
+	write: { properties: ["path", "content"], required: ["path", "content"] },
+	workflow: {
+		properties: [
+			"workflow",
+			"inputs",
+			"budget",
+			"action",
+			"runId",
+			"all",
+			"stageId",
+			"message",
+			"statusFilter",
+			"format",
+			"limit",
+			"tail",
+			"includeToolOutput",
+			"text",
+			"response",
+			"promptId",
+			"reason",
+		],
+		required: [],
+	},
+	subagent: {
+		properties: [
+			"agent",
+			"task",
+			"action",
+			"id",
+			"runId",
+			"config",
+			"tasks",
+			"concurrency",
+			"group",
+			"worktree",
+			"context",
+			"agentScope",
+			"cwd",
+			"maxOutput",
+			"artifacts",
+			"includeProgress",
+			"share",
+			"sessionDir",
+			"control",
+			"output",
+			"outputMode",
+			"reads",
+			"progress",
+			"skill",
+			"model",
+		],
+		required: [],
+	},
+	mcp: {
+		properties: ["tool", "args", "connect", "describe", "search", "regex", "includeSchemas", "server", "action"],
+		required: [],
+	},
+	web_search: {
+		properties: ["query", "queries", "numResults", "includeContent", "recencyFilter", "domainFilter", "provider"],
+		required: [],
+	},
+	code_search: { properties: ["query", "maxTokens"], required: ["query"] },
+	fetch_content: {
+		properties: ["url", "urls", "forceClone", "prompt", "timestamp", "frames", "model"],
+		required: [],
+	},
+	get_search_content: {
+		properties: ["responseId", "query", "queryIndex", "url", "urlIndex"],
+		required: ["responseId"],
+	},
+	intercom: {
+		properties: ["action", "to", "message", "attachments", "replyTo", "group"],
+		required: ["action"],
+	},
+};
+
 export interface ProviderValidation {
 	readonly nonceFound: boolean;
 	readonly toolNames: readonly string[];
@@ -32,6 +119,19 @@ export interface ProviderRequestRecord extends ProviderValidation {
 	readonly raw: string;
 }
 
+export type ProviderSocketAttemptStatus = "pending" | "complete" | "incomplete" | "malformed" | "socket-error";
+
+/** Socket-level evidence retained even when an HTTP request cannot be parsed. */
+export interface ProviderSocketAttempt {
+	readonly index: number;
+	readonly firstByteNs: string;
+	status: ProviderSocketAttemptStatus;
+	closedAtNs?: string;
+	error?: string;
+	raw: string;
+	requestIndex?: number;
+}
+
 interface CollectorOptions {
 	readonly nowNs?: () => bigint;
 	readonly port?: number;
@@ -41,7 +141,7 @@ function objectRecord(value: object): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-function collectToolNames(value: unknown): string[] {
+function collectRawToolNames(value: unknown): string[] {
 	if (!value || typeof value !== "object") return [];
 	const root = objectRecord(value);
 	if (!Array.isArray(root.tools)) return [];
@@ -55,7 +155,104 @@ function collectToolNames(value: unknown): string[] {
 		if (typeof direct === "string") names.push(direct);
 		else if (typeof nested === "string") names.push(nested);
 	}
-	return [...new Set(names)].sort();
+	return names;
+}
+
+function collectToolNames(value: unknown): string[] {
+	return [...new Set(collectRawToolNames(value))].sort();
+}
+
+function sameNames(actual: readonly string[], expected: readonly string[]): boolean {
+	if (actual.length !== expected.length) return false;
+	const sortedActual = [...actual].sort();
+	const sortedExpected = [...expected].sort();
+	return sortedActual.every((name, index) => name === sortedExpected[index]);
+}
+
+function hasDuplicateJsonObjectKeys(json: string): boolean {
+	let index = 0;
+	const skipWhitespace = () => {
+		while (/\s/u.test(json[index] ?? "")) index += 1;
+	};
+	const parseString = (): string => {
+		const start = index;
+		index += 1;
+		while (index < json.length) {
+			if (json[index] === "\\") {
+				index += 2;
+				continue;
+			}
+			if (json[index] === '"') {
+				index += 1;
+				return JSON.parse(json.slice(start, index)) as string;
+			}
+			index += 1;
+		}
+		return "";
+	};
+	const parseValue = (): boolean => {
+		skipWhitespace();
+		if (json[index] === "{") {
+			index += 1;
+			const keys = new Set<string>();
+			skipWhitespace();
+			while (json[index] !== "}") {
+				const key = parseString();
+				if (keys.has(key)) return true;
+				keys.add(key);
+				skipWhitespace();
+				index += 1;
+				if (parseValue()) return true;
+				skipWhitespace();
+				if (json[index] === ",") {
+					index += 1;
+					skipWhitespace();
+				}
+			}
+			index += 1;
+			return false;
+		}
+		if (json[index] === "[") {
+			index += 1;
+			skipWhitespace();
+			while (json[index] !== "]") {
+				if (parseValue()) return true;
+				skipWhitespace();
+				if (json[index] === ",") {
+					index += 1;
+					skipWhitespace();
+				}
+			}
+			index += 1;
+			return false;
+		}
+		if (json[index] === '"') {
+			parseString();
+			return false;
+		}
+		while (index < json.length && !/[\s,}\]]/u.test(json[index] ?? "")) index += 1;
+		return false;
+	};
+	return parseValue();
+}
+
+function collectToolSchemas(value: unknown): Map<string, Record<string, unknown>> {
+	const schemas = new Map<string, Record<string, unknown>>();
+	if (!value || typeof value !== "object") return schemas;
+	const root = objectRecord(value);
+	if (!Array.isArray(root.tools)) return schemas;
+	for (const tool of root.tools) {
+		if (!tool || typeof tool !== "object") continue;
+
+		const record = objectRecord(tool);
+		const fn = record.function && typeof record.function === "object" ? objectRecord(record.function) : undefined;
+		const name = typeof record.name === "string" ? record.name : typeof fn?.name === "string" ? fn.name : undefined;
+		const parameters = record.parameters ?? fn?.parameters;
+		if (name !== undefined && parameters && typeof parameters === "object" && !Array.isArray(parameters)) {
+			schemas.set(name, objectRecord(parameters));
+		}
+	}
+	return schemas;
 }
 
 export function validateProviderRequest(body: string, nonce: string): ProviderValidation {
@@ -66,11 +263,42 @@ export function validateProviderRequest(body: string, nonce: string): ProviderVa
 	} catch {
 		return { nonceFound: false, toolNames: [], errors: ["provider request body is not valid JSON"] };
 	}
+	if (hasDuplicateJsonObjectKeys(body)) errors.push("provider request body contains duplicate JSON object keys");
 	const nonceFound = body.includes(nonce);
 	if (!nonceFound) errors.push("provider request body is missing the per-run nonce");
 	const toolNames = collectToolNames(parsed);
+	const rawToolNames = collectRawToolNames(parsed);
+	const toolSchemas = collectToolSchemas(parsed);
 	for (const required of REQUIRED_BENCHMARK_TOOLS) {
-		if (!toolNames.includes(required)) errors.push(`provider request is missing required tool schema: ${required}`);
+		if (!toolNames.includes(required)) {
+			errors.push(`provider request is missing required tool schema: ${required}`);
+			continue;
+		}
+		if (rawToolNames.filter((name) => name === required).length !== 1) {
+			errors.push(`provider request must contain exactly one required tool schema: ${required}`);
+			continue;
+		}
+		const schema = toolSchemas.get(required);
+		const properties = schema?.properties;
+		const schemaRequired = schema?.required;
+		const contract = REQUIRED_BENCHMARK_TOOL_SCHEMAS[required];
+		const propertyRecord =
+			properties && typeof properties === "object" && !Array.isArray(properties)
+				? objectRecord(properties)
+				: undefined;
+		const requiredArray = Array.isArray(schemaRequired) ? schemaRequired : undefined;
+		const requiredNames = requiredArray?.filter((name): name is string => typeof name === "string");
+		if (
+			schema?.type !== "object" ||
+			propertyRecord === undefined ||
+			!sameNames(Object.keys(propertyRecord), contract.properties) ||
+			requiredNames === undefined ||
+			requiredNames.length !== requiredArray?.length ||
+			new Set(requiredNames).size !== requiredNames.length ||
+			!sameNames(requiredNames, contract.required)
+		) {
+			errors.push(`provider request has an inexact required tool schema: ${required}`);
+		}
 	}
 	return { nonceFound, toolNames, errors };
 }
@@ -117,6 +345,7 @@ export class LoopbackProviderCollector {
 	private readonly requestedPort: number;
 	private server: Server | undefined;
 	private requestWaiters: Array<(record: ProviderRequestRecord) => void> = [];
+	readonly attempts: ProviderSocketAttempt[] = [];
 	readonly requests: ProviderRequestRecord[] = [];
 	port = 0;
 
@@ -143,8 +372,15 @@ export class LoopbackProviderCollector {
 	}
 
 	assertSingleValidRequest(): ProviderRequestRecord {
+		if (this.attempts.length !== 1) {
+			throw new Error(`expected exactly one provider socket attempt, received ${this.attempts.length}`);
+		}
+		const attempt = this.attempts[0]!;
+		if (attempt.status !== "complete") {
+			throw new Error(`provider socket attempt did not complete: ${attempt.error ?? attempt.status}`);
+		}
 		if (this.requests.length !== 1) {
-			throw new Error(`expected exactly one provider request, received ${this.requests.length}`);
+			throw new Error(`expected exactly one parsed provider request, received ${this.requests.length}`);
 		}
 		const record = this.requests[0]!;
 		if (record.errors.length > 0) throw new Error(record.errors.join("; "));
@@ -160,27 +396,47 @@ export class LoopbackProviderCollector {
 	}
 
 	private handleSocket(socket: Socket): void {
-		let firstByteNs: bigint | undefined;
 		let bytes = Buffer.alloc(0);
+		let attempt: ProviderSocketAttempt | undefined;
 		let completed = false;
+		const closeAttempt = (status: Exclude<ProviderSocketAttemptStatus, "pending" | "complete">, error: string) => {
+			if (!attempt || completed) return;
+			completed = true;
+			attempt.status = status;
+			attempt.error = error;
+			attempt.closedAtNs = this.nowNs().toString();
+			attempt.raw = bytes.toString("utf8");
+		};
 		socket.on("data", (chunk) => {
-			firstByteNs ??= this.nowNs();
 			bytes = Buffer.concat([bytes, chunk]);
+			if (!attempt) {
+				attempt = {
+					index: this.attempts.length,
+					firstByteNs: this.nowNs().toString(),
+					status: "pending",
+					raw: bytes.toString("utf8"),
+				};
+				this.attempts.push(attempt);
+			} else attempt.raw = bytes.toString("utf8");
 			if (completed) return;
 			const headerEnd = bytes.indexOf("\r\n\r\n");
 			if (headerEnd < 0) return;
 			const headerText = bytes.subarray(0, headerEnd).toString("utf8");
 			const parsedHeaders = parseHeaders(headerText);
 			const contentLength = Number(parsedHeaders.headers["content-length"] ?? "0");
-			const bodyStart = headerEnd + 4;
-			if (!Number.isSafeInteger(contentLength) || contentLength < 0 || bytes.length < bodyStart + contentLength)
+			if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
+				closeAttempt("malformed", "request has an invalid Content-Length header");
+				socket.end();
 				return;
+			}
+			const bodyStart = headerEnd + 4;
+			if (bytes.length < bodyStart + contentLength) return;
 			completed = true;
 			const body = bytes.subarray(bodyStart, bodyStart + contentLength).toString("utf8");
 			const validation = validateProviderRequest(body, this.nonce);
 			const record: ProviderRequestRecord = {
 				index: this.requests.length,
-				firstByteNs: (firstByteNs ?? this.nowNs()).toString(),
+				firstByteNs: attempt.firstByteNs,
 				parsedAtNs: this.nowNs().toString(),
 				requestLine: parsedHeaders.requestLine,
 				headers: parsedHeaders.headers,
@@ -189,9 +445,20 @@ export class LoopbackProviderCollector {
 				...validation,
 			};
 			this.requests.push(record);
+			attempt.status = "complete";
+			attempt.closedAtNs = record.parsedAtNs;
+			attempt.raw = record.raw;
+			attempt.requestIndex = record.index;
 			for (const waiter of this.requestWaiters.splice(0)) waiter(record);
 			socket.end(streamingResponse());
 		});
-		socket.on("error", () => {});
+		socket.on("end", () => {
+			closeAttempt("incomplete", "socket closed before the declared request body was complete");
+			if (!socket.destroyed) socket.end();
+		});
+		socket.on("error", (error) => closeAttempt("socket-error", error.message));
+		socket.on("close", () =>
+			closeAttempt("incomplete", "socket closed before the declared request body was complete"),
+		);
 	}
 }

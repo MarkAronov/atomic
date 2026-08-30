@@ -32,6 +32,7 @@ import { createRpcInputLineHandler } from "./rpc-input.ts";
 import { createRpcInputScheduler } from "./rpc-input-scheduler.ts";
 import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { RpcOutputBuffer } from "./rpc-output-buffer.ts";
+import { RpcResourceReadiness } from "./rpc-resource-readiness.ts";
 import { RpcSessionBinding } from "./rpc-session-binding.ts";
 
 // Re-export types for consumers
@@ -56,14 +57,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 
 	const interactiveEngineChild = isInteractiveEngineChild();
 	const deferInteractiveEngineResources = interactiveEngineChild && options.deferInteractiveEngineResources === true;
-	let resolveResourcesReady!: () => void;
-	let rejectResourcesReady!: (error: Error) => void;
-	const resourcesReady = new Promise<void>((resolve, reject) => {
-		resolveResourcesReady = resolve;
-		rejectResourcesReady = reject;
-	});
-	resourcesReady.catch(() => {});
-	let resourcesAvailable = false;
+	const resourceReadiness = new RpcResourceReadiness();
 	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
 	if (keybindings) setKeybindings(keybindings);
 
@@ -108,6 +102,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		inputForm,
 		reloadCoordinator,
 	});
+	const loadDeferredResources = () =>
+		resourceReadiness.run(async () => {
+			try {
+				await sessionBinding.loadDeferredResources();
+				markLifecycleTiming("engine-resources-ready");
+				engineLiveness.resourcesReady();
+			} catch (error) {
+				const resourceError = error instanceof Error ? error : new Error(String(error));
+				engineLiveness.resourcesFailed(resourceError);
+				throw resourceError;
+			}
+		});
 
 	runtimeHost.setRebindSession(async () => {
 		await sessionBinding.rebindSession();
@@ -122,7 +128,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		reloadCoordinator,
 		inputForm,
 		pendingExtensionRequests,
-		waitForResources: interactiveEngineChild ? () => (resourcesAvailable ? undefined : resourcesReady) : undefined,
+		waitForResources: deferInteractiveEngineResources ? () => resourceReadiness.wait() : undefined,
+		reloadResources: deferInteractiveEngineResources ? loadDeferredResources : undefined,
+		shouldRetryResources: deferInteractiveEngineResources ? () => resourceReadiness.needsRetry() : undefined,
 	});
 
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
@@ -211,30 +219,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	registerSignalHandlers();
 	engineLiveness.ready();
 	await sessionBinding.rebindSession();
-	if (!interactiveEngineChild) {
-		resolveResourcesReady();
-	} else if (deferInteractiveEngineResources) {
+	if (interactiveEngineChild) engineLiveness.bound();
+	if (deferInteractiveEngineResources) {
 		// RPC control and the mandatory minimal session are usable now. Prompt
-		// handling remains generation-gated until the transactional reload commits.
-		engineLiveness.bound();
-		void sessionBinding.loadDeferredResources().then(
-			() => {
-				markLifecycleTiming("engine-resources-ready");
-				resourcesAvailable = true;
-				resolveResourcesReady();
-				engineLiveness.resourcesReady();
-			},
-			(error: unknown) => {
-				const resourceError = error instanceof Error ? error : new Error(String(error));
-				rejectResourcesReady(resourceError);
-				engineLiveness.resourcesFailed(resourceError);
-			},
-		);
-	} else {
-		engineLiveness.bound();
-		resourcesAvailable = true;
+		// handling remains generation-gated until a retryable transactional reload commits.
+		void loadDeferredResources().catch(() => {});
+	} else if (interactiveEngineChild) {
 		markLifecycleTiming("engine-resources-ready");
-		resolveResourcesReady();
 		engineLiveness.resourcesReady();
 	}
 

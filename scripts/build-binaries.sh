@@ -231,10 +231,11 @@ for platform in "${PLATFORMS[@]}"; do
         bun_target="${bun_target}-baseline"
     fi
     if [[ "$platform" == windows-* ]]; then
-        # Bun 1.3.14 bytecode-compiled Windows standalone executables can
-        # segfault before user code runs (llint_entry / bytecode alignment).
-        # Keep Windows release binaries standalone-compiled, but ship source
-        # payload instead of embedded bytecode until Bun's fix is available.
+        # Atomic observed a Bun 1.3.14 bytecode Windows crash in llint_entry,
+        # but has not reproduced it on pinned Bun 1.4.0. Bun 1.4.0 includes the
+        # alignment fix (#26299) and integrity fallback (#31961). Its separate
+        # Windows standalone/JIT report (#40302) has not been shown to be
+        # bytecode-specific. Disable bytecode only pending Atomic x64+ARM64 evidence.
         bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
     else
         bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
