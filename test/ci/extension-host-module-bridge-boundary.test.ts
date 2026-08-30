@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -26,14 +26,18 @@ function formatCommand(command: readonly string[]): string {
 }
 
 test(
-	"compiled launcher exposes exact live host modules to an external ESM bundle",
+	"compiled production loader natively imports a trusted builtin with exact live host modules",
 	() => {
 		const fixture = mkdtempSync(join(root, ".tmp-host-module-bridge-boundary."));
 		const runtimeDir = join(fixture, "runtime");
 		const executablePath = join(runtimeDir, process.platform === "win32" ? "atomic.exe" : "atomic");
 		const appPath = join(runtimeDir, "app.js");
-		const extensionPath = join(fixture, "extension.mjs");
-		makeDirectorySync(runtimeDir, { recursive: true });
+		const extensionPath = join(runtimeDir, "builtin", "intercom", "index.bundle.mjs");
+		makeDirectorySync(join(runtimeDir, "builtin", "intercom"), { recursive: true });
+		writeTextSync(
+			join(runtimeDir, "builtin", "intercom", "package.json"),
+			JSON.stringify({ name: "@bastani/intercom" }),
+		);
 
 		try {
 			writeTextSync(
@@ -42,53 +46,66 @@ test(
 					'import { createEventBus } from "@bastani/atomic";\n' +
 					'import { StringEnum as bastaniStringEnum } from "@bastani/pi-ai";\n' +
 					'import { StringEnum as earendilStringEnum } from "@earendil-works/pi-ai";\n' +
-					"export const importedDefault = lockfile;\n" +
-					"export const importedNamed = lock;\n" +
-					"export const importedCreateEventBus = createEventBus;\n" +
-					"export const aliasesShareExport = Object.is(bastaniStringEnum, earendilStringEnum);\n" +
-					"export const namedType = typeof lock;\n" +
-					'export function readHostMutation(): string { return (lockfile as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
-					'export function readAtomicHostMutation(): string { return (createEventBus as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
-					'export function mutateNamed(): void { (lock as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n' +
-					'export function mutateAtomicNamed(): void { (createEventBus as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n',
+					"const importedDefault = lockfile;\n" +
+					"const importedNamed = lock;\n" +
+					"const importedCreateEventBus = createEventBus;\n" +
+					"const aliasesShareExport = Object.is(bastaniStringEnum, earendilStringEnum);\n" +
+					"const namedType = typeof lock;\n" +
+					'function readHostMutation(): string { return (lockfile as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
+					'function readAtomicHostMutation(): string { return (createEventBus as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
+					'function mutateNamed(): void { (lock as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n' +
+					'function mutateAtomicNamed(): void { (createEventBus as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n' +
+					"function register(): void {}\n" +
+					"Object.assign(register, { importedDefault, importedNamed, importedCreateEventBus, aliasesShareExport, namedType, readHostMutation, readAtomicHostMutation, mutateNamed, mutateAtomicNamed });\n" +
+					"export default register;\n",
 			);
 			writeTextSync(
 				join(fixture, "app-entry.ts"),
-				`import { installHostModuleBridge } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/host-module-bridge.ts"))};\n` +
-					`import { getVirtualModules } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/loader-virtual-modules.ts"))};\n` +
+				`import { clearExtensionCache, loadExtensionModule } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/loader-virtual-modules.ts"))};\n` +
+					`import { isNativeBuiltinExtensionPath } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/native-builtin-entries.ts"))};\n` +
+					'import { createRequire } from "node:module";\n' +
+					`import { getVirtualModules } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/loader-host-modules.ts"))};\n` +
 					"void (async () => {\n" +
 					'  const extensionPath = process.argv[2];\n  if (!extensionPath) throw new Error("missing extension path");\n' +
-					"  const firstInstall = await installHostModuleBridge();\n" +
-					"  const secondInstall = await installHostModuleBridge();\n" +
-					'  if (!firstInstall.installed || secondInstall !== firstInstall || !firstInstall.specifiers.includes("proper-lockfile")) throw new Error("host bridge did not install exactly once");\n' +
+					'  if (!isNativeBuiltinExtensionPath(extensionPath)) throw new Error("installed builtin entry was not trusted");\n' +
+					'  const fs = createRequire(import.meta.url)("node:fs") as { readFileSync: (...args: any[]) => any };\n' +
+					"  const originalReadFileSync = fs.readFileSync;\n" +
+					'  fs.readFileSync = (target, ...args) => { if (String(target) === extensionPath) throw new Error("jiti read builtin source"); return originalReadFileSync(target, ...args); };\n' +
+					"  let first;\n" +
+					"  try { first = await loadExtensionModule(extensionPath); } finally { fs.readFileSync = originalReadFileSync; }\n" +
+					"  first = first as typeof Function & { importedDefault: object; importedNamed: object; importedCreateEventBus: object; aliasesShareExport: boolean; namedType: string; readHostMutation(): string; readAtomicHostMutation(): string; mutateNamed(): void; mutateAtomicNamed(): void };\n" +
+					'  if (typeof first !== "function") throw new Error("production loader did not return the builtin factory");\n' +
+					"  clearExtensionCache();\n" +
+					"  const second = await loadExtensionModule(extensionPath);\n" +
+					'  if (!Object.is(first, second)) throw new Error("native builtin factory was re-evaluated on reload");\n' +
 					"  const modules = await getVirtualModules();\n" +
 					'  const host = modules["proper-lockfile"] as { default: { bridgeMarker?: string }; lock: { bridgeMarker?: string } };\n' +
 					'  const atomicHost = modules["@bastani/atomic"] as { createEventBus: { bridgeMarker?: string } };\n' +
-					"  const extension = await import(extensionPath);\n" +
-					'  if (extension.namedType !== "function") throw new Error("proper-lockfile named export missing");\n' +
-					'  if (!Object.is(extension.importedDefault, host.default)) throw new Error("proper-lockfile default export identity changed");\n' +
-					'  if (!Object.is(extension.importedNamed, host.lock)) throw new Error("proper-lockfile named export identity changed");\n' +
-					'  if (!Object.is(extension.importedCreateEventBus, atomicHost.createEventBus)) throw new Error("@bastani/atomic named export identity changed");\n' +
-					'  if (!extension.aliasesShareExport) throw new Error("pi-ai aliases duplicated host state");\n' +
+					'  if (first.namedType !== "function") throw new Error("proper-lockfile named export missing");\n' +
+					'  if (!Object.is(first.importedDefault, host.default)) throw new Error("proper-lockfile default export identity changed");\n' +
+					'  if (!Object.is(first.importedNamed, host.lock)) throw new Error("proper-lockfile named export identity changed");\n' +
+					'  if (!Object.is(first.importedCreateEventBus, atomicHost.createEventBus)) throw new Error("@bastani/atomic named export identity changed");\n' +
+					'  if (!first.aliasesShareExport) throw new Error("pi-ai aliases duplicated host state");\n' +
 					'  host.default.bridgeMarker = "host-mutated";\n' +
-					'  if (extension.readHostMutation() !== "host-mutated") throw new Error("proper-lockfile host mutation was not shared");\n' +
+					'  if (first.readHostMutation() !== "host-mutated") throw new Error("proper-lockfile host mutation was not shared");\n' +
 					'  atomicHost.createEventBus.bridgeMarker = "host-mutated";\n' +
-					'  if (extension.readAtomicHostMutation() !== "host-mutated") throw new Error("@bastani/atomic host mutation was not shared");\n' +
-					"  extension.mutateNamed();\n" +
+					'  if (first.readAtomicHostMutation() !== "host-mutated") throw new Error("@bastani/atomic host mutation was not shared");\n' +
+					"  first.mutateNamed();\n" +
 					'  if (host.lock.bridgeMarker !== "external-mutated") throw new Error("proper-lockfile extension mutation was not shared");\n' +
-					"  extension.mutateAtomicNamed();\n" +
+					"  first.mutateAtomicNamed();\n" +
 					'  if (atomicHost.createEventBus.bridgeMarker !== "external-mutated") throw new Error("@bastani/atomic extension mutation was not shared");\n' +
 					"  delete host.default.bridgeMarker;\n" +
 					"  delete host.lock.bridgeMarker;\n" +
 					"  delete atomicHost.createEventBus.bridgeMarker;\n" +
-					'  console.log("compiled host-module bridge probe: OK");\n' +
+					'  console.log("compiled native-builtin production loader probe: OK");\n' +
 					"})().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); });\n",
 			);
 			writeTextSync(
 				join(fixture, "split-loader.ts"),
-				'process.env.ATOMIC_CODING_AGENT = "true";\n' +
-					'import { dirname, join } from "node:path";\n' +
+				'import { dirname, join } from "node:path";\n' +
 					'import { pathToFileURL } from "node:url";\n' +
+					'process.env.ATOMIC_AGENT_DIR = join(dirname(process.execPath), "agent");\n' +
+					'process.env.ATOMIC_CODING_AGENT = "true";\n' +
 					'void import(pathToFileURL(join(dirname(process.execPath), "app.js")).href);\n',
 			);
 
@@ -170,7 +187,12 @@ test(
 			console.log(`startup: ${formatCommand(startupCommand)}`);
 			const startup = spawnSyncCollect(startupCommand, { cwd: fixture });
 			assert.equal(startup.exitCode, 0, startup.stderr.toString());
-			assert.equal(startup.stdout.toString().trim(), "compiled host-module bridge probe: OK");
+			assert.equal(startup.stdout.toString().trim(), "compiled native-builtin production loader probe: OK");
+			assert.equal(
+				existsSync(join(runtimeDir, "agent", "cache", "jiti")),
+				false,
+				"native builtin created jiti cache",
+			);
 		} finally {
 			removeTempDirectory(fixture);
 		}
