@@ -12,6 +12,8 @@
 - Additional validation commits:
   - `ab4aa85f7989c3374f9e7adb9684e23be469b3a4` — `test(extensions): verify Node skips native builtin cache`
   - `docs(evidence): record native builtin routing validation` — the signed commit containing this document; its hash is reported by `git log` after creation because a commit cannot embed its own hash.
+  - `79e29a3f6a397117908ad01da3d5cca48b5a931d` — `fix(builtin): make native extension bundles self-contained`.
+  - `83a15f4fc51e876df60a7f7dd95ac7d1254bcf8b` — `test(ci): guard native builtin dependency closure`.
 
 ## Result table
 
@@ -19,7 +21,7 @@
 |---|---|---|
 | Trusted entry classification | **PASS** | The original focused run passed 4 files and 26 tests. After adding the Node cache guard regression, the same command passed 4 files and 27 tests. The tests cover exactly five identity-verified installed entries and reject arbitrary, sibling, manifest-only, source, and spoofed-package paths. |
 | Editable reload behavior | **PASS** | Focused graph-manifest tests observed both direct entry edits and transitive dependency edits. Editable TypeScript extensions remain on the jiti/content-hash path. |
-| Compiled production route | **PASS** | The CI boundary test passed after building a real external extension bundle, a bundled app sidecar, and a `--compile --bytecode` launcher, then executing that launcher. It checked exact live host export identity, bidirectional shared-object mutation, factory reuse across `clearExtensionCache()`, absence of a jiti source read, and absence of a jiti cache directory. |
+| Compiled production route | **PASS after regression repair** | The original fixture proved host identity but imported only bridge-registered packages and therefore missed unresolved third-party imports. The strengthened fixture bundles and executes `chalk`; a new contract inspects all five installed entries; and an extracted real release binary starts and reports commands/resources from all five builtin packages. |
 | Node/npm route | **PASS** | Under Node, the new focused test loads an identity-verified installed entry through the real loader and proves that the persistent native-builtin factory cache remains unpopulated. The full coding-agent, root unit, and root integration suites also passed under Node. |
 | Static checks | **PASS** | `npm run check` passed Biome, root `tsc --noEmit`, coding-agent tsgo build and typetests, and shrinkwrap verification. |
 
@@ -62,6 +64,61 @@ The test then executed the compiled launcher, which printed:
 compiled native-builtin production loader probe: OK
 ```
 
+### Regression discovered by the real release binary
+
+The first validation verdict was premature. Building and extracting the actual Darwin arm64 archive, then running `./atomic --help`, failed before showing help:
+
+```text
+error: Mandatory bundled Intercom is unavailable: Failed to load extension:
+Cannot find package 'chalk' imported from .../builtin/intercom/index.bundle.mjs
+```
+
+`copy-builtin-packages.ts` had built every installed entry with `packages: "external"`. The former jiti route resolved those bare dependencies from the shipped `node_modules`; native `import()` from a Bun compiled binary cannot resolve an external file's transitive bare imports. All five entries retained unregistered packages, so this was a startup-breaking regression rather than an isolated Intercom problem.
+
+The repair removes `packages: "external"` for installed extension entries and reachable workflow builtin bundles. Bun now embeds third-party JavaScript while preserving exact host identities as explicit externals. The explicit host set was completed for the registered `@bastani/pi-ai` entries and `proper-lockfile`.
+
+Two dependencies required deliberate handling:
+
+- `linkedom`'s Node entry probes the optional native `canvas` peer, whose missing `.node` build made Bun fail. The builtin-only build plugin resolves `linkedom` to its API-compatible `linkedom/worker` entry, which has no canvas dependency. The raw source import stays unchanged, so Node/npm and source-checkout behavior is untouched.
+- `@bastani/atomic-natives` is a genuine native binding and cannot be embedded. The installed bundles keep it external; the compiled host loads the shipped platform binding by its runtime package path and registers that exact live exports object through the host bridge.
+
+### Dependency-closure contract and strengthened boundary
+
+`test/ci/native-builtin-bundle-imports.test.ts` builds the installed package, parses every one of the five installed entry bundles, and rejects every bare import that is neither a Node builtin nor a real `getVirtualModules()` key. With the old `packages: "external"` setting restored temporarily, it failed with a list beginning:
+
+```text
+workflows: cross-spawn
+workflows: chalk
+workflows: highlight.js/lib/core.js
+```
+
+The compiled boundary fixture now imports and calls `chalk.green()`. With `chalk` temporarily externalized to reproduce the old bundle shape, the compiled executable failed with:
+
+```text
+Cannot find package 'chalk' imported from .../builtin/intercom/index.bundle.mjs
+```
+
+After bundling `chalk`, the fixture passed while its proper-lockfile, Atomic, and pi-ai host imports remained external and identity-shared.
+
+### Real archive end to end
+
+The final implementation was built with:
+
+```sh
+./scripts/build-binaries.sh --skip-deps --skip-install --skip-package-build \
+  --offline-model-data --platform darwin-arm64
+```
+
+The archive was extracted to `/tmp/atomic-e2e/atomic`. The checkout's `packages/coding-agent/dist/builtin` was temporarily hidden during execution so the compiled build-time `import.meta.url` could not select checkout artifacts instead of the extracted payload.
+
+`ATOMIC_AGENT_DIR=/tmp/atomic-e2e-agent ./atomic --help` exited 0 and began:
+
+```text
+atomic - AI coding assistant with read, bash, edit, write, find, search, ask_user_question, todo tools
+```
+
+An offline RPC `get_commands` request also exited 0. Its response identified builtin resources from the extracted payload for all five packages: `/workflow` and `/workflows` from workflows, subagent skills including `skill:subagent`, `/mcp` and `/mcp-auth` from MCP, `/websearch` and related commands from web-access, and `/intercom` plus `skill:intercom` from Intercom. Every `sourceInfo.path` was under `/private/tmp/atomic-e2e/atomic/builtin/...`; no checkout path or extension-load error appeared.
+
 ### Repository checks and suites
 
 ```sh
@@ -77,6 +134,10 @@ Observed results:
 - Coding-agent suite: 499 files passed, 4 files skipped; 4113 tests passed, 40 tests skipped.
 - Root unit suite: 723 files passed; 7265 tests passed, 23 tests skipped.
 - Root integration suite: 40 files passed; 506 tests passed.
+- Final focused loader run: 4 files passed; 27 tests passed.
+- Final compiled-boundary plus dependency-closure run: 2 files passed; 2 tests passed.
+
+During the repair validation, one full unit attempt had a single 32.5-second fixture-report timeout in `interactive-engine-inherited-discovery.test.ts` while all other 7,264 tests passed. That file immediately passed alone (2 tests), and the required full rerun then passed all 723 files and 7,265 tests. No product assertion failed.
 
 An initial root-unit invocation reported 4 failed tests because `packages/coding-agent/dist/builtin` did not exist: the coding-agent workspace build had not yet run. After:
 
@@ -154,11 +215,11 @@ Installed `.bundle.mjs` files in an npm installation are shipped artifacts, not 
 
 ## What this does not prove
 
-- The local compiled-boundary evidence covers only Darwin arm64 with Bun 1.4.0. Windows and Linux compiled behavior is covered by CI, not by a local run recorded here.
+- The local real-archive evidence covers only Darwin arm64 with Bun 1.4.0. Windows and Linux compiled behavior is covered by CI, not by a local run recorded here.
 - There is no robust behavioral discriminator between the two `.mjs` routes under vitest: its module runner resolves bare specifiers for either route, while Node's ESM cache makes edit/reload behavior converge. The Node boundary is therefore evidenced structurally by the inert production guard, the falsifiable persistent-cache-population invariant, and the green Node test suites.
 - Exact exported-object identity and mutation were tested. This does not claim that reassigning a host ESM binding after bridge registration becomes a live binding in the external bundle.
 - The validation proves routing and reload semantics; it does not claim a cross-platform startup-time measurement or quantify a production speedup.
 
 ## Verdict
 
-The tested implementation native-imports only exact installed entries of identity-verified Atomic builtin packages in Bun compiled or bundled single-file builds. Those fixed factories survive reload without jiti source reads, transforms, hashing, or graph-manifest work. The Node guard is load-bearing, source-checkout entries remain untrusted, and editable TypeScript extension graphs continue to re-evaluate after direct and transitive edits.
+The final tested implementation native-imports only exact installed entries of identity-verified Atomic builtin packages in Bun compiled or bundled single-file builds. Each installed entry is self-contained except for Node builtins and exact live host modules registered by the bridge, including the shared native control plane. A real extracted archive starts successfully and exposes resources from all five builtin packages. Those fixed factories survive reload without jiti source reads, transforms, hashing, or graph-manifest work. The Node guard is load-bearing, source-checkout entries remain untrusted, and editable TypeScript extension graphs continue to re-evaluate after direct and transitive edits.
