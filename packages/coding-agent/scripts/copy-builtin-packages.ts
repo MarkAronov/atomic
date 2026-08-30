@@ -9,7 +9,8 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	INSTALLED_EXTENSION_ENTRIES,
 	WORKFLOWS_SDK_BUNDLE_ENTRY,
@@ -20,6 +21,9 @@ import {
 	INSTALLED_IMPORT_CLOSURE_ROOTS,
 	shouldSkipBuiltinCopyEntry,
 } from "./derive-import-closure.js";
+
+const require = createRequire(import.meta.url);
+const linkedomWorkerEntry = join(dirname(require.resolve("linkedom/package.json")), "worker.js");
 
 interface BuiltinCopy {
 	label: string;
@@ -68,12 +72,30 @@ const rawAuthoringSourcesToPrune = [
 const HOST_PROVIDED_EXTERNALS = [
 	"@bastani/atomic",
 	"@bastani/atomic/*",
+	"@bastani/atomic-natives",
+	"@bastani/pi-ai",
+	"@bastani/pi-ai/compat",
+	"@bastani/pi-ai/oauth",
+	"@bastani/pi-ai/api/cloudflare-gateway-binding",
 	"@earendil-works/*",
 	"@mariozechner/*",
 	"typebox",
 	"typebox/*",
 	"@sinclair/typebox",
 	"@sinclair/typebox/*",
+	"proper-lockfile",
+];
+
+const SELF_CONTAINED_BUILTIN_PLUGINS: Bun.BunPlugin[] = [
+	{
+		name: "atomic-builtin-dependency-resolution",
+		setup(build) {
+			// linkedom's default Node entry probes its optional native `canvas`
+			// peer. Builtins use its equivalent worker entry so the shipped bundle
+			// keeps the DOM parser without an unbundleable `.node` dependency.
+			build.onResolve({ filter: /^linkedom$/ }, () => ({ path: linkedomWorkerEntry }));
+		},
+	},
 ];
 
 const WORKSPACE_BUILTINS = [
@@ -249,8 +271,8 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 		entrypoints: [entry],
 		target: "node",
 		format: "esm",
-		packages: "external",
 		external: HOST_PROVIDED_EXTERNALS,
+		plugins: SELF_CONTAINED_BUILTIN_PLUGINS,
 	});
 	const output = result.outputs[0];
 	if (!result.success || output === undefined) {
@@ -269,8 +291,8 @@ async function bundleWorkflowBuiltins(): Promise<void> {
 		root: builtinDir,
 		target: "node",
 		format: "esm",
-		packages: "external",
 		external: HOST_PROVIDED_EXTERNALS,
+		plugins: SELF_CONTAINED_BUILTIN_PLUGINS,
 		splitting: true,
 	});
 	if (!result.success) {

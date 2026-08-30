@@ -1,7 +1,19 @@
+import { join } from "node:path";
+import { getPackageDir, isBunBinary } from "../../config.ts";
+import { createModuleRequire } from "../../utils/module-require.ts";
+
 let virtualModules: Record<string, object> | null = null;
 let virtualModulesPromise: Promise<Record<string, object>> | null = null;
 
 export async function loadVirtualModules(): Promise<Record<string, object>> {
+	// Keep the native binding external to both the app sidecar and extension
+	// bundles while sharing its process-global control plane through the bridge.
+	const requireFromHost = createModuleRequire(import.meta.url);
+	const atomicNatives = requireFromHost(
+		isBunBinary
+			? join(getPackageDir(), "node_modules", "@bastani", "atomic-natives", "native", "index.js")
+			: "@bastani/atomic-natives",
+	) as object;
 	const [
 		typebox,
 		typeboxCompile,
@@ -52,6 +64,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@earendil-works/pi-ai/oauth": piAiOauth,
 		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 		"proper-lockfile": properLockfile,
+		"@bastani/atomic-natives": atomicNatives,
 		"@bastani/atomic": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,
