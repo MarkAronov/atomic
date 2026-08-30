@@ -4,7 +4,7 @@ import {
 	getAgentDir,
 	getCodexFastModeEnvironmentSettings,
 	getProjectConfigPaths,
-} from "../config.ts";
+} from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";

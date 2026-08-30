@@ -11,7 +11,7 @@ import {
 	type WorkflowResourceProviderInput,
 } from "./loader-resources.ts";
 import { createExtensionRuntime } from "./loader-runtime.ts";
-import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.ts";
+import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
 /** Associate extension runtimes with the event bus used to construct their APIs. */

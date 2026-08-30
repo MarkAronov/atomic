@@ -38,7 +38,7 @@ import {
 	getPackageDir,
 	setEnvValue,
 	VERSION,
-} from "./config.ts";
+} from "./config.js";
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,

@@ -1,5 +1,5 @@
-import { isBunBinary, isBundledBuild } from "../../config.ts";
-import { getVirtualModules } from "./loader-virtual-modules.ts";
+import { isBunBinary, isBundledBuild } from "../../config.js";
+import { getVirtualModules } from "./loader-virtual-modules.js";
 
 export interface HostModuleBridgeInstallResult {
 	installed: boolean;

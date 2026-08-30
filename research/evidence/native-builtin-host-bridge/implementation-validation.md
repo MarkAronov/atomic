@@ -18,6 +18,11 @@ Implemented the first independently reviewable Bun-runtime host-module bridge la
 
 The interface preserves `Object.keys()` insertion order, does not normalize or deduplicate specifiers, and returns a mutable `string[]` as requested. The omitted/inert result uses an empty list. Duplicate handling is inherited verbatim from the existing `Record<string, object>` host map, whose keys are unique by JavaScript object semantics.
 
+Production relative imports follow the repository's `.js` specifier convention. The spelling-neutral
+`module-import-specifier-consistency` test requires every importer of a resolved module to use one spelling, so the
+bridge could not adopt `.js` for `config` and `loader-virtual-modules` in isolation. Every production importer of those
+two modules migrated together; no other module's specifiers changed.
+
 ## Commands and outcomes
 
 - `npm ci --ignore-scripts` — exit 0; installed 554 packages.
@@ -29,6 +34,7 @@ The interface preserves `Object.keys()` insertion order, does not normalize or d
 - `npm run build --workspace=@bastani/atomic` — exit 0; produced the documented built-package fixtures.
 - Second `npm run test:unit` — exit 0; 723 files and 7265 tests passed, 23 skipped.
 - `npm run test:ci-contracts` — exit 0; 14 files and 75 tests passed.
+- `npx vitest --run --project unit test/unit/module-import-specifier-consistency.test.ts` — exit 0; 1 file and 1 test passed after the `.js` migration closed both target-module spelling groups.
 - `npm run check` — exit 0; Biome completed with one pre-existing informational `noUselessStringRaw` diagnostic in `test/ci/ci-workflow-contracts.test.ts`; both root `tsc` and coding-agent `tsgo` typechecks passed; shrinkwrap was current.
 - Commit hook reran repository checks successfully before creating `83176a3bf0`.
 

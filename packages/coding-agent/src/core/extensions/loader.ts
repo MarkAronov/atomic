@@ -15,4 +15,4 @@ export type {
 	WorkflowResourceProviderInput,
 } from "./loader-resources.ts";
 export { createExtensionRuntime } from "./loader-runtime.ts";
-export { clearExtensionCache } from "./loader-virtual-modules.ts";
+export { clearExtensionCache } from "./loader-virtual-modules.js";

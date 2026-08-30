@@ -1,5 +1,5 @@
 import type { ScrollViewScrollbar, TerminalCapabilities } from "@earendil-works/pi-tui";
-import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.ts";
+import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.js";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode, WarningSettings } from "./settings-types.ts";

@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.js";
 import { stripBom } from "../utils/text.ts";
 
 export interface AppKeybindings {

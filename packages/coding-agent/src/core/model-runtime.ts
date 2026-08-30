@@ -28,7 +28,7 @@ import {
 	type Provider,
 } from "@bastani/pi-ai";
 import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";

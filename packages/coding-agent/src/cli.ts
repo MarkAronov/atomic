@@ -9,7 +9,7 @@
  * attribution, and the disabled-by-default lifecycle seam. The full CLI graph
  * loads dynamically so metadata fast paths (for example `--version`) skip it.
  */
-import { APP_NAME, VERSION } from "./config.ts";
+import { APP_NAME, VERSION } from "./config.js";
 import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
