@@ -8,6 +8,7 @@ import {
 	INSTALLED_EXTENSION_ENTRIES,
 	SOURCE_EXTENSION_ENTRIES,
 } from "../src/core/builtin-install-layout.ts";
+import { extensionLoaderTestHooks, loadExtensionModule } from "../src/core/extensions/loader-virtual-modules.ts";
 import {
 	getNativeBuiltinExtensionEntries,
 	isNativeBuiltinExtensionPath,
@@ -78,4 +79,16 @@ test("rejects an installed-looking entry when the package identity is not Atomic
 
 	assert.equal(isNativeBuiltinExtensionPath(spoofedEntry), false);
 	assert.equal(getNativeBuiltinExtensionEntries().size, 4);
+});
+
+test("does not retain installed builtin factories in the native cache under Node", async () => {
+	const packageDir = createInstall();
+	const entry = resolve(packageDir, "builtin", "workflows", INSTALLED_EXTENSION_ENTRIES.workflows);
+
+	assert.equal(isNativeBuiltinExtensionPath(entry), true);
+	const factory = await loadExtensionModule(entry);
+	assert.equal(typeof factory, "function");
+	// Under Node both .mjs routes converge behaviorally, so cache population is
+	// the faithful observable that the single-file-build guard remained inert.
+	assert.equal(extensionLoaderTestHooks.hasNativeBuiltinFactory(entry), false);
 });

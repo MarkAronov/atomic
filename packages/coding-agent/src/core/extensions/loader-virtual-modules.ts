@@ -458,6 +458,7 @@ export const extensionLoaderTestHooks = {
 	loadTransformedExtensionModule: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
 		loadTransformedExtensionModule(extensionPath, cacheToken),
 	loadNativeBuiltinExtensionModule,
+	hasNativeBuiltinFactory: (extensionPath: string): boolean => nativeBuiltinFactories.has(extensionPath),
 };
 
 /**
