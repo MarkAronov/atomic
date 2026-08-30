@@ -107,7 +107,7 @@ test(
 				join(fixture, "split-loader.ts"),
 				'import { dirname, join } from "node:path";\n' +
 					'import { pathToFileURL } from "node:url";\n' +
-					'process.env.ATOMIC_AGENT_DIR = join(dirname(process.execPath), "agent");\n' +
+					'process.env.ATOMIC_CODING_AGENT_DIR = join(dirname(process.execPath), "agent");\n' +
 					'process.env.ATOMIC_CODING_AGENT = "true";\n' +
 					'void import(pathToFileURL(join(dirname(process.execPath), "app.js")).href);\n',
 			);

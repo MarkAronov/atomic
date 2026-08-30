@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { join } from "node:path";
+import { extname, join, relative } from "node:path";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
 import { test } from "vitest";
-import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
+import {
+	INSTALLED_EXTENSION_ENTRIES,
+	WORKFLOWS_SDK_BUNDLE_ENTRY,
+} from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getVirtualModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -34,24 +37,40 @@ function collectImportSpecifiers(source: string): Set<string> {
 	return specifiers;
 }
 
+function listJavaScriptArtifacts(rootDir: string): string[] {
+	return readdirSync(rootDir, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(rootDir, entry.name);
+		if (entry.isDirectory()) return listJavaScriptArtifacts(path);
+		return [".js", ".mjs"].includes(extname(entry.name)) ? [path] : [];
+	});
+}
+
 test(
-	"installed builtin entry bundles retain only node builtins and registered host imports",
+	"installed builtin bundles retain only node builtins and registered host imports",
 	async () => {
 		const build = spawnSyncCollect(["npm", "run", "build", "--workspace=@bastani/atomic"], { cwd: root });
 		assert.equal(build.exitCode, 0, `${build.stdout.toString()}\n${build.stderr.toString()}`);
 
 		const hostSpecifiers = new Set(Object.keys(await getVirtualModules()));
 		const unexpected: string[] = [];
+		const builtinRoot = join(root, "packages/coding-agent/dist/builtin");
+		const emittedArtifacts = [
+			...Object.entries(INSTALLED_EXTENSION_ENTRIES).map(([dirName, entry]) => join(builtinRoot, dirName, entry)),
+			join(builtinRoot, "workflows", WORKFLOWS_SDK_BUNDLE_ENTRY),
+			...listJavaScriptArtifacts(join(builtinRoot, "workflows", "builtin")),
+		];
 
-		for (const [dirName, relativeEntry] of Object.entries(INSTALLED_EXTENSION_ENTRIES)) {
-			const entryPath = join(root, "packages/coding-agent/dist/builtin", dirName, relativeEntry);
-			const source = readFileSync(entryPath, "utf8");
+		for (const artifactPath of emittedArtifacts) {
+			const source = readFileSync(artifactPath, "utf8");
 			for (const specifier of collectImportSpecifiers(source)) {
 				if (isBareSpecifier(specifier) && !nodeBuiltinSpecifiers.has(specifier) && !hostSpecifiers.has(specifier)) {
-					unexpected.push(`${dirName}: ${specifier}`);
+					unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
 				}
 			}
 		}
+
+		const installedXdgOpen = join(builtinRoot, "mcp", "xdg-open");
+		assert.notEqual(statSync(installedXdgOpen).mode & 0o111, 0, "installed MCP xdg-open fallback is not executable");
 
 		assert.deepEqual(unexpected, []);
 	},
