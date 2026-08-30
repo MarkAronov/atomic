@@ -53,6 +53,20 @@ describe("Bun host-module bridge", () => {
 		REAL_HOST_MODULES_TEST_TIMEOUT_MS,
 	);
 
+	it("contains a missing native binding without changing the successful module identity", async () => {
+		const { loaderHostModulesTestHooks } = await import("../src/core/extensions/loader-host-modules.ts");
+		const nativeExports = { marker: "live native exports" };
+
+		expect(loaderHostModulesTestHooks.loadOptionalAtomicNatives(() => nativeExports, "native-entry")).toBe(
+			nativeExports,
+		);
+		expect(
+			loaderHostModulesTestHooks.loadOptionalAtomicNatives(() => {
+				throw new Error("native binding unavailable");
+			}, "missing-native-entry"),
+		).toBeUndefined();
+	});
+
 	it("is inert outside single-file builds without touching Bun.plugin", async () => {
 		const plugin = vi.fn();
 		vi.stubGlobal("Bun", { plugin });

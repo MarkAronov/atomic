@@ -5,15 +5,31 @@ import { createModuleRequire } from "../../utils/module-require.ts";
 let virtualModules: Record<string, object> | null = null;
 let virtualModulesPromise: Promise<Record<string, object>> | null = null;
 
+type HostModuleRequire = (specifier: string) => object;
+
+function loadOptionalAtomicNatives(requireFromHost: HostModuleRequire, specifier: string): object | undefined {
+	try {
+		return requireFromHost(specifier);
+	} catch {
+		// Keep a missing or unloadable platform binding proportional: only an
+		// extension that imports atomic-natives should fail, not every extension
+		// waiting for the shared host-module map.
+		return undefined;
+	}
+}
+
 export async function loadVirtualModules(): Promise<Record<string, object>> {
 	// Keep the native binding external to both the app sidecar and extension
 	// bundles while sharing its process-global control plane through the bridge.
+	// If the platform package is unavailable, omit only this registration so
+	// unrelated builtins can still load.
 	const requireFromHost = createModuleRequire(import.meta.url);
-	const atomicNatives = requireFromHost(
+	const atomicNatives = loadOptionalAtomicNatives(
+		requireFromHost,
 		isBunBinary
 			? join(getPackageDir(), "node_modules", "@bastani", "atomic-natives", "native", "index.js")
 			: "@bastani/atomic-natives",
-	) as object;
+	);
 	const [
 		typebox,
 		typeboxCompile,
@@ -64,7 +80,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@earendil-works/pi-ai/oauth": piAiOauth,
 		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 		"proper-lockfile": properLockfile,
-		"@bastani/atomic-natives": atomicNatives,
+		...(atomicNatives ? { "@bastani/atomic-natives": atomicNatives } : {}),
 		"@bastani/atomic": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,
@@ -75,6 +91,8 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 	};
 }
+
+export const loaderHostModulesTestHooks = { loadOptionalAtomicNatives };
 
 /** Modules shared with extensions in Bun single-file builds. */
 export async function getVirtualModules(): Promise<Record<string, object>> {
