@@ -1,3 +1,4 @@
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { ActivityWatchdog, type ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { type InteractiveEngineMessage, parseInteractiveEngineMessage } from "./protocol.ts";
 
@@ -59,11 +60,13 @@ export class InteractiveEngineMonitor {
 		this.onMessage(message);
 		switch (message.type) {
 			case "engine_ready":
+				markLifecycleTiming("engine-ready");
 				this.watchdog.heartbeat();
 				this.watchdog.start();
 				this.resolveReady();
 				break;
 			case "engine_bound":
+				markLifecycleTiming("engine-bound");
 				this.resolveBound();
 				break;
 			case "engine_heartbeat":

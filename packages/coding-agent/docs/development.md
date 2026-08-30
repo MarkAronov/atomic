@@ -55,7 +55,32 @@ Never use `__dirname` directly for package assets.
 
 ## Startup timing probes
 
-Set `ATOMIC_TIMING=1` when profiling startup. Normal interactive launches print the initial startup group before `interactiveMode.run()` starts the TUI loop, so marks reached later in the interactive lifecycle are not printed during ordinary sessions. Use `ATOMIC_STARTUP_BENCHMARK=1` for first-frame/deferred-startup probes; it initializes interactive mode, explicitly completes deferred startup work, emits marks such as `time-to-first-frame`, `startup-input-raw-mode-enabled`, `startup-input-first-raw-key`, and `deferred-extension-load` when reached, then exits without submitting a prompt. During normal startup, built-in commands and lightweight bundled extension command metadata are available for autocomplete immediately, while heavy extension implementations load only when an extension command or another extension-aware action is invoked. Targeted tests/probes can also assert later interactive marks such as `interactive-input-handler-ready` and `interactive-first-submit`.
+Use `scripts/perf/windows-startup/benchmark.ts` for Windows startup claims. It launches the ordinary bare `atomic` command through a real 120x40 ConPTY, feeds ordered output into `@xterm/headless`, and timestamps each receive with `process.hrtime.bigint()`. Complete first paint requires the final `Atomic v<version>` identity, the focused `❯ ` editor, and two identical settled frames at least one 80 ms animation interval apart. Submit latency runs from the Enter write to the first byte observed by a raw TCP loopback provider. The provider request must contain the nonce and the normal tool schemas, and every accepted sample must pass `/workflow list` after the timed response. See [the benchmark README](../../../scripts/perf/windows-startup/README.md) for artifact preparation, cache profiles, raw records, and summary commands.
+
+Do not use `time-to-first-frame` as settled-paint evidence. That legacy mark occurs before the startup header mounts. `ATOMIC_STARTUP_BENCHMARK=1`, `--no-extensions`, and `--no-tools` are attribution controls only. They do not run the accepted full CLI path with bundled workflows, normal extensions, tools, and provider dispatch.
+
+The process-local lifecycle timing seams use monotonic nanoseconds and remain disabled until an internal diagnostic adapter installs a synchronous sink. With no sink, they do not read the clock, write output, or schedule work. External ConPTY and TCP marks remain authoritative. The current lifecycle order is:
+
+```text
+process-entry
+interactive-engine-spawn
+engine-ready
+tui-start
+first-terminal-write
+engine-resources-ready
+engine-bound
+header-mounted
+startup-coherent
+startup-complete
+chat-output-release
+interactive-input-handler-ready
+interactive-first-submit
+before-provider-request
+```
+
+`engine-resources-ready` is recorded in the isolated engine process; host marks are recorded in the interactive process. The two process clocks are monotonic but must not be subtracted without an external synchronization protocol. `startup-coherent` and `startup-complete` describe internal render composition, not terminal receipt. The external VT predicates decide the reported first-paint marks.
+
+Set `ATOMIC_TIMING=1` only for the older human-readable phase diagnostics. Normal interactive launches print that initial timing group before `interactiveMode.run()` starts the TUI loop, so later marks are not printed during ordinary sessions.
 
 ## Testing
 

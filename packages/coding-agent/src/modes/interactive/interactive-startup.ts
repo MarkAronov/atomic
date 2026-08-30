@@ -1,4 +1,5 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
@@ -229,6 +230,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	);
 
 	// Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
+	markLifecycleTiming("tui-start");
 	this.ui.start();
 	await waitForInteractiveEngineBound(this.runtimeHost);
 	if (this.isShuttingDown) return;
@@ -254,6 +256,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.builtInHeader = new Text("", 0, 0);
 		this.headerContainer.addChild(this.builtInHeader);
 	}
+	markLifecycleTiming("header-mounted");
 	this.ui.requestRender();
 
 	// fd/rg readiness runs after first paint so slow downloads never make

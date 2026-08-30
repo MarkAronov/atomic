@@ -24,6 +24,7 @@ import {
 } from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
+import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
@@ -384,7 +385,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
 					: extensionPayload;
 			}
-			return sanitizeOpenAIResponsesPayload(finalPayload, model);
+			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
+			markLifecycleTiming("before-provider-request");
+			return sanitizedPayload;
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

@@ -1,3 +1,4 @@
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 /**
  * RPC mode: Headless operation with JSON stdin/stdout protocol.
  *
@@ -196,6 +197,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	registerSignalHandlers();
 	engineLiveness.ready();
 	await sessionBinding.rebindSession();
+	if (interactiveEngineChild) markLifecycleTiming("engine-resources-ready");
 	engineLiveness.bound();
 
 	// Keep process alive forever
