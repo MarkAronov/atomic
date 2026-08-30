@@ -1,14 +1,17 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import { type ExtensionFixture, normalizeRenderedOutput, renderAll } from "./interactive-mode-status-helpers.ts";
 import {
 	createExtensionFixtures,
 	createShowLoadedResourcesThis,
 	createSourceInfo,
 } from "./interactive-mode-status-resources-helpers.ts";
+import { createHarness } from "./suite/harness.ts";
 
 describe("InteractiveMode.showLoadedResources", () => {
 	beforeAll(() => {
@@ -97,6 +100,71 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Extensions]");
 		expect(output).toContain("answer.ts, btw.ts");
 		expect(output).not.toContain("extensions/answer.ts");
+	});
+
+	test("merges the engine inventory into startup extensions exactly once", async () => {
+		const harness = await createHarness();
+		const local = new AgentSessionRuntime(
+			harness.session,
+			{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+		);
+		const runtime = new IsolatedInteractiveRuntime(
+			local,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+			{
+				onEvent: () => () => {},
+				onGenerationEnded: () => () => {},
+				getGeneration: () => 1,
+				getState: async () => ({
+					thinkingLevel: "off",
+					isStreaming: false,
+					isCompacting: false,
+					steeringMode: "all",
+					followUpMode: "all",
+					sessionId: "engine",
+					autoCompactionEnabled: true,
+					messageCount: 0,
+					pendingMessageCount: 0,
+					queuedMessagesPaused: false,
+					resourceExtensions: [
+						{ path: "/builtin/workflows/index.ts", hidden: false },
+						{ path: "/builtin/subagents/index.ts", hidden: false },
+						{ path: "/builtin/mcp/index.ts", hidden: false },
+						{ path: "/builtin/web-access/index.ts", hidden: false },
+						{ path: "/builtin/intercom/index.ts", hidden: false },
+						{ path: "/builtin/internal/index.ts", hidden: true },
+					],
+				}),
+				requestInternal: async () => ({ models: [], scopedModels: [] }),
+				getCommands: async () => [],
+				stop: async () => {},
+			} as never,
+		);
+
+		try {
+			await runtime.initializeFromEngine();
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: false,
+				runtimeHost: runtime,
+				extensions: [{ path: "/builtin/intercom" }],
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+			const output = normalizeRenderedOutput(fakeThis.chatContainer);
+			for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom"]) {
+				expect(output).toContain(name);
+			}
+			expect(output.match(/intercom/g)).toHaveLength(1);
+			expect(output).not.toContain("internal");
+		} finally {
+			await runtime.dispose();
+			harness.cleanup();
+		}
 	});
 
 	test("captures mixed extension layouts in compact output", () => {

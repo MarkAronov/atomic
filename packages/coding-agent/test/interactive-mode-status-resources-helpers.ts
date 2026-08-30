@@ -1,4 +1,5 @@
 import { Container } from "@earendil-works/pi-tui";
+import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../src/core/diagnostics.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -16,6 +17,7 @@ export function createShowLoadedResourcesThis(options: {
 	themes?: Array<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
 	skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
 	overlaps?: ResourceOverlap[];
+	runtimeHost?: AgentSessionRuntime;
 	systemPromptSource?: { path: string };
 	appendSystemPromptSources?: Array<{ path: string }>;
 	useRealScopeGroups?: boolean;
@@ -24,7 +26,7 @@ export function createShowLoadedResourcesThis(options: {
 		options: { verbose: options.verbose ?? false },
 		toolOutputExpanded: options.toolOutputExpanded ?? false,
 		chatContainer: new Container(),
-		runtimeHost: {},
+		runtimeHost: options.runtimeHost ?? {},
 		settingsManager: {
 			getQuietStartup: () => options.quietStartup,
 		},

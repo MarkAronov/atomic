@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view.
+- Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view. The Extensions section includes isolated engine-child extensions without loading them again in the terminal host.
 
 ## [0.9.17] - 2026-08-29
 

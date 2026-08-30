@@ -5,6 +5,7 @@ import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import {
 	onInteractiveEngineRemoteCommandsChanged,
+	onInteractiveEngineResourceExtensionsChanged,
 	waitForInteractiveEngineBound,
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
@@ -214,6 +215,15 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// the host is not isolated.
 	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
 		this.setupAutocompleteProvider();
+	});
+	onInteractiveEngineResourceExtensionsChanged(this.runtimeHost, () => {
+		if (this.resourceDisclosureContainer.children.length === 0) return;
+		this.showLoadedResources({
+			force: true,
+			showDiagnosticsWhenQuiet: true,
+			targetContainer: this.resourceDisclosureContainer,
+		});
+		this.ui.requestRender();
 	});
 
 	seedStartupInput(

@@ -1,5 +1,8 @@
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import { getInteractiveEngineResourceOverlaps } from "../interactive-engine/extension-ui-bridge.ts";
+import {
+	getInteractiveEngineResourceExtensions,
+	getInteractiveEngineResourceOverlaps,
+} from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Container,
@@ -60,6 +63,29 @@ function getExtensionIdentityPath(resourcePath: string): string {
 	return segments.join("/") || normalized;
 }
 
+function mergeExtensions(
+	hostExtensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo; hidden?: boolean }>,
+	engineExtensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo; hidden?: boolean }>,
+): Array<{ path: string; sourceInfo?: SourceInfo }> {
+	const merged: Array<{ path: string; sourceInfo?: SourceInfo }> = [];
+	const indexByIdentity = new Map<string, number>();
+	for (const extension of [...hostExtensions, ...engineExtensions]) {
+		if (extension.hidden === true) continue;
+		const identity = getExtensionIdentityPath(extension.path);
+		const existingIndex = indexByIdentity.get(identity);
+		if (existingIndex === undefined) {
+			indexByIdentity.set(identity, merged.length);
+			merged.push({ path: extension.path, sourceInfo: extension.sourceInfo });
+			continue;
+		}
+		const existing = merged[existingIndex];
+		if (existing && !existing.sourceInfo && extension.sourceInfo) {
+			merged[existingIndex] = { ...existing, sourceInfo: extension.sourceInfo };
+		}
+	}
+	return merged;
+}
+
 function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): string[] {
 	const labels = new Set<string>();
 	const localPackageSources = new Set<string>();
@@ -109,19 +135,19 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	if (!showListing && !showDiagnostics) {
 		return;
 	}
+	if (targetContainer === this.resourceDisclosureContainer) targetContainer.clear();
 
 	const skillsResult = this.session.resourceLoader.getSkills();
 	const promptsResult = this.session.resourceLoader.getPrompts();
 	const themesResult = this.session.resourceLoader.getThemes();
-	const extensions =
+	const hostExtensions =
 		options?.extensions ??
-		this.session.resourceLoader
-			.getExtensions()
-			.extensions.filter((extension) => extension.hidden !== true)
-			.map((extension) => ({
-				path: extension.path,
-				sourceInfo: extension.sourceInfo,
-			}));
+		this.session.resourceLoader.getExtensions().extensions.map((extension) => ({
+			path: extension.path,
+			sourceInfo: extension.sourceInfo,
+			hidden: extension.hidden,
+		}));
+	const extensions = mergeExtensions(hostExtensions, getInteractiveEngineResourceExtensions(this.runtimeHost));
 	const sourceInfos = new Map<string, SourceInfo>();
 	for (const extension of extensions) {
 		if (extension.sourceInfo) {
