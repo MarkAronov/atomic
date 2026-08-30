@@ -15,10 +15,15 @@ describe("InteractiveMode.showLoadedResources", () => {
 		initTheme("dark");
 	});
 
-	test("shows a compact resource listing by default", () => {
+	test("shows installed resource names by default", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,
 			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			contextFiles: [{ path: "/tmp/project/AGENTS.md" }],
+			promptTemplates: [{ filePath: "/tmp/prompts/review.md", name: "review" }],
+			prompts: [{ filePath: "/tmp/prompts/explain.md", name: "explain" }],
+			extensions: [{ path: "/tmp/extensions/answer.ts" }],
+			themes: [{ name: "solarized", sourcePath: "/tmp/themes/solarized.json" }],
 		});
 
 		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
@@ -26,11 +31,17 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("RESOURCES");
-		expect(output).toContain("1 skill");
-		// compact summary only: no expanded detail rows, no per-resource names
-		expect(output).not.toContain("available");
-		expect(output).not.toContain("commit");
+		expect(output).toContain("[Context]");
+		expect(output).toContain("AGENTS.md");
+		expect(output).toContain("[Skills]");
+		expect(output).toContain("commit");
+		expect(output).toContain("[Prompts]");
+		expect(output).toContain("/review, explain");
+		expect(output).toContain("[Extensions]");
+		expect(output).toContain("answer.ts");
+		expect(output).toContain("[Themes]");
+		expect(output).toContain("solarized");
+		expect(output).not.toContain("/tmp/skill/SKILL.md");
 	});
 
 	test("shows full resource listing when expanded", () => {
@@ -38,6 +49,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			quietStartup: false,
 			toolOutputExpanded: true,
 			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			useRealScopeGroups: true,
 		});
 
 		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
@@ -45,9 +57,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("Skills");
-		expect(output).toContain("available");
-		expect(output).toContain("commit");
+		expect(output).toContain("[Skills]");
+		expect(output).toContain("/tmp/skill/SKILL.md");
+		expect(output).not.toContain("  commit");
 	});
 
 	test("shows full resource listing on verbose startup even when tool output is collapsed", () => {
@@ -56,6 +68,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			verbose: true,
 			toolOutputExpanded: false,
 			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			useRealScopeGroups: true,
 		});
 
 		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
@@ -63,15 +76,15 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("Skills");
-		expect(output).toContain("available");
-		expect(output).toContain("commit");
+		expect(output).toContain("[Skills]");
+		expect(output).toContain("/tmp/skill/SKILL.md");
+		expect(output).not.toContain("  commit");
 	});
 
 	test("abbreviates extensions in compact listing", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,
-			toolOutputExpanded: true,
+			toolOutputExpanded: false,
 			extensions: [{ path: "/tmp/extensions/answer.ts" }, { path: "/tmp/extensions/btw.ts" }],
 		});
 
@@ -80,8 +93,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		// abbreviated extension labels render in the expanded Extensions detail row
-		expect(output).toContain("Extensions");
+		// Compact extension rows show the shortest unique labels.
+		expect(output).toContain("[Extensions]");
 		expect(output).toContain("answer.ts, btw.ts");
 		expect(output).not.toContain("extensions/answer.ts");
 	});
@@ -98,7 +111,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 8 extensions"`,
+			`
+			"[Extensions]
+			  @scope/pi-scoped, answer.ts, cli-extension.ts, HazAT/pi-interactive-subagents, HazAT/pi-interactive-subagents:subagents, local-index, pi-markdown-preview, user-index"
+		`,
 		);
 	});
 
@@ -144,7 +160,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 3 extensions"`,
+			`
+			"[Extensions]
+			  alpha/one, beta/one, gamma/one"
+		`,
 		);
 	});
 
@@ -172,7 +191,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 1 extension"`,
+			`
+			"[Extensions]
+			  plan-mode"
+		`,
 		);
 	});
 
@@ -200,7 +222,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 1 extension"`,
+			`
+			"[Extensions]
+			  plan-mode"
+		`,
 		);
 	});
 
@@ -237,7 +262,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 2 extensions"`,
+			`
+			"[Extensions]
+			  plan-mode, webfetch.ts"
+		`,
 		);
 	});
 
@@ -274,7 +302,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 2 extensions"`,
+			`
+			"[Extensions]
+			  bar, foo"
+		`,
 		);
 	});
 
@@ -311,7 +342,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 2 extensions"`,
+			`
+			"[Extensions]
+			  alpha/tools, beta/tools"
+		`,
 		);
 	});
 
@@ -339,7 +373,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 1 extension"`,
+			`
+			"[Extensions]
+			  main.ts"
+		`,
 		);
 	});
 
@@ -367,7 +404,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
-			`"RESOURCES context ready · 1 extension"`,
+			`
+			"[Extensions]
+			  pi-markdown-preview"
+		`,
 		);
 	});
 	test("captures mixed extension layouts in expanded output", () => {
@@ -383,11 +423,21 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-			"RESOURCES context ready · 8 extensions
-			✓ Ready      context loaded
-			✓ Skills     0 available · none
-			✓ Prompts    0 available · none
-			✓ Extensions 8 available · answer.ts, local-index, user-index, pi-markdown-preview, +4"
+			"[Extensions]
+			  project
+			    /tmp/project/.pi/extensions/answer.ts
+			    /tmp/project/.pi/extensions/local-index
+			    git:github.com/HazAT/pi-interactive-subagents
+			      extensions
+			      extensions/subagents
+			    npm:@scope/pi-scoped
+			      extensions
+			    npm:pi-markdown-preview
+			      extensions
+			  user
+			    /tmp/agent/extensions/user-index
+			  path
+			    /tmp/temp/cli-extension.ts"
 		`);
 	});
 
@@ -405,11 +455,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
-		expect(output).toContain("RESOURCES");
+		expect(output).toContain("[Context]");
 		expect(output).toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
 		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
-		// compact summary only: no expanded detail rows
-		expect(output).not.toContain("available");
+		expect(output).not.toContain("~/Development/pi-mono/AGENTS.md");
 	});
 
 	test("lists system prompt sources before project context files", () => {
@@ -443,13 +492,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
-		expect(output).toContain("RESOURCES");
-		// expanded view adds the ✓ Ready detail rows not present in the compact summary
-		expect(output).toContain("Ready");
-		expect(output).toContain("available");
-		// external context path preserved in full; cwd-internal path relativized to its basename
-		expect(output).toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
-		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
+		expect(output).toContain("[Context]");
+		expect(output).toContain("~/.pi/agent/AGENTS.md");
+		expect(output).toContain("~/Development/pi-mono/AGENTS.md");
+		expect(output).not.toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
 	});
 
 	test("does not show verbose listing on quiet startup during reload", () => {

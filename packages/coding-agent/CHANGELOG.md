@@ -7,6 +7,10 @@
 - Interactive startup now paints the themed identity and focused editor before isolated-engine binding completes, while first submissions wait for the complete optional resource set. Escape cancels a submission still blocked on readiness, and `/reload` can retry after an extension failure without restarting Atomic. Failed transactional candidates do not publish host-managed settings, providers, tools, resources, event subscriptions, or system-prompt state. Compiled builds syntax-minify the shared application sidecar without identifier minification and now use Bun bytecode launchers on Windows x64 and ARM64, matching Linux and macOS. No measured Windows speedup is claimed yet.
 - Bun compiled and bundled single-file builds now native-import the five fixed Atomic builtin extension bundles once and reuse their evaluated factories across reloads, avoiding jiti source reads, transforms, hashing, and graph-manifest work for immutable shipped code. Editable user, project, and package extensions and user workflows continue to use content-hash invalidation and re-evaluate after direct or transitive source edits.
 
+### Fixed
+
+- Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view.
+
 ## [0.9.17] - 2026-08-29
 
 Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

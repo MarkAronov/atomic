@@ -156,13 +156,17 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		const templates = this.session.promptTemplates;
 		const customThemes = themesResult.themes.filter((t) => t.sourcePath);
 
-		const expandedSections: string[] = [];
+		const expandedSections: {
+			context?: string;
+			skills?: string;
+			prompts?: string;
+			extensions?: string;
+			themes?: string;
+		} = {};
 		if (contextFiles.length > 0) {
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "CONTEXT"))}\n${contextFiles
-					.map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
-					.join("\n")}`,
-			);
+			expandedSections.context = contextFiles
+				.map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
+				.join("\n");
 		}
 
 		const skills = skillsResult.skills;
@@ -173,62 +177,40 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 					sourceInfo: skill.sourceInfo,
 				})),
 			);
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "SKILLS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-				})}`,
-			);
-		}
-
-		if (templates.length > 0) {
-			const groups = this.buildScopeGroups(
-				templates.map((template) => ({
-					path: template.filePath,
-					sourceInfo: template.sourceInfo,
-				})),
-			);
-			const templateByPath = new Map(templates.map((t) => [t.filePath, t]));
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "PROMPTS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => {
-						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
-					},
-					formatPackagePath: (item) => {
-						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
-					},
-				})}`,
-			);
+			expandedSections.skills = this.formatScopeGroups(groups, {
+				formatPath: (item) => this.formatDisplayPath(item.path),
+				formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+			});
 		}
 
 		const prompts = promptsResult.prompts;
-		if (prompts.length > 0) {
-			const groups = this.buildScopeGroups(
-				prompts.map((prompt) => ({
-					path: prompt.filePath,
-					sourceInfo: prompt.sourceInfo,
-				})),
-			);
-			const promptByPath = new Map(prompts.map((prompt) => [prompt.filePath, prompt]));
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "PROMPTS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => promptByPath.get(item.path)?.name ?? this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => promptByPath.get(item.path)?.name ?? this.formatDisplayPath(item.path),
-				})}`,
-			);
+		const promptEntries = [
+			...templates.map((template) => ({
+				path: template.filePath,
+				sourceInfo: template.sourceInfo,
+				label: `/${template.name}`,
+			})),
+			...prompts.map((prompt) => ({
+				path: prompt.filePath,
+				sourceInfo: prompt.sourceInfo,
+				label: prompt.name,
+			})),
+		];
+		if (promptEntries.length > 0) {
+			const groups = this.buildScopeGroups(promptEntries);
+			const promptByPath = new Map(promptEntries.map((prompt) => [prompt.path, prompt.label]));
+			expandedSections.prompts = this.formatScopeGroups(groups, {
+				formatPath: (item) => promptByPath.get(item.path) ?? this.formatDisplayPath(item.path),
+				formatPackagePath: (item) => promptByPath.get(item.path) ?? this.formatDisplayPath(item.path),
+			});
 		}
 
 		if (extensions.length > 0) {
 			const groups = this.buildScopeGroups(extensions);
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "EXTENSIONS"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatExtensionDisplayPath(item.path),
-					formatPackagePath: (item) =>
-						this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
-				})}`,
-			);
+			expandedSections.extensions = this.formatScopeGroups(groups, {
+				formatPath: (item) => this.formatExtensionDisplayPath(item.path),
+				formatPackagePath: (item) => this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
+			});
 		}
 
 		if (customThemes.length > 0) {
@@ -238,28 +220,11 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 					sourceInfo: loadedTheme.sourceInfo,
 				})),
 			);
-			expandedSections.push(
-				`${theme.bold(theme.fg("muted", "THEMES"))}\n${this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-				})}`,
-			);
-		}
-
-		const extensionDiagnostics: ResourceDiagnostic[] = [];
-		const extensionErrors = this.session.resourceLoader.getExtensions().errors;
-		for (const error of extensionErrors) {
-			extensionDiagnostics.push({
-				type: "error",
-				message: error.error,
-				path: error.path,
+			expandedSections.themes = this.formatScopeGroups(groups, {
+				formatPath: (item) => this.formatDisplayPath(item.path),
+				formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
 			});
 		}
-		extensionDiagnostics.push(
-			...this.session.extensionRunner.getCommandDiagnostics(),
-			...this.getBuiltInCommandConflictDiagnostics(this.session.extensionRunner),
-			...this.session.extensionRunner.getShortcutDiagnostics(),
-		);
 
 		this.addResourceDisclosure({
 			contextFiles,
@@ -268,13 +233,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			templates,
 			extensions,
 			themes: customThemes,
-			diagnosticsTotal: this.getResourceDiagnosticsTotal([
-				skillsResult.diagnostics,
-				promptsResult.diagnostics,
-				extensionDiagnostics,
-				themesResult.diagnostics,
-			]),
-			expandedBody: this.options.verbose ? expandedSections.join("\n\n") : "",
+			expandedSections,
 			targetContainer,
 		});
 	}
