@@ -84,7 +84,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 }
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary). */
-async function getVirtualModules(): Promise<Record<string, object>> {
+export async function getVirtualModules(): Promise<Record<string, object>> {
 	if (_virtualModules) return _virtualModules;
 	_virtualModulesPromise ??= loadVirtualModules().then(
 		(virtualModules) => {

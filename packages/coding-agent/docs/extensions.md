@@ -243,7 +243,9 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Extensions are loaded via [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation.
+Extensions are loaded via [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation. Atomic's
+single-file Bun builds also contain an internal host-module bridge that can expose the same live host package objects
+to precompiled ESM bundles. This bridge is an optimization seam only: production extension routing still uses jiti.
 
 If the factory returns a `Promise`, Atomic awaits it before continuing startup. That means async initialization completes before `session_start`, before `resources_discover`, and before provider registrations queued via `pi.registerProvider()` are flushed.
 
