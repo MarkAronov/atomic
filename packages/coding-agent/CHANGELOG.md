@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Interactive startup now paints the themed identity and focused editor before isolated-engine binding completes, while first submissions wait for the complete optional resource set. Escape cancels a submission still blocked on readiness, and `/reload` can retry after an extension failure without restarting Atomic. Failed transactional candidates do not publish host-managed settings, providers, tools, resources, event subscriptions, or system-prompt state. Compiled builds syntax-minify the shared application sidecar without identifier minification; Windows x64 and ARM64 keep launcher bytecode disabled pending target-specific smoke and stress evidence. No measured Windows speedup is claimed yet.
+- Interactive startup now paints the themed identity and focused editor before isolated-engine binding completes, while first submissions wait for the complete optional resource set. Escape cancels a submission still blocked on readiness, and `/reload` can retry after an extension failure without restarting Atomic. Failed transactional candidates do not publish host-managed settings, providers, tools, resources, event subscriptions, or system-prompt state. Compiled builds syntax-minify the shared application sidecar without identifier minification and now use Bun bytecode launchers on Windows x64 and ARM64, matching Linux and macOS. No measured Windows speedup is claimed yet.
 
 ## [0.9.17] - 2026-08-29
 

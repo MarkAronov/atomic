@@ -31,8 +31,8 @@ const BUN_TARGETS = {
 	"linux-arm64": { bytecode: true, target: "bun-linux-arm64" },
 	"linux-x64-musl": { bytecode: true, target: "bun-linux-x64-musl-baseline" },
 	"linux-arm64-musl": { bytecode: true, target: "bun-linux-arm64-musl" },
-	"windows-x64": { bytecode: false, target: "bun-windows-x64-baseline" },
-	"windows-arm64": { bytecode: false, target: "bun-windows-arm64" },
+	"windows-x64": { bytecode: true, target: "bun-windows-x64-baseline" },
+	"windows-arm64": { bytecode: true, target: "bun-windows-arm64" },
 } as const;
 
 function assertBuildScriptSyntax(): void {
@@ -117,7 +117,7 @@ test("x64 release binaries target Bun's baseline CPU runtime", () => {
 	assertBuildScriptSyntax();
 });
 
-test("the pinned Windows bytecode probe covers x64 and ARM64 without changing release policy", () => {
+test("the pinned Windows bytecode probe covers the enabled x64 and ARM64 release policy", () => {
 	assert.equal(WINDOWS_BYTECODE_PROBE_BUN_VERSION, "1.4.0");
 	assert.deepEqual(
 		WINDOWS_BYTECODE_PROBE_TARGETS.map(({ platform, target, machine }) => ({ platform, target, machine })),
@@ -148,8 +148,8 @@ test("the pinned Windows bytecode probe covers x64 and ARM64 without changing re
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 
-	assert.equal(BUN_TARGETS["windows-x64"].bytecode, false);
-	assert.equal(BUN_TARGETS["windows-arm64"].bytecode, false);
+	assert.equal(BUN_TARGETS["windows-x64"].bytecode, true);
+	assert.equal(BUN_TARGETS["windows-arm64"].bytecode, true);
 });
 
 test("tagged payload builds do not fetch unpublished natives and re-alias pi-ai after restore", () => {
