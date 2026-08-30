@@ -9,11 +9,11 @@ import { resolutionBaseUrl } from "../../utils/module-require.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
-import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.ts";
+import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import type { ExtensionFactory } from "./types.ts";
 
-export { getVirtualModules } from "./loader-host-modules.ts";
+export { getVirtualModules } from "./loader-host-modules.js";
 
 const require = createRequire(import.meta.url);
 let _aliases: Record<string, string> | null = null;

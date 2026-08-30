@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getPackageDir, isBunBinary } from "../../config.ts";
+import { getPackageDir, isBunBinary } from "../../config.js";
 import { createModuleRequire } from "../../utils/module-require.ts";
 
 let virtualModules: Record<string, object> | null = null;
