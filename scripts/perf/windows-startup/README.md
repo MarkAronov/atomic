@@ -17,7 +17,17 @@ The two measured intervals use monotonic `process.hrtime.bigint()` marks:
 Build and install the baseline and candidate before a timed batch. Do not build, install, alter antivirus settings, or perform source operations while samples run. Put each wrapper directory on its own immutable path:
 
 - Release archive: reproduce the installer `atomic.cmd` and `atomic-current` junction layout. Pass the directory containing `atomic.cmd`.
-- Node package: use `npm pack`, install the tarball under a prefix, and pass its `node_modules\.bin` directory. The benchmark invokes that directory's `atomic.cmd`, not `node dist/cli.js`.
+- Node package: on a versionless base, pack `@bastani/atomic-natives`, `@bastani/pi-ai`, and `@bastani/atomic`, then install all three `0.0.0` tarballs together under one prefix. Installing only the Atomic tarball cannot resolve its unpublished placeholder dependencies. Pass the prefix's `node_modules\.bin` directory. The benchmark invokes that directory's `atomic.cmd`, not `node dist/cli.js`.
+
+```powershell
+npm pack --workspace=@bastani/atomic-natives --pack-destination C:\atomic-perf\packs
+npm pack --workspace=@bastani/pi-ai --pack-destination C:\atomic-perf\packs
+npm pack --workspace=@bastani/atomic --pack-destination C:\atomic-perf\packs
+npm install --prefix C:\atomic-perf\node-baseline --ignore-scripts `
+  C:\atomic-perf\packs\bastani-atomic-natives-0.0.0.tgz `
+  C:\atomic-perf\packs\bastani-pi-ai-0.0.0.tgz `
+  C:\atomic-perf\packs\bastani-atomic-0.0.0.tgz
+```
 
 Create one metadata JSON file per build. Hash the ZIP or package tarball, executable, `app.js`, and wrapper before timing.
 
@@ -52,6 +62,7 @@ Release warm, balanced baseline/candidate:
 ```powershell
 bun run scripts/perf/windows-startup/benchmark.ts `
   --output C:\atomic-perf\evidence\release-warm `
+  --state-root C:\atomic-perf\state\release-warm `
   --lane release --profile warm --version 0.0.0 --repeats 30 `
   --baseline-bin C:\atomic-perf\artifacts\baseline\bin `
   --baseline-metadata C:\atomic-perf\metadata\baseline-release.json `
@@ -62,9 +73,11 @@ bun run scripts/perf/windows-startup/benchmark.ts `
 
 Run the release `atomic-state-cold` profile with the same arguments except `--profile atomic-state-cold` and a separate output directory. Run the Node lane with `--lane node --profile warm` and each installed `node_modules\.bin` directory. For a baseline-only checkpoint, omit the candidate arguments. `--repeats 30` means 30 samples per build when both builds are supplied.
 
-Warm runs reuse one initialized agent directory for that lane/build/profile while every process receives a fresh session directory. Atomic-state-cold runs copy the same seeded agent template for each sample while leaving the OS filesystem cache warm. Filesystem-cold startup is not implied by either profile.
+Warm runs reuse one initialized agent directory for that lane/build/profile while every process receives a fresh session directory. Use the same explicit `--state-root` for untimed priming and the measured batch so priming reaches the measured warm-agent trees without mixing its JSONL records into headline evidence. Atomic-state-cold runs copy the same seeded agent template for each sample while leaving the OS filesystem cache warm. Filesystem-cold startup is not implied by either profile.
 
-The seeded AB/BA order and seed are saved in `order.json`. Runs are serial. A slow launch, timeout, crash, missing tool, malformed provider request, duplicate request, or failed workflow command is a retained `product-failure`, not an invalid sample. `invalid` is reserved for mechanical setup failures before product launch.
+The harness forces `CI=0` and animated startup, and removes `ATOMIC_STARTUP_BENCHMARK` and `ATOMIC_TIMING` from the child. This prevents an ambient controller environment from selecting the non-fullscreen fallback or a diagnostic path. The sanitized environment hash normalizes the required artifact and agent-directory differences so baseline and candidate hashes remain comparable.
+
+The seeded AB/BA order and seed are saved in `order.json`. Runs are serial. A slow launch, timeout, crash, missing tool, malformed provider request, duplicate request, or failed workflow command is a retained `product-failure`, not an invalid sample. `invalid` is reserved for mechanical setup failures before product launch. The CLI exits nonzero after persisting all requested records if any sample is not successful.
 
 ## Evidence and summary
 

@@ -29,6 +29,7 @@ interface BuildTarget {
 
 interface BenchmarkOptions {
 	readonly outputDirectory: string;
+	readonly stateDirectory: string;
 	readonly lane: BenchmarkLane;
 	readonly profile: CacheProfile;
 	readonly version: string;
@@ -149,6 +150,7 @@ async function parseOptions(argv: readonly string[]): Promise<BenchmarkOptions> 
 	if (targets.length === 0) throw new Error("provide --baseline-bin and optionally --candidate-bin");
 	return {
 		outputDirectory: resolve(outputDirectory),
+		stateDirectory: resolve(values.get("state-root") ?? join(outputDirectory, "state")),
 		lane,
 		profile,
 		version,
@@ -174,8 +176,8 @@ async function settleProcess(process: ConptyProcess | undefined): Promise<void> 
 async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal: number): Promise<BenchmarkSample> {
 	const id = `${String(ordinal).padStart(3, "0")}-${target.build}-${randomUUID()}`;
 	const nonce = `atomic-startup-${randomUUID()}`;
-	const stateRoot = join(options.outputDirectory, "state", `${options.lane}-${target.build}-${options.profile}`);
-	const templateDirectory = join(options.outputDirectory, "state", "agent-template");
+	const stateRoot = join(options.stateDirectory, `${options.lane}-${target.build}-${options.profile}`);
+	const templateDirectory = join(options.stateDirectory, "agent-template");
 	const collector = new LoopbackProviderCollector(nonce, { port: options.port });
 	const tracker = new StartupScreenTracker(options.version, { cols: 120, rows: 40 });
 	const chunks: Array<{ atNs: string; data: string }> = [];
@@ -362,5 +364,6 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<readonly 
 
 if (import.meta.main) {
 	const options = await parseOptions(process.argv.slice(2));
-	await runBenchmark(options);
+	const samples = await runBenchmark(options);
+	if (samples.some((sample) => sample.state !== "success")) process.exitCode = 1;
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createBalancedOrder } from "../../scripts/perf/windows-startup/benchmark.js";
+import { benchmarkEnvironment, environmentHash } from "../../scripts/perf/windows-startup/fixtures.js";
 import type { BenchmarkSample } from "../../scripts/perf/windows-startup/samples.js";
 import { summarizeSamples } from "../../scripts/perf/windows-startup/summarize.js";
 
@@ -38,6 +39,23 @@ test("balanced execution order is deterministic and alternates AB/BA pairs", () 
 	assert.deepEqual(order.slice(0, 4), [order[0], order[1], order[1], order[0]]);
 	assert.equal(order.filter((build) => build === "baseline").length, 4);
 	assert.equal(order.filter((build) => build === "candidate").length, 4);
+});
+
+test("benchmark environment forces the ordinary fullscreen path and strips diagnostic controls", () => {
+	const base = {
+		PATH: "/usr/bin",
+		CI: "1",
+		ATOMIC_REDUCED_MOTION: "1",
+		ATOMIC_STARTUP_BENCHMARK: "1",
+		ATOMIC_TIMING: "1",
+	};
+	const baseline = benchmarkEnvironment("/agent-a", "/baseline-bin", base);
+	const candidate = benchmarkEnvironment("/agent-b", "/candidate-bin", base);
+	assert.equal(baseline.CI, "0");
+	assert.equal(baseline.ATOMIC_REDUCED_MOTION, "0");
+	assert.equal(baseline.ATOMIC_STARTUP_BENCHMARK, undefined);
+	assert.equal(baseline.ATOMIC_TIMING, undefined);
+	assert.equal(environmentHash(baseline), environmentHash(candidate));
 });
 
 test("invalid samples and product failures remain counted and never enter successful statistics", () => {
