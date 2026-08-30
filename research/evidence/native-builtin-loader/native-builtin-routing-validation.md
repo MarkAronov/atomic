@@ -162,6 +162,32 @@ npm --workspace=@bastani/atomic run build
 
 the affected focused tests passed (2 files, 47 tests), and the subsequent full unit run passed with the totals above. This was missing setup, not a loader regression.
 
+### PR #2774 review repairs
+
+- Greptile identified that `packages/coding-agent/test/native-builtin-entries.test.ts` used `node:assert/strict` instead of the package suite's Vitest `expect` convention. Commit `7e2bff55bc` converts only that package test while preserving its four test names, assertion meanings, and cache-population explanation.
+- The dependency-closure test derived its builtin set from `builtinModules`. Node 22 omits prefix-only modules such as `node:sqlite` from that list even though the runtime supports them. Commit `6762a79250` uses `isBuiltin` as the authoritative predicate and adds a fast invariant test that accepts `node:sqlite` and `node:fs` while rejecting the third-party `acorn` specifier.
+
+The exact CI-floor runtime demonstrated the version-specific mismatch:
+
+```sh
+/tmp/node-v22.19.0-darwin-arm64/bin/node -e 'const { builtinModules, isBuiltin } = require("node:module"); console.log({ builtinModulesHasNodeSqlite: builtinModules.includes("node:sqlite"), isBuiltinNodeSqlite: isBuiltin("node:sqlite"), isBuiltinNodeFs: isBuiltin("node:fs"), isBuiltinAcorn: isBuiltin("acorn") });'
+```
+
+```text
+{
+  builtinModulesHasNodeSqlite: false,
+  isBuiltinNodeSqlite: true,
+  isBuiltinNodeFs: true,
+  isBuiltinAcorn: false
+}
+```
+
+Final validation results for this repair round:
+
+- `npm run check`: passed Biome, both TypeScript checks, and shrinkwrap verification; Biome reported the existing informational `noUselessStringRaw` diagnostic in `test/ci/ci-workflow-contracts.test.ts`.
+- `npm run test --workspace=@bastani/atomic -- native-builtin-entries`: 1 file passed and 4 tests passed.
+- `npm run test:ci-contracts`: 15 files passed and 77 tests passed.
+
 ## Negative controls
 
 ### Compiled builtin bypass
