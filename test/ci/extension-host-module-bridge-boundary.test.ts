@@ -14,7 +14,7 @@ import {
 } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-/** Two real Bun builds plus execution across the compiled launcher/sidecar boundary. */
+/** Three real Bun builds plus execution across the compiled launcher/sidecar boundary. */
 const COMPILED_HOST_MODULE_BRIDGE_TIMEOUT_MS = 120_000;
 
 function sha256(path: string): string {
@@ -46,17 +46,19 @@ test(
 					'import { createEventBus } from "@bastani/atomic";\n' +
 					'import { StringEnum as bastaniStringEnum } from "@bastani/pi-ai";\n' +
 					'import { StringEnum as earendilStringEnum } from "@earendil-works/pi-ai";\n' +
+					'import chalk from "chalk";\n' +
 					"const importedDefault = lockfile;\n" +
 					"const importedNamed = lock;\n" +
 					"const importedCreateEventBus = createEventBus;\n" +
 					"const aliasesShareExport = Object.is(bastaniStringEnum, earendilStringEnum);\n" +
 					"const namedType = typeof lock;\n" +
+					'const styledThirdPartyValue = chalk.green("third-party-bundled");\n' +
 					'function readHostMutation(): string { return (lockfile as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
 					'function readAtomicHostMutation(): string { return (createEventBus as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
 					'function mutateNamed(): void { (lock as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n' +
 					'function mutateAtomicNamed(): void { (createEventBus as { bridgeMarker?: string }).bridgeMarker = "external-mutated"; }\n' +
 					"function register(): void {}\n" +
-					"Object.assign(register, { importedDefault, importedNamed, importedCreateEventBus, aliasesShareExport, namedType, readHostMutation, readAtomicHostMutation, mutateNamed, mutateAtomicNamed });\n" +
+					"Object.assign(register, { importedDefault, importedNamed, importedCreateEventBus, aliasesShareExport, namedType, styledThirdPartyValue, readHostMutation, readAtomicHostMutation, mutateNamed, mutateAtomicNamed });\n" +
 					"export default register;\n",
 			);
 			writeTextSync(
@@ -73,7 +75,7 @@ test(
 					'  fs.readFileSync = (target, ...args) => { if (String(target) === extensionPath) throw new Error("jiti read builtin source"); return originalReadFileSync(target, ...args); };\n' +
 					"  let first;\n" +
 					"  try { first = await loadExtensionModule(extensionPath); } finally { fs.readFileSync = originalReadFileSync; }\n" +
-					"  first = first as typeof Function & { importedDefault: object; importedNamed: object; importedCreateEventBus: object; aliasesShareExport: boolean; namedType: string; readHostMutation(): string; readAtomicHostMutation(): string; mutateNamed(): void; mutateAtomicNamed(): void };\n" +
+					"  first = first as typeof Function & { importedDefault: object; importedNamed: object; importedCreateEventBus: object; aliasesShareExport: boolean; namedType: string; styledThirdPartyValue: string; readHostMutation(): string; readAtomicHostMutation(): string; mutateNamed(): void; mutateAtomicNamed(): void };\n" +
 					'  if (typeof first !== "function") throw new Error("production loader did not return the builtin factory");\n' +
 					"  clearExtensionCache();\n" +
 					"  const second = await loadExtensionModule(extensionPath);\n" +
@@ -86,6 +88,7 @@ test(
 					'  if (!Object.is(first.importedNamed, host.lock)) throw new Error("proper-lockfile named export identity changed");\n' +
 					'  if (!Object.is(first.importedCreateEventBus, atomicHost.createEventBus)) throw new Error("@bastani/atomic named export identity changed");\n' +
 					'  if (!first.aliasesShareExport) throw new Error("pi-ai aliases duplicated host state");\n' +
+					'  if (first.styledThirdPartyValue !== "third-party-bundled") throw new Error("bundled third-party dependency did not execute");\n' +
 					'  host.default.bridgeMarker = "host-mutated";\n' +
 					'  if (first.readHostMutation() !== "host-mutated") throw new Error("proper-lockfile host mutation was not shared");\n' +
 					'  atomicHost.createEventBus.bridgeMarker = "host-mutated";\n' +
@@ -128,6 +131,7 @@ test(
 			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@bastani\/atomic["']/);
 			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@bastani\/pi-ai["']/);
 			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@earendil-works\/pi-ai["']/);
+			assert.doesNotMatch(readFileSync(extensionPath, "utf8"), /from\s+["']chalk["']/);
 
 			const nativeFiles = readdirSync(join(root, "packages/natives/native")).filter((name) =>
 				name.endsWith(".node"),
