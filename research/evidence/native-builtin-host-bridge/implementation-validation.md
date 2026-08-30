@@ -42,7 +42,36 @@ npx vitest --run --project ci test/ci/extension-host-module-bridge-boundary.test
 
 It exited 1. The compiled executable exited 1 with stderr `host bridge did not install exactly once`, and the Vitest assertion reported `1 !== 0` at the startup exit-code check. The source was restored from a byte-for-byte saved copy; the same focused boundary command then exited 0 with 1 test passed. This proves the executable scenario cannot pass with the bridge disabled.
 
-The broadened first-party path was also negative-controlled by temporarily comparing the external `@bastani/atomic` `createEventBus` export with a shallow copy of the host function. The focused boundary test exited 1 with `AssertionError: @bastani/atomic named export identity changed`. Restoring the source byte-for-byte made the same command exit 0 with one test passed.
+The original validation report incorrectly described comparing the external `@bastani/atomic` `createEventBus`
+export with `{ ...createEventBus }` as an identity negative control. That comparison is vacuous: spreading a function
+produces a plain object, so it only proves that the function is not that unrelated object. The meaningful
+namespace-container variant does not break the boundary test either: spreading a host namespace changes its container
+identity while retaining the same exported function and object references, which are the identities the boundary test
+checks.
+
+A genuine value-identity control temporarily changed the `@bastani/atomic` registration so its `createEventBus` export
+was a fresh wrapper function that delegated to the host function. The focused command exited 1 with:
+
+```text
+FAIL  |ci| test/ci/extension-host-module-bridge-boundary.test.ts > compiled launcher exposes exact live host modules to an external ESM bundle
+AssertionError: @bastani/atomic named export identity changed
+
+1 !== 0
+
+Test Files  1 failed (1)
+Tests  1 failed (1)
+```
+
+The temporary implementation change was then restored byte-for-byte (`sha256` before and after:
+`9de9bee75f353b8ebf6ccc35b20fc76fe6faa1c667abbaa07174f39664b0d713`). Re-running the same command exited 0:
+
+```text
+Test Files  1 passed (1)
+Tests  1 passed (1)
+```
+
+This control breaks the exported value's reference identity rather than only replacing its namespace container, so it
+demonstrates that the compiled-boundary assertion detects value-identity loss.
 
 ## Files changed
 
