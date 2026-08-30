@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Interactive package-manager and release-archive launches now paint the themed identity and focused editor before isolated-engine binding completes. The engine binds mandatory Intercom first, then transactionally loads bundled workflows, subagents, MCP, web access, provider overrides, skills, prompts, themes, and optional tools behind a generation-scoped gate; prompts, extension/model/resource commands, reload, session replacement, and tool-aware operations cannot dispatch until the complete resource set commits. Compiled archives also syntax-minify the shared application sidecar on all eight targets without identifier minification, while the Windows x64 and ARM64 no-bytecode safety fallback remains unchanged.
+
 ## [0.9.17] - 2026-08-29
 
 Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

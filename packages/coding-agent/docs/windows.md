@@ -40,6 +40,14 @@ For users who want the default Bash surfaces, [Git for Windows](https://git-scm.
 
 Paths copied from Git Bash, MSYS2, Cygwin, or WSL are accepted anywhere Atomic resolves a file path. For example, `/c/Users/name/project/file.ts`, `/cygdrive/c/Users/name/project/file.ts`, and `/mnt/c/Users/name/project/file.ts` resolve as the matching Windows drive path.
 
+
+## Interactive Startup
+
+Atomic mounts the themed startup identity and focused editor before waiting for the isolated engine to finish binding. You can type immediately; submitting a prompt shows the working indicator and preserves the exact draft while startup finishes.
+
+The isolated engine binds a mandatory minimal runtime first, with Intercom available, then loads bundled workflows, subagents, MCP, web access, optional tools, provider overrides, skills, prompts, and themes. Prompt dispatch, extension commands, model/resource commands, reload, session replacement, and tool-aware RPC operations all wait for a generation-scoped resource-ready gate. A provider request cannot cross that boundary with an incomplete tool set. If optional extension loading fails, Atomic keeps the minimal tool registry, reports the failure, and does not publish partial extension registrations.
+
+This behavior applies to both package-manager installs under Node and self-contained release archives. Node installs retain Node's persistent compile cache and its `NODE_DISABLE_COMPILE_CACHE=1` coverage opt-out. Release archives syntax-minify the shared application sidecar on every supported target without shortening identifiers. Windows launcher bytecode remains disabled on both x64 and ARM64 pending repeated target-machine smoke and stress evidence; the startup optimization does not weaken that safety fallback.
 ## Filesystem Watchers
 
 On Windows, Atomic canonicalizes paths before starting native filesystem watchers. If a watcher target cannot be canonicalized or still contains an unsafe 8.3 short-name component such as `USERNA~1`, Atomic avoids native `fs.watch` for that target and uses polling where the feature supports it. This protects long-running sessions, footer git status refreshes, and custom theme reloads from Windows/libuv path-prefix assertion crashes.

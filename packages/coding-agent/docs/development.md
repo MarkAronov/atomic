@@ -57,28 +57,30 @@ Never use `__dirname` directly for package assets.
 
 Use `scripts/perf/windows-startup/benchmark.ts` for Windows startup claims. It launches the ordinary bare `atomic` command through a real 120x40 ConPTY, feeds ordered output into `@xterm/headless`, and timestamps each receive with `process.hrtime.bigint()`. Complete first paint requires the final `Atomic v<version>` identity, the focused `❯ ` editor, and two identical settled frames at least one 80 ms animation interval apart. Submit latency runs from the Enter write to the first byte observed by a raw TCP loopback provider. The provider request must contain the nonce and the normal tool schemas, and every accepted sample must pass `/workflow list` after the timed response. See [the benchmark README](../../../scripts/perf/windows-startup/README.md) for artifact preparation, cache profiles, raw records, and summary commands.
 
-Do not use `time-to-first-frame` as settled-paint evidence. That legacy mark occurs before the startup header mounts. `ATOMIC_STARTUP_BENCHMARK=1`, `--no-extensions`, and `--no-tools` are attribution controls only. They do not run the accepted full CLI path with bundled workflows, normal extensions, tools, and provider dispatch.
+Do not use `time-to-first-frame` as settled-paint evidence. It records the host's first requested identity frame after the header is mounted; it does not prove terminal receipt, animation settlement, engine resource readiness, or provider readiness. `ATOMIC_STARTUP_BENCHMARK=1`, `--no-extensions`, and `--no-tools` are attribution controls only. They do not run the accepted full CLI path with bundled workflows, normal extensions, tools, and provider dispatch.
 
-The process-local lifecycle timing seams use monotonic nanoseconds and remain disabled until an internal diagnostic adapter installs a synchronous sink. With no sink, they do not read the clock, write output, or schedule work. External ConPTY and TCP marks remain authoritative. The current lifecycle order is:
+The process-local lifecycle timing seams use monotonic nanoseconds and remain disabled until an internal diagnostic adapter installs a synchronous sink. With no sink, they do not read the clock, write output, or schedule work. External ConPTY and TCP marks remain authoritative. Startup now has several deliberate partial orders rather than one cross-process sequence:
 
 ```text
-process-entry
-interactive-engine-spawn
-engine-ready
-tui-start
-first-terminal-write
-engine-resources-ready
-engine-bound
-header-mounted
-startup-coherent
-startup-complete
-chat-output-release
-interactive-input-handler-ready
-interactive-first-submit
-before-provider-request
+interactive host: process-entry → interactive-engine-spawn → engine-ready
+                  → tui-start → header-mounted → initialize engine-bound state
+                  → chat-output-release → interactive-input-handler-ready
+
+isolated child:   process-entry → engine-ready → engine-bound
+                  → engine-resources-ready
+
+external screen:  first-terminal-write → startup-coherent → startup-complete
+
+first turn:       interactive-first-submit → before-provider-request
 ```
 
+The header and editor are mounted before the host waits for `engine-bound`; the child can therefore report binding while the host is applying its theme or requesting that frame. `engine-bound` means RPC control plus the mandatory minimal session are available. `engine-resources-ready` is a separate, generation-scoped child message sent only after optional bundled extensions, tools, providers, skills, prompts, and themes commit. User prompts, extension commands, model/resource commands, reload, session replacement, and tool-dispatching RPC calls wait for that gate. Mandatory Intercom remains in the minimal runtime. A failed deferred extension set leaves that minimal tool registry active and rejects the gate instead of exposing partial registrations.
+
 `engine-resources-ready` is recorded in the isolated engine process; host marks are recorded in the interactive process. The two process clocks are monotonic but must not be subtracted without an external synchronization protocol. `startup-coherent` and `startup-complete` describe internal render composition, not terminal receipt. The external VT predicates decide the reported first-paint marks.
+
+For package-manager installs under Node 22, Atomic enables Node's persistent module compile cache in both the host and isolated child and flushes the host cache before spawning the child. Explicit `NODE_COMPILE_CACHE` and `NODE_DISABLE_COMPILE_CACHE` settings pass through unchanged. This preserves Node's coverage opt-out and avoids forcing a new cache directory or a first-run-only precompile step. SEA, V8 snapshots, and package-install precompilation were not adopted because Atomic's dynamic ESM, native modules, workers, and first-run requirements do not provide a safe portable boundary.
+
+Compiled releases syntax-minify the shared CJS `app.js` sidecar for all eight supported targets without identifier minification. Launcher bytecode policy is unchanged: Linux and macOS keep bytecode, while Windows x64 and ARM64 keep the no-bytecode safety fallback until both architectures have target-machine stress evidence.
 
 Set `ATOMIC_TIMING=1` only for the older human-readable phase diagnostics. Normal interactive launches print that initial timing group before `interactiveMode.run()` starts the TUI loop, so later marks are not printed during ordinary sessions.
 
