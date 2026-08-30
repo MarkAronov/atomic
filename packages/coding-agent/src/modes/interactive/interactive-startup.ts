@@ -229,16 +229,14 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		},
 	);
 
-	// Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
+	// Start and paint the host-owned TUI before waiting for the isolated engine.
+	// The editor remains local and responsive; session binding and provider work
+	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	this.ui.start();
-	await waitForInteractiveEngineBound(this.runtimeHost);
-	if (this.isShuttingDown) return;
-	recordTimeSinceReset("time-to-first-frame");
 	this.footerDataProvider.onBranchChange(() => {
 		this.ui.requestRender();
 	});
-	this.isInitialized = true;
 
 	await this.themeController.applyFromSettings();
 
@@ -257,6 +255,15 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.headerContainer.addChild(this.builtInHeader);
 	}
 	markLifecycleTiming("header-mounted");
+	this.ui.requestRender();
+	// This legacy mark now means the first requested identity frame. The settled
+	// animation frame remains the external benchmark's startup-complete mark.
+	recordTimeSinceReset("time-to-first-frame");
+
+	await waitForInteractiveEngineBound(this.runtimeHost);
+	if (this.isShuttingDown) return;
+	this.isInitialized = true;
+	// The isolated engine may have replaced the preliminary model/provider view.
 	this.ui.requestRender();
 
 	// fd/rg readiness runs after first paint so slow downloads never make
