@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
@@ -171,8 +171,10 @@ export async function createAgentSessionServices(
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
+			const providerId = "provider" in registration ? registration.provider.id : registration.name;
 			if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
 			else modelRuntime.registerProvider(registration.name, registration.config);
+			extensionsResult.runtime.extensionProviderIds.add(providerId);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({ type: "error", message: `Extension "${registration.extensionPath}" error: ${message}` });

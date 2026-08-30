@@ -46,7 +46,7 @@ import type {
 	ToolInfo,
 } from "./extensions/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRuntime } from "./model-runtime.js";
+import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -267,7 +267,15 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_applyExtensionBindings(runner: ExtensionRunner): void;
 	_refreshCurrentModelFromRegistry(): void;
 	refreshCurrentModelFromRegistry(): void;
-	_bindExtensionCore(runner: ExtensionRunner): void;
+	_bindExtensionCore(
+		runner: ExtensionRunner,
+		publication?: {
+			resourceLoader: ResourceLoader;
+			providerTransaction: ExtensionProviderTransaction;
+			providerIds: Set<string>;
+			defer(effect: () => void | Promise<void>): void;
+		},
+	): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
 	reload(options?: AgentSessionReloadOptions): Promise<void>;
@@ -491,6 +499,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_extensionErrorListener?: ExtensionErrorListener;
 	_extensionErrorUnsubscriber?: () => void;
 	_modelRuntime: ModelRuntime;
+	_extensionProviderIds: Set<string>;
 	_toolRegistry: Map<string, AgentTool>;
 	_toolDefinitions: Map<string, ToolDefinitionEntry>;
 	_toolPromptSnippets: Map<string, string>;

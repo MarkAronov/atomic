@@ -3,7 +3,7 @@ import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen 
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
-import { getAgentDir } from "./config.ts";
+import { getAgentDir } from "./config.js";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import { formatMissingSessionCwdPrompt, type SessionCwdIssue } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";

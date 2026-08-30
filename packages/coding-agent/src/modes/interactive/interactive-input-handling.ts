@@ -1,3 +1,4 @@
+import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import {
 	interactiveEngineNeedsExplicitTermination,
@@ -258,6 +259,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 		if (!this.firstSubmitRecorded) {
 			this.firstSubmitRecorded = true;
 			recordTimeSinceReset("interactive-first-submit");
+			markLifecycleTiming("interactive-first-submit");
 		}
 		// pi-tui trims, expands pastes, and clears the editor before it calls
 		// onSubmit, so the callback argument is already reduced. Prefer the buffer

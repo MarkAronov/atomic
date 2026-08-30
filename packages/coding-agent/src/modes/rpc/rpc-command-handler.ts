@@ -29,6 +29,33 @@ interface RpcCommandHandlerOptions {
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 	inputForm?: ProviderLoginInput;
 	pendingExtensionRequests?: RpcPendingExtensionRequests;
+	waitForResources?: () => Promise<void> | undefined;
+	reloadResources?: () => Promise<void>;
+	shouldRetryResources?: () => boolean;
+}
+
+function canRunBeforeOptionalResources(command: RpcCommand): boolean {
+	switch (command.type) {
+		case "abort":
+		case "abort_bash":
+		case "abort_compaction":
+		case "abort_retry":
+		case "cancel_login_provider":
+		case "clear_queue":
+		case "get_messages":
+		case "get_state":
+		case "pause_queued_messages":
+		case "resume_queued_messages":
+		case "set_auto_compaction":
+		case "set_auto_retry":
+		case "set_follow_up_mode":
+		case "set_steering_mode":
+			return true;
+		case "get_available_models":
+			return command.allowPartialResources === true;
+		default:
+			return false;
+	}
 }
 
 export function createRpcCommandHandler({
@@ -40,6 +67,9 @@ export function createRpcCommandHandler({
 	reloadCoordinator,
 	inputForm,
 	pendingExtensionRequests,
+	waitForResources,
+	reloadResources,
+	shouldRetryResources,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
@@ -55,13 +85,21 @@ export function createRpcCommandHandler({
 	};
 	const handleCommand = (async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
+		const retryFailedResources = command.type === "reload" && shouldRetryResources?.() === true;
+		if (command.type !== "prompt" && !retryFailedResources && !canRunBeforeOptionalResources(command)) {
+			const pendingResources = waitForResources?.();
+			if (pendingResources) await pendingResources;
+		}
 		const session = getSession();
 		switch (command.type) {
 			case "prompt": {
-				if (rejectUnsupportedProviderPrompt(runtimeHost, output, id)) return undefined;
 				let preflightSucceeded = false;
-				void session
-					.prompt(command.message, {
+				void (async () => {
+					const pendingResources = waitForResources?.();
+					if (pendingResources) await pendingResources;
+					if (rejectUnsupportedProviderPrompt(runtimeHost, output, id)) return;
+					const promptSession = getSession();
+					await promptSession.prompt(command.message, {
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
 						source: "rpc",
@@ -71,12 +109,12 @@ export function createRpcCommandHandler({
 								output(createRpcSuccessResponse(id, "prompt"));
 							}
 						},
-					})
-					.catch((promptError: unknown) => {
-						if (!preflightSucceeded) {
-							output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
-						}
 					});
+				})().catch((promptError: unknown) => {
+					if (!preflightSucceeded) {
+						output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
+					}
+				});
 				return undefined;
 			}
 
@@ -441,7 +479,8 @@ export function createRpcCommandHandler({
 			}
 
 			case "reload": {
-				if (reloadCoordinator) await reloadCoordinator.reload(session);
+				if (retryFailedResources && reloadResources) await reloadResources();
+				else if (reloadCoordinator) await reloadCoordinator.reload(session);
 				else await session.reload();
 				return createRpcSuccessResponse(id, "reload");
 			}

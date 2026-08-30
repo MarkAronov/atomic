@@ -13,7 +13,7 @@ import {
 	ENV_SESSION_DIR,
 	ENV_SHARE_VIEWER_URL,
 	ENV_TELEMETRY,
-} from "../config.ts";
+} from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";

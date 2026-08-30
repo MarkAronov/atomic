@@ -1,5 +1,5 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { APP_NAME } from "../config.ts";
+import { APP_NAME } from "../config.js";
 import {
 	ATOMIC_GUIDE_COMMAND_DESCRIPTION,
 	ATOMIC_GUIDE_COMMAND_NAME,

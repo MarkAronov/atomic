@@ -150,6 +150,26 @@ export class RpcSessionBinding {
 		this.reloadCoordinator?.publishCurrentState(session);
 	}
 
+	/** Load and atomically publish the optional resource set after the minimal interactive engine binds. */
+	async loadDeferredResources(): Promise<void> {
+		const session = this.session;
+		try {
+			await session.reload({ reason: "startup", failOnExtensionErrors: true });
+		} catch (error) {
+			for (const extensionError of session.resourceLoader.getExtensions().errors) {
+				this.output({
+					type: "extension_error",
+					extensionPath: extensionError.path,
+					event: "startup",
+					error: extensionError.error,
+				});
+			}
+			throw error;
+		}
+		if (session !== this.session) return;
+		this.reloadCoordinator?.publishCurrentState(session);
+	}
+
 	disposeSubscriptions(): void {
 		this.unsubscribe?.();
 		this.unsubscribeBackpressure?.();

@@ -218,7 +218,7 @@ mkdir -p "$shared_app_dir"
 echo "==> Building shared app bundle..."
 # Bun's compiled launcher cannot resolve bare packages from the dynamically loaded CJS sidecar.
 # Bundle pi-tui itself, but keep the import.meta.url-sensitive native loader payload-relative.
-bun build --target=bun --format=cjs --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
+bun build --target=bun --format=cjs --minify-syntax --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
 bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
 
 for platform in "${PLATFORMS[@]}"; do
@@ -230,15 +230,14 @@ for platform in "${PLATFORMS[@]}"; do
     if [[ "$platform" == *-x64 || "$platform" == *-x64-* ]]; then
         bun_target="${bun_target}-baseline"
     fi
+    binary_name="atomic"
     if [[ "$platform" == windows-* ]]; then
-        # Bun 1.3.14 bytecode-compiled Windows standalone executables can
-        # segfault before user code runs (llint_entry / bytecode alignment).
-        # Keep Windows release binaries standalone-compiled, but ship source
-        # payload instead of embedded bytecode until Bun's fix is available.
-        bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
-    else
-        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
+        binary_name="atomic.exe"
     fi
+    # Bun 1.4.0 includes the Windows embedded-bytecode alignment fix (#26299)
+    # and corrupted-bytecode source fallback (#31961), so every release target
+    # now uses the same startup-optimized bytecode policy.
+    bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/$binary_name"
 done
 
 echo "==> Copying runtime dependencies..."

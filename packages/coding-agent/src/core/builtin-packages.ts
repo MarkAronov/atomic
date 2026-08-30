@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getPackageDir } from "../config.ts";
+import { getPackageDir } from "../config.js";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
@@ -17,6 +17,12 @@ interface BuiltinPackageCandidateContext {
 	readonly here: string;
 	readonly packageDir: string;
 	readonly isSourceCheckout: boolean;
+}
+
+export interface BuiltinPackageLocation {
+	readonly packageName: string;
+	readonly distDirName: BuiltinPackageDirName;
+	readonly packageDir: string;
 }
 
 interface WorkspaceBuiltinSpec {
@@ -103,6 +109,20 @@ function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
 	};
 }
 
+/** Atomic-owned builtin package roots paired with their verified descriptors. */
+export function getBuiltinPackageLocations(): BuiltinPackageLocation[] {
+	const context = getBuiltinPackageCandidateContext();
+	return BUILTIN_PACKAGES.flatMap((descriptor) => {
+		const packageDir = firstExistingPackageDir(
+			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
+			descriptor,
+		);
+		return packageDir
+			? [{ packageName: descriptor.packageName, distDirName: descriptor.distDirName, packageDir }]
+			: [];
+	});
+}
+
 /**
  * Built-in pi package roots shipped with this Atomic distribution.
  *
@@ -116,15 +136,7 @@ function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
  *   process executable dir -> builtin/<package>
  */
 export function getBuiltinPackagePaths(): string[] {
-	const context = getBuiltinPackageCandidateContext();
-
-	return BUILTIN_PACKAGES.flatMap((descriptor) => {
-		const packageDir = firstExistingPackageDir(
-			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
-			descriptor,
-		);
-		return packageDir ? [packageDir] : [];
-	});
+	return getBuiltinPackageLocations().map(({ packageDir }) => packageDir);
 }
 
 /** Built-in package roots whose extensions Atomic must load in every model session. */

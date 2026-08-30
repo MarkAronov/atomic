@@ -6,7 +6,7 @@ import {
 	type TUI,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
-import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.ts";
+import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";

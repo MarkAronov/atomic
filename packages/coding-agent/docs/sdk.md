@@ -762,6 +762,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 `createAgentSession()` preserves resources from a supplied loader but restores Atomic's mandatory bundled Intercom extension after loader overrides, deferred reloads, and same-name extension or `customTools` collisions. The supplied loader still controls every optional extension.
 
+Strict reloads (`failOnExtensionErrors: true`) require the loader's transactional `prepareReload()` support so a failed candidate cannot mutate live state before validation. `DefaultResourceLoader` provides that support. Custom loaders without it remain compatible with ordinary reloads, but strict reload fails before calling their mutating `reload()` method.
+
 Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 
 **Event Bus:** Extensions can communicate via `pi.events`. Pass a shared `eventBus` to `DefaultResourceLoader` if you need to emit or listen from outside:

@@ -9,6 +9,7 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.ts";
+import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
@@ -536,6 +537,17 @@ function isCiEnvironment(value: string | undefined): boolean {
 	return normalized !== "" && normalized !== "0" && normalized !== "false";
 }
 
+class LifecycleTimingTerminal extends ProcessTerminal {
+	override write(data: string): void {
+		markLifecycleTiming("first-terminal-write");
+		super.write(data);
+	}
+}
+
+function createProcessTerminal(): ProcessTerminal {
+	return isLifecycleTimingEnabled() ? new LifecycleTimingTerminal() : new ProcessTerminal();
+}
+
 function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
 	if (process.env.TERM?.toLowerCase() === "dumb") return false;
 	if (usesInjectedTerminal) return true;
@@ -552,7 +564,7 @@ function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
  */
 export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScreen {
 	return new AtomicTuiAltScreen(
-		options.terminal ?? new ProcessTerminal(),
+		options.terminal ?? createProcessTerminal(),
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
@@ -581,7 +593,7 @@ class AtomicTuiMainScreen extends TuiMainScreen {
 /** Creates the fullscreen renderer for interactive TTY sessions. */
 export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
 	const usesInjectedTerminal = options.terminal !== undefined;
-	const terminal = options.terminal ?? new ProcessTerminal();
+	const terminal = options.terminal ?? createProcessTerminal();
 	if (!shouldUseFullscreenTui(usesInjectedTerminal)) {
 		// The normal CLI never reaches the interactive mode without a TTY. Keep a
 		// main-screen renderer for internal harnesses and guarded fallback paths.

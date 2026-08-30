@@ -76,7 +76,7 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-flaky-test-suite\.ts/u);
 });
 
-test("global setups: artifacts everywhere, natives on unit and integration only", async () => {
+test("global setups provide artifacts and native bindings to every project", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -87,7 +87,7 @@ test("global setups: artifacts everywhere, natives on unit and integration only"
 	const projects = config.default.test?.projects ?? [];
 	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
-	for (const name of ["unit", "integration"]) {
+	for (const name of ["unit", "integration", "ci"]) {
 		const project = projects.find((entry) => entry.test?.name === name);
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
@@ -96,14 +96,6 @@ test("global setups: artifacts everywhere, natives on unit and integration only"
 			`${name} must keep the artifact and native global setups`,
 		);
 	}
-
-	// The artifact setup must cover every project: workers inherit the env var
-	// from the orchestrator, which is what keeps per-worker temp dirs from
-	// leaking. The native build stays off the ci project, which only inspects
-	// workflow and source state.
-	const ci = projects.find((entry) => entry.test?.name === "ci");
-	assert.ok(ci, "missing vitest project: ci");
-	assert.deepEqual(ci.test?.globalSetup, [artifactSetup], "ci runs the artifact setup but not the native build");
 });
 
 /**
