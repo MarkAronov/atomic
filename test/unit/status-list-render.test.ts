@@ -627,6 +627,27 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
 		for (const line of plain.split("\n")) assert.equal(visibleWidth(line), 60);
 	});
+	test("preserves duplicate pending-stage targets through the live graph projection", () => {
+		// Regression test for #2784: graph compaction must not strip pre-start delivery capability from status cards.
+		const runId = "live-projected-pending-run";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "projected-pending",
+				stages: [
+					makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+					makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				],
+			}),
+		);
+
+		const plain = renderStatusList(localStore.graphSnapshot().runs, { width: 120, showDetailHint: false });
+
+		assert.match(plain, new RegExp(`${runId}:review-a`));
+		assert.match(plain, new RegExp(`${runId}:review-b`));
+		assert.doesNotMatch(plain, /delivery unavailable/);
+	});
 	test("keeps projected pending-stage canonical IDs exact at narrow card widths", () => {
 		const runId = "narrow-pending-run";
 		const stageId = "canonical-review-stage";
