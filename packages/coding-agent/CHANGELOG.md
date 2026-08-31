@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.2] - 2026-08-31
+
+### Fixed
+
+- Fixed the `0.9.18-alpha.1` Windows x64 and ARM64 release archives crashing before startup because Bun 1.4.0 bytecode launchers were cross-compiled on Linux. Tagged releases now build both Windows archives on a Windows host, smoke-test the x64 archive, and stage both architectures into the release payload ([#2781](https://github.com/bastani-inc/atomic/pull/2781)).
+
 ## [0.9.18-alpha.1] - 2026-08-30
 
 ### Changed
