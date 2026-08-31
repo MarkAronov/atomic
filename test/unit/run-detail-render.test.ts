@@ -293,6 +293,32 @@ describe("renderRunDetail — themed", () => {
 			Date.now = originalNow;
 		}
 	});
+	test("themed detail names pending stages and truthful canonical targets", () => {
+		const detail = detailFromRun(
+			makeRun({
+				id: "detail-run",
+				stages: [
+					makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+					makeStage("offline", "review", "pending", { pendingStageDeliveryAvailable: false }),
+				],
+			}),
+		);
+		const plain = stripAnsi(renderRunDetail(detail, { theme: deriveGraphTheme({}), width: 100 }));
+		assert.match(plain, /pending target {2}detail-run:review-a/);
+		assert.match(plain, /pending id {6}offline · delivery unavailable/);
+		assert.doesNotMatch(plain, /detail-run:offline/);
+	});
+	test("plain detail exposes pending canonical identity and target within narrow widths", () => {
+		const detail = detailFromRun(
+			makeRun({
+				id: "plain-run",
+				stages: [makeStage("worker-id", "worker", "pending", { pendingStageDeliveryAvailable: true })],
+			}),
+		);
+		const out = renderRunDetail(detail, { width: 80 });
+		assert.match(out, /pending target {2}plain-run:worker-id/);
+		for (const line of renderRunDetail(detail, { width: 32 }).split("\n")) assert.equal(visibleWidth(line), 32);
+	});
 });
 
 describe("renderRunDetail — plain", () => {

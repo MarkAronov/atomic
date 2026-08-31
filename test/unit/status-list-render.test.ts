@@ -580,6 +580,26 @@ describe("renderStatusList — populated", () => {
 		}
 	});
 
+	test("names pending stages and their steerable canonical targets within the card width", () => {
+		const run = makeRun({
+			id: "pending-run",
+			stages: [
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+				makeStage("later", "later", "pending", { pendingStageDeliveryAvailable: true }),
+			],
+		});
+		const plain = renderStatusList([run], { width: 120, showDetailHint: false });
+		assert.match(plain, /pending: review \(review-a\) → pending-run:review-a/);
+		assert.match(plain, /pending: review \(review-b\) → pending-run:review-b/);
+		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
+		assert.doesNotMatch(plain, /pending-run:offline/);
+		assert.match(plain, /… 1 more pending stages/);
+		assert.doesNotMatch(plain, /pending-run:later/);
+		for (const line of renderStatusList([run], { width: 40 }).split("\n")) assert.equal(visibleWidth(line), 40);
+	});
+
 	test("themes every wrapped run-id row in the workflow status hint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const run = makeRun({ id: runId, name: "narrow-hint", status: "running" });

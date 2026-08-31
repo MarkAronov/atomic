@@ -21,6 +21,7 @@
  *  - src/tui/chat-surface.ts renderRoundedBoxLines
  */
 
+import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -225,6 +226,19 @@ function activeToolLabel(run: RunSnapshot): string | undefined {
 	const details = nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
 	return nodes.length === 1 ? details : `${nodes.length} tools · ${details}`;
 }
+function pendingStageLabel(run: RunSnapshot): string | undefined {
+	const stages = pendingWorkflowStageStatuses(run);
+	if (stages.length === 0) return undefined;
+	const visible = stages
+		.slice(0, 2)
+		.map((stage) =>
+			stage.target === undefined
+				? `${stage.name} (${stage.stageId}) · unavailable`
+				: `${stage.name} (${stage.stageId}) → ${stage.target}`,
+		);
+	if (stages.length > 2) visible.push(`… ${stages.length - 2} more`);
+	return `pending: ${visible.join(", ")}`;
+}
 
 function metaLine(run: RunSnapshot, now: number): string {
 	if (run.endedAt !== undefined) {
@@ -235,6 +249,8 @@ function metaLine(run: RunSnapshot, now: number): string {
 	const parts: string[] = [modeLabel(run)];
 	const prog = progressLabel(run);
 	if (prog) parts.push(prog);
+	const pending = pendingStageLabel(run);
+	if (pending) parts.push(pending);
 	const tools = activeToolLabel(run);
 	if (tools) parts.push(tools);
 	const elapsed = elapsedLabel(run, now);

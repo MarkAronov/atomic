@@ -241,6 +241,70 @@ describe("workflow tool status run listing", () => {
 		assert.equal(parsed.snapshots.length, 1);
 	});
 
+	test.sequential("status text enumerates pending stages with canonical Intercom targets and truthful delivery capability", async () => {
+		const runId = `status-pending-${Date.now()}`;
+		store.recordRunStart({ ...makeInflightRun(runId), name: "pending-status" });
+		for (const [id, available] of [
+			["review-a", true],
+			["review-b", true],
+			["offline", false],
+		] as const) {
+			store.recordStageStart(runId, {
+				id,
+				name: id.startsWith("review") ? "review" : "offline",
+				status: "pending",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: available,
+			});
+		}
+		store.recordStageStart(runId, {
+			id: "legacy",
+			name: "legacy",
+			status: "pending",
+			parentIds: [],
+			toolEvents: [],
+		});
+		for (let index = 0; index < 8; index++) {
+			store.recordStageStart(runId, {
+				id: `extra-${index}`,
+				name: `extra-${index}`,
+				status: "pending",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			});
+		}
+
+		const result = await makeToolHandler()({ action: "status" }, {} as never);
+		const text = renderWorkflowToolContent(result, { action: "status" });
+		assert.match(
+			text,
+			new RegExp(
+				`pending stage: review \\(review-a\\) lifecycle=pending pendingStageDeliveryAvailable=true Intercom target=${runId}:review-a`,
+			),
+		);
+		assert.match(
+			text,
+			new RegExp(
+				`pending stage: review \\(review-b\\) lifecycle=pending pendingStageDeliveryAvailable=true Intercom target=${runId}:review-b`,
+			),
+		);
+		assert.match(
+			text,
+			/pending stage: offline \(offline\) lifecycle=pending pendingStageDeliveryAvailable=false Intercom target=unavailable/,
+		);
+		assert.match(
+			text,
+			/pending stage: legacy \(legacy\) lifecycle=pending pendingStageDeliveryAvailable=false Intercom target=unavailable/,
+		);
+		assert.doesNotMatch(text, new RegExp(`${runId}:(offline|legacy)`));
+		assert.match(text, /… 2 more pending stages; use status with runId/);
+		assert.doesNotMatch(text, new RegExp(`${runId}:extra-(6|7)`));
+		assert.match(text, /pending stage send queues before the first model turn/);
+		assert.match(text, /ask requires a live reply-capable stage/);
+	});
+
 	test.sequential("status text output reports an empty filtered listing", async () => {
 		const handler = makeToolHandler();
 		const result = await handler({ action: "status", statusFilter: "paused" }, {} as never);

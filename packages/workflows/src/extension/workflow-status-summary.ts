@@ -19,6 +19,8 @@ import {
 	isImpossibleRootLiveness,
 } from "../engine/run-liveness.js";
 import type { ExpandedWorkflowStage } from "../shared/expanded-workflow-graph.js";
+import type { PendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
+import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
@@ -95,6 +97,8 @@ export interface WorkflowRunStatusSummary {
 	/** Pause-adjusted elapsed milliseconds (prior sessions included). */
 	readonly elapsedMs: number;
 	readonly activeStages: readonly WorkflowStatusActiveStage[];
+	/** Materialized pending stages with canonical identity and truthful pre-start delivery capability. */
+	readonly pendingStages: readonly PendingWorkflowStageStatus[];
 	/** Durable, non-attachable ctx.tool graph nodes in authored order. */
 	readonly tools?: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
@@ -256,6 +260,7 @@ export function summarizeRunSnapshot(
 			name: stage.name,
 			status: stage.status,
 		})),
+		pendingStages: pendingWorkflowStageStatuses(run),
 		tools: (run.toolNodes ?? []).map((tool) => {
 			const owner = tool as typeof tool & {
 				readonly runId?: string;

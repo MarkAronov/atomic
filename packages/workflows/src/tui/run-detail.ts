@@ -18,6 +18,7 @@
  */
 
 import type { RunDetail } from "../runs/background/status.js";
+import { pendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -72,7 +73,7 @@ function renderPlain(detail: RunDetail, now: number, width: number): string {
 	if (detail.stages.length > 0 || tools.length === 0) {
 		out.push(" STAGES ");
 		if (detail.stages.length === 0) out.push("  (no stages recorded yet) ");
-		else for (const stage of detail.stages) out.push(...renderStageRowsPlain(stage, now, width - 4));
+		else for (const stage of detail.stages) out.push(...renderStageRowsPlain(detail.runId, stage, now, width - 4));
 		out.push("");
 	}
 	if (tools.length > 0) {
@@ -125,7 +126,9 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: 
 	if (detail.stages.length > 0 || tools.length === 0) {
 		out.push(` ${muted}${BOLD}STAGES${RESET} `);
 		if (detail.stages.length === 0) out.push(`  ${dim}(no stages recorded yet)${RESET} `);
-		else for (const stage of detail.stages) out.push(...renderStageRowsThemed(stage, now, theme, width - 4));
+		else
+			for (const stage of detail.stages)
+				out.push(...renderStageRowsThemed(detail.runId, stage, now, theme, width - 4));
 		out.push("");
 	}
 	if (tools.length > 0) {
@@ -235,16 +238,36 @@ function stageLineThemed(stage: StageSnapshot, now: number, theme: GraphTheme, w
 	);
 }
 
-function renderStageRowsPlain(stage: StageSnapshot, now: number, width: number): string[] {
+function renderStageRowsPlain(runId: string, stage: StageSnapshot, now: number, width: number): string[] {
 	const rows = [` ${stageLinePlain(stage, now, Math.max(1, width - 2))} `];
+	const pending = pendingWorkflowStageStatus(runId, stage);
+	if (pending !== undefined) {
+		const value = pending.target ?? `${pending.stageId} · delivery unavailable`;
+		const label = pending.target === undefined ? "pending id" : "pending target";
+		rows.push(`   ${pad(label, 16)}${truncateToWidth(value, Math.max(1, width - 21), "…")} `);
+	}
 	if (stage.error) {
 		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
 	}
 	return rows;
 }
 
-function renderStageRowsThemed(stage: StageSnapshot, now: number, theme: GraphTheme, width: number): string[] {
+function renderStageRowsThemed(
+	runId: string,
+	stage: StageSnapshot,
+	now: number,
+	theme: GraphTheme,
+	width: number,
+): string[] {
 	const rows = [` ${stageLineThemed(stage, now, theme, Math.max(1, width - 2))} `];
+	const pending = pendingWorkflowStageStatus(runId, stage);
+	if (pending !== undefined) {
+		const value = pending.target ?? `${pending.stageId} · delivery unavailable`;
+		const label = pending.target === undefined ? "pending id" : "pending target";
+		rows.push(
+			`   ${hexToAnsi(theme.textMuted)}${pad(label, 16)}${RESET}${hexToAnsi(theme.text)}${truncateToWidth(value, Math.max(1, width - 21), "…")}${RESET} `,
+		);
+	}
 	if (stage.error) {
 		const errFg = hexToAnsi(theme.error);
 		rows.push(
@@ -253,7 +276,6 @@ function renderStageRowsThemed(stage: StageSnapshot, now: number, theme: GraphTh
 	}
 	return rows;
 }
-
 function toolDisplayStatus(status: ToolNodeStatus): "pending" | "running" | "completed" | "failed" | "cancelled" {
 	return status === "cached" ? "completed" : status;
 }

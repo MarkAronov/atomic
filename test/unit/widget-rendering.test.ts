@@ -32,8 +32,13 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeStage(id: string, name: string, status: StageSnapshot["status"]): StageSnapshot {
-	return { id, name, status, parentIds: [], toolEvents: [] };
+function makeStage(
+	id: string,
+	name: string,
+	status: StageSnapshot["status"],
+	extras: Partial<StageSnapshot> = {},
+): StageSnapshot {
+	return { id, name, status, parentIds: [], toolEvents: [], ...extras };
 }
 
 function makeRun(
@@ -750,6 +755,25 @@ describe("run identity rows", () => {
 		const themedAwaiting = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 120);
 		assert.ok(themedAwaiting[1]?.includes(hexToAnsi(statusColor("awaiting_input", theme))));
 		assert.ok(themedAwaiting[1]?.includes(statusIcon("awaiting_input")));
+	});
+
+	test("wide widget names pending stages and targets while collapsed mode stays aggregate", () => {
+		const run = makeRun("widget-run", "publish", "running", [
+			makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+			makeStage("later", "later", "pending", { pendingStageDeliveryAvailable: true }),
+		]);
+		const wide = renderWidgetLines(makeSnap([run]), 160)
+			.map(stripAnsi)
+			.join("\n");
+		assert.match(wide, /pending: review \(review-a\) → widget-run:review-a/);
+		assert.match(wide, /offline \(offline\) · unavailable/);
+		assert.doesNotMatch(wide, /widget-run:offline/);
+		assert.match(wide, /… 1 more/);
+		assert.doesNotMatch(wide, /widget-run:later/);
+		const collapsed = renderWidgetLines(makeSnap([run]), 79).map(stripAnsi);
+		assert.equal(collapsed.length, 1);
+		assert.doesNotMatch(collapsed[0]!, /review|offline|widget-run/);
 	});
 
 	test("keeps every widget border line at the collapsed breakpoint", () => {

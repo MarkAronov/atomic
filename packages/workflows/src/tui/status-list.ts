@@ -21,6 +21,7 @@
  *  - src/tui/run-detail.ts per-run drill-down surface (unchanged)
  */
 
+import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
@@ -159,7 +160,27 @@ function renderRunEntry(
 	const metaSeg = theme ? `${dim}${meta}${reset}` : meta;
 	const metaLine = `   ${modeSeg}    ${strip}${" ".repeat(gap)}${metaSeg} `;
 
-	return [...identityRows, identity, metaLine];
+	return [...identityRows, identity, metaLine, ...pendingStageLines(run, interior, theme)];
+}
+
+const MAX_PENDING_STAGE_ROWS = 3;
+
+function pendingStageLines(run: RunSnapshot, width: number, theme: GraphTheme | undefined): string[] {
+	const stages = pendingWorkflowStageStatuses(run);
+	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).map((stage) => {
+		const detail = stage.target === undefined ? " · delivery unavailable" : ` → ${stage.target}`;
+		const line = truncateToWidth(`   pending: ${stage.name} (${stage.stageId})${detail}`, width, ELLIPSIS);
+		return theme === undefined ? line : `${hexToAnsi(theme.textMuted)}${line}${RESET}`;
+	});
+	if (stages.length > MAX_PENDING_STAGE_ROWS) {
+		const line = truncateToWidth(
+			`   … ${stages.length - MAX_PENDING_STAGE_ROWS} more pending stages`,
+			width,
+			ELLIPSIS,
+		);
+		visible.push(theme === undefined ? line : `${hexToAnsi(theme.dim)}${line}${RESET}`);
+	}
+	return visible;
 }
 
 function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorStatus: RunIndicatorStatus): string {

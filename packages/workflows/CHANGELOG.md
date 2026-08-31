@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Workflow status text, interactive list/detail views, and the persistent `BACKGROUND` panel now identify materialized pending stages by display name and canonical stage ID, show exact Intercom targets only when pre-start delivery is available, and distinguish unavailable pending delivery truthfully.
+
 ### Fixed
 
 - Fixed explicit and automatic stage groups so they become invocation-owned, collision-free subgroups that remain controllable from the workflow invocation while preserving sibling isolation and their exact persisted identity across active durable resume; restored symmetric isolated reviewer groups for Goal and Ralph ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
