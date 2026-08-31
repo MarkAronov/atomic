@@ -232,6 +232,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 				target: `${RUN_ID}:reviewer-id`,
 				lifecycle: "pending",
 				routeEligible: true,
+				group: `workflow:${RUN_ID}`,
 			},
 		]);
 		dispose();

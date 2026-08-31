@@ -82,7 +82,8 @@ test("separate top-level workflow invocations receive different Intercom groups"
 	assert.notEqual(groups[0], groups[1]);
 });
 
-test("explicit named and default stage groups override the workflow invocation group", async () => {
+// Regression coverage for #2784.
+test("explicit named groups become invocation-owned while default remains an escape", async () => {
 	const groups: Array<string | undefined> = [];
 	const definition = workflow({
 		name: "explicit-invocation-group-overrides",
@@ -116,7 +117,7 @@ test("explicit named and default stage groups override the workflow invocation g
 	assert.equal(result.status, "completed");
 	assert.notEqual(groups[0], undefined);
 	assert.notEqual(groups[0], "default");
-	assert.deepEqual(groups.slice(1), ["reviewers", "default"]);
+	assert.deepEqual(groups.slice(1), [`${groups[0]}/reviewers`, "default"]);
 });
 
 test("restricted stages remain in the workflow invocation Intercom group", async () => {
@@ -369,7 +370,8 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 	assert.notEqual(captures[0]?.intercomGroup, `workflow:${firstChild.id}`);
 });
 
-test("parallel and per-task group overrides take precedence over the workflow group", async () => {
+// Regression coverage for #2784.
+test("parallel overrides become invocation-owned subgroups while per-task default escapes", async () => {
 	const groups: string[] = [];
 	const definition = workflow({
 		name: "parallel-invocation-group-overrides",
@@ -407,7 +409,9 @@ test("parallel and per-task group overrides take precedence over the workflow gr
 	);
 
 	assert.equal(result.status, "completed");
-	assert.deepEqual(groups.sort(), ["default", "parallel-reviewers"]);
+	assert.equal(groups.includes("default"), true);
+	const isolated = groups.find((group) => group !== "default");
+	assert.match(isolated ?? "", /^workflow:[^/]+\/parallel-reviewers$/);
 });
 
 test("ordinary workflow traffic cannot reach an unrelated shared-default main chat", async () => {

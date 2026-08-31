@@ -75,7 +75,7 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full Intercom session ID or exact case-insensitive name. For workflow stages, first use `intercom({ action: "list" })`: materialized stages appear with an explicit `PENDING` or `RUNNING` lifecycle and the canonical exact `<runId>:<stageId>` target. `send` queues to `PENDING` and delivers immediately to `RUNNING`. Do not use the SDK `sessionId` from `workflow status` as an Intercom target. A dynamic TypeScript stage cannot be discovered until its creating call executes and materializes it in the workflow store.
+Live sessions accept an exact full Intercom session ID or exact case-insensitive name. For workflow stages, first use `intercom({ action: "list" })`: materialized stages appear as `PENDING` or `RUNNING` with canonical `<runId>:<stageId>` targets and actual groups. The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated. Use queued `send` for `PENDING`; `ask` is supported only for `RUNNING`, where an exact correlated reply returns to the invocation asker.
 
 ### Deliver to workflow stages that have not started
 

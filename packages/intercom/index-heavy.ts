@@ -65,7 +65,7 @@ interface PendingStageRouteRegistrationEvent {
 type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability" | "stages">;
 
 interface PendingStageRouteClientState {
-  readonly route: PendingStageRouteRegistration;
+	route: PendingStageRouteRegistration;
   client: IntercomClient | null;
   promise: Promise<void> | null;
   reconnectTimer: NodeJS.Timeout | null;
@@ -698,8 +698,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       reconnectAttempt: 0,
     };
     if (!existing) pendingStageRouteClients.set(runId, state);
-    if (state.client?.isConnected()) return;
-    if (state.promise) return state.promise;
+	if (state.client?.isConnected()) {
+		state.route = route;
+		state.client.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability, route.stages);
+		return;
+	}
+	if (state.promise) {
+		await state.promise;
+		return ensurePendingStageRouteClient(runId, route);
+	}
 
     const promise = (async () => {
       await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
@@ -838,7 +845,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   pi.events.on(PENDING_STAGE_ROUTE_EVENT, (payload) => {
     if (!isPendingStageRouteRegistrationEvent(payload)) return;
-    pendingStageRoutes.set(payload.runId, { group: payload.group, capability: payload.capability });
+	pendingStageRoutes.set(payload.runId, {
+		group: payload.group,
+		capability: payload.capability,
+		...(payload.stages === undefined ? {} : { stages: payload.stages }),
+	});
     const completion = ensureConnected("background").then((activeClient) =>
       registerPendingStageRoute(activeClient, payload.runId, payload),
     );

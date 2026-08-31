@@ -848,23 +848,17 @@ describe("workflow-first execution routing", () => {
 		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
 	});
 
-	test("requires workflow-group discovery and membership before stage steering", async () => {
+	test("documents directional invocation control before workflow-stage steering", async () => {
+		// Regression: #2784
+		const required = ["workflow:<rootRunId>", "invocation context", "owned", "subgroup"];
 		const routingGuidance = workflowGuidance.join("\n");
-		for (const phrase of [
-			"Before steering a stage, join its invocation group",
-			"Intercom `groups` action to discover it",
-			"Workflow invocation groups are named `workflow:<rootRunId>`",
-		]) {
+		for (const phrase of required) {
 			assert.ok(routingGuidance.includes(phrase), `workflow routing guidance should include: ${phrase}`);
 		}
 
 		for (const path of ["packages/intercom/skills/intercom/SKILL.md", "packages/coding-agent/docs/intercom.md"]) {
 			const guidance = await readRepositoryFile(path);
-			for (const phrase of [
-				"Before steering a stage, join its invocation group",
-				"Intercom `groups` action to discover it",
-				"Workflow invocation groups are named `workflow:<rootRunId>`",
-			]) {
+			for (const phrase of required) {
 				assert.ok(guidance.includes(phrase), `${path} should include: ${phrase}`);
 			}
 		}

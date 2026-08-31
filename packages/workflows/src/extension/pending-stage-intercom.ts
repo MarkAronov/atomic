@@ -103,6 +103,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 						target: `${run.id}:${stage.id}`,
 						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
 						routeEligible: true,
+						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
 					})),
 			});
 		}

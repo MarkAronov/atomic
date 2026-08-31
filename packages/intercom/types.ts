@@ -36,6 +36,8 @@ export interface WorkflowStageRosterAnnouncement {
 	readonly target: string;
 	readonly lifecycle: "pending" | "running";
 	readonly routeEligible: boolean;
+	/** Actual stage group after workflow invocation ownership resolution. */
+	readonly group: string;
 }
 
 

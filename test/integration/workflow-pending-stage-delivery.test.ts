@@ -533,13 +533,19 @@ test("the production owner route preserves pending delivery through tool restric
 			name: "explicit-isolated-group",
 			runId: "dc107fa8-bf94-4cbc-8e56-7768db6ff10d",
 			options: { tools: ["intercom"], group: "isolated-reviewers" },
-			acceptsPending: false,
+			acceptsPending: true,
 		},
 		{
-			name: "exact-owner-group",
-			runId: "f87f3f73-0f31-491b-a487-6955cc163dc4",
-			options: { tools: ["intercom"], group: "workflow:f87f3f73-0f31-491b-a487-6955cc163dc4" },
+			name: "automatic-isolated-group",
+			runId: "dc107fa9-bf94-4cbc-8e56-7768db6ff10d",
+			options: { tools: ["intercom"], group: true },
 			acceptsPending: true,
+		},
+		{
+			name: "explicit-default-escape",
+			runId: "f87f3f73-0f31-491b-a487-6955cc163dc4",
+			options: { tools: ["intercom"], group: "default" },
+			acceptsPending: false,
 		},
 		{
 			name: "default-tools",
@@ -631,10 +637,11 @@ test("the production owner route preserves pending delivery through tool restric
 	}
 });
 
-test("an explicit isolated stage refuses pending workflow delivery but keeps ordinary live Intercom", async () => {
+// Regression coverage for #2784.
+test("an invocation controls pending and live delivery into an owned isolated stage", async () => {
 	const runId = "7d8db053-d87c-49da-9487-9dc06c41aa74";
 	const workflowGroup = `workflow:${runId}`;
-	const isolatedGroup = "isolated-reviewers";
+	const isolatedGroup = `${workflowGroup}/isolated-reviewers`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: runId, name: "isolated-live", inputs: {}, status: "running", createdAt: 1 });
@@ -648,6 +655,8 @@ test("an explicit isolated stage refuses pending workflow delivery but keeps ord
 	rawClients.add(workflowSender);
 	const stageRegistered = Promise.withResolvers<void>();
 	const releaseStageInitialization = Promise.withResolvers<void>();
+	const stageReadyForInvocationAsk = Promise.withResolvers<void>();
+	const releaseStageAfterInvocationReply = Promise.withResolvers<void>();
 	let stageFixture: ReturnType<typeof extensionFixture> | undefined;
 	let stageContext: TestContext["orchestrationContext"] | undefined;
 	const adapters = {
@@ -699,6 +708,8 @@ test("an explicit isolated stage refuses pending workflow delivery but keeps ord
 						const reply = await executeIntercom(peer, { action: "reply", message: "isolated answer" });
 						assert.equal(reply.details.delivered, true);
 						assert.match((await asked).content[0]?.text ?? "", /isolated answer/);
+						stageReadyForInvocationAsk.resolve();
+						await releaseStageAfterInvocationReply.promise;
 						return "isolated live intercom remained usable";
 					},
 					async steer() {},
@@ -760,26 +771,63 @@ test("an explicit isolated stage refuses pending workflow delivery but keeps ord
 		workflowSender.send({
 			type: "send",
 			to: `${runId}:reviewer`,
-			message: { id: messageId, timestamp: 1, content: { text: "must not cross into isolated stage" } },
+			message: { id: messageId, timestamp: 1, content: { text: "queued invocation control" } },
 		});
 		assert.deepEqual(await workflowSender.nextDeliveryAcknowledgment(messageId), {
-			type: "delivery_failed",
+			type: "queued",
 			messageId,
-			reason: `Workflow stage ${runId}:reviewer cannot receive Intercom messages before startup`,
+			runId,
+			stageKey: "reviewer",
+			position: 1,
 		});
-		assert.deepEqual(store.runs()[0]?.pendingStageMessages ?? [], []);
-		assert.deepEqual(backend.getWorkflow(runId)?.pendingStageMessages, []);
+		assert.equal(store.runs()[0]?.stages[0]?.intercomGroup, isolatedGroup);
+		assert.equal(store.pendingStageMessagesFor(runId, "reviewer").length, 1);
+		assert.equal(backend.getWorkflow(runId)?.pendingStageMessages?.length, 1);
+		let roster: Array<{ target: string; group: string }> = [];
+		for (let attempt = 0; attempt < 20 && roster.length === 0; attempt += 1) {
+			const listRequestId = `isolated-roster-list-${attempt}`;
+			workflowSender.send({ type: "list", requestId: listRequestId });
+			const directory = await workflowSender.next("sessions", (message) => message.requestId === listRequestId);
+			roster = (directory.workflowStages ?? []).map((stage) => ({ target: stage.target, group: stage.group }));
+			if (roster.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		const stageTarget = `${runId}:${store.runs()[0]?.stages[0]?.id}`;
+		assert.deepEqual(roster, [{ target: stageTarget, group: isolatedGroup }]);
 
 		releaseStageInitialization.resolve();
+		await stageReadyForInvocationAsk.promise;
+		const questionId = "isolated-live-ask";
+		workflowSender.send({
+			type: "send",
+			to: stageTarget,
+			message: {
+				id: questionId,
+				timestamp: 2,
+				expectsReply: true,
+				content: { text: "reply across invocation control" },
+			},
+		});
+		assert.equal((await workflowSender.nextDeliveryAcknowledgment(questionId)).type, "delivered");
+		assert.ok(stageFixture);
+		await stageFixture.waitForInjectedCount(1);
+		const invocationReply = await executeIntercom(stageFixture, {
+			action: "reply",
+			message: "correlated isolated-stage answer",
+		});
+		assert.equal(invocationReply.details.delivered, true);
+		const correlatedReply = await workflowSender.next("message", (message) => message.message.replyTo === questionId);
+		assert.equal(correlatedReply.message.content.text, "correlated isolated-stage answer");
+		releaseStageAfterInvocationReply.resolve();
 		const result = await runPromise;
 		assert.equal(result.status, "completed", JSON.stringify(result, undefined, 2));
 		assert.equal(result.result?.result, "isolated live intercom remained usable");
 		assert.equal(stageContext?.intercomGroup, isolatedGroup);
-		assert.equal(stageContext?.pendingStageDelivery, undefined);
+		assert.ok(stageContext?.pendingStageDelivery);
 		assert.ok(stageFixture);
 		assert.equal(peer.injectedMessages.length, 2);
 	} finally {
 		releaseStageInitialization.resolve();
+		releaseStageAfterInvocationReply.resolve();
 		if (runPromise !== undefined) await runPromise;
 		if (stageFixture !== undefined) await stageFixture.shutdown();
 		await workflowSender.close();

@@ -284,6 +284,7 @@ test("workflow roster lists pending and running stages only inside its invocatio
 			target: `${runId}:reviewer-id`,
 			lifecycle: "pending",
 			routeEligible: true,
+			group,
 		},
 	]);
 	await owner.listSessions();
@@ -311,6 +312,59 @@ test("workflow roster lists pending and running stages only inside its invocatio
 	owner.registerPendingStageRoute(runId, group, capability, []);
 	await owner.listSessions();
 	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+});
+
+test("invocation roster control is directional across owned subgroups", async () => {
+	// Regression: #2784
+	const runId = "27840001-3528-413e-84c4-87a43e5037a2";
+	const invocation = `workflow:${runId}`;
+	const subgroupA = `${invocation}/reviewers-a`;
+	const subgroupB = `${invocation}/reviewers-b`;
+	const capability = "directional-roster-capability";
+	const owner = new IntercomClient();
+	const memberA = new IntercomClient();
+	const memberB = new IntercomClient();
+	const otherRun = new IntercomClient();
+	for (const client of [owner, memberA, memberB, otherRun]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("owner", invocation));
+	await memberA.connect(productionRegistration("member-a", subgroupA));
+	await memberB.connect(productionRegistration("member-b", subgroupB));
+	await otherRun.connect(productionRegistration("other-run", "workflow:other-run"));
+	owner.registerPendingStageRoute(runId, invocation, capability, [
+		{
+			stageId: "a",
+			stageName: "a",
+			target: `${runId}:a`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group: subgroupA,
+		},
+		{
+			stageId: "b",
+			stageName: "b",
+			target: `${runId}:b`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group: subgroupB,
+		},
+	]);
+	await owner.listSessions();
+	assert.deepEqual((await owner.listDirectory()).workflowStages.map((stage) => stage.stageId).sort(), ["a", "b"]);
+	assert.deepEqual(
+		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["a"],
+	);
+	assert.deepEqual(
+		(await memberB.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["b"],
+	);
+	assert.deepEqual((await otherRun.listDirectory()).workflowStages, []);
+	const lateralPeek = await memberA.listDirectory(subgroupB);
+	assert.deepEqual(lateralPeek.sessions, []);
+	assert.deepEqual(lateralPeek.workflowStages, []);
 });
 
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
