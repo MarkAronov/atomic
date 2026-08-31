@@ -6,6 +6,7 @@
  * support for the run listing, and the agent-visible text/json output.
  */
 import { beforeEach, describe, test } from "vitest";
+import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import type { WorkflowRunStatusSummary } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
@@ -17,6 +18,7 @@ import {
 	makeExecuteWorkflowTool,
 	makeInflightRun,
 	recordTerminalRun,
+	renderResult,
 	store,
 } from "./slash-dispatch-utils.js";
 
@@ -303,6 +305,89 @@ describe("workflow tool status run listing", () => {
 		assert.doesNotMatch(text, new RegExp(`${runId}:extra-(6|7)`));
 		assert.match(text, /pending stage send queues before the first model turn/);
 		assert.match(text, /ask requires a live reply-capable stage/);
+	});
+
+	test.sequential("nested pending stages render the exact canonical target published by the Intercom roster", async () => {
+		const rootRunId = "11111111-1111-4111-8111-111111111111";
+		const childRunId = "22222222-2222-4222-8222-222222222222";
+		const rootStageId = "root-review";
+		const childStageId = "child-review";
+		store.recordRunStart({
+			...makeInflightRun(rootRunId),
+			name: "root workflow",
+			stages: [
+				{
+					id: rootStageId,
+					name: "review",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child workflow", runId: childRunId },
+				},
+			],
+		});
+		store.recordRunStart({
+			...makeInflightRun(childRunId),
+			name: "child workflow",
+			parentRunId: rootRunId,
+			parentStageId: "child-boundary",
+			rootRunId,
+			stages: [
+				{
+					id: childStageId,
+					name: "review",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+		});
+
+		const routes: Array<{
+			runId: string;
+			stages: Array<{ stageId: string; target: string }>;
+		}> = [];
+		const dispose = registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit(event, payload) {
+						if (event === "atomic:workflow-pending-stage-route") routes.push(payload as (typeof routes)[number]);
+					},
+				},
+			},
+			store,
+		);
+		const childRosterTarget = routes
+			.find((route) => route.runId === childRunId)
+			?.stages.find((stage) => stage.stageId === childStageId)?.target;
+		dispose();
+		assert.equal(childRosterTarget, `${childRunId}:${childStageId}`);
+
+		const handler = makeToolHandler();
+		const result = await handler({ action: "status" }, {} as never);
+		const toolText = renderWorkflowToolContent(result, { action: "status" });
+		const listText = renderResult(result, { plain: true, width: 200 });
+		const detailResult = await handler({ action: "status", runId: rootRunId }, {} as never);
+		const detailText = renderResult(detailResult, { plain: true, width: 200 });
+
+		for (const rendered of [toolText, listText]) {
+			assert.ok(rendered.includes(`review (${childStageId})`), rendered);
+		}
+		for (const rendered of [toolText, listText, detailText]) {
+			assert.ok(rendered.includes(childRosterTarget), rendered);
+			assert.ok(!rendered.includes(`${rootRunId}:${childRunId}:${childStageId}`), rendered);
+		}
+		assert.match(toolText, new RegExp(`review \\(${rootStageId}\\).*${rootRunId}:${rootStageId}`));
 	});
 
 	test.sequential("status text output reports an empty filtered listing", async () => {

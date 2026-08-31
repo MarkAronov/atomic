@@ -1,3 +1,4 @@
+import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
 import type { RunSnapshot, StageSnapshot } from "./store-types.js";
 
 /** Actionable identity and pre-start delivery state for one materialized pending stage. */
@@ -10,18 +11,28 @@ export interface PendingWorkflowStageStatus {
 	readonly target?: string;
 }
 
+function pendingStageTarget(
+	runId: string,
+	stage: StageSnapshot,
+): Pick<ExpandedWorkflowStage["workflowGraphTarget"], "runId" | "stageId"> {
+	return "workflowGraphTarget" in stage
+		? (stage as ExpandedWorkflowStage).workflowGraphTarget
+		: { runId, stageId: stage.id };
+}
+
 export function pendingWorkflowStageStatus(
 	runId: string,
 	stage: StageSnapshot,
 ): PendingWorkflowStageStatus | undefined {
 	if (stage.status !== "pending") return undefined;
 	const pendingStageDeliveryAvailable = stage.pendingStageDeliveryAvailable === true;
+	const identity = pendingStageTarget(runId, stage);
 	return {
-		stageId: stage.id,
+		stageId: identity.stageId,
 		name: stage.name,
 		lifecycle: "pending",
 		pendingStageDeliveryAvailable,
-		...(pendingStageDeliveryAvailable ? { target: `${runId}:${stage.id}` } : {}),
+		...(pendingStageDeliveryAvailable ? { target: `${identity.runId}:${identity.stageId}` } : {}),
 	};
 }
 
