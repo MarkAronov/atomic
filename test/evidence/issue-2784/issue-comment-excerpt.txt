@@ -1,54 +1,125 @@
-RENDERING FIX CONFIRMATION
-Tested implementation commit: 9ae154f798426c3c6237e03f7270d56258a42a4b
-Root run: 696ecda7-ee76-45df-92b0-42a5cdeccbe5
+ISSUE #2784 FIXED-COMMIT LIVE ACCEPTANCE EXCERPT
+Tested implementation commit: ff4934664552e020f0a3c3feb877ee70e321b56f
+Root run: 8452ad66-a1d7-46e8-b76b-4519daa7fa9d
 
- intercom send 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50
- ✓ Message queued for 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50 (bc661fe5-dd7b-4776-8bf6-388140aa1db1)
+ANNOTATION (not part of captured pane output)
+All scenarios passed against a broker spawned from this worktree. The blocks below are unmodified tmux captures.
 
-The prior `✗ Message queued` output was a rendering defect; durable queueing succeeded. The corrected renderer now shows the successful queued result with `✓`.
+MAIN CHAT — canonical discovery, live/pending sends, raw-ID refusal, inline ask resolution
+ Thinking...
 
-EARLIER FULL DURABILITY E2E
-Tested commit: 81c738e97019e3cebccb2e055c8cbbd27c86d211
-Root run: 645f0282-5fb2-49a6-81f3-1461ff00732f
-
-MAIN CHAT — joined invocation group and discovered RUNNING + PENDING canonical targets
 
  intercom join
- ✓ Joined intercom group "workflow:645f0282-5fb2-49a6-81f3-1461ff00732f". Memberships: default, workflow:645f0282-5fb2-49a6-81f3-1461ff00732f.
+ ✓ Joined intercom group "workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d". Memberships: default, workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d.
+
+
 
  intercom list
- ✓ Current session (groups: default, workflow:645f0282-5fb2-49a6-81f3-1461ff00732f):
- • subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (dd32ba7b-48e4-46d2-aa00-819cad491baf) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self,
- tool:intercom]
+ ✓ Current session (groups: default, workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d):
+ • subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (259e049b-bc92-4457-bda6-3faf665e4b19) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self, tool:intercom]
 
  Other visible sessions and workflow stages:
- • Unnamed session (8c10db8e-aeb5-4871-8db4-20fcd3392e97) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [same cwd, idle, group:
- workflow:645f0282-5fb2-49a6-81f3-1461ff00732f]
- - running-isolated — workflow stage [RUNNING] — target: `645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837` — intercom session:
- d76b3985-a4c1-4277-82a7-bf5c0cd6aff9
- - future-isolated — workflow stage [PENDING] — target: `645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f`
+ • Unnamed session (acd4a089-7e98-421f-8158-ab626180efa8) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [same cwd, idle, group: workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d]
+ - running-isolated — workflow stage [RUNNING] — target: `8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8` — intercom session: 95356b1d-98fc-438c-ae43-bec440f2b32b
+ - future-isolated — workflow stage [PENDING] — target: `8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac`
 
-MAIN CHAT — pending send acknowledged before stage initialization
-(Literal capture at 81c738e970, BEFORE the renderer fix. The durable queue SUCCEEDED here —
-note the "Message queued for" text and the message id — but the result was mis-rendered with
-the error glyph because the queued path sets delivered:false. Commit 9ae154f798 fixes exactly
-that; the corrected live capture is the ✓ line at the top of this file.)
 
- intercom send 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f
- ✗ Message queued for 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f (889fae12-9d05-43ba-aab7-bcfd684cd6e8)
 
-FUTURE STAGE — token was already present in its first model turn and was quoted
+ intercom send 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8
+ ✓ Message sent to 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8 (01b26066-344f-4231-9096-8ce225af478b)
 
-   STAGE  issue-2784-e2e / future-isolated                                                                                             session 01a05941-8b92-7254-b2a4-e5eba1b6e0e5
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-╭ 📨 From: subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────╮
-│**Messages received before you started**                                                                                                                                          │
-│                                                                                                                                                                                  │
-│Sent: 2026-08-31T19:15:39.755Z                                                                                                                                                    │
-│                                                                                                                                                                                  │
-│PENDING-PROOF-2784-RERUN-B72C                                                                                                                                                     │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ intercom send 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac
+ ✓ Message queued for 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:3b0f4918-9d9f-4df4-81ec-39623656c5ac (5e87b90c-59db-4365-a398-c36555d80650)
+
+
+workflow: list retained runs
+╭ RUN issue-2784-e2e  ● running ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ run id  8452ad66-a1d7-46e8-b76b-4519daa7fa9d                                                                                                                                                         │
+│                                                                                                                                                                                                      │
+│ workflow      issue-2784-e2e                                                                                                                                                                         │
+│ state         ● running                                                                                                                                                                              │
+│ mode          chain · 2 stages                                                                                                                                                                       │
+│ started       21:27:38                                                                                                                                                                               │
+│ elapsed       1m                                                                                                                                                                                     │
+│                                                                                                                                                                                                      │
+│ STAGES                                                                                                                                                                                               │
+│ ● running-isola…  running                   1m                                                                                                                                                       │
+│ ○ future-isolat…  pending                                                                                                                                                                            │
+│                                                                                                                                                                                                      │
+│ ▸ workflow interrupt   id=8452ad66-a1d7-46e8-b76b-4519daa7fa9d    cancel                                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Thinking...
+
+
+ intercom send 01a059b8-807a-747e-9f37-423c26b6042a
+ ✗ Message to "01a059b8-807a-747e-9f37-423c26b6042a" was not delivered: Session not found (bc883534-011d-4874-bc19-7c8606cc1cf5)
+
+
+
+ intercom ask 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8
+ ✓ Reply from 8452ad66-a1d7-46e8-b76b-4519daa7fa9d:89b5736c-ba42-44a0-9562-f45bcb8a19e8:
+ ASK-REPLY-PROOF-2784-OK
+
+
+RUNNING STAGE — live token, correlated reply, sibling isolation
+╭ 📨 From: subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────────────────────────╮
+│LIVE-SEND-PROOF-2784-FINAL-7C91                                                                                                                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+╭ 📨 From: subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────────────────────────╮
+│Reply via intercom with ASK-REPLY-PROOF-2784-FINAL-QUESTION                                                                                                                                           │
+│                                                                                                                                                                                                      │
+│ ↩ To reply: intercom({ action: "reply", message: "..." })                                                                                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Inspecting injected message contexts
+
+
+ intercom pending
+ ✓ Pending asks:
+ - subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 · 7999865e-211d-4e00-a493-77887b3698d9 · 86s ago · Reply via intercom with ASK-REPLY-PROOF-2784-FINAL-QUESTION
+
+
+ Requesting exact message ID
+
+
+ intercom reply
+ ✓ Reply sent to subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (9c1763a1-1712-42c8-a590-8bb050bd2250)
+
+
+ Listing beta subgroup stages
+
+
+ intercom list
+ ✓ Current session (groups: workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/alpha):
+ • subagent-chat-01a059b8-807a-747e-9f37-423c26b6042a (95356b1d-98fc-438c-ae43-bec440f2b32b) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self, tool:intercom, group:
+ workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/alpha]
+
+ Other sessions and workflow stages:
+ No other sessions or workflow stages share any of your groups.
+
+
+ Clarifying unique token quoting
+
+ Normal message token: LIVE-SEND-PROOF-2784-FINAL-7C91
+
+ Replied to the pending ask with ASK-REPLY-PROOF-2784-OK.
+
+ No stage in the beta sibling subgroup was visible in intercom list.
+
+FUTURE STAGE — queued token present before first turn, sibling isolation
+╭ 📨 From: subagent-chat-01a059b8-1019-7985-a812-c579836c8cc5 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────────────────────────╮
+│**Messages received before you started**                                                                                                                                                              │
+│                                                                                                                                                                                                      │
+│Sent: 2026-08-31T21:28:36.753Z                                                                                                                                                                        │
+│                                                                                                                                                                                                      │
+│PENDING-PROOF-2784-FINAL-5D82                                                                                                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
  ISSUE-2784 LIVE E2E FUTURE STAGE.
  Before doing anything else, inspect the messages already present in your FIRST TURN context.
@@ -56,25 +127,19 @@ FUTURE STAGE — token was already present in its first model turn and was quote
  Then call intercom list and state whether the alpha sibling subgroup's running-isolated stage is visible.
  Return a concise receipt.
 
- Receipt: PENDING-PROOF-2784-RERUN-B72C
 
-MAIN CHAT → ISOLATED ALPHA STAGE → MAIN CHAT — ask/reply resolved inline
+ Preparing token completion and intercom call
 
- intercom ask 645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837
 
-╭ 📨 From: subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────╮
-│Reply via intercom with ASK-REPLY-PROOF-2784-RERUN-QUESTION                                                                                                                       │
-│                                                                                                                                                                                  │
-│ ↩ To reply: intercom({ action: "reply", message: "..." })                                                                                                                        │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ intercom list
+ ✓ Current session (groups: workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/beta):
+ • subagent-chat-01a059bb-0e93-767c-88de-35df4da12b5f (8e5ce406-37ec-4dd9-b9a0-23bae9e34b0e) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self, tool:intercom, group:
+ workflow:8452ad66-a1d7-46e8-b76b-4519daa7fa9d/beta]
 
- intercom pending
- ✓ Pending asks:
- - subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 · a4d371b7-4295-4dd7-b7f9-9a11b48eef56 · 104s ago · Reply via intercom with ASK-REPLY-PROOF-2784-RERUN-QUESTION
+ Other sessions and workflow stages:
+ No other sessions or workflow stages share any of your groups.
 
- intercom reply
- ✓ Reply sent to subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (b56a2410-9d85-4f63-a3b4-a13e8b557b57)
 
- intercom ask 645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837
- ✓ Reply from 645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837:
- ASK-REPLY-PROOF-2784-OK
+ Received token: PENDING-PROOF-2784-FINAL-5D82
+
+ Intercom list checked. The alpha sibling subgroup’s running-isolated stage is not visible.
