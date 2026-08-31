@@ -539,9 +539,7 @@ InteractiveModeBase.prototype.formatDisplayPath = function (this: InteractiveMod
 };
 
 InteractiveModeBase.prototype.formatExtensionDisplayPath = function (this: InteractiveModeBase, path: string): string {
-	let result = this.formatDisplayPath(path);
-	result = result.replace(/\/index\.ts$/, "").replace(/\/index\.js$/, "");
-	return result;
+	return this.formatDisplayPath(path).replace(/[\\/]index\.(?:ts|js)$/, "");
 };
 
 InteractiveModeBase.prototype.formatContextPath = function (this: InteractiveModeBase, p: string): string {

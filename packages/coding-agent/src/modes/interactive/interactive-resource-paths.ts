@@ -145,18 +145,20 @@ InteractiveModeBase.prototype.getCompactExtensionLabels = function (
 ): string[] {
 	const nonPackageExtensions = extensions
 		.map((extension) => {
-			const segments = this.getCompactDisplayPathSegments(extension.path);
+			const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
+			const segments = builtinLabel ? [builtinLabel] : this.getCompactDisplayPathSegments(extension.path);
 			const lastSegment = segments[segments.length - 1];
-			if (segments.length > 1 && (lastSegment === "index.ts" || lastSegment === "index.js")) {
+			if (!builtinLabel && segments.length > 1 && (lastSegment === "index.ts" || lastSegment === "index.js")) {
 				segments.pop();
 			}
 			return {
 				path: extension.path,
 				sourceInfo: extension.sourceInfo,
 				segments,
+				builtinLabel,
 			};
 		})
-		.filter((extension) => !this.isPackageSource(extension.sourceInfo));
+		.filter((extension) => extension.builtinLabel || !this.isPackageSource(extension.sourceInfo));
 
 	return extensions.map((extension) => {
 		const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);

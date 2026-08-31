@@ -222,6 +222,39 @@ describe("InteractiveMode.showLoadedResources", () => {
 		}
 	});
 
+	test("keeps builtin compact labels while disambiguating colliding local extensions", () => {
+		const builtins = createBuiltinExtensionFixtures();
+		const renderExtensions = (extensions: ExtensionFixture[]): string => {
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: false,
+				toolOutputExpanded: false,
+				extensions,
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+			return normalizeRenderedOutput(fakeThis.chatContainer);
+		};
+
+		expect(renderExtensions(builtins)).toContain("[Extensions]\n  intercom, mcp, subagents, web-access, workflows");
+		expect(
+			renderExtensions([
+				...builtins,
+				{ path: "/tmp/user/extensions/workflows/index.ts", sourceInfo: createSourceInfo("local", "user") },
+			]),
+		).toContain("[Extensions]\n  extensions/workflows, intercom, mcp, subagents, web-access, workflows");
+	});
+
+	test("strips index entry names from Windows extension display paths", () => {
+		const fakeThis = createShowLoadedResourcesThis({ quietStartup: false });
+
+		expect(fakeThis.formatExtensionDisplayPath("C:\\atomic\\extensions\\example\\index.ts")).toBe(
+			"C:\\atomic\\extensions\\example",
+		);
+		expect(fakeThis.formatExtensionDisplayPath("C:\\atomic\\extensions\\example\\index.js")).toBe(
+			"C:\\atomic\\extensions\\example",
+		);
+	});
+
 	test("keeps verified bundled extension source paths in the expanded listing", () => {
 		const extensions = createBuiltinExtensionFixtures();
 		const fakeThis = createShowLoadedResourcesThis({
@@ -235,7 +268,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		const output = normalizeRenderedOutput(fakeThis.chatContainer);
 		for (const extension of extensions) {
-			expect(output).toContain(fakeThis.formatExtensionDisplayPath(extension.path));
+			const expectedPath = fakeThis.formatExtensionDisplayPath(extension.path).replace(/\\/g, "/");
+			expect(output).toContain(expectedPath);
 		}
 	});
 
