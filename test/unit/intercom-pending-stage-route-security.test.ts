@@ -259,6 +259,60 @@ function productionRegistration(name: string | undefined, group: string) {
 	};
 }
 
+test("workflow roster lists pending and running stages only inside its invocation group", async () => {
+	// Regression: #2784
+	const runId = "27840000-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "workflow-roster-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, stage, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("owner", group));
+	await stage.connect(productionRegistration("reviewer", group));
+	await member.connect(productionRegistration("member", group));
+	await outsider.connect(productionRegistration("outsider", "other-group"));
+
+	owner.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+		},
+	]);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowStages, [
+		{
+			kind: "workflow-stage",
+			runId,
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			group,
+		},
+	]);
+	assert.deepEqual((await outsider.listDirectory()).workflowStages, []);
+
+	stage.registerPendingStageRoute(runId, group, capability);
+	await stage.listSessions();
+	await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-id", "reviewer"], capability);
+	assert.deepEqual(
+		(await member.listDirectory()).workflowStages.map(({ lifecycle, sessionId }) => ({ lifecycle, sessionId })),
+		[{ lifecycle: "running", sessionId: stage.sessionId }],
+	);
+
+	owner.registerPendingStageRoute(runId, group, capability, []);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+});
+
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
 	const runId = "13ec4058-3528-413e-84c4-87a43e5037a2";
 	const group = `workflow:${runId}`;

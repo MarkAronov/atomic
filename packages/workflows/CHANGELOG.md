@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed builtin Goal reviewers using a turn-global Intercom group instead of their invocation-unique workflow group, restoring discoverable pending/live routes and cross-run isolation ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+
 ## [0.9.16] - 2026-08-29
 
 Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

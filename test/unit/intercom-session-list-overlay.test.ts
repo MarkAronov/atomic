@@ -69,6 +69,26 @@ test("session-list overlay keeps full IDs accessible while fitting every rendere
 	}
 });
 
+test("session-list overlay labels discoverable workflow stages with exact targets", () => {
+	// Regression: #2784
+	const current = session(CURRENT_ID, "planner");
+	const target = "27840000-3528-413e-84c4-87a43e5037a2:reviewer-id";
+	const overlay = new SessionListOverlay(theme, new KeybindingsManager(), current, [], () => {}, [
+		{
+			kind: "workflow-stage",
+			runId: "27840000-3528-413e-84c4-87a43e5037a2",
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target,
+			lifecycle: "pending",
+			group: "workflow:27840000-3528-413e-84c4-87a43e5037a2",
+		},
+	]);
+	const output = plain(overlay.render(80)).join("\n");
+	assert.match(output, /reviewer \[PENDING\]/);
+	assert.match(output, new RegExp(target));
+});
+
 test("inline-message marks clipped full sender and reply IDs with visible ellipses", () => {
 	const from = session(CURRENT_ID, "");
 	const message: Message = {

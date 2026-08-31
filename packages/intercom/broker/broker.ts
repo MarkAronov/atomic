@@ -6,7 +6,14 @@ import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
-import type { SessionInfo, Message, BrokerMessage, SupervisorRegistration } from "../types.js";
+import type {
+	SessionInfo,
+	Message,
+	BrokerMessage,
+	SupervisorRegistration,
+	WorkflowStageRosterAnnouncement,
+	WorkflowStageRosterEntry,
+} from "../types.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
@@ -39,6 +46,13 @@ interface PendingStageRouteRegistration {
   readonly group: string;
   readonly capability: string;
 }
+
+interface WorkflowRosterRegistration {
+	readonly ownerSessionId: string;
+	readonly group: string;
+	readonly stages: WorkflowStageRosterAnnouncement[];
+}
+
 
 interface PendingStageAcknowledgment {
   readonly ownerSessionId: string;
@@ -116,6 +130,24 @@ function isSupervisorRegistration(value: unknown): value is SupervisorRegistrati
     && typeof registration.supervisorSessionId === "string";
 }
 
+function isWorkflowStageRosterAnnouncements(value: unknown, runId: string): value is WorkflowStageRosterAnnouncement[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(stage) =>
+				typeof stage === "object" &&
+				stage !== null &&
+				typeof (stage as WorkflowStageRosterAnnouncement).stageId === "string" &&
+				typeof (stage as WorkflowStageRosterAnnouncement).stageName === "string" &&
+				(stage as WorkflowStageRosterAnnouncement).target ===
+					`${runId}:${(stage as WorkflowStageRosterAnnouncement).stageId}` &&
+				((stage as WorkflowStageRosterAnnouncement).lifecycle === "pending" ||
+					(stage as WorkflowStageRosterAnnouncement).lifecycle === "running") &&
+				typeof (stage as WorkflowStageRosterAnnouncement).routeEligible === "boolean",
+		)
+	);
+}
+
 
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
@@ -128,6 +160,7 @@ class IntercomBroker {
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
 	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
   private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
+  private workflowRosters = new Map<string, WorkflowRosterRegistration>();
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
 
   constructor() {
@@ -202,6 +235,33 @@ class IntercomBroker {
     this.liveWorkflowStageRoutes.delete(target);
     return undefined;
   };
+
+  private workflowStagesVisibleTo(requester: SessionInfo, selectedGroup?: string): WorkflowStageRosterEntry[] {
+	const requesterGroups = sessionGroups(requester);
+	const entries: WorkflowStageRosterEntry[] = [];
+	for (const [runId, roster] of this.workflowRosters) {
+		if (selectedGroup === undefined ? !requesterGroups.has(roster.group) : normalizeGroup(selectedGroup) !== roster.group) {
+			continue;
+		}
+		for (const stage of roster.stages) {
+			if (!stage.routeEligible) continue;
+			const live = this.liveWorkflowStageRoutes.get(stage.target);
+			const liveSession = live === undefined ? undefined : this.sessions.get(live.sessionId);
+			if (stage.lifecycle === "running" && liveSession === undefined) continue;
+			entries.push({
+				kind: "workflow-stage",
+				runId,
+				stageId: stage.stageId,
+				stageName: stage.stageName,
+				target: stage.target,
+				lifecycle: liveSession === undefined ? "pending" : "running",
+				group: roster.group,
+				...(liveSession === undefined ? {} : { sessionId: liveSession.info.id }),
+			});
+		}
+	}
+	return entries;
+  }
 
   private acknowledgeLiveWorkflowStageRoute(requestId: string): void {
     const activation = this.liveWorkflowStageRouteActivations.get(requestId);
@@ -662,7 +722,12 @@ class IntercomBroker {
         const sessions = typeof clientMessage.group === "string"
 			? sessionsInGroup(this.sessions, clientMessage.group)
 			: sessionsVisibleTo(this.sessions, requester.info);
-        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
+        writeMessage(socket, {
+			type: "sessions",
+			requestId: clientMessage.requestId,
+			sessions,
+			workflowStages: this.workflowStagesVisibleTo(requester.info, clientMessage.group),
+		});
         break;
       }
 
@@ -733,10 +798,20 @@ class IntercomBroker {
           break;
         }
         this.pendingStageRoutes.set(clientMessage.runId, {
-          sessionId: currentId,
-          group: ownerGroup,
-          capability: clientMessage.capability,
-        });
+			sessionId: currentId,
+			group: ownerGroup,
+			capability: clientMessage.capability,
+		});
+		if (clientMessage.stages !== undefined) {
+			if (!isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId)) {
+				throw new Error("Invalid workflow-stage roster");
+			}
+			this.workflowRosters.set(clientMessage.runId, {
+				ownerSessionId: currentId,
+				group: ownerGroup,
+				stages: clientMessage.stages,
+			});
+		}
         break;
       }
 
@@ -873,8 +948,10 @@ class IntercomBroker {
     }
 
     for (const [runId, owner] of this.pendingStageRoutes) {
-      if (owner.sessionId === sessionId) this.pendingStageRoutes.delete(runId);
-    }
+		if (owner.sessionId !== sessionId) continue;
+		this.pendingStageRoutes.delete(runId);
+		this.workflowRosters.delete(runId);
+	}
     for (const [requestId, pending] of this.pendingStageAcknowledgments) {
       if (pending.ownerSessionId !== sessionId) continue;
       clearTimeout(pending.timeout);

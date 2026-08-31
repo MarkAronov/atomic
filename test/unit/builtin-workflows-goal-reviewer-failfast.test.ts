@@ -37,6 +37,8 @@ describe("goal reviewer failure fail-fast", () => {
 		assert.match(String(result.remaining_work), /Recover reviewer execution/);
 		assert.match(String(result.remaining_work), /github-copilot/);
 
+		// Regression: #2784 — reviewers inherit the invocation-unique workflow group.
+		assert.equal(ctx.calls.parallelOptions[0]?.group, undefined);
 		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			status: string;
 			receipts: readonly unknown[];

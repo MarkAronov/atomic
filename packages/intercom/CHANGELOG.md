@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Recoverable Intercom disconnects during lazy initialization no longer print a misleading error and stack trace in the interactive UI; later calls still retry initialization.
+- Fixed workflow-stage discovery and routing so `intercom list` exposes group-scoped pending and running stages with canonical targets, and Goal reviewers inherit their invocation group for immediate or durable delivery ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
 
 ## [0.9.17] - 2026-08-29
 

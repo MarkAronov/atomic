@@ -87,6 +87,23 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
 				capability: workflowPendingStageRouteCapability(activeStore, run.id),
+				stages: run.stages
+					.filter(
+						(stage) =>
+							stage.pendingStageDeliveryAvailable === true &&
+							(stage.status === "pending" ||
+								stage.status === "running" ||
+								stage.status === "awaiting_input" ||
+								stage.status === "paused" ||
+								stage.status === "blocked"),
+					)
+					.map((stage) => ({
+						stageId: stage.id,
+						stageName: stage.name,
+						target: `${run.id}:${stage.id}`,
+						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
+						routeEligible: true,
+					})),
 			});
 		}
 		sweepPromise = sweepPromise

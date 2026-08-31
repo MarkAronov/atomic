@@ -221,6 +221,22 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		dispose();
 	});
 
+	test("announces discoverable pending workflow stages with canonical targets", () => {
+		const { emitted, dispose } = harness();
+		const route = emitted.find(({ event }) => event === "atomic:workflow-pending-stage-route");
+		// Regression: #2784
+		assert.deepEqual(route?.payload.stages, [
+			{
+				stageId: "reviewer-id",
+				stageName: "reviewer",
+				target: `${RUN_ID}:reviewer-id`,
+				lifecycle: "pending",
+				routeEligible: true,
+			},
+		]);
+		dispose();
+	});
+
 	test("enforces one exact 50-message cap across stage id and name aliases", async () => {
 		const { store, backend, request, dispose } = harness();
 		for (let index = 1; index <= 50; index += 1) {

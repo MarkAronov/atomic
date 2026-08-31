@@ -1,7 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
-import type { SessionInfo } from "../types.js";
+import type { SessionInfo, WorkflowStageRosterEntry } from "../types.js";
 
 function formatKeyLabel(key: string): string {
   return key
@@ -72,20 +72,23 @@ export class SessionListOverlay implements Component {
   private done: (result: SessionInfo | undefined) => void;
   private sessions: SessionInfo[];
   private selectedIndex = 0;
+  private workflowStages: WorkflowStageRosterEntry[];
   private maxVisible = 8;
 
   constructor(
-    theme: Theme,
-    keybindings: KeybindingsManager,
-    currentSession: SessionInfo,
-    sessions: SessionInfo[],
-    done: (result: SessionInfo | undefined) => void,
+	theme: Theme,
+	keybindings: KeybindingsManager,
+	currentSession: SessionInfo,
+	sessions: SessionInfo[],
+	done: (result: SessionInfo | undefined) => void,
+	workflowStages: WorkflowStageRosterEntry[] = [],
   ) {
-    this.theme = theme;
-    this.keybindings = keybindings;
-    this.currentSession = currentSession;
-    this.sessions = sessions;
-    this.done = done;
+	this.theme = theme;
+	this.keybindings = keybindings;
+	this.currentSession = currentSession;
+	this.sessions = sessions;
+	this.done = done;
+	this.workflowStages = workflowStages;
   }
 
   private onSessionSelect(sessionId: string): void {
@@ -179,11 +182,21 @@ export class SessionListOverlay implements Component {
         }
       }
 
+
       if (startIndex > 0 || endIndex < this.sessions.length) {
         lines.push(row());
         lines.push(row(this.theme.fg("dim", ` ${this.selectedIndex + 1}/${this.sessions.length}`)));
       }
     }
+
+	if (this.workflowStages.length > 0) {
+		lines.push(row());
+		lines.push(row(this.theme.bold(" Workflow Stages")));
+		for (const stage of this.workflowStages) {
+			lines.push(row(`  ${stage.stageName} [${stage.lifecycle.toUpperCase()}]`));
+			lines.push(row(`  ${this.theme.fg("dim", stage.target)}`));
+		}
+	}
 
     lines.push(row());
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));

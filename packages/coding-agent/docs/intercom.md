@@ -153,7 +153,7 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 | `join` | Adds a trimmed named group membership and creates the group if needed. The action waits for broker acknowledgement and reports the complete resulting membership set. `default` is shared; `true` and `auto` are reserved for subagent auto-groups. |
 | `leave` | With `group`, removes only that membership and keeps all others. Without `group`, resets the session to its resolved startup home group. Both forms report the resulting membership set. |
 | `groups` | Lists every group represented by a connected session, with its session count and a marker for each group this session belongs to. Use it to discover names rather than guessing. |
-| `list` | Keeps session-listing semantics: returns the current session plus every active session sharing at least one membership, with name, full session ID, working directory, model, and live status. Pass `group` for a read-only view of one group. |
+| `list` | Returns the current session, every active session sharing at least one membership, and discoverable workflow stages. Workflow rows are explicitly labeled `PENDING` or `RUNNING` and include the canonical `<runId>:<stageId>` target. Pass `group` for a read-only view of one group. |
 | `send` | Fire-and-forget delivery through ordinary Intercom. A live workflow-stage session receives the message immediately and returns `delivered`. A known workflow stage whose session has not initialized is addressed as `<runId>:<stageKey>`; Atomic persists the message and returns the distinct `queued` result with its FIFO position. Unknown stage identities retain the ordinary unknown-target failure. Requires `to` and `message`; cannot message the current session. |
 | `ask` | Sends a message and blocks until a live recipient replies (10-minute timeout). An ask to a known workflow stage whose session has not initialized is refused with `pending_stage_ask_unsupported` and recommends ordinary `send`; holding a waiter until a stage eventually starts would be unbounded. A live recipient disconnect fails promptly. From a foreground child to its launching parent, the existing fresh-subagent handoff path remains unchanged. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
@@ -172,9 +172,9 @@ Sent and received messages are recorded in session history as `intercom_sent` / 
 
 ### Targeting Sessions and Pending Workflow Stages
 
-Live-session lookup accepts only an exact full session ID or an exact case-insensitive session name. Ordinary `send` also accepts the exact `<runId>:<stageKey>` identity of a known workflow stage whose session has not initialized. The run ID is the full UUID, and the authored stage key is case-sensitive. Unknown runs and stages retain the ordinary unknown-target failure. Targeting is **group-scoped** — see [Groups](#groups) below.
+Live-session lookup accepts only an exact full Intercom session ID or an exact case-insensitive session name. Workflow stages use the canonical exact `<runId>:<stageId>` target printed by `intercom list`; this target works while the row is `PENDING` and after it becomes `RUNNING`. The `sessionId` shown by `workflow status` belongs to the workflow SDK and is **not** an Intercom target.
 
-Before steering a stage, join its invocation group. Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`.
+Before steering a stage, join its invocation group. Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`. Within that group, `intercom list` includes stages already materialized in the workflow store: `PENDING` means the session has not initialized and `send` queues durably; `RUNNING` means the broker route is live and delivery is immediate. Stages from dynamic TypeScript calls that have not executed and therefore have not allocated a stage record cannot appear yet.
 
 ### Deferred delivery to pending stages
 

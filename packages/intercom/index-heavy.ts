@@ -9,7 +9,7 @@ import {
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message } from "./types.js";
+import type { SessionInfo, Message, WorkflowStageRosterAnnouncement } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
@@ -55,13 +55,14 @@ const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 
 interface PendingStageRouteRegistrationEvent {
-  readonly runId: string;
-  readonly group: string;
-  readonly capability: string;
-  completion?: Promise<void>;
+	readonly runId: string;
+	readonly group: string;
+	readonly capability: string;
+	readonly stages?: WorkflowStageRosterAnnouncement[];
+	completion?: Promise<void>;
 }
 
-type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability">;
+type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability" | "stages">;
 
 interface PendingStageRouteClientState {
   readonly route: PendingStageRouteRegistration;
@@ -715,7 +716,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         await nextClient.disconnect();
         throw new Error("Intercom runtime no longer active");
       }
-      nextClient.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability);
+      nextClient.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability, route.stages);
       await nextClient.listSessions();
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         await nextClient.disconnect();
@@ -757,7 +758,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   ): Promise<void> {
     const routeGroup = normalizeGroup(route.group);
     if (clientRegistrationGroup === routeGroup) {
-      activeClient.registerPendingStageRoute(runId, routeGroup, route.capability);
+      activeClient.registerPendingStageRoute(runId, routeGroup, route.capability, route.stages);
       return;
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
