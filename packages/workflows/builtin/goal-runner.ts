@@ -269,11 +269,11 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       let reviewerBatchFailed = false;
       let reviewerExecutionDiagnostic: string | undefined;
       try {
-		reviewResults = await ctx.parallel(reviewerSteps, {
-			task: objective,
-			failFast: true,
-			group: `goal-reviewers-turn-${turn}`,
-		});
+        reviewResults = await ctx.parallel(reviewerSteps, {
+          task: objective,
+          failFast: true,
+          group: `goal-reviewers-turn-${turn}`,
+        });
       } catch (err) {
         reviewerBatchFailed = true;
         const failure = reviewerFailureText(err);

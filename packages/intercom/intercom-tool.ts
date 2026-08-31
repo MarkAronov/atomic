@@ -18,6 +18,7 @@ import {
 import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
+import { parsePendingStageTarget } from "./broker/send-handler.js";
 
 async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
 	if (typeof client.listDirectory === "function") return client.listDirectory(group);
@@ -26,6 +27,10 @@ async function listDirectory(client: IntercomClient, group?: string): Promise<Se
 
 async function resolveReplySender(client: IntercomClient, logicalTarget: string, sendTarget: string): Promise<string> {
 	if (logicalTarget !== sendTarget) return sendTarget;
+	// #2784: only a canonical `<runId>:<stageKey>` target needs the roster lookup that maps it to
+	// the stage's live session id. Ordinary name/id asks resolve to themselves here, so gating on
+	// the canonical shape keeps them off the directory round-trip (and its timeout failure mode).
+	if (parsePendingStageTarget(logicalTarget) === undefined) return sendTarget;
 	const stage = (await listDirectory(client)).workflowStages.find(
 		(candidate) => candidate.target === logicalTarget && candidate.sessionId !== undefined,
 	);

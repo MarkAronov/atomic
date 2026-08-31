@@ -292,6 +292,9 @@ class IntercomBroker {
 			const live = this.liveWorkflowStageRoutes.get(stage.target);
 			const liveSession = live === undefined ? undefined : this.sessions.get(live.sessionId);
 			if (stage.lifecycle === "running" && liveSession === undefined) continue;
+			// #2784: never list the requester's own stage as an "other" participant.
+			// Ordinary session rows already exclude self; the roster must match.
+			if (liveSession !== undefined && liveSession.info.id === requester.id) continue;
 			entries.push({
 				kind: "workflow-stage",
 				runId,
@@ -362,15 +365,15 @@ class IntercomBroker {
       this.pendingStageRoutes.delete(route.runId);
       return false;
     }
-		if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
-			writeMessage(route.socket, {
-				type: "delivery_failed",
-				messageId: route.message.id,
-				...(route.attemptId ? { attemptId: route.attemptId } : {}),
-				reason: "Target workflow run is in a different intercom group",
-			});
-			return true;
-		}
+    if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
+      writeMessage(route.socket, {
+        type: "delivery_failed",
+        messageId: route.message.id,
+        ...(route.attemptId ? { attemptId: route.attemptId } : {}),
+        reason: "Target workflow run is in a different intercom group",
+      });
+      return true;
+    }
     const requestId = randomUUID();
     const timeout = setTimeout(() => {
       const pending = this.pendingStageAcknowledgments.get(requestId);
@@ -739,15 +742,12 @@ class IntercomBroker {
           this.shutdownTimer = null;
         }
 
-		writeMessage(
-			socket,
-			supervisorId
-				? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
-				: { type: "registered", sessionId: id },
-		);
-		this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
-		break;
-	  }
+        writeMessage(socket, supervisorId
+          ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
+          : { type: "registered", sessionId: id });
+        this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
+        break;
+      }
 
       case "unregister": {
         this.disconnectSession(currentId);
@@ -841,29 +841,31 @@ class IntercomBroker {
           socket.end();
           return;
         }
-		if (activeExisting !== undefined && activeExisting.sessionId !== currentId) {
-			// A stage replays the process-shared owner announcement before registering its live aliases.
-			break;
-		}
-		this.pendingStageRoutes.set(clientMessage.runId, {
-			sessionId: currentId,
-			group: ownerGroup,
-			capability: clientMessage.capability,
-		});
-		if (clientMessage.stages !== undefined) {
-			if (
-				!isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId) ||
-				!clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group))
-			) {
-				throw new Error("Invalid workflow-stage roster");
-			}
-			this.workflowRosters.set(clientMessage.runId, {
-				ownerSessionId: currentId,
-				group: ownerGroup,
-				stages: clientMessage.stages,
-			});
-		}
-		break;
+        if (activeExisting !== undefined && activeExisting.sessionId !== currentId) {
+          // A stage replays the process-shared owner announcement before
+          // registering its live aliases. Authenticate it without replacing
+          // the workflow owner that handles pending delivery.
+          break;
+        }
+        this.pendingStageRoutes.set(clientMessage.runId, {
+          sessionId: currentId,
+          group: ownerGroup,
+          capability: clientMessage.capability,
+        });
+        if (clientMessage.stages !== undefined) {
+          if (
+            !isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId) ||
+            !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group))
+          ) {
+            throw new Error("Invalid workflow-stage roster");
+          }
+          this.workflowRosters.set(clientMessage.runId, {
+            ownerSessionId: currentId,
+            group: ownerGroup,
+            stages: clientMessage.stages,
+          });
+        }
+        break;
       }
 
       case "register_live_workflow_stage_route": {
@@ -1002,10 +1004,10 @@ class IntercomBroker {
     }
 
     for (const [runId, owner] of this.pendingStageRoutes) {
-		if (owner.sessionId !== sessionId) continue;
-		this.pendingStageRoutes.delete(runId);
-		this.workflowRosters.delete(runId);
-	}
+      if (owner.sessionId !== sessionId) continue;
+      this.pendingStageRoutes.delete(runId);
+      this.workflowRosters.delete(runId);
+    }
     for (const [requestId, pending] of this.pendingStageAcknowledgments) {
       if (pending.ownerSessionId !== sessionId) continue;
       clearTimeout(pending.timeout);

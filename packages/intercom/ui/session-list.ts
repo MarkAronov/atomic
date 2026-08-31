@@ -189,14 +189,20 @@ export class SessionListOverlay implements Component {
       }
     }
 
-	if (this.workflowStages.length > 0) {
-		lines.push(row());
-		lines.push(row(this.theme.bold(" Workflow Stages")));
-		for (const stage of this.workflowStages) {
-			lines.push(row(`  ${stage.stageName} [${stage.lifecycle.toUpperCase()}]`));
-			lines.push(row(`  ${this.theme.fg("dim", stage.target)}`));
-		}
-	}
+    if (this.workflowStages.length > 0) {
+      // #2784: bound the stage block the same way the session region above is bounded, so a run
+      // with many materialized stages cannot push the footer and border off-screen.
+      const visibleStages = this.workflowStages.slice(0, this.maxVisible);
+      lines.push(row());
+      lines.push(row(this.theme.bold(" Workflow Stages")));
+      for (const stage of visibleStages) {
+        lines.push(row(`  ${stage.stageName} [${stage.lifecycle.toUpperCase()}]`));
+        lines.push(row(`  ${this.theme.fg("dim", stage.target)}`));
+      }
+      if (visibleStages.length < this.workflowStages.length) {
+        lines.push(row(this.theme.fg("dim", ` ${visibleStages.length}/${this.workflowStages.length}`)));
+      }
+    }
 
     lines.push(row());
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));

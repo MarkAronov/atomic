@@ -309,6 +309,17 @@ test("workflow roster lists pending and running stages only inside its invocatio
 		[{ lifecycle: "running", sessionId: stage.sessionId }],
 	);
 
+	// Regression: #2784 — a stage must not appear in its own roster. The tool renders these rows
+	// under "Other visible sessions and workflow stages", so listing self there reports one session
+	// twice and invites a wasted turn addressing a target that answers "Cannot message the current
+	// session". Ordinary session rows already exclude self; the roster must match.
+	assert.deepEqual((await stage.listDirectory()).workflowStages, []);
+	assert.deepEqual(
+		(await member.listDirectory()).workflowStages.map(({ stageId, sessionId }) => ({ stageId, sessionId })),
+		[{ stageId: "reviewer-id", sessionId: stage.sessionId }],
+		"peers must still see the running stage after self-exclusion",
+	);
+
 	owner.registerPendingStageRoute(runId, group, capability, []);
 	await owner.listSessions();
 	assert.deepEqual((await member.listDirectory()).workflowStages, []);

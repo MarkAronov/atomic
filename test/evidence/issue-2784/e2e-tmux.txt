@@ -5,7 +5,17 @@ Date: 2026-08-31
 Worktree: /Users/tonystark/Documents/projects/atomic-issue-2784
 CLI command: cd /Users/tonystark/Documents/projects/atomic-issue-2784 && node packages/coding-agent/dist/cli.js
 tmux: /opt/homebrew/bin/tmux 3.7c; session issue2784b
-Fixture: .atomic/workflows/issue-2784-e2e.ts
+Fixture: test/evidence/issue-2784/issue-2784-e2e.ts
+
+ANNOTATION (added after capture; not part of any captured pane output)
+At capture time the fixture lived at `.atomic/workflows/issue-2784-e2e.ts`, which is why the
+transcript below shows it being discovered by the workflow tool and run as "issue-2784-e2e".
+It was afterwards moved to `test/evidence/issue-2784/issue-2784-e2e.ts` to match the repository's
+precedent for E2E fixture workflows (`test/evidence/intercom-always-enabled/intercom-restrictive-e2e.ts`)
+and to keep a one-off issue fixture out of project workflow discovery. To reproduce, copy it back
+into `.atomic/workflows/` first:
+    cp test/evidence/issue-2784/issue-2784-e2e.ts .atomic/workflows/
+Every transcript line below is unmodified verbatim pane output and still refers to the original path.
 
 CURRENT VERIFIED RESULT AT 81c738e97019e3cebccb2e055c8cbbd27c86d211
 - S1 PASS: invocation-group list exposed the running canonical target; canonical send was acknowledged and the stage quoted LIVE-SEND-PROOF-2784-RERUN-A91F.

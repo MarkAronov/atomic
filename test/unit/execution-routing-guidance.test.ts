@@ -850,17 +850,33 @@ describe("workflow-first execution routing", () => {
 
 	test("documents directional invocation control before workflow-stage steering", async () => {
 		// Regression: #2784
-		const required = ["workflow:<rootRunId>", "invocation context", "owned", "subgroup"];
+		// Pin exact sentences rather than bare substrings. A substring like "owned" also matches
+		// "non-owned", so it would pass against guidance stating the opposite of this contract.
 		const routingGuidance = workflowGuidance.join("\n");
-		for (const phrase of required) {
-			assert.ok(routingGuidance.includes(phrase), `workflow routing guidance should include: ${phrase}`);
-		}
+		assert.ok(
+			routingGuidance.includes("workflow:<rootRunId>"),
+			"workflow routing guidance should name the invocation group",
+		);
+		assert.ok(
+			routingGuidance.includes(
+				"The invocation context may list and exactly send/ask live stages in its owned subgroups and queue send to known pending stages; this authority is directional and does not let subgroup siblings see or reach each other.",
+			),
+			"workflow routing guidance should state the directional invocation-control invariant verbatim",
+		);
 
-		for (const path of ["packages/intercom/skills/intercom/SKILL.md", "packages/coding-agent/docs/intercom.md"]) {
+		const exactGuidance: Record<string, string> = {
+			"packages/intercom/skills/intercom/SKILL.md":
+				"The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated.",
+			"packages/coding-agent/docs/intercom.md":
+				"The invocation group has asymmetric exact-target control over its owned subgroups; ownership does not grant reverse or lateral access.",
+		};
+		for (const [path, sentence] of Object.entries(exactGuidance)) {
 			const guidance = await readRepositoryFile(path);
-			for (const phrase of required) {
-				assert.ok(guidance.includes(phrase), `${path} should include: ${phrase}`);
-			}
+			assert.ok(guidance.includes("workflow:<rootRunId>"), `${path} should name the invocation group`);
+			assert.ok(
+				guidance.includes(sentence),
+				`${path} should state the invocation-control invariant verbatim: ${sentence}`,
+			);
 		}
 	});
 

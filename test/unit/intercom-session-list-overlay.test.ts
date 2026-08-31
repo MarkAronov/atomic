@@ -89,6 +89,35 @@ test("session-list overlay labels discoverable workflow stages with exact target
 	assert.match(output, new RegExp(target));
 });
 
+test("session-list overlay bounds the workflow-stage block like the session region", () => {
+	// Regression: #2784 — stage rows were appended uncapped after the maxVisible session window,
+	// so a run with many materialized stages pushed the footer and border off-screen.
+	const runId = "27840000-3528-413e-84c4-87a43e5037a2";
+	const current = session(CURRENT_ID, "");
+	const stages = Array.from({ length: 25 }, (_unused, index) => ({
+		kind: "workflow-stage" as const,
+		runId,
+		stageId: `stage-${index}`,
+		stageName: `stage-${index}`,
+		target: `${runId}:stage-${index}`,
+		lifecycle: "pending" as const,
+		group: `workflow:${runId}`,
+	}));
+	const overlay = new SessionListOverlay(theme, new KeybindingsManager(), current, [], () => {}, stages);
+	const rendered = plain(overlay.render(80));
+	const output = rendered.join("\n");
+
+	const shown = stages.filter((stage) => output.includes(stage.target)).length;
+	assert.ok(shown < stages.length, "overlay must not render every stage row uncapped");
+	assert.equal(shown, 8, `expected the maxVisible cap of 8 stage rows, saw ${shown}`);
+	assert.match(output, /\s8\/25/);
+	// The bottom border must survive, which is exactly what the uncapped block destroyed.
+	assert.ok(
+		rendered.some((line) => line.includes("╰")),
+		"overlay bottom border must still render with a large stage roster",
+	);
+});
+
 test("inline-message marks clipped full sender and reply IDs with visible ellipses", () => {
 	const from = session(CURRENT_ID, "");
 	const message: Message = {
