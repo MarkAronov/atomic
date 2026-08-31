@@ -29,9 +29,13 @@ MAIN CHAT — joined invocation group and discovered RUNNING + PENDING canonical
  - future-isolated — workflow stage [PENDING] — target: `645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f`
 
 MAIN CHAT — pending send acknowledged before stage initialization
+(Literal capture at 81c738e970, BEFORE the renderer fix. The durable queue SUCCEEDED here —
+note the "Message queued for" text and the message id — but the result was mis-rendered with
+the error glyph because the queued path sets delivered:false. Commit 9ae154f798 fixes exactly
+that; the corrected live capture is the ✓ line at the top of this file.)
 
  intercom send 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f
- ✓ Message queued for 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f (889fae12-9d05-43ba-aab7-bcfd684cd6e8)
+ ✗ Message queued for 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f (889fae12-9d05-43ba-aab7-bcfd684cd6e8)
 
 FUTURE STAGE — token was already present in its first model turn and was quoted
 
