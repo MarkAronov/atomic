@@ -31,8 +31,14 @@ async function resolveReplySender(client: IntercomClient, logicalTarget: string,
 	// the stage's live session id. Ordinary name/id asks resolve to themselves here, so gating on
 	// the canonical shape keeps them off the directory round-trip (and its timeout failure mode).
 	if (parsePendingStageTarget(logicalTarget) === undefined) return sendTarget;
+	// The broker registers BOTH `<runId>:<stageId>` and `<runId>:<stageName>` as live aliases, but the
+	// roster only publishes the id form. Match either alias, otherwise a name-addressed ask is
+	// delivered and then blocks to the 10-minute timeout because its waiter is keyed on a string
+	// inbound reply routing never produces.
 	const stage = (await listDirectory(client)).workflowStages.find(
-		(candidate) => candidate.target === logicalTarget && candidate.sessionId !== undefined,
+		(candidate) =>
+			candidate.sessionId !== undefined &&
+			(candidate.target === logicalTarget || `${candidate.runId}:${candidate.stageName}` === logicalTarget),
 	);
 	return stage?.sessionId ?? sendTarget;
 }

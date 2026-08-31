@@ -847,18 +847,26 @@ class IntercomBroker {
           // the workflow owner that handles pending delivery.
           break;
         }
+        // #2784: validate before mutating route state, and reject the way every adjacent failure in
+        // this handler does — a registration_failed frame then an orderly end. Throwing here instead
+        // propagates into the framing reader's socket.destroy(error), giving the client an abrupt
+        // errored close with no reason frame, and it fired only after pendingStageRoutes had already
+        // been written, briefly leaving the run owning a route with no roster.
+        if (
+          clientMessage.stages !== undefined &&
+          (!isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId) ||
+            !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
+        ) {
+          writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow-stage roster" });
+          socket.end();
+          return;
+        }
         this.pendingStageRoutes.set(clientMessage.runId, {
           sessionId: currentId,
           group: ownerGroup,
           capability: clientMessage.capability,
         });
         if (clientMessage.stages !== undefined) {
-          if (
-            !isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId) ||
-            !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group))
-          ) {
-            throw new Error("Invalid workflow-stage roster");
-          }
           this.workflowRosters.set(clientMessage.runId, {
             ownerSessionId: currentId,
             group: ownerGroup,

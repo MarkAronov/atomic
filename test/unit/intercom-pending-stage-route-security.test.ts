@@ -247,6 +247,58 @@ test("broker flushes registration_failed before an orderly close and ignores lat
 	assert.equal(brokerOutput.includes("write after end"), false, brokerOutput);
 });
 
+test("an invalid workflow-stage roster is rejected orderly and leaves no route registered", async () => {
+	// Regression: #2784 — this path threw into the framing reader, so the client got an abrupt
+	// socket.destroy(error) with no reason frame, and only AFTER pendingStageRoutes had already been
+	// written. Every neighbouring rejection in this handler writes registration_failed then ends.
+	const runId = "89258800-bf6c-4e44-bba8-bb298794a9c4";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const observer = new WireClient();
+	await register(owner, "invalid-roster-owner", group);
+	await register(observer, "invalid-roster-observer", group);
+
+	owner.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "invalid-roster-capability",
+			// Foreign group: not owned by this invocation, so roster validation must refuse it.
+			stages: [
+				{
+					stageId: "reviewer-id",
+					stageName: "reviewer",
+					target: `${runId}:reviewer-id`,
+					lifecycle: "pending",
+					routeEligible: true,
+					group: "workflow:00000000-0000-4000-8000-000000000000/foreign",
+				},
+			],
+		},
+		{ type: "list", requestId: "must-not-run-after-invalid-roster" },
+	]);
+
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false, "an invalid roster must not destroy the socket with an error");
+	assert.equal(
+		owner.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-invalid-roster",
+		),
+		false,
+	);
+
+	// The refused announcement must not have left a pending route behind: the observer sees no roster.
+	observer.send({ type: "list", requestId: "invalid-roster-barrier" });
+	const listed = await observer.next("sessions", (frame) => frame.requestId === "invalid-roster-barrier");
+	assert.deepEqual(listed.workflowStages ?? [], []);
+});
+
 function productionRegistration(name: string | undefined, group: string) {
 	return {
 		...(name === undefined ? {} : { name }),
