@@ -174,7 +174,7 @@ Sent and received messages are recorded in session history as `intercom_sent` / 
 
 Live-session lookup accepts only an exact full Intercom session ID or an exact case-insensitive session name. Workflow stages use the canonical exact `<runId>:<stageId>` target printed by `intercom list`; this target works while the row is `PENDING` and after it becomes `RUNNING`. The `sessionId` shown by `workflow status` belongs to the workflow SDK and is **not** an Intercom target.
 
-Before steering a stage, use the workflow invocation context/group, named `workflow:<rootRunId>`. An invocation can list, `send` to, and live-`ask` exact stages in any invocation-owned subgroup (`workflow:<rootRunId>/<name>`), including intentionally isolated reviewer batches. This control is directional: subgroup members cannot discover or reach sibling subgroups, other workflow invocations, or unrelated sessions. `PENDING` accepts queued `send` only; `RUNNING` accepts immediate `send` and correlated `ask`/`reply`.
+Before steering a stage from the main chat, enter the workflow invocation context by joining `workflow:<rootRunId>` with `intercom({ action: "join", group: "workflow:<rootRunId>" })`; workflow-owned invocation sessions already start there. A member of that invocation group can list, `send` to, and live-`ask` exact stages in any invocation-owned subgroup (`workflow:<rootRunId>/<name>`), including intentionally isolated reviewer batches. This control is directional: a session registered as a subgroup stage cannot gain parent control by joining the invocation group, subgroup members cannot discover or reach sibling subgroups, and another workflow invocation remains refused. `PENDING` accepts queued `send` only; `RUNNING` accepts immediate `send` and correlated `ask`/`reply`.
 
 ### Deferred delivery to pending stages
 
@@ -182,7 +182,7 @@ Send material updates through Intercom to every affected workflow stage, includi
 
 The workflows extension persists up to **50 queued messages per exact run/stage key** with workflow state. Messages survive resume/replay and broker restart, and logical message IDs prevent redelivery across stage-attempt restarts. When the stage session initializes, it receives the FIFO entries through the ordinary Intercom inbound path before its first model turn, under the heading **Messages received before you started**, with sender identity and `Sent:` timestamps visible separately from the task prompt.
 
-Only the workflow invocation group can queue to its invocation-owned stages; subgroup peers, another root run, and unrelated groups are refused. An explicit stage `group: "default"` is a shared-group escape, is not workflow-owned, and does not receive pending invocation delivery. The 51st queued message is refused with `Pending stage message queue is full (limit 50)` rather than evicting an earlier entry.
+Only a workflow invocation member with eligible invocation-control authority can queue to its invocation-owned stages; this includes a main-chat session that explicitly joined `workflow:<rootRunId>`. Subgroup peers and another root run remain refused even if they add that membership. An explicit stage `group: "default"` is a shared-group escape, is not workflow-owned, and does not receive pending invocation delivery. The 51st queued message is refused with `Pending stage message queue is full (limit 50)` rather than evicting an earlier entry.
 
 ### Groups
 

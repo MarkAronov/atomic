@@ -365,6 +365,34 @@ test("invocation roster control is directional across owned subgroups", async ()
 	const lateralPeek = await memberA.listDirectory(subgroupB);
 	assert.deepEqual(lateralPeek.sessions, []);
 	assert.deepEqual(lateralPeek.workflowStages, []);
+
+	// Regression: #2784. Mutable membership lets the main invocation join, but
+	// must not let an isolated workflow stage or a different workflow root turn
+	// that join into lateral pending/live control.
+	await memberA.joinGroup(invocation);
+	await otherRun.joinGroup(invocation);
+	for (const [sender, messageId] of [
+		[memberA, "subgroup-pending-escalation"],
+		[otherRun, "other-root-pending-escalation"],
+	] as const) {
+		const result = await sender.send(`${runId}:b`, { messageId, text: "must stay isolated" });
+		assert.equal(result.delivered, false);
+		assert.equal(result.reason, "Target workflow run is in a different intercom group");
+	}
+
+	await memberB.registerLiveWorkflowStageRoute(runId, ["b"], capability);
+	for (const [sender, messageId] of [
+		[memberA, "subgroup-live-ask-escalation"],
+		[otherRun, "other-root-live-ask-escalation"],
+	] as const) {
+		const result = await sender.send(`${runId}:b`, {
+			messageId,
+			text: "must not ask across the boundary",
+			expectsReply: true,
+		});
+		assert.equal(result.delivered, false);
+		assert.equal(result.reason, "Target session is in a different intercom group");
+	}
 });
 
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {

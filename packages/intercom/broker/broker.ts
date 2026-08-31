@@ -253,18 +253,30 @@ class IntercomBroker {
 	return true;
   }
 
-  private canControlLiveWorkflowStage = (
-	sender: ConnectedSession,
-	target: ConnectedSession,
-	logicalTarget: string,
-  ): boolean => {
-	const parsed = parsePendingStageTarget(logicalTarget);
-	const owner = parsed === undefined ? undefined : this.pendingStageRoutes.get(parsed.runId);
-	const live = this.liveWorkflowStageRoutes.get(logicalTarget);
-	if (owner === undefined || live?.sessionId !== target.info.id) return false;
-	const targetGroup = target.registrationGroup ?? target.info.group ?? "default";
-	return hasGroup(sessionGroups(sender.info), owner.group) && invocationOwnsGroup(owner.group, targetGroup);
-  };
+	/**
+	 * Invocation control may come from the invocation owner or from an ordinary
+	 * host session that explicitly joined the invocation group. A workflow stage
+	 * registered under any workflow group cannot turn mutable membership into a
+	 * parent-control capability for a sibling (or for another workflow run).
+	 */
+	private canControlWorkflowInvocation(sender: ConnectedSession, invocationGroup: string): boolean {
+		if (!hasGroup(sessionGroups(sender.info), invocationGroup)) return false;
+		const registrationGroup = normalizeGroup(sender.registrationGroup);
+		return registrationGroup === invocationGroup || !registrationGroup.startsWith("workflow:");
+	}
+
+	private canControlLiveWorkflowStage = (
+		sender: ConnectedSession,
+		target: ConnectedSession,
+		logicalTarget: string,
+	): boolean => {
+		const parsed = parsePendingStageTarget(logicalTarget);
+		const owner = parsed === undefined ? undefined : this.pendingStageRoutes.get(parsed.runId);
+		const live = this.liveWorkflowStageRoutes.get(logicalTarget);
+		if (owner === undefined || live?.sessionId !== target.info.id) return false;
+		const targetGroup = target.registrationGroup ?? target.info.group ?? "default";
+		return this.canControlWorkflowInvocation(sender, owner.group) && invocationOwnsGroup(owner.group, targetGroup);
+	};
 
   private workflowStagesVisibleTo(requester: SessionInfo, selectedGroup?: string): WorkflowStageRosterEntry[] {
 	const requesterGroups = sessionGroups(requester);
@@ -350,15 +362,15 @@ class IntercomBroker {
       this.pendingStageRoutes.delete(route.runId);
       return false;
     }
-		if (route.liveTargetId === undefined && !hasGroup(sessionGroups(route.from.info), ownerRegistration.group)) {
-      writeMessage(route.socket, {
-        type: "delivery_failed",
-        messageId: route.message.id,
-        ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-        reason: "Target workflow run is in a different intercom group",
-      });
-      return true;
-    }
+		if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
+			writeMessage(route.socket, {
+				type: "delivery_failed",
+				messageId: route.message.id,
+				...(route.attemptId ? { attemptId: route.attemptId } : {}),
+				reason: "Target workflow run is in a different intercom group",
+			});
+			return true;
+		}
     const requestId = randomUUID();
     const timeout = setTimeout(() => {
       const pending = this.pendingStageAcknowledgments.get(requestId);

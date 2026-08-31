@@ -24,6 +24,14 @@ async function listDirectory(client: IntercomClient, group?: string): Promise<Se
 	return { sessions: await client.listSessions(group), workflowStages: [] };
 }
 
+async function resolveReplySender(client: IntercomClient, logicalTarget: string, sendTarget: string): Promise<string> {
+	if (logicalTarget !== sendTarget) return sendTarget;
+	const stage = (await listDirectory(client)).workflowStages.find(
+		(candidate) => candidate.target === logicalTarget && candidate.sessionId !== undefined,
+	);
+	return stage?.sessionId ?? sendTarget;
+}
+
 function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
 	return `- **${stage.stageName}** — workflow stage [${stage.lifecycle.toUpperCase()}] — target: \`${stage.target}\`${
 		stage.sessionId === undefined ? "" : ` — intercom session: ${stage.sessionId}`
@@ -472,8 +480,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true },
               };
             }
-            const questionId = randomUUID();
-            const admission = beginReplyWait(sendTo, questionId, _signal);
+			const questionId = randomUUID();
+			// Canonical workflow targets must remain canonical on the send path so the
+			// broker can authorize invocation-to-subgroup control. The waiter, however,
+			// correlates the actual inbound stage session identity.
+			const replyFrom = await resolveReplySender(connectedClient, to, sendTo);
+			const admission = beginReplyWait(replyFrom, questionId, _signal);
             if (!admission.ok) {
               const text = admission.reason === "busy"
                 ? `Too many pending asks (${admission.limit}); reply-wait slots are full`

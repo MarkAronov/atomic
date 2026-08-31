@@ -110,7 +110,7 @@ interface CapturedTool {
 	name: string;
 	execute?: (
 		toolCallId: string,
-		params: { action: string; message?: string; to?: string },
+		params: { action: string; group?: string; message?: string; to?: string },
 		signal: undefined,
 		onUpdate: undefined,
 		ctx: TestContext,
@@ -307,7 +307,7 @@ async function waitForBroker(child: ChildProcess): Promise<void> {
 
 async function executeIntercom(
 	fixture: ReturnType<typeof extensionFixture>,
-	params: { action: string; message?: string; to?: string },
+	params: { action: string; group?: string; message?: string; to?: string },
 ): Promise<ToolResult> {
 	const execute = fixture.tools.get("intercom")?.execute;
 	assert.ok(execute);
@@ -651,8 +651,13 @@ test("an invocation controls pending and live delivery into an owned isolated st
 	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
 	const peer = extensionFixture("isolated-peer-session", "isolated-peer", undefined, isolatedGroup);
 	intercomHeavy(peer.pi as never);
-	const workflowSender = new RawBrokerClient();
-	rawClients.add(workflowSender);
+	const workflowSender = extensionFixture(
+		"workflow-group-sender-session",
+		"workflow-group-sender",
+		undefined,
+		"default",
+	);
+	intercomHeavy(workflowSender.pi as never);
 	const stageRegistered = Promise.withResolvers<void>();
 	const releaseStageInitialization = Promise.withResolvers<void>();
 	const stageReadyForInvocationAsk = Promise.withResolvers<void>();
@@ -684,6 +689,11 @@ test("an invocation controls pending and live delivery into an owned isolated st
 				};
 				const session: StageSessionRuntime = {
 					async prompt() {
+						assert.match(
+							fixture.injectedMessages[0]?.content ?? "",
+							/queued invocation control/,
+							"#2784: queued delivery must be present before the future stage's first model turn",
+						);
 						const stageList = await executeIntercom(fixture, { action: "list" });
 						assert.equal(stageList.isError, false);
 						assert.match(stageList.content[0]?.text ?? "", /isolated-peer \([^)]+\)/);
@@ -761,34 +771,32 @@ test("an invocation controls pending and live delivery into an owned isolated st
 	try {
 		await owner.start();
 		await peer.start();
+		await workflowSender.start();
+		const joined = await executeIntercom(workflowSender, { action: "join", group: workflowGroup });
+		assert.equal(joined.isError, false);
+		assert.match(joined.content[0]?.text ?? "", new RegExp(workflowGroup));
 		const peerStarted = await executeIntercom(peer, { action: "list" });
 		assert.equal(peerStarted.details.group, isolatedGroup);
 		runPromise = run(definition, {}, { runId, store, adapters });
 		await stageRegistered.promise;
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
-		await workflowSender.register("workflow-group-sender", workflowGroup);
-		const messageId = "isolated-pre-start-send";
-		workflowSender.send({
-			type: "send",
+		const queued = await executeIntercom(workflowSender, {
+			action: "send",
 			to: `${runId}:reviewer`,
-			message: { id: messageId, timestamp: 1, content: { text: "queued invocation control" } },
+			message: "queued invocation control",
 		});
-		assert.deepEqual(await workflowSender.nextDeliveryAcknowledgment(messageId), {
-			type: "queued",
-			messageId,
-			runId,
-			stageKey: "reviewer",
-			position: 1,
-		});
+		assert.equal(queued.isError, false);
+		assert.equal(queued.details.queued, true);
+		assert.ok(queued.details.messageId);
 		assert.equal(store.runs()[0]?.stages[0]?.intercomGroup, isolatedGroup);
 		assert.equal(store.pendingStageMessagesFor(runId, "reviewer").length, 1);
 		assert.equal(backend.getWorkflow(runId)?.pendingStageMessages?.length, 1);
 		let roster: Array<{ target: string; group: string }> = [];
 		for (let attempt = 0; attempt < 20 && roster.length === 0; attempt += 1) {
-			const listRequestId = `isolated-roster-list-${attempt}`;
-			workflowSender.send({ type: "list", requestId: listRequestId });
-			const directory = await workflowSender.next("sessions", (message) => message.requestId === listRequestId);
-			roster = (directory.workflowStages ?? []).map((stage) => ({ target: stage.target, group: stage.group }));
+			const listed = await executeIntercom(workflowSender, { action: "list" });
+			if ((listed.content[0]?.text ?? "").includes(`target: \`${runId}:`)) {
+				roster = [{ target: `${runId}:${store.runs()[0]?.stages[0]?.id}`, group: isolatedGroup }];
+			}
 			if (roster.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
 		}
 		const stageTarget = `${runId}:${store.runs()[0]?.stages[0]?.id}`;
@@ -796,27 +804,22 @@ test("an invocation controls pending and live delivery into an owned isolated st
 
 		releaseStageInitialization.resolve();
 		await stageReadyForInvocationAsk.promise;
-		const questionId = "isolated-live-ask";
-		workflowSender.send({
-			type: "send",
+		const asked = executeIntercom(workflowSender, {
+			action: "ask",
 			to: stageTarget,
-			message: {
-				id: questionId,
-				timestamp: 2,
-				expectsReply: true,
-				content: { text: "reply across invocation control" },
-			},
+			message: "reply across invocation control",
 		});
-		assert.equal((await workflowSender.nextDeliveryAcknowledgment(questionId)).type, "delivered");
 		assert.ok(stageFixture);
-		await stageFixture.waitForInjectedCount(1);
+		await stageFixture.waitForInjectedCount(2);
 		const invocationReply = await executeIntercom(stageFixture, {
 			action: "reply",
 			message: "correlated isolated-stage answer",
 		});
 		assert.equal(invocationReply.details.delivered, true);
-		const correlatedReply = await workflowSender.next("message", (message) => message.message.replyTo === questionId);
-		assert.equal(correlatedReply.message.content.text, "correlated isolated-stage answer");
+		const correlatedReply = await asked;
+		assert.equal(correlatedReply.isError, false);
+		assert.match(correlatedReply.content[0]?.text ?? "", /correlated isolated-stage answer/);
+		assert.equal(workflowSender.injectedMessages.length, 0, "the correlated answer must settle the ask waiter");
 		releaseStageAfterInvocationReply.resolve();
 		const result = await runPromise;
 		assert.equal(result.status, "completed", JSON.stringify(result, undefined, 2));
@@ -830,8 +833,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 		releaseStageAfterInvocationReply.resolve();
 		if (runPromise !== undefined) await runPromise;
 		if (stageFixture !== undefined) await stageFixture.shutdown();
-		await workflowSender.close();
-		rawClients.delete(workflowSender);
+		await workflowSender.shutdown();
 		disposeBridge();
 		await peer.shutdown();
 		await owner.shutdown();

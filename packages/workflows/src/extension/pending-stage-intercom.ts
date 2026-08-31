@@ -237,9 +237,14 @@ async function queueAndPersist(
 	const rootBackend = getDurableBackend();
 	const backend = durableBackendForRun(rootBackend, activeStore.runs(), event.runId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
+	// The broker has already authorized the immutable registration identity.
+	// Preserve the sender identity in the durable entry, but use its current
+	// invocation membership for the durable group check so an ordinary session
+	// that explicitly joined workflow:<runId> can queue before stage startup.
+	const senderGroup = event.from.groups?.includes(runGroup) === true ? runGroup : event.from.group;
 	const result: PendingStageQueueResult | undefined = await activeStore.queueStageMessage(
 		request,
-		event.from.group,
+		senderGroup,
 		runGroup,
 		backend,
 	);
