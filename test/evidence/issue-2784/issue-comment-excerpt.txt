@@ -1,0 +1,66 @@
+Tested commit: 81c738e97019e3cebccb2e055c8cbbd27c86d211
+Root run: 645f0282-5fb2-49a6-81f3-1461ff00732f
+
+MAIN CHAT — joined invocation group and discovered RUNNING + PENDING canonical targets
+
+ intercom join
+ ✓ Joined intercom group "workflow:645f0282-5fb2-49a6-81f3-1461ff00732f". Memberships: default, workflow:645f0282-5fb2-49a6-81f3-1461ff00732f.
+
+ intercom list
+ ✓ Current session (groups: default, workflow:645f0282-5fb2-49a6-81f3-1461ff00732f):
+ • subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (dd32ba7b-48e4-46d2-aa00-819cad491baf) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [self,
+ tool:intercom]
+
+ Other visible sessions and workflow stages:
+ • Unnamed session (8c10db8e-aeb5-4871-8db4-20fcd3392e97) — /Users/tonystark/Documents/projects/atomic-issue-2784 (gpt-5.6-sol) [same cwd, idle, group:
+ workflow:645f0282-5fb2-49a6-81f3-1461ff00732f]
+ - running-isolated — workflow stage [RUNNING] — target: `645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837` — intercom session:
+ d76b3985-a4c1-4277-82a7-bf5c0cd6aff9
+ - future-isolated — workflow stage [PENDING] — target: `645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f`
+
+MAIN CHAT — pending send acknowledged before stage initialization
+
+ intercom send 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f
+ ✗ Message queued for 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f (889fae12-9d05-43ba-aab7-bcfd684cd6e8)
+
+FUTURE STAGE — token was already present in its first model turn and was quoted
+
+   STAGE  issue-2784-e2e / future-isolated                                                                                             session 01a05941-8b92-7254-b2a4-e5eba1b6e0e5
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+╭ 📨 From: subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────╮
+│**Messages received before you started**                                                                                                                                          │
+│                                                                                                                                                                                  │
+│Sent: 2026-08-31T19:15:39.755Z                                                                                                                                                    │
+│                                                                                                                                                                                  │
+│PENDING-PROOF-2784-RERUN-B72C                                                                                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ISSUE-2784 LIVE E2E FUTURE STAGE.
+ Before doing anything else, inspect the messages already present in your FIRST TURN context.
+ Quote the complete PENDING-PROOF-2784 token you received before initialization.
+ Then call intercom list and state whether the alpha sibling subgroup's running-isolated stage is visible.
+ Return a concise receipt.
+
+ Receipt: PENDING-PROOF-2784-RERUN-B72C
+
+MAIN CHAT → ISOLATED ALPHA STAGE → MAIN CHAT — ask/reply resolved inline
+
+ intercom ask 645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837
+
+╭ 📨 From: subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (/Users/tonystark/Documents/projects/atomic-issue-2784) ─────────────────────────────────────────────────────────────╮
+│Reply via intercom with ASK-REPLY-PROOF-2784-RERUN-QUESTION                                                                                                                       │
+│                                                                                                                                                                                  │
+│ ↩ To reply: intercom({ action: "reply", message: "..." })                                                                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ intercom pending
+ ✓ Pending asks:
+ - subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 · a4d371b7-4295-4dd7-b7f9-9a11b48eef56 · 104s ago · Reply via intercom with ASK-REPLY-PROOF-2784-RERUN-QUESTION
+
+ intercom reply
+ ✓ Reply sent to subagent-chat-01a0593e-c968-7fa2-890c-0afcf2d9d470 (b56a2410-9d85-4f63-a3b4-a13e8b557b57)
+
+ intercom ask 645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837
+ ✓ Reply from 645f0282-5fb2-49a6-81f3-1461ff00732f:b792439e-2faa-42be-87a3-345b05939837:
+ ASK-REPLY-PROOF-2784-OK
