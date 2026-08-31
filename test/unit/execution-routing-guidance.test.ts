@@ -25,7 +25,6 @@ const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n
 const workflowDocumentationPaths = [
 	"packages/coding-agent/docs/workflows.md",
 	"packages/coding-agent/docs/quickstart.md",
-	"packages/coding-agent/src/core/atomic-guide-command.ts",
 	"packages/workflows/README.md",
 	"docs/workflow-playbook.md",
 	"README.md",
@@ -736,7 +735,7 @@ describe("workflow-first execution routing", () => {
 			"dynamic fan-out",
 			"adversarial verification",
 			"bounded loop",
-			"@bastani/workflows/builtin",
+			"@bastani/atomic/workflows/builtin",
 			"ctx.workflow(...)",
 			"Nested children",
 			"maxDepth",
