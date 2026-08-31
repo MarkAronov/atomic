@@ -15,6 +15,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
 import { hexToAnsi, RESET } from "../../packages/workflows/src/tui/color-utils.js";
@@ -600,6 +601,31 @@ describe("renderStatusList — populated", () => {
 		for (const line of renderStatusList([run], { width: 40 }).split("\n")) assert.equal(visibleWidth(line), 40);
 	});
 
+	test("wraps exact pending-stage targets instead of rendering truncated addresses at width 60", () => {
+		const now = 1_000_000;
+		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
+		const run = makeRun({
+			id: runId,
+			name: "release-docs",
+			startedAt: now - 5_000,
+			stages: [
+				makeStage("s-build", "build", "completed", { durationMs: 1_000 }),
+				makeStage("s-verify", "verify", "running", { startedAt: now - 4_000 }),
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+			],
+		});
+		const plain = stripAnsi(
+			renderResult({ action: "status", filter: "all", runs: [], snapshots: [run] }, { plain: true, width: 60, now }),
+		);
+
+		assert.match(plain, new RegExp(`${runId}:review-a`));
+		assert.match(plain, new RegExp(`${runId}:review-b`));
+		assert.doesNotMatch(plain, /→ [^\n│]*…/u);
+		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
+		for (const line of plain.split("\n")) assert.equal(visibleWidth(line), 60);
+	});
 	test("themes every wrapped run-id row in the workflow status hint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const run = makeRun({ id: runId, name: "narrow-hint", status: "running" });

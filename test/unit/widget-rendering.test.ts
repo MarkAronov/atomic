@@ -776,6 +776,31 @@ describe("run identity rows", () => {
 		assert.doesNotMatch(collapsed[0]!, /review|offline|widget-run/);
 	});
 
+	test("uses exact or labelled pending-stage identities with visible width elision", () => {
+		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
+		const run = makeRun(runId, "release-docs", "running", [
+			makeStage("s-build", "build", "completed"),
+			makeStage("s-verify", "verify", "running"),
+			makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+		]);
+		const snapshot = makeSnap([run]);
+
+		const standard = renderWidgetLines(snapshot, 100).map(stripAnsi).join("\n");
+		assert.doesNotMatch(standard, /→ [^\n│,]*…/u);
+		assert.doesNotMatch(standard, /→/u, "a target that cannot fit is omitted rather than shortened");
+		assert.match(standard, /review · stage review-a/u);
+		assert.match(standard, /… 2 more/u);
+
+		assert.deepEqual(renderWidgetLines(snapshot, 70).map(stripAnsi), [" ▾  1 background · 1 ●"]);
+
+		const wide = renderWidgetLines(snapshot, 240).map(stripAnsi).join("\n");
+		assert.match(wide, new RegExp(`${runId}:review-a`));
+		assert.match(wide, new RegExp(`${runId}:review-b`));
+		assert.doesNotMatch(wide, /→ [^\n│,]*…/u);
+		assert.match(wide, /… 1 more/u);
+	});
 	test("keeps every widget border line at the collapsed breakpoint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const snap = makeSnap([makeRun(runId, "narrow-run", "running")]);

@@ -167,10 +167,20 @@ const MAX_PENDING_STAGE_ROWS = 3;
 
 function pendingStageLines(run: RunSnapshot, width: number, theme: GraphTheme | undefined): string[] {
 	const stages = pendingWorkflowStageStatuses(run);
-	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).map((stage) => {
-		const detail = stage.target === undefined ? " · delivery unavailable" : ` → ${stage.target}`;
-		const line = truncateToWidth(`   pending: ${stage.name} (${stage.stageId})${detail}`, width, ELLIPSIS);
-		return theme === undefined ? line : `${hexToAnsi(theme.textMuted)}${line}${RESET}`;
+	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
+		const prefix = `   pending: ${stage.name} (${stage.stageId})`;
+		if (stage.target === undefined) {
+			return [pendingStageLine(`${prefix} · delivery unavailable`, width, theme)];
+		}
+
+		const inline = `${prefix} → ${stage.target}`;
+		if (visibleWidth(inline) <= width) return [pendingStageLine(inline, width, theme)];
+
+		const label = pendingStageLine(`${prefix} →`, width, theme);
+		const targetRows = wrapIdentifierLines(stage.target, width, "   ", "   ").map(({ prefix, chunk }) =>
+			pendingStageLine(`${prefix}${chunk}`, width, theme),
+		);
+		return [label, ...targetRows];
 	});
 	if (stages.length > MAX_PENDING_STAGE_ROWS) {
 		const line = truncateToWidth(
@@ -181,6 +191,11 @@ function pendingStageLines(run: RunSnapshot, width: number, theme: GraphTheme | 
 		visible.push(theme === undefined ? line : `${hexToAnsi(theme.dim)}${line}${RESET}`);
 	}
 	return visible;
+}
+
+function pendingStageLine(line: string, width: number, theme: GraphTheme | undefined): string {
+	const visible = truncateToWidth(line, width, ELLIPSIS);
+	return theme === undefined ? visible : `${hexToAnsi(theme.textMuted)}${visible}${RESET}`;
 }
 
 function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorStatus: RunIndicatorStatus): string {
