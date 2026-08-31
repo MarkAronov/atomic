@@ -69,9 +69,10 @@ function mergeExtensions(
 ): Array<{ path: string; sourceInfo?: SourceInfo }> {
 	const merged: Array<{ path: string; sourceInfo?: SourceInfo }> = [];
 	const indexByIdentity = new Map<string, number>();
+	const hiddenIdentities = new Set<string>();
 	for (const extension of [...hostExtensions, ...engineExtensions]) {
-		if (extension.hidden === true) continue;
 		const identity = getExtensionIdentityPath(extension.path);
+		if (extension.hidden === true) hiddenIdentities.add(identity);
 		const existingIndex = indexByIdentity.get(identity);
 		if (existingIndex === undefined) {
 			indexByIdentity.set(identity, merged.length);
@@ -83,7 +84,7 @@ function mergeExtensions(
 			merged[existingIndex] = { ...existing, sourceInfo: extension.sourceInfo };
 		}
 	}
-	return merged;
+	return merged.filter((extension) => !hiddenIdentities.has(getExtensionIdentityPath(extension.path)));
 }
 
 function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): string[] {
@@ -107,17 +108,28 @@ function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly Resource
 	for (const label of getShortestUniqueSourceLabels([...extensionSources], labels).values()) labels.add(label);
 	return [...labels];
 }
-const displayedOverlapFingerprints = new WeakMap<InteractiveModeBase, string>();
+interface DisplayedOverlapNotice {
+	component: Text;
+	container: Container;
+	fingerprint: string;
+}
 
-function shouldDisplayOverlapNotice(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): boolean {
-	if (overlaps.length === 0) return false;
+const displayedOverlapNotices = new WeakMap<InteractiveModeBase, DisplayedOverlapNotice>();
+
+function getOverlapNoticeFingerprint(
+	mode: InteractiveModeBase,
+	overlaps: readonly ResourceOverlap[],
+): string | undefined {
+	if (overlaps.length === 0) return undefined;
 	const fingerprint = overlaps
 		.map((overlap) => `${overlap.resourceType}:${overlap.name}:${overlap.inherited.path}:${overlap.bundled.path}`)
 		.sort()
 		.join("\n");
-	if (displayedOverlapFingerprints.get(mode) === fingerprint) return false;
-	displayedOverlapFingerprints.set(mode, fingerprint);
-	return true;
+	const displayed = displayedOverlapNotices.get(mode);
+	if (displayed?.fingerprint === fingerprint && displayed.container.children.includes(displayed.component)) {
+		return undefined;
+	}
+	return fingerprint;
 }
 
 InteractiveModeBase.prototype.showLoadedResources = function (
@@ -261,19 +273,24 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...getInteractiveEngineResourceOverlaps(this.runtimeHost),
 		];
 		const overlapLabels = getOverlapLabels(this, overlaps);
-		if (shouldDisplayOverlapNotice(this, overlaps) && overlapLabels.length > 0) {
+		const overlapFingerprint = getOverlapNoticeFingerprint(this, overlaps);
+		if (overlapFingerprint && overlapLabels.length > 0) {
 			const sources = formatList(overlapLabels.map((label) => `\`${label}\``));
 			const verb = overlapLabels.length === 1 ? "provides" : "provide";
-			targetContainer.addChild(
-				new Text(
-					theme.fg(
-						"warning",
-						`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
-					),
-					0,
-					0,
+			const notice = new Text(
+				theme.fg(
+					"warning",
+					`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
 				),
+				0,
+				0,
 			);
+			targetContainer.addChild(notice);
+			displayedOverlapNotices.set(this, {
+				component: notice,
+				container: targetContainer,
+				fingerprint: overlapFingerprint,
+			});
 			targetContainer.addChild(new Spacer(1));
 		}
 

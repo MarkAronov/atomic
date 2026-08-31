@@ -4,8 +4,10 @@ import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { attachInteractiveEngineResourceExtensionRefresh } from "../src/modes/interactive/interactive-startup.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import type { RpcResourceExtension } from "../src/modes/rpc/rpc-types.ts";
 import { type ExtensionFixture, normalizeRenderedOutput, renderAll } from "./interactive-mode-status-helpers.ts";
 import {
 	createExtensionFixtures,
@@ -13,6 +15,45 @@ import {
 	createSourceInfo,
 } from "./interactive-mode-status-resources-helpers.ts";
 import { createHarness } from "./suite/harness.ts";
+
+async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]) {
+	const harness = await createHarness();
+	const local = new AgentSessionRuntime(
+		harness.session,
+		{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+	);
+	const runtime = new IsolatedInteractiveRuntime(
+		local,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+		{
+			onEvent: () => () => {},
+			onGenerationEnded: () => () => {},
+			getGeneration: () => 1,
+			getState: async () => ({
+				thinkingLevel: "off",
+				isStreaming: false,
+				isCompacting: false,
+				steeringMode: "all",
+				followUpMode: "all",
+				sessionId: "engine",
+				autoCompactionEnabled: true,
+				messageCount: 0,
+				pendingMessageCount: 0,
+				queuedMessagesPaused: false,
+				resourceExtensions,
+			}),
+			requestInternal: async () => ({ models: [], scopedModels: [] }),
+			getCommands: async () => [],
+			stop: async () => {},
+		} as never,
+	);
+	return { harness, runtime };
+}
 
 describe("InteractiveMode.showLoadedResources", () => {
 	beforeAll(() => {
@@ -155,56 +196,28 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain("extensions/answer.ts");
 	});
 
-	test("merges the engine inventory into startup extensions exactly once", async () => {
-		const harness = await createHarness();
-		const local = new AgentSessionRuntime(
-			harness.session,
-			{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
-			async () => {
-				throw new Error("unused runtime factory");
-			},
-		);
-		const runtime = new IsolatedInteractiveRuntime(
-			local,
-			async () => {
-				throw new Error("unused runtime factory");
-			},
-			{
-				onEvent: () => () => {},
-				onGenerationEnded: () => () => {},
-				getGeneration: () => 1,
-				getState: async () => ({
-					thinkingLevel: "off",
-					isStreaming: false,
-					isCompacting: false,
-					steeringMode: "all",
-					followUpMode: "all",
-					sessionId: "engine",
-					autoCompactionEnabled: true,
-					messageCount: 0,
-					pendingMessageCount: 0,
-					queuedMessagesPaused: false,
-					resourceExtensions: [
-						{ path: "/builtin/workflows/index.ts", hidden: false },
-						{ path: "/builtin/subagents/index.ts", hidden: false },
-						{ path: "/builtin/mcp/index.ts", hidden: false },
-						{ path: "/builtin/web-access/index.ts", hidden: false },
-						{ path: "/builtin/intercom/index.ts", hidden: false },
-						{ path: "/builtin/internal/index.ts", hidden: true },
-					],
-				}),
-				requestInternal: async () => ({ models: [], scopedModels: [] }),
-				getCommands: async () => [],
-				stop: async () => {},
-			} as never,
-		);
+	test("merges the engine inventory once and hides identities hidden by either side", async () => {
+		const { harness, runtime } = await createInventoryRuntime([
+			{ path: "/builtin/workflows/index.ts", hidden: false },
+			{ path: "/builtin/subagents/index.ts", hidden: false },
+			{ path: "/builtin/mcp/index.ts", hidden: false },
+			{ path: "/builtin/web-access/index.ts", hidden: false },
+			{ path: "/builtin/intercom/index.ts", hidden: false },
+			{ path: "/builtin/internal/index.ts", hidden: true },
+			{ path: "/builtin/host-hidden/index.ts", hidden: false },
+			{ path: "/builtin/engine-hidden/index.ts", hidden: true },
+		]);
 
 		try {
 			await runtime.initializeFromEngine();
 			const fakeThis = createShowLoadedResourcesThis({
 				quietStartup: false,
 				runtimeHost: runtime,
-				extensions: [{ path: "/builtin/intercom" }],
+				extensions: [
+					{ path: "/builtin/intercom" },
+					{ path: "/builtin/host-hidden/index.ts", hidden: true },
+					{ path: "/builtin/engine-hidden/index.ts" },
+				],
 			});
 
 			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
@@ -214,7 +227,65 @@ describe("InteractiveMode.showLoadedResources", () => {
 			}
 			expect(output.match(/intercom/g)).toHaveLength(1);
 			expect(output).not.toContain("internal");
+			expect(output).not.toContain("host-hidden");
+			expect(output).not.toContain("engine-hidden");
 		} finally {
+			await runtime.dispose();
+			harness.cleanup();
+		}
+	});
+
+	test("refreshes a rendered disclosure when the engine publishes its extension inventory", async () => {
+		const { harness, runtime } = await createInventoryRuntime([
+			{ path: "/builtin/workflows/index.ts", hidden: false },
+			{ path: "/builtin/intercom/index.ts", hidden: false },
+		]);
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			runtimeHost: runtime,
+			extensions: [{ path: "/builtin/intercom" }],
+		});
+		fakeThis.resourceDisclosureContainer = new Container();
+		fakeThis.chatContainer.addChild(fakeThis.resourceDisclosureContainer);
+		fakeThis.showLoadedResources = (options: Parameters<InteractiveMode["showLoadedResources"]>[0]) =>
+			InteractiveMode.prototype.showLoadedResources.call(fakeThis, options);
+		fakeThis.ui = { requestRender: () => {} };
+
+		InteractiveMode.prototype.showLoadedResources.call(fakeThis, {
+			force: true,
+			targetContainer: fakeThis.resourceDisclosureContainer,
+		});
+		const disposeRefresh = attachInteractiveEngineResourceExtensionRefresh(fakeThis);
+		try {
+			await runtime.initializeFromEngine();
+			const output = normalizeRenderedOutput(fakeThis.resourceDisclosureContainer);
+			expect(output).toContain("workflows");
+			expect(output.match(/intercom/g)).toHaveLength(1);
+			expect(output.match(/workflows/g)).toHaveLength(1);
+		} finally {
+			disposeRefresh();
+			await runtime.dispose();
+			harness.cleanup();
+		}
+	});
+
+	test("does not refresh before the startup disclosure has rendered", async () => {
+		const { harness, runtime } = await createInventoryRuntime([
+			{ path: "/builtin/workflows/index.ts", hidden: false },
+		]);
+		const fakeThis = createShowLoadedResourcesThis({ quietStartup: false, runtimeHost: runtime });
+		fakeThis.resourceDisclosureContainer = new Container();
+		let renderCount = 0;
+		fakeThis.showLoadedResources = () => {
+			renderCount += 1;
+		};
+		const disposeRefresh = attachInteractiveEngineResourceExtensionRefresh(fakeThis);
+		try {
+			await runtime.initializeFromEngine();
+			expect(renderCount).toBe(0);
+			expect(fakeThis.resourceDisclosureContainer.children).toHaveLength(0);
+		} finally {
+			disposeRefresh();
 			await runtime.dispose();
 			harness.cleanup();
 		}
@@ -694,5 +765,50 @@ describe("InteractiveMode.showLoadedResources", () => {
 		);
 		expect(output).not.toContain("[Prompt conflicts]");
 		expect(output).not.toContain("[Extension issues]");
+	});
+
+	test("keeps one overlap notice when the startup disclosure is rebuilt", () => {
+		const inherited = {
+			...createSourceInfo("/tmp/pi-subagents/extensions/index.ts", {
+				source: "npm:pi-subagents",
+				scope: "user",
+				origin: "package",
+			}),
+			configurationOrigin: "inherited-pi" as const,
+		};
+		const bundled = {
+			...createSourceInfo("/tmp/atomic-subagents/index.ts", {
+				source: "@bastani/subagents",
+				scope: "temporary",
+				origin: "package",
+			}),
+			configurationOrigin: "bundled" as const,
+		};
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: true,
+			overlaps: [{ resourceType: "tool", name: "subagent", inherited, bundled }],
+		});
+		fakeThis.resourceDisclosureContainer = new Container();
+		fakeThis.chatContainer.addChild(fakeThis.resourceDisclosureContainer);
+
+		for (let render = 0; render < 2; render += 1) {
+			InteractiveMode.prototype.showLoadedResources.call(fakeThis, {
+				force: true,
+				showDiagnosticsWhenQuiet: true,
+				targetContainer: fakeThis.resourceDisclosureContainer,
+			});
+		}
+
+		const output = normalizeRenderedOutput(fakeThis.resourceDisclosureContainer);
+		expect(output.match(/Extension overlap detected:/g)).toHaveLength(1);
+		expect(output).toContain("`pi-subagents` provides resources already bundled with Atomic.");
+
+		fakeThis.resourceDisclosureContainer.clear();
+		InteractiveMode.prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+		const rebuiltOutput = normalizeRenderedOutput(fakeThis.chatContainer);
+		expect(rebuiltOutput.match(/Extension overlap detected:/g)).toHaveLength(1);
 	});
 });

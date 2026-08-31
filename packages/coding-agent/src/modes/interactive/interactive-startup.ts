@@ -160,6 +160,18 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
+export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
+	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
+		if (mode.resourceDisclosureContainer.children.length === 0) return;
+		mode.showLoadedResources({
+			force: true,
+			showDiagnosticsWhenQuiet: true,
+			targetContainer: mode.resourceDisclosureContainer,
+		});
+		mode.ui.requestRender();
+	});
+}
+
 InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
 	if (this.isInitialized) return;
 
@@ -216,15 +228,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
 		this.setupAutocompleteProvider();
 	});
-	onInteractiveEngineResourceExtensionsChanged(this.runtimeHost, () => {
-		if (this.resourceDisclosureContainer.children.length === 0) return;
-		this.showLoadedResources({
-			force: true,
-			showDiagnosticsWhenQuiet: true,
-			targetContainer: this.resourceDisclosureContainer,
-		});
-		this.ui.requestRender();
-	});
+	attachInteractiveEngineResourceExtensionRefresh(this);
 
 	seedStartupInput(
 		this.pendingUserInputs,

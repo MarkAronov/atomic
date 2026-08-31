@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view. Prompt commands now appear once with their slash-prefixed labels, and Ctrl+O expands resource sections nested in the startup disclosure. The Extensions section includes isolated engine-child extensions without loading them again in the terminal host.
+- Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view. Prompt commands now appear once with their slash-prefixed labels, and Ctrl+O expands resource sections nested in the startup disclosure. The Extensions section includes isolated engine-child extensions without loading them again in the terminal host, preserves overlap warnings when the listing refreshes, and keeps an extension hidden when either inventory marks its identity hidden.
 
 ## [0.9.17] - 2026-08-29
 
