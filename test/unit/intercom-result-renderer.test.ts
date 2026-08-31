@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { renderIntercomResult } from "../../packages/intercom/result-renderers.ts";
+import { renderIntercomResult } from "../../packages/intercom/result-renderers.js";
 
 const theme = {
 	fg: (color: string, text: string) => `<${color}>${text}</${color}>`,

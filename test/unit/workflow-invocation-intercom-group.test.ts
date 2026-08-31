@@ -371,6 +371,86 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 });
 
 // Regression coverage for #2784.
+test("active durable boolean subgroup resume preserves the persisted group identity", async () => {
+	const rootRunId = "27840003-3528-413e-84c4-87a43e5037a2";
+	const promptStarted = Promise.withResolvers<void>();
+	const releasePrompt = Promise.withResolvers<void>();
+	let initialGroup: string | undefined;
+	const definition = workflow({
+		name: "durable-boolean-subgroup-resume",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("isolated-reviewer", { group: true }).prompt("review");
+			return {};
+		},
+	});
+	const sdk = createMockSdk();
+	const firstBackend = new DbosDurableBackend(sdk, { executorId: "boolean-group-first" });
+	const firstStore = createStore();
+	const firstController = new AbortController();
+	const firstPromise = run(
+		definition,
+		{},
+		{
+			runId: rootRunId,
+			store: firstStore,
+			durableBackend: firstBackend,
+			signal: firstController.signal,
+			adapters: {
+				agentSession: {
+					async create(options) {
+						initialGroup = capturedGroup(options);
+						return {
+							...mockSession(),
+							async prompt() {
+								promptStarted.resolve();
+								await releasePrompt.promise;
+							},
+						};
+					},
+				},
+			},
+		},
+	);
+	await promptStarted.promise;
+	await firstBackend.flush();
+	assert.match(initialGroup ?? "", new RegExp(`^workflow:${rootRunId}/[0-9a-f-]{36}$`, "i"));
+
+	const persisted = createMockSdk();
+	for (const [key, value] of sdk.state.workflows) persisted.state.workflows.set(key, { ...value });
+	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, structuredClone(value));
+	firstController.abort(new Error("first process stopped"));
+	releasePrompt.resolve();
+	await firstPromise;
+
+	let resumedGroup: string | undefined;
+	const freshBackend = new DbosDurableBackend(persisted, { executorId: "boolean-group-fresh" });
+	await freshBackend.hydrateWorkflow(rootRunId);
+	const resumed = await run(
+		definition,
+		{},
+		{
+			runId: rootRunId,
+			store: createStore(),
+			durableBackend: freshBackend,
+			adapters: {
+				agentSession: {
+					async create(options) {
+						resumedGroup = capturedGroup(options);
+						return mockSession();
+					},
+				},
+			},
+		},
+	);
+
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.equal(resumedGroup, initialGroup);
+});
+
+// Regression coverage for #2784.
 test("parallel overrides become invocation-owned subgroups while per-task default escapes", async () => {
 	const groups: string[] = [];
 	const definition = workflow({

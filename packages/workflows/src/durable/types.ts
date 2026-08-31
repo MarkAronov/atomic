@@ -207,6 +207,8 @@ export interface DurableStageTopology {
 	readonly version: typeof DURABLE_STAGE_TOPOLOGY_VERSION;
 	readonly stageId: string;
 	readonly parentIds: readonly string[];
+	/** Exact Intercom subgroup identity retained across an active stage resume. */
+	readonly intercomGroup?: string;
 	/** Zero-based source/spawn order within the owning run. */
 	readonly sourceOrder?: number;
 	/** Distinguishes one durable prompt-node occurrence from its logical continuation replay key. */

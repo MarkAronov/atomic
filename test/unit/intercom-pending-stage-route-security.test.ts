@@ -434,6 +434,12 @@ test("invocation roster control is directional across owned subgroups", async ()
 	// that join into lateral pending/live control.
 	await memberA.joinGroup(invocation);
 	await otherRun.joinGroup(invocation);
+	// Regression: #2784. Joining the invocation must not turn mutable membership
+	// into directory authorization for a sibling workflow subgroup.
+	assert.deepEqual(
+		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["a"],
+	);
 	for (const [sender, messageId] of [
 		[memberA, "subgroup-pending-escalation"],
 		[otherRun, "other-root-pending-escalation"],

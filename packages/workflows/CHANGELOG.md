@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed explicit and automatic stage groups so they become invocation-owned, collision-free subgroups that remain controllable from the workflow invocation while preserving sibling isolation; restored symmetric isolated reviewer groups for Goal and Ralph ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+- Fixed explicit and automatic stage groups so they become invocation-owned, collision-free subgroups that remain controllable from the workflow invocation while preserving sibling isolation and their exact persisted identity across active durable resume; restored symmetric isolated reviewer groups for Goal and Ralph ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
 
 ## [0.9.16] - 2026-08-29
 

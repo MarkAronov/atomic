@@ -104,7 +104,8 @@ export function createWorkflowStageFactory(input: {
 						context: options?.context ?? "fork",
 						forkFromSessionFile: options?.forkFromSessionFile ?? executeReplaySource.sessionFile,
 					};
-		const intercomGroup = resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);
+		const intercomGroup =
+			options?.durableIntercomGroup ?? resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);
 		const stageOptionsForContext =
 			replayStageOptions?.group === undefined || intercomGroup === undefined
 				? replayStageOptions

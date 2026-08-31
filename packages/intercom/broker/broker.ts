@@ -278,14 +278,15 @@ class IntercomBroker {
 		return this.canControlWorkflowInvocation(sender, owner.group) && invocationOwnsGroup(owner.group, targetGroup);
 	};
 
-  private workflowStagesVisibleTo(requester: SessionInfo, selectedGroup?: string): WorkflowStageRosterEntry[] {
-	const requesterGroups = sessionGroups(requester);
+	private workflowStagesVisibleTo(requester: ConnectedSession, selectedGroup?: string): WorkflowStageRosterEntry[] {
+	const requesterGroups = sessionGroups(requester.info);
 	const selected = selectedGroup === undefined ? undefined : normalizeGroup(selectedGroup);
 	const entries: WorkflowStageRosterEntry[] = [];
 	for (const [runId, roster] of this.workflowRosters) {
 		for (const stage of roster.stages) {
 			if (!stage.routeEligible) continue;
-			const parentControl = requesterGroups.has(roster.group) && invocationOwnsGroup(roster.group, stage.group);
+			const parentControl =
+				this.canControlWorkflowInvocation(requester, roster.group) && invocationOwnsGroup(roster.group, stage.group);
 			const directMembership = requesterGroups.has(stage.group);
 			if (!parentControl && !directMembership) continue;
 			if (selected !== undefined && selected !== stage.group) continue;
@@ -294,7 +295,7 @@ class IntercomBroker {
 			if (stage.lifecycle === "running" && liveSession === undefined) continue;
 			// #2784: never list the requester's own stage as an "other" participant.
 			// Ordinary session rows already exclude self; the roster must match.
-			if (liveSession !== undefined && liveSession.info.id === requester.id) continue;
+			if (liveSession !== undefined && liveSession.info.id === requester.info.id) continue;
 			entries.push({
 				kind: "workflow-stage",
 				runId,
@@ -776,7 +777,7 @@ class IntercomBroker {
 			type: "sessions",
 			requestId: clientMessage.requestId,
 			sessions,
-			workflowStages: this.workflowStagesVisibleTo(requester.info, clientMessage.group),
+			workflowStages: this.workflowStagesVisibleTo(requester, clientMessage.group),
 		});
         break;
       }
