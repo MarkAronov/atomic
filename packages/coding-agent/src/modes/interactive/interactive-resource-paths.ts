@@ -136,7 +136,7 @@ InteractiveModeBase.prototype.getCompactNonPackageExtensionLabel = function (
 		}
 	}
 
-	return segments.join("/");
+	return this.formatDisplayPath(resourcePath).replace(/\\/g, "/");
 };
 
 InteractiveModeBase.prototype.getCompactExtensionLabels = function (
@@ -160,7 +160,7 @@ InteractiveModeBase.prototype.getCompactExtensionLabels = function (
 		})
 		.filter((extension) => extension.builtinLabel || !this.isPackageSource(extension.sourceInfo));
 
-	return extensions.map((extension) => {
+	const labels = extensions.map((extension) => {
 		const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
 		if (builtinLabel) return builtinLabel;
 		if (this.isPackageSource(extension.sourceInfo)) {
@@ -173,6 +173,27 @@ InteractiveModeBase.prototype.getCompactExtensionLabels = function (
 		}
 
 		return this.getCompactNonPackageExtensionLabel(extension.path, nonPackageIndex, nonPackageExtensions);
+	});
+
+	const taken = new Set<string>(
+		extensions.flatMap((extension) => {
+			const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
+			return builtinLabel ? [builtinLabel] : [];
+		}),
+	);
+
+	return labels.map((label, index) => {
+		if (getBuiltinExtensionEntryLabel(extensions[index]!.path)) return label;
+		if (!taken.has(label)) {
+			taken.add(label);
+			return label;
+		}
+
+		let suffix = 2;
+		while (taken.has(`${label} (${suffix})`)) suffix += 1;
+		const uniqueLabel = `${label} (${suffix})`;
+		taken.add(uniqueLabel);
+		return uniqueLabel;
 	});
 };
 

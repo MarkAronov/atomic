@@ -111,6 +111,15 @@ export function createSourceInfo(
 		baseDir?: string;
 	},
 ): SourceInfo {
+	if (
+		typeof options !== "object" ||
+		options === null ||
+		typeof options.source !== "string" ||
+		typeof options.scope !== "string" ||
+		typeof options.origin !== "string"
+	) {
+		throw new TypeError("createSourceInfo options must include source, scope, and origin");
+	}
 	return {
 		path: filePath,
 		source: options.source,

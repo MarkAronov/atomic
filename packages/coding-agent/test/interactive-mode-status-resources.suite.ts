@@ -25,6 +25,38 @@ function createBuiltinExtensionFixtures(entryKind: "source" | "installed" = "sou
 	}));
 }
 
+const BUILTIN_EXTENSION_LABELS = ["intercom", "mcp", "subagents", "web-access", "workflows"];
+
+function createLocalExtensionFixture(
+	extensionPath: string,
+	scope: "user" | "project",
+): ExtensionFixture & { sourceInfo: NonNullable<ExtensionFixture["sourceInfo"]> } {
+	return {
+		path: extensionPath,
+		sourceInfo: createSourceInfo(extensionPath, {
+			source: "local",
+			scope,
+			origin: "top-level",
+		}),
+	};
+}
+
+function renderCompactExtensionLabels(extensions: ExtensionFixture[]): string[] {
+	const fakeThis = createShowLoadedResourcesThis({ quietStartup: false });
+	(InteractiveMode as any).prototype.addResourceDisclosure.call(fakeThis, {
+		contextFiles: [],
+		skills: [],
+		prompts: [],
+		extensions,
+		themes: [],
+		expandedSections: {},
+	});
+	const output = normalizeRenderedOutput(fakeThis.chatContainer);
+	const extensionsRow = output.match(/\[Extensions\]\n {2}([^\n]+)/)?.[1];
+	if (!extensionsRow) throw new Error("Expected a compact Extensions row");
+	return extensionsRow.split(", ");
+}
+
 async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]) {
 	const harness = await createHarness();
 	const local = new AgentSessionRuntime(
@@ -205,43 +237,121 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain("extensions/answer.ts");
 	});
 
-	test("labels verified bundled extensions by package name in compact source and installed layouts", () => {
+	test("labels verified bundled extensions by exact package names in compact source and installed layouts", () => {
 		for (const entryKind of ["source", "installed"] as const) {
-			const fakeThis = createShowLoadedResourcesThis({
-				quietStartup: false,
-				toolOutputExpanded: false,
-				extensions: createBuiltinExtensionFixtures(entryKind),
-			});
-
-			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
-
-			const output = normalizeRenderedOutput(fakeThis.chatContainer);
-			expect(output).toContain("[Extensions]\n  intercom, mcp, subagents, web-access, workflows");
-			expect(output).not.toContain("subagents/src/extension");
-			expect(output).not.toContain("workflows/src/extension");
+			expect(renderCompactExtensionLabels(createBuiltinExtensionFixtures(entryKind))).toEqual(
+				BUILTIN_EXTENSION_LABELS,
+			);
 		}
 	});
 
-	test("keeps builtin compact labels while disambiguating colliding local extensions", () => {
-		const builtins = createBuiltinExtensionFixtures();
-		const renderExtensions = (extensions: ExtensionFixture[]): string => {
-			const fakeThis = createShowLoadedResourcesThis({
-				quietStartup: false,
-				toolOutputExpanded: false,
-				extensions,
-			});
+	test("rejects malformed SourceInfo test fixtures at runtime", () => {
+		expect(() => createSourceInfo("/tmp/user/extensions/workflows/index.ts", "user" as never)).toThrow(
+			"createSourceInfo options must include source, scope, and origin",
+		);
+	});
 
-			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
-			return normalizeRenderedOutput(fakeThis.chatContainer);
-		};
+	test("models colliding user and project extensions with complete SourceInfo", () => {
+		const user = createLocalExtensionFixture("/tmp/user/extensions/workflows/index.ts", "user");
+		const project = createLocalExtensionFixture("/tmp/project/extensions/mcp/index.ts", "project");
 
-		expect(renderExtensions(builtins)).toContain("[Extensions]\n  intercom, mcp, subagents, web-access, workflows");
+		expect(user.sourceInfo).toMatchObject({ source: "local", scope: "user", origin: "top-level" });
+		expect(project.sourceInfo).toMatchObject({ source: "local", scope: "project", origin: "top-level" });
+		expect(renderCompactExtensionLabels([...createBuiltinExtensionFixtures(), user])).toContain(
+			"extensions/workflows",
+		);
+	});
+
+	test.each([
+		[`${homedir()}/workflows/index.ts`, "~/workflows/index.ts", "workflows"],
+		[`${homedir()}/workflows`, "~/workflows", "workflows"],
+		["/workflows/index.ts", "/workflows/index.ts", "workflows"],
+		[`${homedir()}/mcp/index.ts`, "~/mcp/index.ts", "mcp"],
+	])(
+		"uses the full display path for exhausted builtin collision %s",
+		(extensionPath, expectedLocalLabel, builtinLabel) => {
+			const labels = renderCompactExtensionLabels([
+				...createBuiltinExtensionFixtures(),
+				createLocalExtensionFixture(extensionPath, "user"),
+			]);
+
+			expect(labels).toContain(builtinLabel);
+			expect(labels).toContain(expectedLocalLabel);
+			expect(new Set(labels).size).toBe(labels.length);
+		},
+	);
+
+	test("keeps every builtin exact and every local distinct across simultaneous exhausted collisions", () => {
+		const localPaths = [
+			`${homedir()}/workflows/index.ts`,
+			`${homedir()}/workflows`,
+			"/workflows/index.ts",
+			`${homedir()}/mcp/index.ts`,
+		];
+		const labels = renderCompactExtensionLabels([
+			...createBuiltinExtensionFixtures(),
+			...localPaths.map((extensionPath) => createLocalExtensionFixture(extensionPath, "user")),
+		]);
+
+		expect(new Set(labels).size).toBe(labels.length);
+		for (const builtinLabel of BUILTIN_EXTENSION_LABELS) expect(labels).toContain(builtinLabel);
+		expect(labels).toEqual(
+			[
+				"/workflows/index.ts",
+				"~/mcp/index.ts",
+				"~/workflows",
+				"~/workflows/index.ts",
+				...BUILTIN_EXTENSION_LABELS,
+			].sort((left, right) => left.localeCompare(right)),
+		);
+	});
+
+	test("prefers parent segments before full display paths for local builtin collisions", () => {
+		const labels = renderCompactExtensionLabels([
+			...createBuiltinExtensionFixtures(),
+			createLocalExtensionFixture("/tmp/a/workflows/index.ts", "project"),
+			createLocalExtensionFixture("/tmp/b/workflows/index.ts", "project"),
+			createLocalExtensionFixture("/tmp/extensions/answer.ts", "project"),
+		]);
+
+		expect(labels).toContain("a/workflows");
+		expect(labels).toContain("b/workflows");
+		expect(labels).toContain("answer.ts");
+	});
+
+	test("uses deterministic numeric tiebreaks only when the terminal display path is also taken", () => {
 		expect(
-			renderExtensions([
-				...builtins,
-				{ path: "/tmp/user/extensions/workflows/index.ts", sourceInfo: createSourceInfo("local", "user") },
+			renderCompactExtensionLabels([
+				...createBuiltinExtensionFixtures(),
+				createLocalExtensionFixture("workflows", "project"),
+				createLocalExtensionFixture("workflows", "user"),
 			]),
-		).toContain("[Extensions]\n  extensions/workflows, intercom, mcp, subagents, web-access, workflows");
+		).toEqual(
+			[...BUILTIN_EXTENSION_LABELS, "workflows (2)", "workflows (3)"].sort((left, right) =>
+				left.localeCompare(right),
+			),
+		);
+		expect(renderCompactExtensionLabels([createLocalExtensionFixture("workflows", "project")])).toEqual([
+			"workflows",
+		]);
+	});
+
+	test("keeps local and builtin full source paths in the expanded listing", () => {
+		const local = createLocalExtensionFixture(`${homedir()}/workflows/index.ts`, "user");
+		const extensions = [...createBuiltinExtensionFixtures(), local];
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			toolOutputExpanded: true,
+			extensions,
+			useRealScopeGroups: true,
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+		const output = normalizeRenderedOutput(fakeThis.chatContainer);
+		for (const extension of extensions) {
+			const expectedPath = fakeThis.formatExtensionDisplayPath(extension.path).replace(/\\/g, "/");
+			expect(output).toContain(expectedPath);
+		}
 	});
 
 	test("strips index entry names from Windows extension display paths", () => {
