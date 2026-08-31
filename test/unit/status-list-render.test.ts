@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
 import { hexToAnsi, RESET } from "../../packages/workflows/src/tui/color-utils.js";
@@ -625,6 +626,45 @@ describe("renderStatusList — populated", () => {
 		assert.doesNotMatch(plain, /→ [^\n│]*…/u);
 		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
 		for (const line of plain.split("\n")) assert.equal(visibleWidth(line), 60);
+	});
+	test("keeps projected pending-stage canonical IDs exact at narrow card widths", () => {
+		const runId = "narrow-pending-run";
+		const stageId = "canonical-review-stage";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "narrow-pending",
+				stages: [makeStage(stageId, "review", "pending", { pendingStageDeliveryAvailable: false })],
+			}),
+		);
+		const projected = localStore.graphSnapshot().runs;
+
+		for (let width = 20; width <= 40; width++) {
+			const plain = renderStatusList(projected, { width, showDetailHint: false });
+			const compact = plain.replace(/[\s│]/gu, "");
+			assert.ok(compact.includes(stageId), `canonical stage id must remain exact at width ${width}`);
+			assert.doesNotMatch(plain, /canonical-[^\n│]*…/u);
+			for (const line of plain.split("\n")) assert.equal(visibleWidth(line), chatWidth(width));
+		}
+	});
+	test("projected status cards suppress pending-stage targets after the run terminates", () => {
+		const runId = "terminated-projected-list";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "terminated-list",
+				stages: [makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true })],
+			}),
+		);
+		localStore.recordRunEnd(runId, "failed", undefined, "boom");
+
+		const plain = renderStatusList(localStore.graphSnapshot().runs, { width: 100, showDetailHint: false });
+
+		assert.match(plain, /✗ failed/);
+		assert.match(plain, /pending: review \(review-a\) · delivery unavailable/);
+		assert.doesNotMatch(plain, new RegExp(`${runId}:review-a`));
 	});
 	test("themes every wrapped run-id row in the workflow status hint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";

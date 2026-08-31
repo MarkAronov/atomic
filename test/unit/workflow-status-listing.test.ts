@@ -18,6 +18,7 @@ import {
 	makeExecuteWorkflowTool,
 	makeInflightRun,
 	recordTerminalRun,
+	registerWorkflowCommand,
 	renderResult,
 	store,
 } from "./slash-dispatch-utils.js";
@@ -243,6 +244,32 @@ describe("workflow tool status run listing", () => {
 		assert.equal(parsed.snapshots.length, 1);
 	});
 
+	test.sequential("/workflow status preserves deliverable pending-stage targets through the graph projection", async () => {
+		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
+		store.recordRunStart({
+			...makeInflightRun(runId),
+			name: "projected-pending-status",
+			stages: [
+				{
+					id: "review-a",
+					name: "review",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+		});
+		const { sent, workflowCmd } = await registerWorkflowCommand();
+
+		await workflowCmd.options.handler("status", { hasUI: false, ui: { notify: () => undefined } });
+
+		const message = sent.find((entry) => (entry.details as { kind?: string } | undefined)?.kind === "status");
+		assert.ok(message, "expected the real slash handler to emit a status surface");
+		assert.equal(store.graphSnapshot().runs[0]?.stages[0]?.pendingStageDeliveryAvailable, true);
+		assert.match(message.content ?? "", new RegExp(`${runId}:review-a`));
+		assert.doesNotMatch(message.content ?? "", /review \(review-a\) · delivery unavailable/);
+	});
 	test.sequential("status text enumerates pending stages with canonical Intercom targets and truthful delivery capability", async () => {
 		const runId = `status-pending-${Date.now()}`;
 		store.recordRunStart({ ...makeInflightRun(runId), name: "pending-status" });
@@ -307,6 +334,42 @@ describe("workflow tool status run listing", () => {
 		assert.match(text, /ask requires a live reply-capable stage/);
 	});
 
+	test.sequential("terminated runs never advertise pending-stage targets on tool, list, or detail surfaces", async () => {
+		const runId = "ffffffff-1111-4111-8111-111111111111";
+		const target = `${runId}:review-a`;
+		store.recordRunStart({
+			...makeInflightRun(runId),
+			name: "failed-pending-status",
+			stages: [
+				{
+					id: "review-a",
+					name: "review",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+		});
+		store.recordRunEnd(runId, "failed", undefined, "boom");
+		const handler = makeToolHandler();
+
+		const result = await handler({ action: "status" }, {} as never);
+		const toolText = renderWorkflowToolContent(result, { action: "status" });
+		const listText = renderResult(result, { plain: true, width: 160 });
+		const detailResult = await handler({ action: "status", runId }, {} as never);
+		const detailText = renderResult(detailResult, { plain: true, width: 160 });
+
+		for (const rendered of [toolText, listText, detailText]) {
+			assert.doesNotMatch(rendered, new RegExp(target));
+		}
+		assert.match(
+			toolText,
+			/pending stage: review \(review-a\) lifecycle=pending pendingStageDeliveryAvailable=false Intercom target=unavailable/,
+		);
+		assert.match(listText, /pending: review \(review-a\) · delivery unavailable/);
+		assert.match(detailText, /pending id {6}review-a · delivery unavailable/);
+	});
 	test.sequential("nested pending stages render the exact canonical target published by the Intercom roster", async () => {
 		const rootRunId = "11111111-1111-4111-8111-111111111111";
 		const childRunId = "22222222-2222-4222-8222-222222222222";

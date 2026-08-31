@@ -1,5 +1,6 @@
 import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
-import type { RunSnapshot, StageSnapshot } from "./store-types.js";
+import { isTerminalRunStatus } from "./store-internal.js";
+import type { RunSnapshot, RunStatus, StageSnapshot } from "./store-types.js";
 
 /** Actionable identity and pre-start delivery state for one materialized pending stage. */
 export interface PendingWorkflowStageStatus {
@@ -10,6 +11,10 @@ export interface PendingWorkflowStageStatus {
 	/** Exact Intercom target, present only when pre-start delivery is available. */
 	readonly target?: string;
 }
+type PendingWorkflowRun = {
+	readonly id: string;
+	readonly status: RunStatus | "crashed";
+};
 
 function pendingStageTarget(
 	runId: string,
@@ -21,12 +26,13 @@ function pendingStageTarget(
 }
 
 export function pendingWorkflowStageStatus(
-	runId: string,
+	run: PendingWorkflowRun,
 	stage: StageSnapshot,
 ): PendingWorkflowStageStatus | undefined {
 	if (stage.status !== "pending") return undefined;
-	const pendingStageDeliveryAvailable = stage.pendingStageDeliveryAvailable === true;
-	const identity = pendingStageTarget(runId, stage);
+	const pendingStageDeliveryAvailable =
+		run.status !== "crashed" && !isTerminalRunStatus(run.status) && stage.pendingStageDeliveryAvailable === true;
+	const identity = pendingStageTarget(run.id, stage);
 	return {
 		stageId: identity.stageId,
 		name: stage.name,
@@ -36,9 +42,11 @@ export function pendingWorkflowStageStatus(
 	};
 }
 
-export function pendingWorkflowStageStatuses(run: Pick<RunSnapshot, "id" | "stages">): PendingWorkflowStageStatus[] {
+export function pendingWorkflowStageStatuses(
+	run: Pick<RunSnapshot, "id" | "status" | "stages">,
+): PendingWorkflowStageStatus[] {
 	return run.stages.flatMap((stage) => {
-		const pending = pendingWorkflowStageStatus(run.id, stage);
+		const pending = pendingWorkflowStageStatus(run, stage);
 		return pending === undefined ? [] : [pending];
 	});
 }

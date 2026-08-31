@@ -319,6 +319,60 @@ describe("renderRunDetail — themed", () => {
 		assert.match(out, /pending target {2}plain-run:worker-id/);
 		for (const line of renderRunDetail(detail, { width: 32 }).split("\n")) assert.equal(visibleWidth(line), 32);
 	});
+	test("never ellipsizes a projected pending-stage target at widths 32 through 200", () => {
+		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
+		const target = `${runId}:review-a`;
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "projected-run-detail",
+				stages: [makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true })],
+			}),
+		);
+		const detail = detailFromRun(localStore.graphSnapshot().runs[0]!);
+
+		for (let width = 32; width <= 200; width++) {
+			const plain = stripAnsi(renderRunDetail(detail, { width }));
+			const lines = plain.split("\n");
+			const firstIndex = lines.findIndex((line) => line.includes("pending target"));
+			assert.notEqual(firstIndex, -1, `pending target row is present at width ${width}`);
+			const chunks: string[] = [];
+			for (let index = firstIndex; index < lines.length; index++) {
+				const content = lines[index]!.replace(/^│/u, "").replace(/│$/u, "").trimEnd();
+				if (index === firstIndex) {
+					chunks.push(content.slice(content.indexOf("pending target") + "pending target".length).trim());
+					continue;
+				}
+				const chunk = content.trim();
+				if (chunk.length === 0) break;
+				chunks.push(chunk);
+			}
+			const renderedTarget = chunks.join("");
+			assert.equal(renderedTarget, target, `target must remain exact at width ${width}`);
+			assert.doesNotMatch(renderedTarget, /…/u, `target must never be ellipsized at width ${width}`);
+			for (const line of lines) assert.equal(visibleWidth(line), width);
+		}
+	});
+	test("projected detail suppresses pending-stage targets after the run terminates", () => {
+		const runId = "terminated-projected-detail";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun({
+				id: runId,
+				name: "terminated-detail",
+				stages: [makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true })],
+			}),
+		);
+		localStore.recordRunEnd(runId, "failed", undefined, "boom");
+		const detail = detailFromRun(localStore.graphSnapshot().runs[0]!);
+
+		const plain = renderRunDetail(detail, { width: 100 });
+
+		assert.match(plain, /✗ failed/);
+		assert.match(plain, /pending id {6}review-a · delivery unavailable/);
+		assert.doesNotMatch(plain, new RegExp(`${runId}:review-a`));
+	});
 });
 
 describe("renderRunDetail — plain", () => {

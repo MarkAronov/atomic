@@ -757,25 +757,42 @@ describe("run identity rows", () => {
 		assert.ok(themedAwaiting[1]?.includes(statusIcon("awaiting_input")));
 	});
 
-	test("wide widget names pending stages and targets while collapsed mode stays aggregate", () => {
-		const run = makeRun("widget-run", "publish", "running", [
-			makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
-			makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
-			makeStage("later", "later", "pending", { pendingStageDeliveryAvailable: true }),
-		]);
-		const wide = renderWidgetLines(makeSnap([run]), 160)
-			.map(stripAnsi)
-			.join("\n");
+	test("wide widget names projected pending stages and targets while collapsed mode stays aggregate", () => {
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun("widget-run", "publish", "running", [
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
+				makeStage("later", "later", "pending", { pendingStageDeliveryAvailable: true }),
+			]),
+		);
+		const snapshot = localStore.graphSnapshot();
+		const wide = renderWidgetLines(snapshot, 160).map(stripAnsi).join("\n");
 		assert.match(wide, /pending: review \(review-a\) → widget-run:review-a/);
 		assert.match(wide, /offline \(offline\) · unavailable/);
 		assert.doesNotMatch(wide, /widget-run:offline/);
 		assert.match(wide, /… 1 more/);
 		assert.doesNotMatch(wide, /widget-run:later/);
-		const collapsed = renderWidgetLines(makeSnap([run]), 79).map(stripAnsi);
+		const collapsed = renderWidgetLines(snapshot, 79).map(stripAnsi);
 		assert.equal(collapsed.length, 1);
 		assert.doesNotMatch(collapsed[0]!, /review|offline|widget-run/);
 	});
 
+	test("projected widget cards never advertise pending-stage targets after the run terminates", () => {
+		const runId = "terminated-widget-run";
+		const localStore = createStore();
+		localStore.recordRunStart(
+			makeRun(runId, "terminated-widget", "running", [
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			]),
+		);
+		localStore.recordRunEnd(runId, "failed", undefined, "boom");
+
+		const wide = renderWidgetLines(localStore.graphSnapshot(), 160).map(stripAnsi).join("\n");
+
+		assert.match(wide, /failed/);
+		assert.doesNotMatch(wide, new RegExp(`${runId}:review-a`));
+	});
 	test("uses exact or labelled pending-stage identities with visible width elision", () => {
 		const runId = "aaaaaaaa-1111-4111-8111-111111111111";
 		const run = makeRun(runId, "release-docs", "running", [

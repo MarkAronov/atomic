@@ -164,23 +164,53 @@ function renderRunEntry(
 }
 
 const MAX_PENDING_STAGE_ROWS = 3;
+function pendingStageIdentityLines(
+	stage: { readonly name: string; readonly stageId: string },
+	width: number,
+	suffix = "",
+): string[] {
+	const full = `   pending: ${stage.name} (${stage.stageId})${suffix}`;
+	if (visibleWidth(full) <= width) return [full];
+
+	// At narrow widths, drop the display-name decoration before wrapping the
+	// canonical id. The id is the duplicate-name disambiguator and must never
+	// be replaced by a partial, ellipsized identity.
+	const labelledPrefix = "   pending: ";
+	const prefix = visibleWidth(labelledPrefix) < width ? labelledPrefix : width > 3 ? "   " : "";
+	const continuation = width > 3 ? "   " : "";
+	const rows = wrapIdentifierLines(stage.stageId, width, prefix, continuation).map(
+		({ prefix: rowPrefix, chunk }) => `${rowPrefix}${chunk}`,
+	);
+	if (suffix.length === 0) return rows;
+	const last = rows.at(-1)!;
+	if (visibleWidth(`${last}${suffix}`) <= width) rows[rows.length - 1] = `${last}${suffix}`;
+	else rows.push(`${continuation}${suffix.trim()}`);
+	return rows;
+}
 
 function pendingStageLines(run: RunSnapshot, width: number, theme: GraphTheme | undefined): string[] {
 	const stages = pendingWorkflowStageStatuses(run);
 	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
 		const prefix = `   pending: ${stage.name} (${stage.stageId})`;
 		if (stage.target === undefined) {
-			return [pendingStageLine(`${prefix} · delivery unavailable`, width, theme)];
+			const unavailable = `${prefix} · delivery unavailable`;
+			if (visibleWidth(unavailable) <= width) return [pendingStageLine(unavailable, width, theme)];
+			return [
+				...pendingStageIdentityLines(stage, width).map((line) => pendingStageLine(line, width, theme)),
+				pendingStageLine("   delivery unavailable", width, theme),
+			];
 		}
 
 		const inline = `${prefix} → ${stage.target}`;
 		if (visibleWidth(inline) <= width) return [pendingStageLine(inline, width, theme)];
 
-		const label = pendingStageLine(`${prefix} →`, width, theme);
+		const labelRows = pendingStageIdentityLines(stage, width, " →").map((line) =>
+			pendingStageLine(line, width, theme),
+		);
 		const targetRows = wrapIdentifierLines(stage.target, width, "   ", "   ").map(({ prefix, chunk }) =>
 			pendingStageLine(`${prefix}${chunk}`, width, theme),
 		);
-		return [label, ...targetRows];
+		return [...labelRows, ...targetRows];
 	});
 	if (stages.length > MAX_PENDING_STAGE_ROWS) {
 		const line = truncateToWidth(
