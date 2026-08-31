@@ -131,7 +131,6 @@ declare module "./interactive-mode-base.ts" {
 			contextFiles: ReadonlyArray<{ path: string }>;
 			skills: ReadonlyArray<{ filePath: string; name: string }>;
 			prompts: ReadonlyArray<{ filePath: string; name: string }>;
-			templates: ReadonlyArray<{ filePath: string; name: string }>;
 			extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
 			themes: ReadonlyArray<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
 			expandedSections: {

@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
+import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -23,8 +24,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 			quietStartup: false,
 			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
 			contextFiles: [{ path: "/tmp/project/AGENTS.md" }],
-			promptTemplates: [{ filePath: "/tmp/prompts/review.md", name: "review" }],
-			prompts: [{ filePath: "/tmp/prompts/explain.md", name: "explain" }],
+			prompts: [
+				{ filePath: "/tmp/prompts/review.md", name: "review" },
+				{ filePath: "/tmp/prompts/explain.md", name: "explain" },
+			],
 			extensions: [{ path: "/tmp/extensions/answer.ts" }],
 			themes: [{ name: "solarized", sourcePath: "/tmp/themes/solarized.json" }],
 		});
@@ -39,12 +42,62 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Skills]");
 		expect(output).toContain("commit");
 		expect(output).toContain("[Prompts]");
-		expect(output).toContain("/review, explain");
+		expect(output).toContain("/explain, /review");
 		expect(output).toContain("[Extensions]");
 		expect(output).toContain("answer.ts");
 		expect(output).toContain("[Themes]");
 		expect(output).toContain("solarized");
 		expect(output).not.toContain("/tmp/skill/SKILL.md");
+	});
+
+	test("lists each prompt once and keeps slash-prefixed labels when expanded", () => {
+		const prompts = [{ filePath: "/tmp/prompts/review.md", name: "review" }];
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			promptTemplates: prompts,
+			prompts,
+			useRealScopeGroups: true,
+		});
+
+		InteractiveMode.prototype.showLoadedResources.call(fakeThis, { force: false });
+
+		const collapsedOutput = normalizeRenderedOutput(fakeThis.chatContainer);
+		expect(collapsedOutput.match(/\/review/g)).toHaveLength(1);
+		expect(collapsedOutput).not.toContain("review, review");
+
+		fakeThis.chatContainer.children.forEach((child: object) => {
+			if ("setExpanded" in child && typeof child.setExpanded === "function") child.setExpanded(true);
+		});
+		const expandedOutput = normalizeRenderedOutput(fakeThis.chatContainer);
+		expect(expandedOutput.match(/\/review/g)).toHaveLength(1);
+		expect(expandedOutput).not.toContain("/tmp/prompts/review.md");
+	});
+
+	test("Ctrl+O expands and collapses startup resource sections nested in the disclosure container", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			useRealScopeGroups: true,
+		});
+		fakeThis.resourceDisclosureContainer = new Container();
+		fakeThis.chatContainer.addChild(fakeThis.resourceDisclosureContainer);
+		fakeThis.customHeader = undefined;
+		fakeThis.builtInHeader = undefined;
+		fakeThis.ui = { requestRender: () => {} };
+
+		InteractiveMode.prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			targetContainer: fakeThis.resourceDisclosureContainer,
+		});
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toContain("commit");
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
+
+		InteractiveMode.prototype.setToolsExpanded.call(fakeThis, true);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toContain("/tmp/skill/SKILL.md");
+
+		InteractiveMode.prototype.setToolsExpanded.call(fakeThis, false);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toContain("commit");
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
 	});
 
 	test("shows full resource listing when expanded", () => {

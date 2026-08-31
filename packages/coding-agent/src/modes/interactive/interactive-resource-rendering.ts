@@ -179,7 +179,6 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...this.session.resourceLoader.getAppendSystemPromptSources(),
 			...this.session.resourceLoader.getAgentsFiles().agentsFiles,
 		];
-		const templates = this.session.promptTemplates;
 		const customThemes = themesResult.themes.filter((t) => t.sourcePath);
 
 		const expandedSections: {
@@ -210,18 +209,11 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		}
 
 		const prompts = promptsResult.prompts;
-		const promptEntries = [
-			...templates.map((template) => ({
-				path: template.filePath,
-				sourceInfo: template.sourceInfo,
-				label: `/${template.name}`,
-			})),
-			...prompts.map((prompt) => ({
-				path: prompt.filePath,
-				sourceInfo: prompt.sourceInfo,
-				label: prompt.name,
-			})),
-		];
+		const promptEntries = prompts.map((prompt) => ({
+			path: prompt.filePath,
+			sourceInfo: prompt.sourceInfo,
+			label: `/${prompt.name}`,
+		}));
 		if (promptEntries.length > 0) {
 			const groups = this.buildScopeGroups(promptEntries);
 			const promptByPath = new Map(promptEntries.map((prompt) => [prompt.path, prompt.label]));
@@ -256,7 +248,6 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			contextFiles,
 			skills,
 			prompts,
-			templates,
 			extensions,
 			themes: customThemes,
 			expandedSections,
