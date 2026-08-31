@@ -308,14 +308,15 @@ async function productionCompileSites(): Promise<[string, string[]][]> {
 test("pi#7685: every bun --compile command disables bunfig autoload", async () => {
 	const sites = await productionCompileSites();
 
-	// One in the package build, one release path shared by every target now
-	// that Windows also compiles with bytecode. A third compile is not covered
-	// by anything here until it is added deliberately, and a missing one means
-	// this contract stopped measuring a build that still ships.
+	// One in the package build, and two release paths: Windows compiles
+	// without bytecode while every other target embeds it. A fourth compile is
+	// not covered by anything here until it is added deliberately, and a
+	// missing one means this contract stopped measuring a build that still
+	// ships.
 	assert.equal(
 		sites.length,
-		2,
-		`expected two \`bun build --compile\` invocations (one in ${PACKAGE_MANIFEST}, one in ${RELEASE_SCRIPT}); found ${sites.length}: ${sites.map(([site]) => site).join(", ")}`,
+		3,
+		`expected three \`bun build --compile\` invocations (one in ${PACKAGE_MANIFEST}, two in ${RELEASE_SCRIPT}); found ${sites.length}: ${sites.map(([site]) => site).join(", ")}`,
 	);
 	for (const [site, argv] of sites) assertCompilesGuarded(site, [argv]);
 });
@@ -514,8 +515,9 @@ test(
 		const sites = await productionCompileSites();
 		assert.ok(sites.length > 0, "found no production compile to derive the probe from");
 
-		// Distinct option lists only: the two release targets differ from the
-		// package build by `--bytecode` and by the `--target` the probe drops.
+		// Distinct option lists only: the non-Windows release targets differ
+		// from the package build by the `--target` the probe drops, and the
+		// Windows release target additionally omits `--bytecode`.
 		// Keyed by the joined form, carried as tokens — a token may contain a
 		// space, and rebuilding argv by splitting the key would take a defined
 		// build apart.

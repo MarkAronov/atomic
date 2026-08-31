@@ -230,14 +230,18 @@ for platform in "${PLATFORMS[@]}"; do
     if [[ "$platform" == *-x64 || "$platform" == *-x64-* ]]; then
         bun_target="${bun_target}-baseline"
     fi
-    binary_name="atomic"
     if [[ "$platform" == windows-* ]]; then
-        binary_name="atomic.exe"
+        # Bun 1.4.0 Windows executables cross-compiled with --bytecode from a
+        # non-Windows host segfault before user code runs (even on --version).
+        # Compiling on a Windows host produces a working bytecode binary, which
+        # is why the Windows smoke job passes while the Linux-built release
+        # payload crashes. Keep Windows release binaries standalone-compiled,
+        # but ship source payload instead of embedded bytecode until Bun's
+        # cross-compilation fix is available.
+        bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
+    else
+        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
     fi
-    # Bun 1.4.0 includes the Windows embedded-bytecode alignment fix (#26299)
-    # and corrupted-bytecode source fallback (#31961), so every release target
-    # now uses the same startup-optimized bytecode policy.
-    bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/$binary_name"
 done
 
 echo "==> Copying runtime dependencies..."
