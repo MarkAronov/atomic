@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.ts";
+import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { attachInteractiveEngineResourceExtensionRefresh } from "../src/modes/interactive/interactive-startup.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -15,6 +17,13 @@ import {
 	createSourceInfo,
 } from "./interactive-mode-status-resources-helpers.ts";
 import { createHarness } from "./suite/harness.ts";
+
+function createBuiltinExtensionFixtures(entryKind: "source" | "installed" = "source"): ExtensionFixture[] {
+	const entries = entryKind === "source" ? SOURCE_EXTENSION_ENTRIES : INSTALLED_EXTENSION_ENTRIES;
+	return getBuiltinPackageLocations().map(({ distDirName, packageDir }) => ({
+		path: path.resolve(packageDir, entries[distDirName]),
+	}));
+}
 
 async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]) {
 	const harness = await createHarness();
@@ -194,6 +203,55 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Extensions]");
 		expect(output).toContain("answer.ts, btw.ts");
 		expect(output).not.toContain("extensions/answer.ts");
+	});
+
+	test("labels verified bundled extensions by package name in compact source and installed layouts", () => {
+		for (const entryKind of ["source", "installed"] as const) {
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: false,
+				toolOutputExpanded: false,
+				extensions: createBuiltinExtensionFixtures(entryKind),
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+
+			const output = normalizeRenderedOutput(fakeThis.chatContainer);
+			expect(output).toContain("[Extensions]\n  intercom, mcp, subagents, web-access, workflows");
+			expect(output).not.toContain("subagents/src/extension");
+			expect(output).not.toContain("workflows/src/extension");
+		}
+	});
+
+	test("keeps verified bundled extension source paths in the expanded listing", () => {
+		const extensions = createBuiltinExtensionFixtures();
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			toolOutputExpanded: true,
+			extensions,
+			useRealScopeGroups: true,
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+
+		const output = normalizeRenderedOutput(fakeThis.chatContainer);
+		for (const extension of extensions) {
+			expect(output).toContain(fakeThis.formatExtensionDisplayPath(extension.path));
+		}
+	});
+
+	test("does not relabel a local extension with a builtin-shaped source path", () => {
+		const localPath = "/tmp/project/.atomic/extensions/local/src/extension/index.ts";
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			toolOutputExpanded: false,
+			extensions: [{ path: localPath }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+
+		const output = normalizeRenderedOutput(fakeThis.chatContainer);
+		expect(output).toContain("[Extensions]\n  extension");
+		expect(output).not.toContain("[Extensions]\n  local");
 	});
 
 	test("merges the engine inventory once and hides identities hidden by either side", async () => {

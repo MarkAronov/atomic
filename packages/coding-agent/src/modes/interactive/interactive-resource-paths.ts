@@ -1,3 +1,4 @@
+import { getBuiltinExtensionEntryLabel } from "../../core/extensions/builtin-extension-entry-labels.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { parseGitUrl, path, type SourceInfo, theme } from "./interactive-mode-deps.ts";
 
@@ -158,6 +159,8 @@ InteractiveModeBase.prototype.getCompactExtensionLabels = function (
 		.filter((extension) => !this.isPackageSource(extension.sourceInfo));
 
 	return extensions.map((extension) => {
+		const builtinLabel = getBuiltinExtensionEntryLabel(extension.path);
+		if (builtinLabel) return builtinLabel;
 		if (this.isPackageSource(extension.sourceInfo)) {
 			return this.getCompactExtensionLabel(extension.path, extension.sourceInfo);
 		}
