@@ -11,6 +11,10 @@
 
 - Restored the interactive startup resource listing so loaded context files, prompts, skills, extensions, and themes are named on screen by default, with source paths available in the expanded view. Prompt commands now appear once with their slash-prefixed labels, and Ctrl+O expands resource sections nested in the startup disclosure. The Extensions section includes isolated engine-child extensions without loading them again in the terminal host, labels bundled extensions by package name in the compact view, and disambiguates local labels that collide with those builtin names. It prefers compact parent segments, falls back to the local display path when no parent is available, and uses deterministic numeric suffixes only for remaining duplicates. The listing preserves overlap warnings when it refreshes and keeps an extension hidden when either inventory marks its identity hidden. Windows expanded listings also omit trailing extension `index.ts` and `index.js` entry names consistently with other platforms.
 
+### Removed
+
+- Removed the `/atomic` onboarding and help guide command. Use `/workflow list` to explore built-in workflows, `/changelog` for release notes, and `/hotkeys` for keyboard shortcuts.
+
 ## [0.9.17] - 2026-08-29
 
 Cumulative release of the `0.9.17-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
