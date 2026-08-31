@@ -1,3 +1,13 @@
+RENDERING FIX CONFIRMATION
+Tested implementation commit: 9ae154f798426c3c6237e03f7270d56258a42a4b
+Root run: 696ecda7-ee76-45df-92b0-42a5cdeccbe5
+
+ intercom send 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50
+ ✓ Message queued for 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50 (bc661fe5-dd7b-4776-8bf6-388140aa1db1)
+
+The prior `✗ Message queued` output was a rendering defect; durable queueing succeeded. The corrected renderer now shows the successful queued result with `✓`.
+
+EARLIER FULL DURABILITY E2E
 Tested commit: 81c738e97019e3cebccb2e055c8cbbd27c86d211
 Root run: 645f0282-5fb2-49a6-81f3-1461ff00732f
 
@@ -21,7 +31,7 @@ MAIN CHAT — joined invocation group and discovered RUNNING + PENDING canonical
 MAIN CHAT — pending send acknowledged before stage initialization
 
  intercom send 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f
- ✗ Message queued for 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f (889fae12-9d05-43ba-aab7-bcfd684cd6e8)
+ ✓ Message queued for 645f0282-5fb2-49a6-81f3-1461ff00732f:79fd60a3-9b89-49a7-8df0-c9d05a86ff3f (889fae12-9d05-43ba-aab7-bcfd684cd6e8)
 
 FUTURE STAGE — token was already present in its first model turn and was quoted
 

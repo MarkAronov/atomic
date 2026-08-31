@@ -191,3 +191,18 @@ FUTURE ISOLATED STAGE FIRST TURN: QUEUED RECEIPT AND BETA-TO-ALPHA ISOLATION
  Receipt: PENDING-PROOF-2784-RERUN-B72C
 
  After intercom list, the alpha sibling subgroup’s running-isolated stage is not visible.
+
+====================================================================================================
+RENDERING-FIX ADDENDUM
+====================================================================================================
+Tested implementation commit: 9ae154f798426c3c6237e03f7270d56258a42a4b
+Date: 2026-08-31
+tmux session: issue2784fix4
+Capture command: tmux capture-pane -t issue2784fix4:0.0 -p -S -120
+Root run: 696ecda7-ee76-45df-92b0-42a5cdeccbe5
+Pending canonical target: 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50
+
+ intercom send 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50
+ ✓ Message queued for 696ecda7-ee76-45df-92b0-42a5cdeccbe5:d8da891a-3aaf-4e7f-8938-6beb58e2ac50 (bc661fe5-dd7b-4776-8bf6-388140aa1db1)
+
+The earlier `✗ Message queued` line at commit 81c738e97019e3cebccb2e055c8cbbd27c86d211 (line 85 above) was a result-rendering defect: the durable queue operation succeeded but `delivered: false` selected the error glyph and color. Commit 9ae154f798426c3c6237e03f7270d56258a42a4b preserves the queue acknowledgment text and renders that successful queued result with `✓`.
