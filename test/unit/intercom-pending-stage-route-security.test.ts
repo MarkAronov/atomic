@@ -458,6 +458,65 @@ test("invocation roster control is directional across owned subgroups", async ()
 	}
 });
 
+test("an authenticated second-session replay publishes the roster without stealing pending-route ownership", async () => {
+	// Regression: #2784 — workflow store invalidation replays the process-shared owner announcement
+	// with materialized stages from a stage session, after the owner registered without a roster.
+	const runId = "27840002-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "second-session-roster-replay-capability";
+	const owner = new IntercomClient();
+	const replayingStage = new IntercomClient();
+	const member = new IntercomClient();
+	for (const client of [owner, replayingStage, member]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("replay-owner", group));
+	await replayingStage.connect(productionRegistration("replaying-stage", group));
+	await member.connect(productionRegistration("replay-member", group));
+
+	owner.registerPendingStageRoute(runId, group, capability);
+	await owner.listSessions();
+	replayingStage.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await replayingStage.listSessions();
+
+	assert.deepEqual((await member.listDirectory()).workflowStages, [
+		{
+			kind: "workflow-stage",
+			runId,
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			group,
+		},
+	]);
+
+	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const send = member.send(`${runId}:reviewer-id`, { text: "original owner must receive this" });
+	const request = await pendingRequest;
+	assert.equal(request.message.content.text, "original owner must receive this");
+	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+	assert.equal((await send).queued, true);
+
+	await owner.disconnect();
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+	const afterDisconnect = await member.send(`${runId}:reviewer-id`, { text: "route must be gone" });
+	assert.equal(afterDisconnect.delivered, false);
+	assert.equal(afterDisconnect.reason, "Session not found");
+});
+
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
 	const runId = "13ec4058-3528-413e-84c4-87a43e5037a2";
 	const group = `workflow:${runId}`;
