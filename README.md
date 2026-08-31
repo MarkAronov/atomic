@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
-  Atomic trades speed for quality. Complex runs can take hours, days, or weeks because Atomic researches, implements, and verifies the work that quick coding-agent passes tend to leave to you.
+  Atomic prioritizes quality over quick responses. Complex runs can take hours, days, or weeks because Atomic researches, implements, and verifies the work that quick coding-agent passes tend to leave to you.
 </p>
 
 <p align="center">
-  Engineers using Atomic tell us this means less babysitting and less stress. The end result is work built and verified for production review, backed by evidence instead of another round of manual prompting.
+  Engineers using Atomic tell us this means less babysitting, less code review comments, and less stress. The end result is work built and verified for production review, backed by evidence instead of another round of manual prompting.
 </p>
 
 <p align="center">
