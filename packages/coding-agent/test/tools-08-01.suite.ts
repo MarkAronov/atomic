@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
@@ -148,7 +148,9 @@ describe("tool cwd resolution", () => {
 			undefined,
 			fakeCtx(testDir),
 		);
-		expect(getTextOutput(result)).toContain(testDir);
+		// MSYS/Git Bash maps Windows temp directories to POSIX paths such as `/tmp`,
+		// but the unique final segment still distinguishes the ctx cwd from factoryDir.
+		expect(getTextOutput(result)).toContain(basename(testDir));
 	});
 
 	// The contract is `ctx?.cwd || cwd`, so the factory cwd must still win when no ctx arrives.
