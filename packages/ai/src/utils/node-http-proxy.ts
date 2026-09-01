@@ -92,6 +92,15 @@ function shouldProxyHostname(hostname: string, port: number, env?: ProviderEnv):
 			return true;
 		}
 
+		// A bare `*` entry disables the proxy for every host. The fast path above only fires when
+		// the entire NO_PROXY value is exactly "*", so a wildcard listed alongside other entries,
+		// or padded with whitespace, would otherwise strip to an empty domain and match nothing.
+		// Checked per entry after trimming, as Go's x/net/http/httpproxy does. Deliberately placed
+		// after the port guard so `*:443` stays scoped to its port.
+		if (parsed.host === "*") {
+			return false;
+		}
+
 		let domain = stripBrackets(parsed.host);
 		if (domain.startsWith("*.")) {
 			domain = domain.slice(2);

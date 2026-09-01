@@ -6,7 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
-- `NO_PROXY` now matches a root domain and its subdomains consistently, and understands bracketed IPv6 hosts, bare IPv6 hosts, and port-scoped entries. Previously an entry such as `example.com` did not exempt `api.example.com`, and `[2001:db8::1]` was parsed as a host/port pair ([#8737](https://github.com/earendil-works/pi/pull/8737)).
+- `NO_PROXY` now matches a root domain and its subdomains consistently, and understands bracketed IPv6 hosts, bare IPv6 hosts, port-scoped entries, and a bare `*` entry anywhere in the list. Previously an entry such as `example.com` did not exempt `api.example.com`, and `[2001:db8::1]` was parsed as a host/port pair ([#8737](https://github.com/earendil-works/pi/pull/8737)).
 - Added a `supportsMaxOutputTokens` compatibility flag to `OpenAIResponsesCompat` (default `true`). Setting it to `false` omits `max_output_tokens` from openai-responses requests, for Codex-protocol gateways that reject the parameter with a 400 ([#8941](https://github.com/earendil-works/pi/pull/8941)).
 
 ## [0.9.16] - 2026-08-29
