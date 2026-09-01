@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.4] - 2026-09-01
+
+### Changed
+
+- The bundled model-selection reference documentation now tracks the August 26, 2026 DeepSWE v1.1 snapshot across the model-selection, Pareto-efficiency, and benchmark-source pages. Displayed pricing is corrected for GPT-5.6 Sol ($8.39 to $6.46 after OpenAI's promotional cut), DeepSeek V4 Pro ($1.67), and DeepSeek V4 Flash ($0.46). The recomputed Pareto frontier adds GLM-5.3 Flash as its cheapest point, moves both DeepSeek V4 configurations to provider-diversity options, and retains seven configurations no longer displayed on the live leaderboard as clearly labeled history. These static reference changes do not alter runtime routing or model defaults ([#2798](https://github.com/bastani-inc/atomic/pull/2798)).
+
 ## [0.9.18-alpha.2] - 2026-08-31
 
 ### Fixed
