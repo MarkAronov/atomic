@@ -90,6 +90,10 @@ export function transformMessages<TApi extends Api>(
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
+	// Tool calls dropped for preceding a fallback boundary. Their results must go too: a
+	// `tool_result` whose `tool_use` is absent is rejected, and `ToolResultMessage` is a separate
+	// top-level message so removing the call alone would orphan it.
+	const droppedToolCallIds = new Set<string>();
 	// Normalize null/undefined content from untyped callers (custom tools, hand-built
 	// histories, old session files) so downstream code can rely on the type contract.
 	const normalizedMessages = messages.map((msg) => (msg.content == null ? { ...msg, content: [] } : msg));
@@ -184,7 +188,11 @@ export function transformMessages<TApi extends Api>(
 				if (block.type === "toolCall") {
 					// Client-side `tool_use` before the final fallback marker must be dropped: the
 					// declining model's tool call was never executed by the model that continued.
-					if (precedesFallbackBoundary) return [];
+					// Record the id so its `toolResult` message is dropped alongside it.
+					if (precedesFallbackBoundary) {
+						droppedToolCallIds.add(block.id);
+						return [];
+					}
 					const toolCall = block as ToolCall;
 					let normalizedToolCall: ToolCall = toolCall;
 
@@ -215,6 +223,14 @@ export function transformMessages<TApi extends Api>(
 		return msg;
 	});
 
+	// Drop the tool results whose calls were removed at a fallback boundary. Anthropic rejects a
+	// `tool_result` with no matching `tool_use`, so removing the call without its result would
+	// trade one rejection for another.
+	const boundaryFiltered =
+		droppedToolCallIds.size === 0
+			? transformed
+			: transformed.filter((msg) => msg.role !== "toolResult" || !droppedToolCallIds.has(msg.toolCallId));
+
 	// Second pass: insert synthetic empty tool results for orphaned tool calls
 	// This preserves thinking signatures and satisfies API requirements
 	const result: Message[] = [];
@@ -239,8 +255,8 @@ export function transformMessages<TApi extends Api>(
 		}
 	};
 
-	for (let i = 0; i < transformed.length; i++) {
-		const msg = transformed[i];
+	for (let i = 0; i < boundaryFiltered.length; i++) {
+		const msg = boundaryFiltered[i];
 
 		if (msg.role === "assistant") {
 			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now

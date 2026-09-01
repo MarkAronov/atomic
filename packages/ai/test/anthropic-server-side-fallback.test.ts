@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
 import { getModel } from "../src/compat.ts";
-import type { AssistantMessage, Context, FallbackContent, Message } from "../src/types.ts";
+import type { AssistantMessage, Context, FallbackContent, Message, Model } from "../src/types.ts";
 
 /**
  * Mid-stream server-side fallback.
@@ -39,6 +39,64 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 }
 
 const context: Context = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] };
+
+interface CapturedBlock {
+	type: string;
+	tool_use_id?: string;
+	from?: { model?: string };
+	to?: { model?: string };
+}
+interface CapturedPayload {
+	messages?: Array<{ role: string; content: CapturedBlock[] }>;
+}
+
+class PayloadCaptured extends Error {
+	constructor() {
+		super("payload captured");
+		this.name = "PayloadCaptured";
+	}
+}
+
+/** Capture the request body Atomic would send for a given history. */
+async function capturePayload(model: Model<"anthropic-messages">, messages: Message[]): Promise<CapturedPayload> {
+	let capturedPayload: CapturedPayload | undefined;
+
+	const s = streamAnthropic(
+		{ ...model, baseUrl: "http://127.0.0.1:9" },
+		{ messages },
+		{
+			apiKey: "fake-key",
+			onPayload: (payload) => {
+				capturedPayload = payload as CapturedPayload;
+				throw new PayloadCaptured();
+			},
+		},
+	);
+
+	await s.result();
+
+	if (!capturedPayload) {
+		throw new Error("Expected payload to be captured before request failure");
+	}
+	return capturedPayload;
+}
+
+interface UsageIteration {
+	type: string;
+	model: string;
+	input_tokens?: number;
+	output_tokens?: number;
+}
+
+/** The same stream, with a `usage.iterations` record on the final `message_delta`. */
+function eventsWithIterations(iterations: UsageIteration[]): Array<{ event: string; data: string }> {
+	return midOutputFallbackEvents().map((entry) => {
+		if (entry.event !== "message_delta") return entry;
+		const parsed = JSON.parse(entry.data);
+		parsed.usage = { ...parsed.usage, iterations };
+		return { event: entry.event, data: JSON.stringify(parsed) };
+	});
+}
 
 /** A stream that starts on Fable 5.1, declines mid-output, and finishes on Opus 4.8. */
 function midOutputFallbackEvents(): Array<{ event: string; data: string }> {
@@ -163,6 +221,76 @@ describe("mid-output server-side fallback", () => {
 		expect(result.model).toBe("claude-fable-5-1");
 		expect(result.usage.cost.input).toBeCloseTo(model.cost.input, 10);
 	});
+
+	// "Every attempt that produced output… is billed separately at the rates of the model that ran
+	// it… The top-level `usage` counts describe only the attempt that produced the returned
+	// message." The `fallback_message` entry *is* that attempt, so adding it again would double
+	// count; the declining `message` entry is the one the top-level usage omits.
+	it("bills an earlier attempt that produced output before declining", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const withoutIterations = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
+		}).result();
+
+		const withIterations = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(
+				createSseResponse(
+					eventsWithIterations([
+						{ type: "message", model: "claude-fable-5-1", input_tokens: 0, output_tokens: 1_000_000 },
+						{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 1_000_000, output_tokens: 0 },
+					]),
+				),
+			),
+		}).result();
+
+		// 1M output tokens at Claude Fable 5.1's output rate, added on top of the serving attempt.
+		const expectedExtra = model.cost.output;
+		expect(withIterations.usage.cost.output - withoutIterations.usage.cost.output).toBeCloseTo(expectedExtra, 10);
+		expect(withIterations.usage.cost.total - withoutIterations.usage.cost.total).toBeCloseTo(expectedExtra, 10);
+	});
+
+	// "An attempt that declined before producing any output is not billed: its tokens are reported
+	// on its `usage.iterations` entry but not charged."
+	it("does not bill an attempt that declined before producing output", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const baseline = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
+		}).result();
+
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(
+				createSseResponse(
+					eventsWithIterations([
+						{ type: "message", model: "claude-fable-5-1", input_tokens: 1_000_000, output_tokens: 0 },
+						{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 1_000_000, output_tokens: 0 },
+					]),
+				),
+			),
+		}).result();
+
+		expect(result.usage.cost.total).toBeCloseTo(baseline.usage.cost.total, 10);
+	});
+
+	// The serving attempt is already priced from the top-level usage; counting its `iterations`
+	// entry as well would bill it twice.
+	it("does not double-count the serving attempt", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const baseline = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
+		}).result();
+
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(
+				createSseResponse(
+					eventsWithIterations([
+						{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 1_000_000, output_tokens: 500 },
+					]),
+				),
+			),
+		}).result();
+
+		expect(result.usage.cost.total).toBeCloseTo(baseline.usage.cost.total, 10);
+	});
 });
 
 function fallbackBlock(): FallbackContent {
@@ -276,5 +404,78 @@ describe("replaying a turn that straddles a fallback boundary", () => {
 			"text",
 			"toolCall",
 		]);
+	});
+});
+
+/**
+ * Keeping the marker in `transformMessages` output is only half the job — it has to reach the
+ * wire. The replay pass drops the pre-boundary thinking; if the serializer then dropped the
+ * marker too, the request would carry thinking from one side of a boundary that is no longer
+ * marked, which is the shape Anthropic rejects. These assert the captured request body.
+ */
+describe("the fallback marker reaches the request body", () => {
+	it("serializes the marker at its original position", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), [
+			{ role: "user", content: "Double 1 and 2.", timestamp: Date.now() },
+			straddlingTurn(),
+			{
+				role: "toolResult",
+				toolCallId: "toolu_after",
+				toolName: "double_number",
+				content: [{ type: "text", text: "4" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+		]);
+
+		const assistant = payload.messages?.find((message) => message.role === "assistant");
+		expect(assistant).toBeDefined();
+		expect(assistant!.content.map((block) => block.type)).toEqual([
+			"text",
+			"fallback",
+			"thinking",
+			"text",
+			"tool_use",
+		]);
+		expect(assistant!.content[1]).toEqual({
+			type: "fallback",
+			from: { model: "claude-fable-5-1" },
+			to: { model: "claude-opus-4-8" },
+		});
+	});
+
+	// Dropping the pre-boundary `tool_use` leaves its `tool_result` with nothing to match, and
+	// Anthropic rejects an unmatched `tool_result`. Both must go together.
+	it("drops the tool result belonging to a dropped pre-boundary tool call", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), [
+			{ role: "user", content: "Double 1 and 2.", timestamp: Date.now() },
+			straddlingTurn(),
+			{
+				role: "toolResult",
+				toolCallId: "toolu_before",
+				toolName: "double_number",
+				content: [{ type: "text", text: "2" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+			{
+				role: "toolResult",
+				toolCallId: "toolu_after",
+				toolName: "double_number",
+				content: [{ type: "text", text: "4" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+		]);
+
+		const toolResultIds = (payload.messages ?? [])
+			.flatMap((message) => message.content)
+			.filter((block) => block.type === "tool_result")
+			.map((block) => block.tool_use_id);
+
+		// The surviving post-boundary call keeps its result; the dropped one takes its result with it.
+		expect(toolResultIds).toEqual(["toolu_after"]);
+		// And no synthetic filler was invented for the call that was removed.
+		expect(toolResultIds).not.toContain("toolu_before");
 	});
 });

@@ -28,6 +28,7 @@ import type {
 	Tool,
 	ToolCall,
 	ToolResultMessage,
+	Usage,
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
@@ -237,6 +238,77 @@ function recordInputTransformations(output: AssistantMessage, message: unknown):
 			paths: transformations.map((entry) => entry.path).filter((p): p is string => !!p),
 		},
 	});
+}
+
+/** One entry of the per-attempt `usage.iterations` array a server-side fallback response carries. */
+interface AnthropicUsageIteration {
+	type?: string;
+	model?: string;
+	input_tokens?: number;
+	output_tokens?: number;
+	cache_read_input_tokens?: number;
+	cache_creation_input_tokens?: number;
+}
+
+/**
+ * Bill the attempts that ran *before* the one which produced the returned message.
+ *
+ * "Every attempt that produced output, including one that declined partway through its response,
+ * is billed separately at the rates of the model that ran it. The `usage.iterations` array is the
+ * per-attempt record of what you're billed. The top-level `usage` counts describe only the attempt
+ * that produced the returned message. Tokens from different models are never summed into one
+ * field." https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+ *
+ * Two rules follow, and both matter for not double-counting:
+ *
+ * - Only `type: "message"` entries are added. The `fallback_message` entry *is* the serving
+ *   attempt, and its tokens are already in the top-level usage that `calculateCost` just priced.
+ * - Only entries with output are added: "An attempt that declined before producing any output is
+ *   not billed: its tokens are reported on its `usage.iterations` entry but not charged."
+ *
+ * Token counts are deliberately left alone — the docs forbid summing across models and `Usage` has
+ * no per-attempt shape — so this contributes to `usage.cost` only.
+ */
+function addEarlierAttemptCosts(
+	output: AssistantMessage,
+	model: Model<"anthropic-messages">,
+	servingModel: Model<"anthropic-messages">,
+	event: unknown,
+): void {
+	const iterations = (event as { usage?: { iterations?: AnthropicUsageIteration[] } })?.usage?.iterations;
+	if (!Array.isArray(iterations) || iterations.length === 0) return;
+
+	for (const iteration of iterations) {
+		if (iteration.type !== "message") continue;
+		if (!iteration.output_tokens) continue;
+
+		// Price at the rates of the model that ran the attempt, which is not the serving model.
+		const attemptCost =
+			iteration.model === model.id
+				? model.cost
+				: iteration.model === servingModel.id
+					? servingModel.cost
+					: model.compat?.allowedFallbackModels?.find(
+							(fallback) => fallback.provider === model.provider && fallback.model === iteration.model,
+						)?.cost;
+		if (!attemptCost) continue;
+
+		const attemptUsage: Usage = {
+			input: iteration.input_tokens ?? 0,
+			output: iteration.output_tokens,
+			cacheRead: iteration.cache_read_input_tokens ?? 0,
+			cacheWrite: iteration.cache_creation_input_tokens ?? 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		calculateCost({ ...model, id: iteration.model ?? model.id, cost: attemptCost }, attemptUsage);
+
+		output.usage.cost.input += attemptUsage.cost.input;
+		output.usage.cost.output += attemptUsage.cost.output;
+		output.usage.cost.cacheRead += attemptUsage.cost.cacheRead;
+		output.usage.cost.cacheWrite += attemptUsage.cost.cacheWrite;
+		output.usage.cost.total += attemptUsage.cost.total;
+	}
 }
 
 function getAnthropicCompat(
@@ -891,6 +963,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					// The delta's entries describe the serving model, so they are distinct from
 					// `message_start`'s rather than a repeat of them.
 					recordInputTransformations(output, event);
+					addEarlierAttemptCosts(output, model, usageModel, event);
 				}
 			}
 
@@ -928,7 +1001,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 /**
  * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
  * Note: effort "max" is available on all adaptive-thinking Claude models, while native
- * "xhigh" is only available on Opus 4.7/4.8, Sonnet 5, and Fable 5.
+ * "xhigh" is available on Opus 4.7, Opus 4.8, Opus 5, Sonnet 5, Fable 5, and Fable 5.1 —
+ * the models the generator merges an `xhigh` mapping onto.
  */
 function mapThinkingLevelToEffort(
 	model: Model<"anthropic-messages">,
@@ -1434,6 +1508,21 @@ function convertMessages(
 						name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
 						input: block.arguments ?? {},
 					});
+				} else if (block.type === "fallback") {
+					// The server-side fallback boundary must go back on the wire at the position it
+					// arrived: "Keep it exactly where it appeared. The API uses its position to
+					// validate the thinking blocks around it, so a request that echoes thinking
+					// blocks from both sides of the boundary is rejected if the block is omitted or
+					// moved." `transformMessages` drops the pre-boundary thinking; without this
+					// branch the marker would be dropped too, which is the failure that rule names.
+					// https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+					//
+					// The SDK types lag this block, matching the cast on the stream side.
+					blocks.push({
+						type: "fallback",
+						from: { model: block.fromModel },
+						to: { model: block.toModel },
+					} as unknown as ContentBlockParam);
 				}
 			}
 			if (blocks.length === 0) continue;
