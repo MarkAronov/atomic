@@ -376,6 +376,24 @@ export interface ThinkingContent {
 	redacted?: boolean;
 }
 
+/**
+ * Boundary marker emitted by Anthropic server-side fallback, where one model's output gives way
+ * to the next after a classifier refusal.
+ *
+ * This is public content rather than a stream-only event because it must survive the round trip:
+ * "Keep it exactly where it appeared. The API uses its position to validate the thinking blocks
+ * around it, so a request that echoes thinking blocks from both sides of the boundary is rejected
+ * if the block is omitted or moved."
+ * https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+ */
+export interface FallbackContent {
+	type: "fallback";
+	/** The model that declined. Echoes the model string sent when the declining hop is the request's own model. */
+	fromModel: string;
+	/** Resolved id of the model that continues. Always present. */
+	toModel: string;
+}
+
 export interface ImageContent {
 	type: "image";
 	data: string; // base64 encoded image data
@@ -439,7 +457,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
 	role: "assistant";
-	content: (TextContent | ThinkingContent | ToolCall)[];
+	content: (TextContent | ThinkingContent | ToolCall | FallbackContent)[];
 	api: Api;
 	provider: ProviderId;
 	model: string;

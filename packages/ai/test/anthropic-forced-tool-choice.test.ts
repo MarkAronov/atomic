@@ -41,8 +41,8 @@ const testTool: Tool = {
 	parameters: { type: "object", properties: { value: { type: "number" } } },
 };
 
-function makeContext(): Context {
-	return { messages: [{ role: "user", content: "Hello", timestamp: Date.now() }], tools: [testTool] };
+function makeContext(tools: Tool[] | undefined = [testTool]): Context {
+	return { messages: [{ role: "user", content: "Hello", timestamp: Date.now() }], tools };
 }
 
 interface ToolChoicePayload {
@@ -115,8 +115,9 @@ async function captureBedrockPayload(
 async function bedrockErrorMessage(
 	model: Model<"bedrock-converse-stream">,
 	toolChoice: BedrockOptions["toolChoice"],
+	tools: Tool[] | undefined = [testTool],
 ): Promise<string> {
-	const s = streamBedrock(model, makeContext(), { toolChoice });
+	const s = streamBedrock(model, makeContext(tools), { toolChoice });
 	for await (const event of s) {
 		if (event.type === "error") break;
 	}
@@ -217,6 +218,33 @@ describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 		const message = await bedrockErrorMessage(getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"), "any");
 
 		expect(message).toMatch(FORCED_TOOL_CHOICE_ERROR);
+	});
+
+	// The rejection must not depend on the shape of the tool list. `convertToolConfig` returns
+	// early when there are no tools, and the guard originally sat below that return — so a forced
+	// choice with an empty or absent tool list was discarded in silence, which is the exact defect
+	// the guard exists to prevent. Both empty and undefined are covered by one `!tools?.length`.
+	it.each([
+		["an empty tool list", [] as Tool[]],
+		["no tool list", undefined],
+	] as const)("rejects forced tool choice on Bedrock with %s", async (_label, tools) => {
+		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+
+		expect(await bedrockErrorMessage(model, "any", tools)).toMatch(FORCED_TOOL_CHOICE_ERROR);
+		expect(await bedrockErrorMessage(model, { type: "tool", name: "double_number" }, tools)).toMatch(
+			FORCED_TOOL_CHOICE_ERROR,
+		);
+	});
+
+	// Negative control for the hoist: `none` is never forced, so moving the guard above the early
+	// returns must not start rejecting it, with or without tools.
+	it.each([
+		["an empty tool list", [] as Tool[]],
+		["no tool list", undefined],
+	] as const)("still accepts toolChoice none on Bedrock with %s", async (_label, tools) => {
+		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+
+		expect(await bedrockErrorMessage(model, "none", tools)).not.toMatch(FORCED_TOOL_CHOICE_ERROR);
 	});
 
 	it.each(["auto", "none"] as const)("passes %s through unchanged", async (toolChoice) => {

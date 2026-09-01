@@ -175,7 +175,7 @@ function contentToText(content: string | Array<TextContent | ImageContent>): str
 		.join("\n");
 }
 
-function assistantContentToText(content: Array<TextContent | ThinkingContent | ToolCall>): string {
+function assistantContentToText(content: AssistantMessage["content"]): string {
 	return content
 		.map((block) => {
 			if (block.type === "text") {
@@ -183,6 +183,10 @@ function assistantContentToText(content: Array<TextContent | ThinkingContent | T
 			}
 			if (block.type === "thinking") {
 				return block.thinking;
+			}
+			// Fallback boundary markers carry no text.
+			if (block.type !== "toolCall") {
+				return "";
 			}
 			return `${block.name}:${JSON.stringify(block.arguments)}`;
 		})
@@ -401,6 +405,11 @@ async function streamWithDeltas(
 				stream.push({ type: "text_delta", contentIndex: index, delta: chunk, partial: { ...partial } });
 			}
 			stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: { ...partial } });
+			continue;
+		}
+
+		// Fallback boundary markers are replay metadata with nothing to stream.
+		if (block.type !== "toolCall") {
 			continue;
 		}
 

@@ -736,6 +736,35 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						};
 						output.content.push(block);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					} else if ((event.content_block as { type?: string }).type === "fallback") {
+						// Server-side fallback boundary: "the `fallback` block (an ordinary
+						// `content_block_start` and `content_block_stop` pair with no deltas) marks the
+						// boundary", and clients must "Keep it exactly where it appeared. The API uses
+						// its position to validate the thinking blocks around it".
+						// https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+						//
+						// The SDK types lag this block, so read it through a narrow cast.
+						const fallbackBlock = event.content_block as unknown as {
+							from?: { model?: string };
+							to?: { model?: string };
+						};
+						const toModel = fallbackBlock.to?.model;
+						output.content.push({
+							type: "fallback",
+							fromModel: fallbackBlock.from?.model ?? output.model,
+							toModel: toModel ?? output.model,
+						});
+						// `message_start` named the requested model, so on a mid-output fallback the
+						// serving model is only knowable here. Re-derive pricing the same way the
+						// `message_start` branch does, so the returned message is costed at the rates
+						// of the model that actually produced it.
+						if (toModel && toModel !== output.model) {
+							output.model = toModel;
+							const fallbackCost = model.compat?.allowedFallbackModels?.find(
+								(fallback) => fallback.provider === model.provider && fallback.model === toModel,
+							)?.cost;
+							usageModel = fallbackCost ? { ...model, id: toModel, cost: fallbackCost } : model;
+						}
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {

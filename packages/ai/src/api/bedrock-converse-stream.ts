@@ -1110,12 +1110,14 @@ function convertToolConfig(
 	supportsStrictMode: boolean,
 	model: Model<"bedrock-converse-stream">,
 ): ToolConfiguration | undefined {
-	if (!tools?.length) return undefined;
-	if (toolChoice === "none") return undefined;
-
+	// Validate the requested choice before any early return. A forced choice on a model that
+	// rejects it is an error regardless of whether tools were supplied: returning `undefined` for
+	// an empty or absent tool list would discard the caller's instruction silently, which is the
+	// behavior this guard exists to prevent.
+	//
 	// Claude Fable 5.1 rejects forced tool use on every request with a 400, whichever platform
-	// serves it. Reject rather than silently rewriting to `auto`, which would discard an explicit
-	// caller instruction. Mirrors the guard in `anthropic-messages.ts`.
+	// serves it. Reject rather than rewriting to `auto`, which would discard an explicit caller
+	// instruction. Mirrors the guards in `anthropic-messages.ts` and `openai-completions.ts`.
 	// https://platform.claude.com/docs/en/build-with-claude/thinking
 	if (model.compat?.supportsForcedToolChoice === false) {
 		const isForced = toolChoice === "any" || (typeof toolChoice === "object" && toolChoice.type === "tool");
@@ -1127,6 +1129,10 @@ function convertToolConfig(
 			);
 		}
 	}
+
+	if (!tools?.length) return undefined;
+	// `none` is never a forced choice, so this return can never skip a rejection above.
+	if (toolChoice === "none") return undefined;
 
 	const bedrockTools: BedrockTool[] = tools.map((tool) => {
 		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);

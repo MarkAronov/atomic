@@ -128,8 +128,34 @@ export function transformMessages<TApi extends Api>(
 				delegatesThinkingModelBinding(model);
 			const preservesThinking = isSameModel || canReplayForeignThinking;
 
-			const transformedContent = assistantMsg.content.flatMap((block) => {
+			// After a mid-output server-side fallback the turn holds output from two models either
+			// side of a `fallback` marker. Anthropic's replay rules: keep the marker "exactly where
+			// it appeared", keep `text` and everything after it, and drop `thinking`,
+			// `redacted_thinking`, and client-side `tool_use` that precede the final marker. A
+			// request that echoes thinking from both sides is rejected outright, so this is a
+			// correctness requirement rather than a token saving — and it applies even when the
+			// blocks would otherwise be replayable.
+			// https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+			// `findLastIndex` needs ES2023; this package targets ES2022.
+			let finalFallbackIndex = -1;
+			for (let i = assistantMsg.content.length - 1; i >= 0; i--) {
+				if (assistantMsg.content[i].type === "fallback") {
+					finalFallbackIndex = i;
+					break;
+				}
+			}
+
+			const transformedContent = assistantMsg.content.flatMap((block, blockIndex) => {
+				const precedesFallbackBoundary = finalFallbackIndex >= 0 && blockIndex < finalFallbackIndex;
+
+				if (block.type === "fallback") {
+					// Only the final marker is load-bearing for validation, but earlier ones are
+					// equally "where they appeared", so every marker is preserved in place.
+					return block;
+				}
+
 				if (block.type === "thinking") {
+					if (precedesFallbackBoundary) return [];
 					// Redacted thinking is opaque encrypted content the client cannot rewrite.
 					// Replay it where the API adjudicates it; otherwise drop it to avoid API errors.
 					if (block.redacted) {
@@ -156,6 +182,9 @@ export function transformMessages<TApi extends Api>(
 				}
 
 				if (block.type === "toolCall") {
+					// Client-side `tool_use` before the final fallback marker must be dropped: the
+					// declining model's tool call was never executed by the model that continued.
+					if (precedesFallbackBoundary) return [];
 					const toolCall = block as ToolCall;
 					let normalizedToolCall: ToolCall = toolCall;
 
