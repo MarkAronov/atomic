@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow status text, interactive list/detail views, and the persistent `BACKGROUND` panel now identify materialized pending stages by display name and canonical stage ID, show exact Intercom targets only when pre-start delivery is available, and distinguish unavailable pending delivery truthfully.
 
+### Changed
+
+- Workflow-authoring guidance now distinguishes inspectable workflow orchestration from cross-cutting extension-hook policy, requires companion-extension dependencies to remain explicit, and directs generated workflows toward readable top-level graphs with cohesive source boundaries.
+
 ### Fixed
 
 - Fixed pending-stage targets in `/workflow status` cards and the persistent `BACKGROUND` panel being truncated into unusable addresses. Status cards now wrap exact targets, while widget metadata uses only bounded pending-stage forms that fit without displacing existing metadata and width-based omissions show an explicit remaining-stage count. ([#2784](https://github.com/bastani-inc/atomic/issues/2784))

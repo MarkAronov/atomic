@@ -86,7 +86,7 @@ Execution, replay, and DBOS hydration are the authoritative topology-validation 
 
 ### Workflow source layout
 
-Keep a small, readable workflow in one entry file. Do not split short one-use prompts, create one file per stage, add wrapper-only modules, hide the graph across files, or use line counts alone as a module boundary.
+Keep a small, readable workflow in one entry file and write it for human maintainers. Keep the graph and control flow visible in the top-level workflow entry file, use stage names that state each stage's responsibility, and make its inputs, outputs, evidence, and success contract explicit. A developer reading the entry file from top to bottom should be able to identify the graph, branches, gates, artifacts, and stop conditions. Avoid both monolithic prompt blobs and gratuitous fragmentation: do not split short one-use prompts, create one file per stage, add wrapper-only modules, hide the graph across files, or use line counts alone as a module boundary.
 
 At a meaningful source boundary that improves clarity, reuse, ownership, or testability, keep the graph and control flow in the top-level workflow entry file and extract cohesive concerns: long or reused prompt builders; shared TypeBox schemas and workflow-specific types; model-policy constants shared by several stages; deterministic helpers with their own testable behavior; or reusable child workflow definitions.
 
@@ -100,6 +100,12 @@ The existing `.atomic/workflows/release-docs.ts` keeps its graph in the entry fi
 .atomic/workflows/code-review/schemas.ts
 .atomic/workflows/code-review/model-policy.ts
 ```
+
+### Workflow and extension responsibilities
+
+Evaluate Atomic extension hooks when a workflow needs fine-grained, cross-cutting tool or session event control. Workflow TypeScript owns the inspectable DAG, stages, handoffs, durable `ctx.tool` side effects, and gates. Extension hooks own cross-cutting session and model-tool policy such as `tool_call` interception, input mutation, or blocking; `tool_result` transformation; context and provider hooks; lifecycle observation; or reusable custom tools. Use hooks only when cross-stage or cross-workflow event control is materially clearer than embedding the policy in each stage. Do not require a companion extension for ordinary workflow logic. See the authoritative [extension event documentation](../coding-agent/docs/extensions.md#events) for hook contracts and ordering.
+
+When a workflow depends on a companion extension, make that dependency explicit and package and document the extension with the workflow. If stages use `tools` allowlists, include any custom tools provided by the extension. Document the hook-driven behavior and keep the graph, stage contracts, artifacts, gates, and stop conditions visible in the workflow entry file so readers can distinguish inspectable workflow orchestration from event policy.
 
 ### Workflow-owned side effects
 
