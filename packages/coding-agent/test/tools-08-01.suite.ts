@@ -3,13 +3,15 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
-import { createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
+import { createPowerShellToolDefinition } from "../src/core/tools/powershell.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { createSearchToolDefinition } from "../src/core/tools/search.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 function getTextOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
@@ -192,5 +194,72 @@ describe("tool cwd resolution", () => {
 
 		expect(readFileSync(join(factoryDir, "same-name.txt"), "utf-8")).toBe("factory edited\n");
 		expect(readFileSync(join(testDir, "same-name.txt"), "utf-8")).toBe("ctx edited\n");
+	});
+
+	// `search`, not `grep`, is the invokable Atomic builtin: `grep` is absent from `ToolName` and
+	// is not SDK-exported, so an extension only ever reaches content search through `search`.
+	// `search` is an Atomic-owned wrapper with no upstream counterpart, so upstream #8627 could
+	// not have covered it.
+	it("search uses ctx.cwd when provided", async () => {
+		writeFileSync(join(testDir, "ctx-only.txt"), "NEEDLE in the ctx root\n");
+		const search = createSearchToolDefinition(factoryDir);
+
+		const result = await search.execute(
+			"test-search-ctx-cwd",
+			{ pattern: "NEEDLE", paths: "ctx-only.txt:1" },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+
+		expect(getTextOutput(result)).toContain("NEEDLE in the ctx root");
+	});
+
+	// The decisive case. `search` stamps hashline tags on the content it returns, so if the
+	// content comes from `ctx.cwd` while the tag is computed against the factory cwd, `edit`
+	// rejects a tag `search` just issued and the search-then-edit round-trip is broken.
+	it("search and edit agree on hashline tags across execution cwds", async () => {
+		writeFileSync(join(factoryDir, "target.txt"), "decoy NEEDLE factory\n");
+		writeFileSync(join(testDir, "target.txt"), "real NEEDLE ctx\n");
+		const store = createHashlineSnapshotStore();
+		const search = createSearchToolDefinition(factoryDir, { hashlineStore: store });
+		const edit = createEditToolDefinition(factoryDir, { hashlineStore: store });
+		const ctx = fakeCtx(testDir);
+
+		const output = getTextOutput(
+			await search.execute("search-ctx", { pattern: "NEEDLE", paths: "target.txt" }, undefined, undefined, ctx),
+		);
+		expect(output).toContain("real NEEDLE ctx");
+		expect(output).not.toContain("decoy NEEDLE factory");
+
+		await edit.execute(
+			"edit-after-search",
+			{ input: `[target.txt#${tagFrom(output)}]\nreplace 1..1:\n+edited via search tag` },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(readFileSync(join(testDir, "target.txt"), "utf-8")).toBe("edited via search tag\n");
+		expect(readFileSync(join(factoryDir, "target.txt"), "utf-8")).toBe("decoy NEEDLE factory\n");
+	});
+
+	// powershell spreads its definition from createBashToolDefinition, so it inherits the same
+	// executionCwd. Injected operations keep this runnable where pwsh is absent.
+	it("powershell uses ctx.cwd when provided", async () => {
+		const seen: string[] = [];
+		const operations: BashOperations = {
+			exec: async (_command, execCwd, { onData }) => {
+				seen.push(execCwd);
+				onData(Buffer.from(execCwd), "stdout");
+				return { exitCode: 0 };
+			},
+		};
+
+		const tool = createPowerShellToolDefinition(factoryDir, { operations, exposeSessionEnvironment: false });
+		await tool.execute("test-pwsh-ctx-cwd", { command: "pwd" }, undefined, undefined, fakeCtx(testDir));
+		await tool.execute("test-pwsh-no-ctx", { command: "pwd" });
+
+		expect(seen).toEqual([testDir, factoryDir]);
 	});
 });
