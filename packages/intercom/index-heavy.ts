@@ -840,6 +840,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           clientRegistrationGroup = null;
         }
         connectFailed = true;
+        // A step after `connect()` succeeded — supervisor-authorization restore, pending-route
+        // re-registration, live stage-route registration — leaves `nextClient` registered at the
+        // broker. Dropping the reference without closing the socket leaves a phantom roster row
+        // that the retry then duplicates: the broker still answers `delivered: true` for it while
+        // `attachClientHandlers` swallows the message on `client === nextClient`. This is the
+        // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set above, so
+        // the `finally` reschedules however this disconnect behaves.
+        try { await nextClient.disconnect(); } catch {}
         throw toError(error);
       } finally {
         if (reconnectPromiseGeneration === generationAtStart) {

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, test } from "vitest";
+import { afterAll, test, vi } from "vitest";
 import { sleep } from "../helpers/runtime.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -42,6 +42,9 @@ const { createWorkflowPendingStageDelivery } = await import(
 	"../../packages/workflows/src/runs/foreground/pending-stage-delivery.js"
 );
 const { createStore } = await import("../../packages/workflows/src/shared/store.js");
+const { SupervisorAuthorizationRegistry } = await import(
+	"../../packages/intercom/supervisor-authorization-registry.js"
+);
 
 type TestOverrides = Parameters<typeof intercomHeavy>[1];
 
@@ -279,6 +282,48 @@ async function probeSessionNames(): Promise<string[]> {
 	}
 }
 
+/**
+ * Send one uniquely marked message to every broker row registered under `name`.
+ *
+ * `rows` is what `intercom list` would show for that session, `acks` is how many of those rows
+ * the broker reported as delivered. Returns `undefined` while the broker is unreachable, so a
+ * caller can keep polling across a broker restart.
+ */
+async function fanOutToSessionsNamed(
+	name: string,
+	marker: string,
+): Promise<{ marker: string; rows: number; acks: number } | undefined> {
+	const probe = new IntercomClient(`reconnect-fanout-${Math.random().toString(16).slice(2)}`);
+	try {
+		await probe.connect({
+			name: "reconnect-fanout",
+			model: "test-model",
+			cwd: repoRoot,
+			pid: process.pid,
+			status: "idle",
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+			group: "default",
+			groups: ["default"],
+		});
+		const rows = (await probe.listSessions()).filter((session) => session.name === name);
+		let acks = 0;
+		for (const row of rows) {
+			const result = await probe.send(row.id, { text: marker });
+			if (result.delivered) acks += 1;
+		}
+		return { marker, rows: rows.length, acks };
+	} catch {
+		return undefined;
+	} finally {
+		try {
+			await probe.disconnect();
+		} catch {
+			// A broker that died mid-probe needs no clean disconnect.
+		}
+	}
+}
+
 function killBroker(pid: number): void {
 	try {
 		process.kill(pid, "SIGKILL");
@@ -498,5 +543,80 @@ test("a running workflow stage regains list visibility and both route aliases af
 		await sender.shutdown();
 		disposeBridge();
 		await owner.shutdown();
+	}
+});
+
+test("a reconnect that fails after the broker accepted it leaves no second registration", async () => {
+	const session = extensionFixture("reconnect-orphan-session", "reconnect-orphan", { intercomGroup: "default" });
+	intercomHeavy(session.pi as never);
+	// `beforeConnectAttempt` fires before `spawnBrokerIfNeeded`, so it can only fail an attempt
+	// that never opened a socket. This failure has to land *after* `connect()` resolved — that is
+	// the only window in which dropping the client leaves it registered at the broker.
+	// `supervisorAuthorizations.restore()` is the first such step, and in production it rejects on
+	// a 5s `authorizeSupervisorChild` timeout that never touches the socket.
+	const restore = SupervisorAuthorizationRegistry.prototype.restore;
+	let armed = false;
+	let failures = 0;
+	const restoreSpy = vi.spyOn(SupervisorAuthorizationRegistry.prototype, "restore").mockImplementation(async function (
+		this: InstanceType<typeof SupervisorAuthorizationRegistry>,
+		client,
+	) {
+		// Arming late matters: an injection armed from the start is consumed by the baseline
+		// connect below and the post-connect scenario never happens.
+		if (!armed || failures > 0) return restore.call(this, client);
+		failures += 1;
+		throw new Error(FORCED_FAILURE_MESSAGE);
+	});
+	try {
+		await session.start();
+		assert.equal((await session.execute({ action: "status" })).isError, false);
+		const firstPid = await waitForBrokerPid();
+		const toolCallsAtKill = session.toolExecutions;
+
+		armed = true;
+		killBroker(firstPid);
+		// The failing attempt spawns the replacement broker and registers on it before `restore`
+		// rejects, so a new pid appearing is the signal that the orphan window has opened.
+		const recoveredPid = await waitForBrokerPid(firstPid);
+		assert.equal(processIsAlive(recoveredPid), true);
+
+		const receivedFor = (marker: string): number =>
+			session.injectedMessages.filter(({ content }) => (content ?? "").includes(marker)).length;
+		const attempts: Array<{ marker: string; rows: number; acks: number }> = [];
+		let observedMaxRows = 0;
+		let settled: { marker: string; rows: number; acks: number } | undefined;
+		const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
+		while (Date.now() < deadline) {
+			// Judge an earlier fan-out only once one of its messages actually reached the runtime.
+			// Counting roster rows on their own is a false green: a phantom row is still listed and
+			// still acked while the live client is absent.
+			settled = attempts.find((attempt) => receivedFor(attempt.marker) > 0);
+			if (settled !== undefined) break;
+			const observed = await fanOutToSessionsNamed("reconnect-orphan", `<orphan-probe-${attempts.length + 1}>`);
+			if (observed !== undefined) {
+				observedMaxRows = Math.max(observedMaxRows, observed.rows);
+				attempts.push(observed);
+			}
+			await sleep(RECOVERY_POLL_MS);
+		}
+		assert.ok(settled, `no fan-out reached the runtime within ${RECOVERY_TIMEOUT_MS}ms`);
+
+		assert.equal(failures, 1, "exactly one post-connect reconnect step must have been forced to fail");
+		assert.equal(settled.rows, 1, "the failed attempt's client must not stay registered alongside the live one");
+		assert.equal(observedMaxRows, 1, "a second registration must never coexist, at any point during recovery");
+		assert.equal(
+			receivedFor(settled.marker),
+			settled.rows,
+			"every listed row must be a live client, not a phantom the broker acks and nothing receives",
+		);
+		assert.equal(settled.acks, settled.rows, "the broker must not report delivery for a row that cannot receive");
+		assert.equal(
+			session.toolExecutions,
+			toolCallsAtKill,
+			"recovery must complete without any intercom tool call after the broker died",
+		);
+	} finally {
+		restoreSpy.mockRestore();
+		await session.shutdown();
 	}
 });
