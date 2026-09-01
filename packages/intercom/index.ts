@@ -120,6 +120,10 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 	if (renderer) return renderer(...args);
 	return renderIntercomToolResult(name, args);
 }
+function isRecoverableHeavyInitializationDisconnect(error: unknown): boolean {
+	return error instanceof Error && error.message === "Client disconnected";
+}
+
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
   let heavyAttempt: HeavyAttempt | null = null;
@@ -252,8 +256,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			() => undefined,
 			(error: unknown) => {
 				if (heavyAttempt?.promise === promise) heavyAttempt = null;
-				const message = error instanceof Error ? error.message : String(error);
-				console.error(`Intercom heavy initialization failed; a later call will retry: ${message}`, error);
+				if (!isRecoverableHeavyInitializationDisconnect(error)) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.error(`Intercom heavy initialization failed; a later call will retry: ${message}`, error);
+				}
 			},
 		);
 		return promise;
