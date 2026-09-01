@@ -860,8 +860,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         // no promise owning the next attempt. `ensurePendingStageRouteClient` already orders it
         // this way; this is the same ordering. Every failing reason reschedules, not just
         // "background": `clearReconnectTimer()` above drops any pending timer before the attempt,
-        // so a failed "tool"/"overlay"/"startup" attempt would otherwise destroy the recovery a
-        // background timer already owned.
+        // so a failed "tool" or "overlay" attempt would otherwise destroy the recovery a
+        // background timer already owned. The timer armed for a failed "startup" attempt does not
+        // survive: that reason is reachable only from the lazy wrapper's first heavy load, whose
+        // rejection path disposes the whole candidate (`index.ts` `cleanupCandidate`), and
+        // `cleanupRuntime` clears the timer with it. Do not advertise a startup retry.
         if (connectFailed && getLiveContext(contextAtStart, generationAtStart)) {
           scheduleReconnect();
         }

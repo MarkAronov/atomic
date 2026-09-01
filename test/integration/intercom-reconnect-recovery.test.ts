@@ -32,6 +32,7 @@ delete process.env.PI_CODING_AGENT_DIR;
 const { getBrokerPidPath } = await import("../../packages/intercom/broker/paths.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
+const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { reconnectDelayMs } = await import("../../packages/intercom/reconnect-backoff.js");
 const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
@@ -397,8 +398,9 @@ test("a failed explicit tool connect surfaces the error and still leaves a sched
 		await session.start();
 		forced.arm();
 		// `ensureConnected` clears any pending reconnect timer before it attempts, so before this
-		// fix only a "background" failure rescheduled: a failing "tool"/"overlay"/"startup"
-		// attempt left the live runtime with no client, no timer and no promise.
+		// fix only a "background" failure rescheduled: a failing "tool" or "overlay" attempt left
+		// the live runtime with no client, no timer and no promise. ("startup" reschedules too, but
+		// its timer never survives — see the lazy-startup disposal pin at the end of this file.)
 		const failedToolCall = await session.execute({ action: "status" });
 		assert.equal(failedToolCall.isError, true);
 		assert.match(failedToolCall.content[0]?.text ?? "", /Intercom not connected/);
@@ -619,4 +621,70 @@ test("a reconnect that fails after the broker accepted it leaves no second regis
 		restoreSpy.mockRestore();
 		await session.shutdown();
 	}
+});
+
+/**
+ * Characterization pin, not a fail-before regression.
+ *
+ * `ensureConnected("startup")` has exactly one call site, and it is reached only for a
+ * `kind: "workflow-stage"` context that carries a `pendingStageDelivery`. That is precisely the
+ * context the lightweight wrapper loads eagerly, down the first-load path whose `catch` runs
+ * `cleanupCandidate()` — which dispatches `session_shutdown` into heavy, and `cleanupRuntime`
+ * clears the reconnect timer the `finally` had just armed. So a failed startup connect is torn
+ * down with its candidate rather than retried, and the retry guarantee this branch documents
+ * covers `intercom`-tool and overlay connects only.
+ *
+ * Both assertions also hold on `origin/main` (which armed no startup timer at all). They exist
+ * as forward-looking falsifiers: `attempts` rises above 1 if a startup retry is ever made real,
+ * and `heavyShutdowns` drops to 0 if the rejected-candidate disposal regresses.
+ */
+test("a failed lazy workflow-stage startup connect disposes the candidate instead of retrying", async () => {
+	const runId = "0f4c8a2b-71de-4b93-9a5f-6c2d81e0b7a4";
+	const stageId = "a91b6d3c-52f8-4e17-8c0a-3d7b45f9e128";
+	const store = createStore();
+	const stage = extensionFixture("startup-disposal-session", "startup-disposal", {
+		intercomGroup: `workflow:${runId}`,
+		kind: "workflow-stage",
+		workflowRunId: runId,
+		workflowStageId: stageId,
+		workflowStageName: "reviewer",
+		pendingStageDelivery: createWorkflowPendingStageDelivery(store, runId, stageId, "reviewer"),
+	});
+	let attempts = 0;
+	let heavyShutdowns = 0;
+	// Drive the real lightweight wrapper so the disposal path is production code, and observe the
+	// disposal directly through one extra handler on the proxy `pi` it hands to heavy. That is
+	// what keeps this sleep-free: waiting out a 1s backoff to assert a negative would be both
+	// slower and weaker evidence.
+	intercomLightweight(stage.pi as never, {
+		importHeavy: async () => ({
+			default: (heavyPi) => {
+				heavyPi.on("session_shutdown", () => {
+					heavyShutdowns += 1;
+				});
+				return intercomHeavy(heavyPi, {
+					beforeConnectAttempt: (reason) => {
+						if (reason !== "startup") return;
+						attempts += 1;
+						throw new Error(FORCED_FAILURE_MESSAGE);
+					},
+				});
+			},
+		}),
+	});
+
+	let startupError = "";
+	try {
+		await stage.start();
+	} catch (error) {
+		startupError = String(error);
+	}
+
+	assert.match(startupError, new RegExp(FORCED_FAILURE_MESSAGE), "the startup failure must reach the caller");
+	assert.equal(attempts, 1, "a failed startup connect must not be retried behind the caller");
+	assert.ok(
+		heavyShutdowns >= 1,
+		"the rejected candidate must be disposed, which is what clears the timer the finally armed",
+	);
+	assert.equal(stage.toolExecutions, 0);
 });
