@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Workflow status text, interactive list/detail views, and the persistent `BACKGROUND` panel now identify materialized pending stages by display name and canonical stage ID, show exact Intercom targets only when pre-start delivery is available, and distinguish unavailable pending delivery truthfully.
+
+### Fixed
+
+- Fixed pending-stage targets in `/workflow status` cards and the persistent `BACKGROUND` panel being truncated into unusable addresses. Status cards now wrap exact targets, while widget metadata uses only bounded pending-stage forms that fit without displacing existing metadata and width-based omissions show an explicit remaining-stage count. ([#2784](https://github.com/bastani-inc/atomic/issues/2784))
+- Fixed `/workflow status` losing pending-stage delivery capability in its bounded graph projection, run detail ellipsizing exact pending targets at narrow widths, terminal runs advertising undeliverable targets, and narrow status cards truncating canonical stage IDs. Exact targets and IDs now wrap where appropriate, while ended runs report pending delivery as unavailable. ([#2784](https://github.com/bastani-inc/atomic/issues/2784))
+- Fixed projected pending stages from terminal nested child runs advertising unusable Intercom targets through their still-live root, pending widget labels exceeding their width budget and evicting tool/elapsed metadata, duplicated Intercom coaching in model-facing status hints, and singular overflow counts using a plural noun. ([#2784](https://github.com/bastani-inc/atomic/issues/2784))
+
+- Fixed explicit and automatic stage groups so they become invocation-owned, collision-free subgroups that remain controllable from the workflow invocation while preserving sibling isolation and their exact persisted identity across active durable resume; restored symmetric isolated reviewer groups for Goal and Ralph ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+
 ## [0.9.16] - 2026-08-29
 
 Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

@@ -13,6 +13,34 @@ export interface SessionInfo {
   group?: string;
 }
 
+export interface WorkflowStageRosterEntry {
+	readonly kind: "workflow-stage";
+	readonly runId: string;
+	readonly stageId: string;
+	readonly stageName: string;
+	readonly target: string;
+	readonly lifecycle: "pending" | "running";
+	readonly group: string;
+	/** Broker session identity, present only while the workflow stage is connected. */
+	readonly sessionId?: string;
+}
+
+export interface SessionDirectory {
+	readonly sessions: SessionInfo[];
+	readonly workflowStages: WorkflowStageRosterEntry[];
+}
+
+export interface WorkflowStageRosterAnnouncement {
+	readonly stageId: string;
+	readonly stageName: string;
+	readonly target: string;
+	readonly lifecycle: "pending" | "running";
+	readonly routeEligible: boolean;
+	/** Actual stage group after workflow invocation ownership resolution. */
+	readonly group: string;
+}
+
+
 export interface GroupSummary {
 	group: string;
 	sessionCount: number;
@@ -77,7 +105,7 @@ export type ClientMessage =
 			attemptId?: string;
 	  }
 	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
-  | { type: "register_pending_stage_route"; runId: string; group: string; capability: string }
+  | { type: "register_pending_stage_route"; runId: string; group: string; capability: string; stages?: WorkflowStageRosterAnnouncement[] }
   | {
       type: "register_live_workflow_stage_route";
       requestId: string;
@@ -107,7 +135,7 @@ export type ClientMessage =
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }
   | { type: "registration_failed"; reason: string }
-  | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
+  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[] }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }

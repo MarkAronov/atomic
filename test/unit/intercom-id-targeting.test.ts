@@ -131,6 +131,151 @@ describe("Intercom full session ID targeting", () => {
 		assert.deepEqual(current.sent, [{ to: recipient.id }]);
 	});
 
+	test("ask by a workflow stage name alias keys its reply waiter on the live stage session", async () => {
+		// Regression: #2784 — the broker registers BOTH `<runId>:<stageId>` and `<runId>:<stageName>`
+		// as live aliases, but the roster publishes only the id form. Matching the id form alone left a
+		// name-addressed ask delivered but keyed on a string inbound reply routing never produces, so
+		// it blocked to the 10-minute timeout instead of settling.
+		const runId = "27840002-3528-413e-84c4-87a43e5037a2";
+		const stageSession = session("ee02315c-1111-4222-8333-123456789abc", "reviewer-stage");
+		const nameTarget = `${runId}:reviewer`;
+		let tool: Tool | undefined;
+		const client = {
+			sessionId: "self-session-id",
+			async listSessions(): Promise<SessionInfo[]> {
+				return [stageSession];
+			},
+			async listDirectory() {
+				return {
+					sessions: [stageSession],
+					workflowStages: [
+						{
+							kind: "workflow-stage" as const,
+							runId,
+							stageId: "reviewer-id",
+							stageName: "reviewer",
+							target: `${runId}:reviewer-id`,
+							lifecycle: "running" as const,
+							group: `workflow:${runId}/reviewers`,
+							sessionId: stageSession.id,
+						},
+					],
+				};
+			},
+			async send(to: string, message: { messageId?: string }) {
+				return { id: message.messageId ?? "reply-message", delivered: true, to };
+			},
+		};
+		const waiterSlot = new ReplyWaiterRegistry();
+		registerIntercomTool(
+			{
+				registerTool(value: Tool) {
+					tool = value;
+				},
+				appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				confirmSend: false,
+				beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) =>
+					waiterSlot.begin(from, replyTo, signal),
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		assert.ok(tool);
+
+		const pending = tool.execute(
+			"ask-name-alias",
+			{ action: "ask", to: nameTarget, message: "question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(10);
+		const waiter = waiterSlot.pending()[0];
+		assert.ok(waiter, "the name-aliased ask should register a reply waiter");
+		assert.equal(
+			waiter.from,
+			stageSession.id,
+			"waiter must key on the stage's live broker session, not the literal name-alias target",
+		);
+		const routed = routeIncomingReply(waiter, stageSession, {
+			id: "alias-reply",
+			timestamp: 2,
+			replyTo: waiter.replyTo,
+			content: { text: "answer" },
+		});
+		assert.equal(routed, true, "the stage's correlated reply must settle the name-aliased ask");
+		const result = await pending;
+		assert.equal(result.isError, false, result.content[0]?.text);
+	});
+
+	test("an ordinary exact-session-id ask performs no workflow-roster directory lookup", async () => {
+		// Regression: #2784 — resolveReplySender short-circuited only when the logical and send
+		// targets differed, but an exact session id resolves to itself, so every ordinary ask paid a
+		// listDirectory round-trip and inherited its 5s "List sessions timeout" as a new failure mode.
+		const self = session("self-session-id", "self");
+		const recipient = session("dd91204b-1111-4222-8333-123456789abc", "recipient");
+		let directoryCalls = 0;
+		let tool: Tool | undefined;
+		const client = {
+			sessionId: self.id,
+			async listSessions(): Promise<SessionInfo[]> {
+				return [self, recipient];
+			},
+			async listDirectory() {
+				directoryCalls += 1;
+				throw new Error("List sessions timeout");
+			},
+			async send(to: string, message: { messageId?: string }) {
+				return { id: message.messageId ?? "reply-message", delivered: true, to };
+			},
+		};
+		const waiterSlot = new ReplyWaiterRegistry();
+		registerIntercomTool(
+			{
+				registerTool(value: Tool) {
+					tool = value;
+				},
+				appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				confirmSend: false,
+				beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) =>
+					waiterSlot.begin(from, replyTo, signal),
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		assert.ok(tool);
+
+		const pending = tool.execute(
+			"ask-ordinary",
+			{ action: "ask", to: recipient.id, message: "question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(10);
+		assert.equal(directoryCalls, 0, "an ordinary id-targeted ask must not query the workflow roster");
+
+		const waiter = waiterSlot.pending()[0];
+		assert.ok(waiter, "ask should have registered a reply waiter rather than erroring out");
+		assert.equal(waiter.from, recipient.id, "waiter must key on the recipient session id");
+		const routed = routeIncomingReply(waiter, recipient, {
+			id: "threaded-reply",
+			timestamp: 2,
+			replyTo: waiter.replyTo,
+			content: { text: "answer" },
+		});
+		assert.equal(routed, true, "the correlated reply must settle the waiter");
+		const result = await pending;
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(directoryCalls, 0, "no roster lookup may occur across the whole ask lifecycle");
+	});
+
 	test("blocking ask accepts an exact full session ID and correlates the reply", async () => {
 		const self = session("self-session-id", "self");
 		const recipient = session("aa56071e-1111-4222-8333-123456789abc", "recipient");

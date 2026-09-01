@@ -42,6 +42,11 @@ export interface PendingStageRoute {
 export type PendingStageRouter = (route: PendingStageRoute) => boolean;
 
 export type LiveWorkflowStageResolver = (target: string) => BrokerConnectedSession | undefined;
+export type LiveWorkflowStageController = (
+	sender: BrokerConnectedSession,
+	target: BrokerConnectedSession,
+	logicalTarget: string,
+) => boolean;
 
 const WORKFLOW_RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -56,6 +61,8 @@ export const PENDING_STAGE_ASK_REFUSAL =
   "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
 
+
+
 interface SendClientMessage extends Record<string, unknown> {
   type: string;
 }
@@ -68,16 +75,17 @@ function wireMessageId(value: unknown): string {
 
 /** Validate and route one wire-level send request. */
 export function handleBrokerSend(
-  socket: net.Socket,
-  clientMessage: SendClientMessage,
-  currentId: string | null,
-  sessions: Map<string, BrokerConnectedSession>,
-  deliveredMessages: DeliveredMessageCache,
-  write: (target: net.Socket, message: BrokerMessage) => void,
-  supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
-  pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
-  routePendingStage?: PendingStageRouter,
-  resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
+	socket: net.Socket,
+	clientMessage: SendClientMessage,
+	currentId: string | null,
+	sessions: Map<string, BrokerConnectedSession>,
+	deliveredMessages: DeliveredMessageCache,
+	write: (target: net.Socket, message: BrokerMessage) => void,
+	supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
+	pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
+	routePendingStage?: PendingStageRouter,
+	resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
+	canControlLiveWorkflowStage?: LiveWorkflowStageController,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -158,13 +166,20 @@ export function handleBrokerSend(
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Cannot message the current session" });
       return;
     }
-    const bypass = supervisorSend || isVerticalBypass({
-      replyTo: message.replyTo,
-      sender: fromSession.info,
-      target: target.info,
-      supervisorCache,
-    });
-    if (!bypass && !sameGroup(target.info, fromSession.info)) {
+	const correlatedReply =
+		message.replyTo !== undefined &&
+		pendingQuestions.matchesReply(fromSession.info.id, target.info.id, message.replyTo);
+	const bypass =
+		supervisorSend ||
+		isVerticalBypass({
+			replyTo: message.replyTo,
+			sender: fromSession.info,
+			target: target.info,
+			supervisorCache,
+		}) ||
+		correlatedReply ||
+		(liveWorkflowTarget !== undefined && canControlLiveWorkflowStage?.(fromSession, target, trimmedTo) === true);
+	if (!bypass && !sameGroup(target.info, fromSession.info)) {
       write(socket, {
         type: "delivery_failed",
         messageId: message.id,

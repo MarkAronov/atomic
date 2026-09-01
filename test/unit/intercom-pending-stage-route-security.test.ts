@@ -247,6 +247,58 @@ test("broker flushes registration_failed before an orderly close and ignores lat
 	assert.equal(brokerOutput.includes("write after end"), false, brokerOutput);
 });
 
+test("an invalid workflow-stage roster is rejected orderly and leaves no route registered", async () => {
+	// Regression: #2784 — this path threw into the framing reader, so the client got an abrupt
+	// socket.destroy(error) with no reason frame, and only AFTER pendingStageRoutes had already been
+	// written. Every neighbouring rejection in this handler writes registration_failed then ends.
+	const runId = "89258800-bf6c-4e44-bba8-bb298794a9c4";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const observer = new WireClient();
+	await register(owner, "invalid-roster-owner", group);
+	await register(observer, "invalid-roster-observer", group);
+
+	owner.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "invalid-roster-capability",
+			// Foreign group: not owned by this invocation, so roster validation must refuse it.
+			stages: [
+				{
+					stageId: "reviewer-id",
+					stageName: "reviewer",
+					target: `${runId}:reviewer-id`,
+					lifecycle: "pending",
+					routeEligible: true,
+					group: "workflow:00000000-0000-4000-8000-000000000000/foreign",
+				},
+			],
+		},
+		{ type: "list", requestId: "must-not-run-after-invalid-roster" },
+	]);
+
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false, "an invalid roster must not destroy the socket with an error");
+	assert.equal(
+		owner.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-invalid-roster",
+		),
+		false,
+	);
+
+	// The refused announcement must not have left a pending route behind: the observer sees no roster.
+	observer.send({ type: "list", requestId: "invalid-roster-barrier" });
+	const listed = await observer.next("sessions", (frame) => frame.requestId === "invalid-roster-barrier");
+	assert.deepEqual(listed.workflowStages ?? [], []);
+});
+
 function productionRegistration(name: string | undefined, group: string) {
 	return {
 		...(name === undefined ? {} : { name }),
@@ -258,6 +310,235 @@ function productionRegistration(name: string | undefined, group: string) {
 		lastActivity: 1,
 	};
 }
+
+test("workflow roster lists pending and running stages only inside its invocation group", async () => {
+	// Regression: #2784
+	const runId = "27840000-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "workflow-roster-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, stage, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("owner", group));
+	await stage.connect(productionRegistration("reviewer", group));
+	await member.connect(productionRegistration("member", group));
+	await outsider.connect(productionRegistration("outsider", "other-group"));
+
+	owner.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowStages, [
+		{
+			kind: "workflow-stage",
+			runId,
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			group,
+		},
+	]);
+	assert.deepEqual((await outsider.listDirectory()).workflowStages, []);
+
+	stage.registerPendingStageRoute(runId, group, capability);
+	await stage.listSessions();
+	await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-id", "reviewer"], capability);
+	assert.deepEqual(
+		(await member.listDirectory()).workflowStages.map(({ lifecycle, sessionId }) => ({ lifecycle, sessionId })),
+		[{ lifecycle: "running", sessionId: stage.sessionId }],
+	);
+
+	// Regression: #2784 — a stage must not appear in its own roster. The tool renders these rows
+	// under "Other visible sessions and workflow stages", so listing self there reports one session
+	// twice and invites a wasted turn addressing a target that answers "Cannot message the current
+	// session". Ordinary session rows already exclude self; the roster must match.
+	assert.deepEqual((await stage.listDirectory()).workflowStages, []);
+	assert.deepEqual(
+		(await member.listDirectory()).workflowStages.map(({ stageId, sessionId }) => ({ stageId, sessionId })),
+		[{ stageId: "reviewer-id", sessionId: stage.sessionId }],
+		"peers must still see the running stage after self-exclusion",
+	);
+
+	owner.registerPendingStageRoute(runId, group, capability, []);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+});
+
+test("invocation roster control is directional across owned subgroups", async () => {
+	// Regression: #2784
+	const runId = "27840001-3528-413e-84c4-87a43e5037a2";
+	const invocation = `workflow:${runId}`;
+	const subgroupA = `${invocation}/reviewers-a`;
+	const subgroupB = `${invocation}/reviewers-b`;
+	const capability = "directional-roster-capability";
+	const owner = new IntercomClient();
+	const memberA = new IntercomClient();
+	const memberB = new IntercomClient();
+	const otherRun = new IntercomClient();
+	for (const client of [owner, memberA, memberB, otherRun]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("owner", invocation));
+	await memberA.connect(productionRegistration("member-a", subgroupA));
+	await memberB.connect(productionRegistration("member-b", subgroupB));
+	await otherRun.connect(productionRegistration("other-run", "workflow:other-run"));
+	owner.registerPendingStageRoute(runId, invocation, capability, [
+		{
+			stageId: "a",
+			stageName: "a",
+			target: `${runId}:a`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group: subgroupA,
+		},
+		{
+			stageId: "b",
+			stageName: "b",
+			target: `${runId}:b`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group: subgroupB,
+		},
+	]);
+	await owner.listSessions();
+	assert.deepEqual((await owner.listDirectory()).workflowStages.map((stage) => stage.stageId).sort(), ["a", "b"]);
+	// Regression: #2784. Pin the allow half of directory authorization so the
+	// sibling-deny assertions cannot pass through an over-restrictive predicate.
+	const ownerSubgroupDirectory = await owner.listDirectory(subgroupB);
+	assert.deepEqual(
+		ownerSubgroupDirectory.sessions.map((session) => session.name),
+		["member-b"],
+	);
+	assert.deepEqual(
+		ownerSubgroupDirectory.workflowStages.map((stage) => stage.stageId),
+		["b"],
+	);
+	assert.deepEqual(
+		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["a"],
+	);
+	assert.deepEqual(
+		(await memberB.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["b"],
+	);
+	assert.deepEqual((await otherRun.listDirectory()).workflowStages, []);
+	const lateralPeek = await memberA.listDirectory(subgroupB);
+	assert.deepEqual(lateralPeek.sessions, []);
+	assert.deepEqual(lateralPeek.workflowStages, []);
+
+	// Regression: #2784. Mutable membership lets the main invocation join, but
+	// must not let an isolated workflow stage or a different workflow root turn
+	// that join into lateral pending/live control.
+	await memberA.joinGroup(invocation);
+	await otherRun.joinGroup(invocation);
+	// Regression: #2784. Joining the invocation must not turn mutable membership
+	// into directory authorization for a sibling workflow subgroup.
+	assert.deepEqual(
+		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
+		["a"],
+	);
+	const memberALateralPeekAfterJoin = await memberA.listDirectory(subgroupB);
+	assert.deepEqual(memberALateralPeekAfterJoin.sessions, []);
+	assert.deepEqual(memberALateralPeekAfterJoin.workflowStages, []);
+	const otherRunLateralPeekAfterJoin = await otherRun.listDirectory(subgroupB);
+	assert.deepEqual(otherRunLateralPeekAfterJoin.sessions, []);
+	assert.deepEqual(otherRunLateralPeekAfterJoin.workflowStages, []);
+	for (const [sender, messageId] of [
+		[memberA, "subgroup-pending-escalation"],
+		[otherRun, "other-root-pending-escalation"],
+	] as const) {
+		const result = await sender.send(`${runId}:b`, { messageId, text: "must stay isolated" });
+		assert.equal(result.delivered, false);
+		assert.equal(result.reason, "Target workflow run is in a different intercom group");
+	}
+
+	await memberB.registerLiveWorkflowStageRoute(runId, ["b"], capability);
+	for (const [sender, messageId] of [
+		[memberA, "subgroup-live-ask-escalation"],
+		[otherRun, "other-root-live-ask-escalation"],
+	] as const) {
+		const result = await sender.send(`${runId}:b`, {
+			messageId,
+			text: "must not ask across the boundary",
+			expectsReply: true,
+		});
+		assert.equal(result.delivered, false);
+		assert.equal(result.reason, "Target session is in a different intercom group");
+	}
+});
+
+test("an authenticated second-session replay publishes the roster without stealing pending-route ownership", async () => {
+	// Regression: #2784 — workflow store invalidation replays the process-shared owner announcement
+	// with materialized stages from a stage session, after the owner registered without a roster.
+	const runId = "27840002-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "second-session-roster-replay-capability";
+	const owner = new IntercomClient();
+	const replayingStage = new IntercomClient();
+	const member = new IntercomClient();
+	for (const client of [owner, replayingStage, member]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("replay-owner", group));
+	await replayingStage.connect(productionRegistration("replaying-stage", group));
+	await member.connect(productionRegistration("replay-member", group));
+
+	owner.registerPendingStageRoute(runId, group, capability);
+	await owner.listSessions();
+	replayingStage.registerPendingStageRoute(runId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await replayingStage.listSessions();
+
+	assert.deepEqual((await member.listDirectory()).workflowStages, [
+		{
+			kind: "workflow-stage",
+			runId,
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `${runId}:reviewer-id`,
+			lifecycle: "pending",
+			group,
+		},
+	]);
+
+	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const send = member.send(`${runId}:reviewer-id`, { text: "original owner must receive this" });
+	const request = await pendingRequest;
+	assert.equal(request.message.content.text, "original owner must receive this");
+	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+	assert.equal((await send).queued, true);
+
+	await owner.disconnect();
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+	const afterDisconnect = await member.send(`${runId}:reviewer-id`, { text: "route must be gone" });
+	assert.equal(afterDisconnect.delivered, false);
+	assert.equal(afterDisconnect.reason, "Session not found");
+});
 
 test("production clients keep the pending owner and live stage connected when a shared capability replays", async () => {
 	const runId = "13ec4058-3528-413e-84c4-87a43e5037a2";

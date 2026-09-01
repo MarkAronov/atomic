@@ -75,7 +75,7 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full session ID or exact case-insensitive name. Ordinary `send` to a known workflow stage whose session has not initialized uses the exact `<runId>:<stageKey>` identity. Unknown runs and stages retain the ordinary unknown-target failure.
+Live sessions accept an exact full Intercom session ID or exact case-insensitive name. For workflow stages, first use `intercom({ action: "list" })`: materialized stages appear as `PENDING` or `RUNNING` with canonical `<runId>:<stageId>` targets and actual groups. The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated. Use queued `send` for `PENDING`; `ask` is supported only for `RUNNING`, where an exact correlated reply returns to the invocation asker.
 
 ### Deliver to workflow stages that have not started
 

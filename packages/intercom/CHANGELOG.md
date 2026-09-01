@@ -7,6 +7,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Recoverable Intercom disconnects during lazy initialization no longer print a misleading error and stack trace in the interactive UI; later calls still retry initialization.
+- Fixed workflow invocation control across isolated workflow-owned subgroups: canonical pending/running roster discovery, queued pending sends, immediate live send/ask with correlated replies, immutable registration-based directory authorization after mutable joins, directional sibling and cross-run isolation, and invocation-unique group names ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
+- Durably queued pending-stage sends are now rendered as successful sends instead of failed sends ([#2784](https://github.com/bastani-inc/atomic/issues/2784)).
 
 ## [0.9.17] - 2026-08-29
 

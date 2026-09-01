@@ -142,17 +142,27 @@ export function makeExecuteWorkflowTool(
 							? { action: "statusDetail", runId: target, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
 					}
-					const result = inspectRun(resolved.runId, { toolControlRegistry });
-					return result.ok
-						? { action: "statusDetail", runId: result.runId, detail: result.detail }
-						: { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+					const inspected = inspectRun(resolved.runId, { toolControlRegistry });
+					if (!inspected.ok) {
+						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+					}
+					const detailResult = {
+						action: "statusDetail" as const,
+						runId: inspected.runId,
+						detail: inspected.detail,
+					};
+					setWorkflowStatusRenderRuns(detailResult, store.graphSnapshot().runs);
+					return detailResult;
 				}
+				const capturedRuns = store.graphSnapshot().runs;
+				const statusByRunId = new Map(capturedRuns.map((run) => [run.id, run.status]));
 				const listing = buildWorkflowStatusListing(
 					topLevelExpandedSnapshots(),
 					args.statusFilter ?? "all",
 					Date.now(),
 					{
 						toolControlRegistry,
+						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
 					},
 				);
 				const result = {
@@ -161,7 +171,7 @@ export function makeExecuteWorkflowTool(
 					runs: listing.runs,
 					snapshots: listing.snapshots,
 				};
-				setWorkflowStatusRenderRuns(result, store.graphSnapshot().runs);
+				setWorkflowStatusRenderRuns(result, capturedRuns);
 				return result;
 			}
 			case "stages":

@@ -585,11 +585,17 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		completedStageReplayKeys,
 		sourceToReplayedNodeIds: sourceToContinuationNodeIds,
 	});
+	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
+		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
+		return stages.find((stage) => (stageId !== undefined && stage.id === stageId) || stage.replayKey === replayKey)
+			?.intercomGroup;
+	};
 	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
 	const durableTask = createDurableTaskPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+		durableIntercomGroup,
 		task: taskRunners.task,
 		recordCachedTask: cachedStage.record,
 		signal: ownController.signal,
@@ -641,6 +647,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			workflowId: runId,
 			backend: durableBackend,
 			nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+			durableIntercomGroup,
 			recordCachedStage: cachedStage.record,
 			stage: (name, options, replayKey) => {
 				const stage = runtime.stage(name, options);

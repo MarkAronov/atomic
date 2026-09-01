@@ -87,6 +87,24 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
 				capability: workflowPendingStageRouteCapability(activeStore, run.id),
+				stages: run.stages
+					.filter(
+						(stage) =>
+							stage.pendingStageDeliveryAvailable === true &&
+							(stage.status === "pending" ||
+								stage.status === "running" ||
+								stage.status === "awaiting_input" ||
+								stage.status === "paused" ||
+								stage.status === "blocked"),
+					)
+					.map((stage) => ({
+						stageId: stage.id,
+						stageName: stage.name,
+						target: `${run.id}:${stage.id}`,
+						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
+						routeEligible: true,
+						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
+					})),
 			});
 		}
 		sweepPromise = sweepPromise
@@ -219,9 +237,14 @@ async function queueAndPersist(
 	const rootBackend = getDurableBackend();
 	const backend = durableBackendForRun(rootBackend, activeStore.runs(), event.runId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
+	// The broker has already authorized the immutable registration identity.
+	// Preserve the sender identity in the durable entry, but use its current
+	// invocation membership for the durable group check so an ordinary session
+	// that explicitly joined workflow:<runId> can queue before stage startup.
+	const senderGroup = event.from.groups?.includes(runGroup) === true ? runGroup : event.from.group;
 	const result: PendingStageQueueResult | undefined = await activeStore.queueStageMessage(
 		request,
-		event.from.group,
+		senderGroup,
 		runGroup,
 		backend,
 	);

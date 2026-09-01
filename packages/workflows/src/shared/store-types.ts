@@ -349,6 +349,8 @@ export interface StageSnapshot {
 	skippedReason?: string;
 	/** Stable continuation replay identity, separate from display name. */
 	replayKey?: string;
+	/** Actual broker group after invocation-owned subgroup resolution. */
+	intercomGroup?: string;
 	/** Authoritative stage-factory capability; only true stages have a pre-start Intercom drain. */
 	pendingStageDeliveryAvailable?: boolean;
 	/** Snapshot-safe prompt answer availability marker; never contains the raw answer. */

@@ -3,7 +3,16 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
-import type { SessionInfo, Message, Attachment, GroupSummary, SupervisorRegistration } from "../types.js";
+import type {
+	SessionInfo,
+	Message,
+	Attachment,
+	GroupSummary,
+	SupervisorRegistration,
+	SessionDirectory,
+	WorkflowStageRosterAnnouncement,
+	WorkflowStageRosterEntry,
+} from "../types.js";
 import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
@@ -74,6 +83,27 @@ function toError(error: unknown): Error {
 }
 
 
+function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRosterEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as WorkflowStageRosterEntry).kind === "workflow-stage" &&
+				typeof (entry as WorkflowStageRosterEntry).runId === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).stageId === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).stageName === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).target === "string" &&
+				((entry as WorkflowStageRosterEntry).lifecycle === "pending" ||
+					(entry as WorkflowStageRosterEntry).lifecycle === "running") &&
+				typeof (entry as WorkflowStageRosterEntry).group === "string" &&
+				((entry as WorkflowStageRosterEntry).sessionId === undefined ||
+					typeof (entry as WorkflowStageRosterEntry).sessionId === "string"),
+		)
+	);
+}
+
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
   private socket: net.Socket | null = null;
@@ -83,7 +113,7 @@ export class IntercomClient extends EventEmitter {
   private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
   private pendingGroupLists = new Map<string, { resolve: (groups: GroupSummary[]) => void; reject: (error: Error) => void }>();
-  private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private pendingLists = new Map<string, { resolve: (directory: SessionDirectory) => void; reject: (e: Error) => void }>();
   private pendingPresence = new Map<string, {
     resolve: (group: string) => void;
     reject: (error: Error) => void;
@@ -329,19 +359,21 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "sessions": {
-        const { requestId, sessions } = brokerMessage;
-        if (typeof requestId !== "string" || !Array.isArray(sessions) || !sessions.every(isSessionInfo)) {
-          throw new Error("Invalid sessions message");
-        }
-        const pending = this.pendingLists.get(requestId);
-        if (!pending) {
-          // Late list responses can still arrive after the caller has already timed out.
-          return;
-        }
-        this.pendingLists.delete(requestId);
-        pending.resolve(sessions);
-        break;
-      }
+		const { requestId, sessions, workflowStages } = brokerMessage;
+		if (
+			typeof requestId !== "string" ||
+			!Array.isArray(sessions) ||
+			!sessions.every(isSessionInfo) ||
+			(workflowStages !== undefined && !isWorkflowStageRosterEntries(workflowStages))
+		) {
+			throw new Error("Invalid sessions message");
+		}
+		const pending = this.pendingLists.get(requestId);
+		if (!pending) return;
+		this.pendingLists.delete(requestId);
+		pending.resolve({ sessions, workflowStages: workflowStages ?? [] });
+		break;
+	  }
       case "groups": {
         const { requestId, groups } = brokerMessage;
         if (
@@ -602,38 +634,41 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  listSessions(group?: string): Promise<SessionInfo[]> {
-    let socket: net.Socket;
-    try {
-      socket = this.requireActiveSocket();
-    } catch (error) {
-      return Promise.reject(toError(error));
-    }
-    return new Promise((resolve, reject) => {
-      const requestId = randomUUID();
-      const wrappedResolve = (sessions: SessionInfo[]) => {
-        clearTimeout(timeout);
-        resolve(sessions);
-      };
-      const wrappedReject = (error: Error) => {
-        clearTimeout(timeout);
-        reject(error);
-      };
-      const timeout = setTimeout(() => {
-        if (this.pendingLists.has(requestId)) {
-          this.pendingLists.delete(requestId);
-          wrappedReject(new Error("List sessions timeout"));
-        }
-      }, 5000);
-      this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
-      try {
-        writeMessage(socket, group === undefined ? { type: "list", requestId } : { type: "list", requestId, group });
-      } catch (error) {
-        clearTimeout(timeout);
-        this.pendingLists.delete(requestId);
-        reject(toError(error));
-      }
-    });
+  async listSessions(group?: string): Promise<SessionInfo[]> {
+	return (await this.listDirectory(group)).sessions;
+  }
+
+  listDirectory(group?: string): Promise<SessionDirectory> {
+	let socket: net.Socket;
+	try {
+		socket = this.requireActiveSocket();
+	} catch (error) {
+		return Promise.reject(toError(error));
+	}
+	return new Promise((resolve, reject) => {
+		const requestId = randomUUID();
+		const timeout = setTimeout(() => {
+			if (!this.pendingLists.delete(requestId)) return;
+			reject(new Error("List sessions timeout"));
+		}, 5000);
+		this.pendingLists.set(requestId, {
+			resolve: (directory) => {
+				clearTimeout(timeout);
+				resolve(directory);
+			},
+			reject: (error) => {
+				clearTimeout(timeout);
+				reject(error);
+			},
+		});
+		try {
+			writeMessage(socket, group === undefined ? { type: "list", requestId } : { type: "list", requestId, group });
+		} catch (error) {
+			clearTimeout(timeout);
+			this.pendingLists.delete(requestId);
+			reject(toError(error));
+		}
+	});
   }
   listGroups(): Promise<GroupSummary[]> {
     let socket: net.Socket;
@@ -728,8 +763,13 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  registerPendingStageRoute(runId: string, group: string, capability: string): void {
-    writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group, capability });
+  registerPendingStageRoute(
+	runId: string,
+	group: string,
+	capability: string,
+	stages?: WorkflowStageRosterAnnouncement[],
+  ): void {
+	writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group, capability, stages });
   }
 
   registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
