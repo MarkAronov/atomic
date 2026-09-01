@@ -160,12 +160,16 @@ describe("Anthropic thinking disable payload", () => {
 	});
 
 	// Claude Fable 5.1 has adaptive thinking always on: `thinking: {"type": "disabled"}` and
-	// `{"type": "enabled"}` with `budget_tokens` both return a 400.
+	// `{"type": "enabled"}` with `budget_tokens` both return a 400. Omitting `thinking` and
+	// sending `{"type": "adaptive"}` are equivalent, so the no-reasoning path uses the latter to
+	// carry `block_binding`. See anthropic-preserved-thinking.test.ts for why that matters.
 	// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
-	it("omits thinking.type=disabled for Claude Fable 5.1 when thinking is off", async () => {
+	it("never sends thinking.type=disabled for Claude Fable 5.1 when thinking is off", async () => {
 		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"));
 
-		expect(payload.thinking).toBeUndefined();
+		expect(payload.thinking?.type).not.toBe("disabled");
+		expect(payload.thinking?.budget_tokens).toBeUndefined();
+		// No effort is selected, so no `output_config` is sent.
 		expect(payload.output_config).toBeUndefined();
 	});
 

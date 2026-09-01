@@ -57,6 +57,12 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		expect(model.contextWindow).toBe(1_000_000);
 		expect(model.maxTokens).toBe(128_000);
 		expect(model.reasoning).toBe(true);
+		// models.dev publishes a third `pdf` input modality for this model, and Anthropic does
+		// accept PDFs as `document` content blocks. Atomic narrows to `["text", "image"]` because
+		// `Model.input` has no `"pdf"` member and there is no `DocumentContent` block for any
+		// provider to receive, so no Atomic code path could produce a PDF to send. Widening the
+		// field alone would advertise a capability nothing can reach. `docs/models.md` states this
+		// limitation for users; every other Claude entry narrows identically.
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.cost).toEqual({ input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 });
 		expect(model.compat?.forceAdaptiveThinking).toBe(true);
@@ -101,12 +107,18 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		});
 	});
 
-	it("keeps the 1M/128K limits on every generated Fable 5.1 mirror", () => {
+	// Sweeps every Fable entry rather than only IDs matching `claude-fable-5-1`, because a
+	// provider "latest" alias can route to Fable 5.1 without naming it: OpenRouter's
+	// `~anthropic/claude-fable-latest` carries Fable 5.1's $0.25 cache read against Fable 5's
+	// $1.00. Both Fable generations share these limits, so the assertion holds for either.
+	it("keeps the 1M/128K limits on every generated Fable mirror, aliases included", () => {
 		const mirrors = getProviders()
 			.flatMap((provider) => getModels(provider) as Model<Api>[])
-			.filter((model) => /claude-fable-5[-.]1/.test(model.id));
+			.filter((model) => /fable/i.test(model.id));
 
 		expect(mirrors.length).toBeGreaterThan(0);
+		// The `claude-fable-5-1` IDs specifically must be present, not just some Fable entry.
+		expect(mirrors.some((model) => /claude-fable-5[-.]1/.test(model.id))).toBe(true);
 		for (const model of mirrors) {
 			expect(model.contextWindow, `${model.provider}/${model.id}`).toBe(1_000_000);
 			expect(model.maxTokens, `${model.provider}/${model.id}`).toBe(128_000);

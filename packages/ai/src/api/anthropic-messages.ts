@@ -192,8 +192,14 @@ function shouldUseServerSideFallbackBeta(model: Model<"anthropic-messages">): bo
  * for Anthropic accounts created on or after 2026-08-31, rejects a replay behind a changed
  * `system` prompt, `tools` array, or earlier message with a 400 `invalid_request_error`.
  * Atomic rebuilds those inputs between turns (dynamic system prompt, tool availability changes,
- * compaction, model switches), so it opts into `prefix_mismatch_behavior: "drop_block"`: the API
- * discards the affected thinking blocks and answers the turn instead of failing the session.
+ * model switches), so it opts into `prefix_mismatch_behavior: "drop_block"`: the API discards
+ * the affected thinking blocks and answers the turn instead of failing the session.
+ *
+ * This covers live prefix mismatches *between* compaction boundaries. It is not what handles
+ * compaction itself: Atomic's client-side `preserve_recent` tail compaction serializes the
+ * protected tail into a single boundary message, so no signed thinking block survives a
+ * boundary to be replayed behind it. That is Anthropic's documented keep-tail remedy applied
+ * structurally rather than a case `drop_block` has to catch.
  * https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
  */
 function shouldUseThinkingBindingControlsBeta(model: Model<"anthropic-messages">): boolean {
@@ -1169,18 +1175,33 @@ function buildParams(
 					display,
 				};
 			}
-			// `block_binding` is accepted alongside both `adaptive` and `enabled` thinking. It only
-			// changes what happens to a thinking block replayed behind a changed conversation
-			// prefix; the model check always drops unreadable blocks regardless.
-			if (shouldUseThinkingBindingControlsBeta(model) && params.thinking) {
-				// The Anthropic SDK types lag the `thinking-binding-controls-2026-08-01` beta.
-				params.thinking = {
-					...params.thinking,
-					block_binding: { prefix_mismatch_behavior: "drop_block" },
-				} as unknown as NonNullable<MessageCreateParamsStreaming["thinking"]>;
-			}
 		} else if (options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null) {
 			params.thinking = { type: "disabled" };
+		}
+
+		// `block_binding` must accompany the beta header on *every* request for a model that
+		// enforces the conversation check, not only on reasoning turns. The header alone leaves
+		// `prefix_mismatch_behavior` at its `"error"` default, which is the 400 this opts out of.
+		// `streamSimple` sets `thinkingEnabled: false` whenever no reasoning level is requested,
+		// and Claude Fable 5.1 denies thinking-off (`thinkingLevelMap.off === null`), so without
+		// this the no-reasoning path would send the header with no field at all.
+		if (shouldUseThinkingBindingControlsBeta(model)) {
+			const blockBinding = { block_binding: { prefix_mismatch_behavior: "drop_block" } };
+			// The Anthropic SDK types lag the `thinking-binding-controls-2026-08-01` beta.
+			if (params.thinking?.type === "adaptive" || params.thinking?.type === "enabled") {
+				// Accepted alongside both thinking types. It only changes what happens to a block
+				// replayed behind a changed prefix; the model check always drops regardless.
+				params.thinking = { ...params.thinking, ...blockBinding } as unknown as NonNullable<
+					MessageCreateParamsStreaming["thinking"]
+				>;
+			} else if (!params.thinking && model.compat?.forceAdaptiveThinking === true) {
+				// Adaptive thinking is always on for these models, so omitting `thinking` and
+				// sending `{type: "adaptive"}` are equivalent. `display` stays absent to keep the
+				// API's `"omitted"` default, which is exactly what omitting `thinking` produced.
+				params.thinking = { type: "adaptive", ...blockBinding } as unknown as NonNullable<
+					MessageCreateParamsStreaming["thinking"]
+				>;
+			}
 		}
 	}
 

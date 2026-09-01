@@ -25,7 +25,13 @@ import type { AssistantMessage, Context, Message, Model, TextContent, ThinkingCo
  */
 
 interface AnthropicThinkingPayload {
-	thinking?: { type: string; display?: string; block_binding?: { prefix_mismatch_behavior?: string } };
+	thinking?: {
+		type: string;
+		display?: string;
+		budget_tokens?: number;
+		block_binding?: { prefix_mismatch_behavior?: string };
+	};
+	output_config?: { effort?: string };
 }
 
 class PayloadCaptured extends Error {
@@ -41,14 +47,15 @@ function makeContext(): Context {
 
 async function capturePayloadAndHeaders(
 	model: Model<"anthropic-messages">,
+	options?: { reasoning?: "low" | "medium" | "high" | "xhigh" | "max" },
 ): Promise<{ payload: AnthropicThinkingPayload; betaHeader: string }> {
 	let capturedPayload: AnthropicThinkingPayload | undefined;
 	let betaHeader = "";
 
 	const s = streamSimple({ ...model, baseUrl: "http://127.0.0.1:9" }, makeContext(), {
 		apiKey: "fake-key",
-		reasoning: "high",
-		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+		...(options?.reasoning ? { reasoning: options.reasoning } : {}),
+		fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
 			const headers = new Headers(init?.headers);
 			betaHeader = headers.get("anthropic-beta") ?? "";
 			throw new PayloadCaptured();
@@ -201,23 +208,62 @@ describe("preserved thinking across mid-conversation model switches", () => {
 });
 
 describe("Fable 5.1 prefix-mismatch handling", () => {
-	it("sends the block-binding beta header and drop_block for Claude Fable 5.1", async () => {
-		const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"));
+	it("sends the block-binding beta header and drop_block on a reasoning turn", async () => {
+		const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"), {
+			reasoning: "high",
+		});
 
 		expect(betaHeader).toContain("thinking-binding-controls-2026-08-01");
 		expect(payload.thinking?.type).toBe("adaptive");
 		expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
 	});
 
-	it.each(["claude-fable-5", "claude-opus-5", "claude-sonnet-4-5"] as const)(
-		"does not opt %s into the conversation check",
-		async (modelId) => {
-			const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", modelId));
+	// The header alone leaves `prefix_mismatch_behavior` at its `"error"` default, which is the
+	// 400 this feature exists to avoid. `streamSimple` sets `thinkingEnabled: false` whenever no
+	// reasoning level is requested, so a no-reasoning turn must still carry the field or the
+	// session fails on exactly the prefix change the beta was sent to absorb.
+	it("sends drop_block on a no-reasoning turn, where the header would otherwise be inert", async () => {
+		const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"));
 
-			expect(betaHeader).not.toContain("thinking-binding-controls-2026-08-01");
-			expect(payload.thinking?.block_binding).toBeUndefined();
+		expect(betaHeader).toContain("thinking-binding-controls-2026-08-01");
+		expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
+		// Omitting `thinking` and sending `{type: "adaptive"}` are equivalent on this model, and
+		// leaving `display` absent keeps the API's `"omitted"` default that omission produced.
+		expect(payload.thinking?.type).toBe("adaptive");
+		expect(payload.thinking?.display).toBeUndefined();
+		expect(payload.thinking?.budget_tokens).toBeUndefined();
+		expect(payload.output_config).toBeUndefined();
+	});
+
+	it.each(["low", "medium", "high", "xhigh", "max"] as const)(
+		"keeps drop_block alongside effort=%s",
+		async (reasoning) => {
+			const { payload } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"), { reasoning });
+
+			expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
+			expect(payload.output_config).toEqual({ effort: reasoning });
 		},
 	);
+
+	it.each(["claude-fable-5", "claude-opus-5", "claude-sonnet-4-5"] as const)(
+		"does not opt %s into the conversation check, on reasoning or no-reasoning turns",
+		async (modelId) => {
+			for (const options of [undefined, { reasoning: "high" as const }]) {
+				const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", modelId), options);
+
+				expect(betaHeader).not.toContain("thinking-binding-controls-2026-08-01");
+				expect(payload.thinking?.block_binding).toBeUndefined();
+			}
+		},
+	);
+
+	// Never merged onto `thinking.type: "disabled"`; the docs scope `block_binding` to the
+	// `adaptive` and `enabled` shapes only.
+	it("does not attach block_binding to a disabled-thinking payload", async () => {
+		const { payload } = await capturePayloadAndHeaders(getModel("anthropic", "claude-sonnet-4-5"));
+
+		expect(payload.thinking).toEqual({ type: "disabled" });
+	});
 });
 
 function createSseResponse(events: Array<{ event: string; data: string }>): Response {
