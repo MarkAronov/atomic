@@ -720,6 +720,26 @@ export interface AnthropicMessagesCompat {
 	 * except Haiku and models older than Claude 4.5; false for other providers.
 	 */
 	supportsToolReferences?: boolean;
+	/**
+	 * Whether the model runs Anthropic's preserved-thinking *conversation* check, which
+	 * rejects a request whose `system` prompt, `tools`, or earlier messages changed since a
+	 * replayed thinking block was produced. When true the provider sends the
+	 * `thinking-binding-controls-2026-08-01` beta header and
+	 * `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`, so a changed prefix
+	 * drops the affected thinking blocks instead of failing the request with a 400.
+	 * Enforced by default for Anthropic accounts created on or after 2026-08-31.
+	 * Default: false.
+	 */
+	enforcesPreservedThinkingBinding?: boolean;
+	/**
+	 * Whether the API adjudicates thinking-block *model* binding itself, always dropping a
+	 * block the target model cannot read. When true, an assistant turn produced by a
+	 * different model on the same provider and API replays its signed `thinking` and
+	 * `redacted_thinking` blocks unchanged rather than being rewritten into plain text, so a
+	 * mid-conversation model switch keeps reasoning the target model is allowed to read.
+	 * Default: false.
+	 */
+	delegatesThinkingModelBinding?: boolean;
 }
 
 /** Compatibility settings for Amazon Bedrock models. */

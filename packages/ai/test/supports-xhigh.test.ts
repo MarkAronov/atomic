@@ -45,6 +45,32 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).not.toContain("off");
 	});
 
+	it("includes low/medium/high/xhigh/max but not off for Anthropic Claude Fable 5.1", () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		expect(model).toBeDefined();
+		const levels = getSupportedThinkingLevels(model!);
+		// Anthropic's documented effort set for Claude Fable 5.1 is low/medium/high/xhigh/max.
+		expect(levels).toContain("low");
+		expect(levels).toContain("medium");
+		expect(levels).toContain("high");
+		expect(levels).toContain("xhigh");
+		expect(levels).toContain("max");
+		// Adaptive thinking is always on: `thinking: {"type": "disabled"}` returns a 400.
+		expect(levels).not.toContain("off");
+	});
+
+	it("includes low/medium/high/xhigh/max but not off for OpenCode Claude Fable 5.1", () => {
+		const model = getModel("opencode", "claude-fable-5-1");
+		expect(model).toBeDefined();
+		const levels = getSupportedThinkingLevels(model!);
+		expect(levels).toContain("low");
+		expect(levels).toContain("medium");
+		expect(levels).toContain("high");
+		expect(levels).toContain("xhigh");
+		expect(levels).toContain("max");
+		expect(levels).not.toContain("off");
+	});
+
 	it("does not include xhigh or max for Claude Sonnet 4.5", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeDefined();
@@ -159,5 +185,21 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toContain("xhigh");
 		expect(getSupportedThinkingLevels(model!)).toContain("max");
 		expect(getSupportedThinkingLevels(model!)).not.toContain("off");
+	});
+
+	it.each([
+		"anthropic.claude-fable-5-1",
+		"global.anthropic.claude-fable-5-1",
+		"us.anthropic.claude-fable-5-1",
+	] as const)("includes xhigh and max but not off for Bedrock %s", (modelId) => {
+		const model = getModel("amazon-bedrock", modelId);
+		expect(model).toBeDefined();
+		const levels = getSupportedThinkingLevels(model!);
+		expect(levels).toContain("low");
+		expect(levels).toContain("medium");
+		expect(levels).toContain("high");
+		expect(levels).toContain("xhigh");
+		expect(levels).toContain("max");
+		expect(levels).not.toContain("off");
 	});
 });

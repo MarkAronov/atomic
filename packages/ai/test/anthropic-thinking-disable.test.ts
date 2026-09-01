@@ -158,6 +158,37 @@ describe("Anthropic thinking disable payload", () => {
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "xhigh" });
 	});
+
+	// Claude Fable 5.1 has adaptive thinking always on: `thinking: {"type": "disabled"}` and
+	// `{"type": "enabled"}` with `budget_tokens` both return a 400.
+	// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
+	it("omits thinking.type=disabled for Claude Fable 5.1 when thinking is off", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"));
+
+		expect(payload.thinking).toBeUndefined();
+		expect(payload.output_config).toBeUndefined();
+	});
+
+	it("never sends a thinking budget for Claude Fable 5.1", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { reasoning: "high" });
+
+		// `block_binding` also rides on this object; see anthropic-preserved-thinking.test.ts.
+		expect(payload.thinking).toMatchObject({ type: "adaptive", display: "summarized" });
+		expect(payload.thinking?.budget_tokens).toBeUndefined();
+	});
+
+	it.each([
+		["low", "low"],
+		["medium", "medium"],
+		["high", "high"],
+		["xhigh", "xhigh"],
+		["max", "max"],
+	] as const)("maps %s reasoning to effort=%s for Claude Fable 5.1", async (reasoning, effort) => {
+		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { reasoning });
+
+		expect(payload.thinking).toMatchObject({ type: "adaptive", display: "summarized" });
+		expect(payload.output_config).toEqual({ effort });
+	});
 });
 
 describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic thinking disable E2E", () => {

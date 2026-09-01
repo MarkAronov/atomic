@@ -30,6 +30,7 @@ import type {
 	ToolResultMessage,
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
+import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -180,14 +181,69 @@ type MessageCreateParamsStreamingWithFallbacks = MessageCreateParamsStreaming & 
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
+const THINKING_BINDING_CONTROLS_BETA = "thinking-binding-controls-2026-08-01";
 
 function shouldUseServerSideFallbackBeta(model: Model<"anthropic-messages">): boolean {
 	return (model.compat?.allowedFallbackModels?.length ?? 0) > 0;
 }
 
+/**
+ * Claude Fable 5.1 binds each thinking block to the conversation prefix that produced it and,
+ * for Anthropic accounts created on or after 2026-08-31, rejects a replay behind a changed
+ * `system` prompt, `tools` array, or earlier message with a 400 `invalid_request_error`.
+ * Atomic rebuilds those inputs between turns (dynamic system prompt, tool availability changes,
+ * compaction, model switches), so it opts into `prefix_mismatch_behavior: "drop_block"`: the API
+ * discards the affected thinking blocks and answers the turn instead of failing the session.
+ * https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+ */
+function shouldUseThinkingBindingControlsBeta(model: Model<"anthropic-messages">): boolean {
+	return model.compat?.enforcesPreservedThinkingBinding === true;
+}
+
+/** One entry of the `input_transformations` array the block-binding controls beta adds. */
+interface AnthropicInputTransformation {
+	type?: string;
+	path?: string;
+	reason?: string;
+}
+
+/**
+ * Record thinking blocks the API dropped from this request.
+ *
+ * With the block-binding controls beta, `message_start` carries a top-level
+ * `input_transformations` array naming each dropped block and why: `model_binding_mismatch` when
+ * the conversation moved to a model that cannot read an earlier model's blocks (expected on a
+ * downward model switch), or `prefix_binding_mismatch` when something before the block changed.
+ * The drop is otherwise silent, so surface it on the existing diagnostics channel rather than
+ * losing it. Not an error: the request succeeded without those blocks.
+ */
+function recordInputTransformations(output: AssistantMessage, message: unknown): void {
+	const transformations = (message as { input_transformations?: AnthropicInputTransformation[] })
+		?.input_transformations;
+	if (!Array.isArray(transformations) || transformations.length === 0) return;
+
+	appendAssistantMessageDiagnostic(output, {
+		type: "anthropic_input_transformations",
+		timestamp: Date.now(),
+		details: {
+			droppedBlockCount: transformations.length,
+			reasons: [...new Set(transformations.map((entry) => entry.reason).filter((r): r is string => !!r))],
+			paths: transformations.map((entry) => entry.path).filter((p): p is string => !!p),
+		},
+	});
+}
+
 function getAnthropicCompat(
 	model: Model<"anthropic-messages">,
-): Required<Omit<AnthropicMessagesCompat, "forceAdaptiveThinking" | "allowedFallbackModels">> {
+): Required<
+	Omit<
+		AnthropicMessagesCompat,
+		| "forceAdaptiveThinking"
+		| "allowedFallbackModels"
+		| "enforcesPreservedThinkingBinding"
+		| "delegatesThinkingModelBinding"
+	>
+> {
 	return {
 		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
@@ -631,6 +687,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+					recordInputTransformations(output, event.message);
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: Block = {
@@ -922,6 +979,9 @@ function createClient(
 	if (useServerSideFallbackBeta) {
 		betaFeatures.push(SERVER_SIDE_FALLBACK_BETA);
 	}
+	if (shouldUseThinkingBindingControlsBeta(model)) {
+		betaFeatures.push(THINKING_BINDING_CONTROLS_BETA);
+	}
 
 	// Copilot: Bearer auth, selective betas.
 	if (model.provider === "github-copilot") {
@@ -1108,6 +1168,16 @@ function buildParams(
 					budget_tokens: options.thinkingBudgetTokens || 1024,
 					display,
 				};
+			}
+			// `block_binding` is accepted alongside both `adaptive` and `enabled` thinking. It only
+			// changes what happens to a thinking block replayed behind a changed conversation
+			// prefix; the model check always drops unreadable blocks regardless.
+			if (shouldUseThinkingBindingControlsBeta(model) && params.thinking) {
+				// The Anthropic SDK types lag the `thinking-binding-controls-2026-08-01` beta.
+				params.thinking = {
+					...params.thinking,
+					block_binding: { prefix_mismatch_behavior: "drop_block" },
+				} as unknown as NonNullable<MessageCreateParamsStreaming["thinking"]>;
 			}
 		} else if (options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null) {
 			params.thinking = { type: "disabled" };

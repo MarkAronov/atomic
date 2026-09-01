@@ -4,10 +4,21 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added first-class Claude Fable 5.1 (`claude-fable-5-1`) support to the generated catalogs. It is generated for Anthropic, three Amazon Bedrock inference profiles (`anthropic.claude-fable-5-1`, `global.anthropic.claude-fable-5-1`, and `us.anthropic.claude-fable-5-1`), and opencode zen — every mirror that authoritative provider metadata publishes. Each entry carries the model's 1,000,000-token context window, 128,000-token maximum output, and provider-specific pricing, including the reduced $0.25 per million cache read (a quarter of Claude Fable 5's rate) and the US-only inference premium on the `us.` profile. Adaptive thinking is always on, `off` is denied, and `low`, `medium`, `high`, `xhigh`, and `max` are all selectable, with Anthropic's `high` default preserved.
+- Added the published server-side fallback targets for Claude Fable 5.1. Requests now send `fallbacks` naming Claude Opus 4.8 and Claude Opus 5, so a classifier refusal can be retried server-side and can redeem the prompt-cache fallback credit.
+- Added `compat.enforcesPreservedThinkingBinding` and `compat.delegatesThinkingModelBinding` to the Anthropic Messages compatibility options, so a custom Anthropic-compatible provider can declare that its API adjudicates thinking-block signatures and that its model runs Anthropic's conversation check.
+- Added visibility for thinking blocks the Anthropic API drops. When a response reports `input_transformations`, the assistant message now carries an `anthropic_input_transformations` diagnostic with the dropped-block count, the reasons (`prefix_binding_mismatch` or `model_binding_mismatch`), and the block paths, instead of the drop being silent.
+
 ### Fixed
 
 - `NO_PROXY` now matches a root domain and its subdomains consistently, and understands bracketed IPv6 hosts, bare IPv6 hosts, port-scoped entries, and a bare `*` entry anywhere in the list. Previously an entry such as `example.com` did not exempt `api.example.com`, and `[2001:db8::1]` was parsed as a host/port pair ([#8737](https://github.com/earendil-works/pi/pull/8737)).
 - Added a `supportsMaxOutputTokens` compatibility flag to `OpenAIResponsesCompat` (default `true`). Setting it to `false` omits `max_output_tokens` from openai-responses requests, for Codex-protocol gateways that reject the parameter with a 400 ([#8941](https://github.com/earendil-works/pi/pull/8941)).
+- Fixed Claude Fable 5 and Claude Fable 5.1 sending `temperature`. Anthropic rejects non-default `temperature`, `top_p`, and `top_k` on both models with a 400 on every request, whether or not thinking is on, so both are now generated with `supportsTemperature: false` and the field is omitted.
+- Fixed Claude Fable 5.1 sessions failing with a 400 `invalid_request_error` when a thinking block was replayed behind a changed conversation prefix. Anthropic enforces that check by default for organizations created on or after 2026-08-31, so a dynamic system prompt, a tool-set change, compaction, or a model switch could break an otherwise healthy session. Requests for that model now send the `thinking-binding-controls-2026-08-01` beta header with `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`, so the API drops the affected thinking blocks and answers the turn.
+- Fixed mid-conversation model switches discarding reasoning that the target model was allowed to read. First-party Anthropic models now replay another Claude model's signed `thinking` and `redacted_thinking` blocks unchanged and let the API decide which ones the target model may use, instead of rewriting them into visible assistant text. Switching up to Claude Fable 5.1 keeps the conversation's reasoning; switching down to an earlier Claude model has the API drop it server-side. Assistant text, tool calls, and tool results are preserved in both directions. The change is scoped to `provider: "anthropic"` on the `anthropic-messages` API; Amazon Bedrock, Google Vertex, and Anthropic-compatible proxies are unchanged.
+
 
 ## [0.9.16] - 2026-08-29
 

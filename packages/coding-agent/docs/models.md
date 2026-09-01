@@ -491,6 +491,25 @@ By default, Atomic sends per-tool `eager_input_streaming: true`. If a proxy or A
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `supportsEagerToolInputStreaming` | Whether the provider accepts per-tool `eager_input_streaming`. Default: `true`. Set to `false` to omit that field and use the legacy fine-grained tool streaming beta header on tool-enabled requests. |
 | `supportsLongCacheRetention`      | Whether the provider accepts Anthropic long cache retention (`cache_control.ttl: "1h"`) when cache retention is `long`. Default: `true`.                                                               |
+| `delegatesThinkingModelBinding`   | Whether the API decides for itself which thinking blocks the target model may read, dropping the rest. Default: `false`. See [Preserved thinking and model switches](#preserved-thinking-and-model-switches).                                    |
+| `enforcesPreservedThinkingBinding` | Whether the model rejects a thinking block replayed behind a changed conversation prefix. Default: `false`. When `true`, Atomic sends the `thinking-binding-controls-2026-08-01` beta header and `prefix_mismatch_behavior: "drop_block"`.  |
+
+### Preserved thinking and model switches
+
+Anthropic binds every `thinking` and `redacted_thinking` block to the model that produced it, and on Claude Fable 5.1 also to the conversation prefix — the `system` prompt, the `tools` array, and every earlier message — that it was produced from. See [Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking).
+
+Two separate checks follow from that, and Atomic handles them differently.
+
+**The model check is the API's job.** A block is readable by the model that produced it or a newer one. Claude Fable 5.1 reads every earlier Claude model's blocks; no earlier model reads Fable 5.1's. A block the target model cannot read is always dropped by the API before the prompt reaches the model, unbilled, and the request succeeds. For first-party Anthropic models, Atomic therefore replays signed thinking blocks unchanged when you switch models mid-conversation and lets the API adjudicate:
+
+- **Switching up** to Claude Fable 5.1 from another Claude model keeps the conversation's reasoning, because Fable 5.1 is allowed to read it.
+- **Switching down** from Claude Fable 5.1 to an earlier Claude model drops that reasoning server-side, and the earlier model reasons again from the visible messages.
+
+In both directions the visible assistant text, tool calls, and tool results are preserved exactly, so the conversation stays coherent. Atomic no longer rewrites another Claude model's reasoning into visible assistant text on a switch: that both discarded reasoning the newer model was entitled to read and destabilized the prefix later blocks are bound to.
+
+**The conversation check can fail the request, so Atomic opts out of failing.** On Claude Fable 5.1, replaying a thinking block behind a changed prefix returns a 400. Anthropic enforces this by default for organizations created on or after August 31, 2026, which is why a session could fail on a new account but not an older one. Atomic sends the `thinking-binding-controls-2026-08-01` beta header with `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` for that model, so a changed system prompt, a tool that appeared or disappeared, a compaction, or a model switch drops the affected thinking blocks and the turn still answers. When the API reports drops, Atomic records them on the assistant message's `diagnostics` array as an `anthropic_input_transformations` entry with the count, reasons, and block paths.
+
+**Provider restriction.** Both behaviors are scoped to first-party Anthropic models on the `anthropic-messages` API, which is where Anthropic documents the signature adjudication. Claude on Amazon Bedrock, Google Vertex, and Anthropic-compatible proxies (including opencode zen) keep the previous behavior: their thinking blocks are not replayed across a model switch, and Atomic does not send the block-binding beta on those paths. If you run Claude Fable 5.1 through one of those providers on a new Anthropic-backed account, a prefix change can still surface as a provider error. Custom providers that are known to adjudicate signatures the same way can opt in with the two `compat` fields above.
 
 ## OpenAI Compatibility
 

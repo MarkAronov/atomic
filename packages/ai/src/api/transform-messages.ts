@@ -1,4 +1,5 @@
 import type {
+	AnthropicMessagesCompat,
 	Api,
 	AssistantMessage,
 	ImageContent,
@@ -11,6 +12,27 @@ import type {
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+
+/**
+ * Whether the target model's API adjudicates thinking-block model binding itself.
+ *
+ * Anthropic's preserved-thinking rules make the API, not the client, the authority on which
+ * thinking blocks a model may read: "Pass blocks back unchanged. Send every assistant turn
+ * exactly as you received it, thinking blocks included, and let the API decide which blocks the
+ * model can use", and "A block that fails the model check is always dropped" before the prompt
+ * reaches the model, unbilled.
+ * https://platform.claude.com/docs/en/build-with-claude/thinking#preserved-thinking
+ *
+ * Flattening those blocks into visible text client-side is both lossy (a newer model that is
+ * allowed to read them loses the reasoning) and destabilizing (it rewrites the conversation
+ * prefix that later thinking-block signatures are bound to). Models whose generated metadata
+ * sets this flag replay foreign signed blocks unchanged instead.
+ */
+function delegatesThinkingModelBinding<TApi extends Api>(model: Model<TApi>): boolean {
+	if (model.api !== "anthropic-messages") return false;
+	const compat = model.compat as AnthropicMessagesCompat | undefined;
+	return compat?.delegatesThinkingModelBinding === true;
+}
 
 function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[] {
 	const result: TextContent[] = [];
@@ -96,20 +118,29 @@ export function transformMessages<TApi extends Api>(
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api &&
 				assistantMsg.model === model.id;
+			// A different model on the same provider and API whose API adjudicates model binding
+			// itself. Its signed blocks replay unchanged; the API keeps the ones the target model
+			// may read and silently drops the rest.
+			const canReplayForeignThinking =
+				!isSameModel &&
+				assistantMsg.provider === model.provider &&
+				assistantMsg.api === model.api &&
+				delegatesThinkingModelBinding(model);
+			const preservesThinking = isSameModel || canReplayForeignThinking;
 
 			const transformedContent = assistantMsg.content.flatMap((block) => {
 				if (block.type === "thinking") {
-					// Redacted thinking is opaque encrypted content, only valid for the same model.
-					// Drop it for cross-model to avoid API errors.
+					// Redacted thinking is opaque encrypted content the client cannot rewrite.
+					// Replay it where the API adjudicates it; otherwise drop it to avoid API errors.
 					if (block.redacted) {
-						return isSameModel ? block : [];
+						return preservesThinking ? block : [];
 					}
-					// For same model: keep thinking blocks with signatures (needed for replay)
-					// even if the thinking text is empty (OpenAI encrypted reasoning)
-					if (isSameModel && block.thinkingSignature) return block;
+					// Keep signed thinking blocks for replay even when the thinking text is empty
+					// (OpenAI encrypted reasoning, or Anthropic `display: "omitted"`).
+					if (preservesThinking && block.thinkingSignature) return block;
 					// Skip empty thinking blocks, convert others to plain text
 					if (!block.thinking || block.thinking.trim() === "") return [];
-					if (isSameModel) return block;
+					if (preservesThinking) return block;
 					return {
 						type: "text" as const,
 						text: block.thinking,

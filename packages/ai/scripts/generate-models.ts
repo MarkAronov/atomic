@@ -283,8 +283,12 @@ const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-sonnet-4",
 	"github-copilot:claude-sonnet-4.5",
 ]);
+// Anthropic publishes the permitted server-side `fallbacks` targets per model. Claude Fable 5.1:
+// "The permitted fallback targets for Claude Fable 5.1 are Claude Opus 4.8 and Claude Opus 5."
+// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
 const ANTHROPIC_ALLOWED_FALLBACK_MODELS = {
 	"claude-fable-5": ["claude-opus-4-8", "claude-opus-5"],
+	"claude-fable-5-1": ["claude-opus-4-8", "claude-opus-5"],
 	"claude-opus-5": ["claude-opus-4-8"],
 } satisfies Record<string, string[]>;
 
@@ -589,6 +593,10 @@ function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 	);
 }
 
+// Models that reject non-default `temperature`, `top_p`, or `top_k` with a 400 on every request,
+// whether or not thinking is on. The list is published in "Limits and feature compatibility >
+// Sampling parameters": https://platform.claude.com/docs/en/build-with-claude/thinking
+// The `fable-5` clause covers Claude Fable 5 and Claude Fable 5.1, which the same sentence names.
 function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 	const id = modelId.toLowerCase();
 	return (
@@ -597,7 +605,8 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 		id.includes("opus-4-8") ||
 		id.includes("opus-4.8") ||
 		id.includes("opus-5") ||
-		id.includes("opus.5")
+		id.includes("opus.5") ||
+		id.includes("fable-5")
 	);
 }
 
@@ -795,6 +804,26 @@ function applyAnthropicAllowedFallbackModelMetadata(models: readonly Model<"anth
 		if (allowedFallbackModels.length > 0) {
 			mergeAnthropicMessagesCompat(model, { allowedFallbackModels });
 		}
+	}
+}
+
+// Anthropic's preserved-thinking rules: "A block that fails the model check is always dropped"
+// before the prompt reaches the model, and callers should "Send every assistant turn exactly as
+// you received it, thinking blocks included, and let the API decide which blocks the model can
+// use." That makes the first-party Anthropic Messages API the authority on model binding, so its
+// models replay another Claude model's signed thinking blocks instead of flattening them to text.
+// Scoped to `provider === "anthropic"`: third-party Anthropic-compatible proxies are not
+// documented to adjudicate signatures the same way.
+// https://platform.claude.com/docs/en/build-with-claude/thinking#preserved-thinking
+function applyPreservedThinkingCompatMetadata(model: Model<Api>): void {
+	if (model.provider !== "anthropic" || model.api !== "anthropic-messages") return;
+	mergeAnthropicMessagesCompat(model, { delegatesThinkingModelBinding: true });
+
+	// Only Claude Fable 5.1 runs the *conversation* check. Claude Mythos 5.1 records the same
+	// signature but does not run it, and no earlier model records the condition at all.
+	// https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+	if (model.id.includes("fable-5-1")) {
+		mergeAnthropicMessagesCompat(model, { enforcesPreservedThinkingBinding: true });
 	}
 }
 
@@ -2907,6 +2936,7 @@ async function generateModels() {
 		applyModelsDevReasoningOptionMetadata(model);
 		applyThinkingLevelMetadata(model);
 		applyStrictToolCompatMetadata(model);
+		applyPreservedThinkingCompatMetadata(model);
 		applyOpenAIGrammarToolCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);
 		applyOpenAIExplicitPromptCacheMetadata(model);

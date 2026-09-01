@@ -2,19 +2,23 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Changed selectors in `/thinking`, `/model`, `/scoped-models`, `/trust`, per-model thinking settings, and theme settings to keep active options marked while browsing. `/scoped-models` now uses consistent per-item toggles and strikes through unavailable models ([#8900](https://github.com/earendil-works/pi/pull/8900), [#8950](https://github.com/earendil-works/pi/pull/8950)).
-
 ### Added
 
 - Documented the Zed integrated-terminal `keymap.json` bindings that make Zed emit the Kitty-protocol sequences Atomic reads for `Shift+Enter` and friends ([#8828](https://github.com/earendil-works/pi/pull/8828)).
+- Claude Fable 5.1 (`claude-fable-5-1`) is now selectable in Atomic, on Anthropic, Amazon Bedrock, and opencode zen. It offers a 1M-token context window, 128K maximum output, always-on adaptive thinking at `low`, `medium`, `high`, `xhigh`, or `max`, and a $0.25 per million cache read against Claude Fable 5's $1.00.
+
+### Changed
+
+- Changed selectors in `/thinking`, `/model`, `/scoped-models`, `/trust`, per-model thinking settings, and theme settings to keep active options marked while browsing. `/scoped-models` now uses consistent per-item toggles and strikes through unavailable models ([#8900](https://github.com/earendil-works/pi/pull/8900), [#8950](https://github.com/earendil-works/pi/pull/8950)).
+- The bundled model-selection and Pareto-efficiency reference pages now state that Claude Fable 5.1 is unmeasured in Atomic's August 26, 2026 DeepSWE snapshot, because the model was released after it. They record the model's source-backed limits, effort levels, and pricing, and state explicitly that Claude Fable 5's benchmark row must not be read as a Fable 5.1 result. Builtin agent and workflow model defaults are unchanged.
 
 ### Fixed
 
 - Fixed forking an in-memory (`--no-session`) session while a tool call was still running appending the aborted turn to the replacement session. The active turn is now settled before the fork ([#8937](https://github.com/earendil-works/pi/pull/8937)).
 - The built-in `read`, `write`, `edit`, `search`, `find`, `ls`, `bash`, and `powershell` tools now resolve relative paths against `ctx.cwd` when an extension supplies one, instead of the cwd captured when the tool was created ([#8627](https://github.com/earendil-works/pi/pull/8627)). Atomic's `search` wrapper has no upstream counterpart; without this it returned content from the extension cwd while stamping hashline tags from the tool's original cwd, so a search result could not be edited.
 - Custom provider model configs accept a `supportsMaxOutputTokens` compat flag, so openai-responses gateways that reject `max_output_tokens` can opt out ([#8941](https://github.com/earendil-works/pi/pull/8941)).
+- Fixed Claude Fable 5.1 sessions breaking on a mid-conversation model switch. Anthropic ties each thinking block to the model that produced it and, on Claude Fable 5.1, to the conversation it was produced in, and enforces the second check by default for organizations created on or after August 31, 2026. Atomic now sends the block-binding beta with `prefix_mismatch_behavior: "drop_block"` for that model, so a changed system prompt, a tool-set change, compaction, or a model switch drops the affected reasoning and still answers the turn instead of failing with a 400. Switching between first-party Anthropic models also keeps reasoning the target model is allowed to read — switching up to Claude Fable 5.1 preserves it, switching down has the API drop it — while assistant text, tool calls, and tool results survive the switch intact. Claude on Amazon Bedrock, Google Vertex, and Anthropic-compatible proxies is unchanged; see [Preserved thinking and model switches](https://atomic.bastani.dev/models#preserved-thinking-and-model-switches).
+
 
 ## [0.9.18-alpha.4] - 2026-09-01
 
