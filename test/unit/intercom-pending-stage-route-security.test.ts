@@ -440,6 +440,12 @@ test("invocation roster control is directional across owned subgroups", async ()
 		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
 		["a"],
 	);
+	const memberALateralPeekAfterJoin = await memberA.listDirectory(subgroupB);
+	assert.deepEqual(memberALateralPeekAfterJoin.sessions, []);
+	assert.deepEqual(memberALateralPeekAfterJoin.workflowStages, []);
+	const otherRunLateralPeekAfterJoin = await otherRun.listDirectory(subgroupB);
+	assert.deepEqual(otherRunLateralPeekAfterJoin.sessions, []);
+	assert.deepEqual(otherRunLateralPeekAfterJoin.workflowStages, []);
 	for (const [sender, messageId] of [
 		[memberA, "subgroup-pending-escalation"],
 		[otherRun, "other-root-pending-escalation"],

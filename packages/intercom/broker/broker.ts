@@ -243,15 +243,15 @@ class IntercomBroker {
     return undefined;
   };
 
-  private canInspectSelectedGroup(requester: SessionInfo, selectedGroup: string): boolean {
-	const selected = normalizeGroup(selectedGroup);
-	const groups = sessionGroups(requester);
-	for (const roster of this.workflowRosters.values()) {
-		if (!roster.stages.some((stage) => stage.group === selected && invocationOwnsGroup(roster.group, selected))) continue;
-		return groups.has(selected) || groups.has(roster.group);
+	private canInspectSelectedGroup(requester: ConnectedSession, selectedGroup: string): boolean {
+		const selected = normalizeGroup(selectedGroup);
+		const groups = sessionGroups(requester.info);
+		for (const roster of this.workflowRosters.values()) {
+			if (!roster.stages.some((stage) => stage.group === selected && invocationOwnsGroup(roster.group, selected))) continue;
+			return groups.has(selected) || this.canControlWorkflowInvocation(requester, roster.group);
+		}
+		return true;
 	}
-	return true;
-  }
 
 	/**
 	 * Invocation control may come from the invocation owner or from an ordinary
@@ -769,7 +769,7 @@ class IntercomBroker {
 		if (requester === undefined) throw new Error("Session not found");
 		const sessions =
 			typeof clientMessage.group === "string"
-				? this.canInspectSelectedGroup(requester.info, clientMessage.group)
+				? this.canInspectSelectedGroup(requester, clientMessage.group)
 					? sessionsInGroup(this.sessions, clientMessage.group)
 					: []
 				: sessionsVisibleTo(this.sessions, requester.info);
