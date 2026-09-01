@@ -414,8 +414,17 @@ export interface DocumentContent {
 	type: "document";
 	/** Base64-encoded document bytes. Amazon Bedrock takes raw bytes and decodes this itself. */
 	data: string;
-	/** Currently always `application/pdf`; the field exists so other formats can be added later. */
-	mimeType: string;
+	/**
+	 * The only media type either serializer implements. It is a literal rather than `string`
+	 * because both paths hardcode PDF — the Anthropic block emits `BetaBase64PDFSource`, whose
+	 * `media_type` is itself a fixed literal, and Bedrock emits `DocumentFormat.PDF` — so a wider
+	 * type would let a caller label arbitrary bytes as a PDF. Widening this union later is
+	 * non-breaking; narrowing it after release would not be. Note that adding a format is not a
+	 * media-type swap on the Anthropic side: plain text needs a structurally different source
+	 * variant (`BetaPlainTextSource`, `type: "text"`), and Bedrock's `doc`/`docx`/`xls`/`xlsx`/
+	 * `csv`/`html`/`md` formats have no Anthropic source variant at all.
+	 */
+	mimeType: "application/pdf";
 	/**
 	 * Optional caller-supplied label. Amazon Bedrock requires a name and warns that it "is
 	 * vulnerable to prompt injections", so the Bedrock path sanitizes this to the characters AWS

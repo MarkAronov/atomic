@@ -47,6 +47,17 @@ function documentContext(name?: string): Context {
 	};
 }
 
+/**
+ * A block a JavaScript caller could construct but a TypeScript one cannot: `DocumentContent`
+ * declares `mimeType` as the single literal both serializers implement.
+ */
+function mislabelledDocumentContext(mimeType: string): Context {
+	const block = { type: "document", data: PDF_BASE64, mimeType } as unknown as DocumentContent;
+	return {
+		messages: [{ role: "user", content: [{ type: "text", text: "Summarize this." }, block], timestamp: Date.now() }],
+	};
+}
+
 interface AnthropicBlock {
 	type: string;
 	source?: { type?: string; media_type?: string; data?: string };
@@ -196,6 +207,64 @@ describe("documents degrade visibly on models that cannot receive them", () => {
 		// The base64 payload must not leak through to a provider that cannot use it.
 		expect(serialized).not.toContain(PDF_BASE64);
 		expect(serialized).toContain("Summarize this.");
+	});
+});
+
+/**
+ * `DocumentContent.mimeType` is the literal `"application/pdf"`, because that is the only media
+ * type either serializer implements: the Anthropic block emits `BetaBase64PDFSource`, whose
+ * `media_type` is itself a fixed literal, and Bedrock emits `DocumentFormat.PDF`. Neither reads
+ * the field, so without a runtime check a JavaScript caller could get arbitrary bytes labelled as
+ * a PDF on the wire.
+ */
+describe("a document media type neither serializer implements is rejected", () => {
+	it("rejects it on the Anthropic Messages path, naming the value", async () => {
+		const s = streamAnthropic(
+			{ ...getModel("anthropic", "claude-fable-5-1"), baseUrl: "http://127.0.0.1:9" },
+			mislabelledDocumentContext("text/plain"),
+			{ apiKey: "fake-key" },
+		);
+
+		const message = (await s.result()).errorMessage ?? "";
+
+		expect(message).toContain("Unsupported document mimeType");
+		expect(message).toContain("text/plain");
+		expect(message).toContain("application/pdf");
+	});
+
+	it("rejects it on the Bedrock Converse path, naming the value", async () => {
+		const s = streamBedrock(
+			getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"),
+			mislabelledDocumentContext("text/plain"),
+			{},
+		);
+		for await (const event of s) {
+			if (event.type === "error") break;
+		}
+
+		const message = (await s.result()).errorMessage ?? "";
+
+		expect(message).toContain("Unsupported document mimeType");
+		expect(message).toContain("text/plain");
+	});
+
+	// The hazard this check must not create. `transformMessages` replaces documents bound for a
+	// model without `pdf` before serialization, so that path still degrades rather than throwing.
+	it("still degrades to a placeholder on a model that cannot receive documents at all", async () => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+
+		let captured: { messages?: Array<{ content: unknown }> } | undefined;
+		const s = streamSimple({ ...model, baseUrl: "http://127.0.0.1:9/v1" }, mislabelledDocumentContext("text/plain"), {
+			apiKey: "fake-key",
+			onPayload: (payload) => {
+				captured = payload as typeof captured;
+				throw new PayloadCaptured();
+			},
+		});
+		const message = (await s.result()).errorMessage ?? "";
+
+		expect(message).not.toContain("Unsupported document mimeType");
+		expect(JSON.stringify(captured)).toContain("document omitted");
 	});
 });
 

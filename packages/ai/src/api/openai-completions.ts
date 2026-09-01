@@ -902,17 +902,27 @@ function buildParams(
 		// explicit instruction. Mirrors the guards in `anthropic-messages.ts` and
 		// `bedrock-converse-stream.ts`. https://platform.claude.com/docs/en/build-with-claude/thinking
 		//
-		// `"required"` and `{type: "function", ...}` are the shapes that map to Anthropic's `any`
-		// and `{type: "tool"}`. Other members of OpenAI's union (`allowed_tools`, `custom`) are
-		// left alone: no Claude mirror accepts them, so they cannot reach a restricted model here.
+		// OpenAI's `ChatCompletionToolChoiceOption` is strictly wider than Anthropic's four-member
+		// union, so all four of its forcing shapes must be tested here: `"required"`, a named
+		// `function`, a named `custom` tool, and `allowed_tools` — but the last one *only* with
+		// `mode: "required"`. The SDK documents `mode: "auto"` as allowing the model "to pick from
+		// among the allowed tools and generate a message", which constrains the candidate set
+		// rather than forcing a call, so that shape must pass through untouched. Re-audit this
+		// predicate whenever the `openai` package widens that union.
 		if (compat.supportsForcedToolChoice === false) {
 			const choice = options.toolChoice;
-			const forcedLabel =
-				choice === "required"
-					? "required"
-					: typeof choice === "object" && choice.type === "function"
-						? `tool "${choice.function.name}"`
-						: undefined;
+			let forcedLabel: string | undefined;
+			if (choice === "required") {
+				forcedLabel = "required";
+			} else if (typeof choice === "object") {
+				if (choice.type === "function") {
+					forcedLabel = `tool "${choice.function.name}"`;
+				} else if (choice.type === "custom") {
+					forcedLabel = `custom tool "${choice.custom.name}"`;
+				} else if (choice.type === "allowed_tools" && choice.allowed_tools?.mode === "required") {
+					forcedLabel = `allowed_tools (mode "required")`;
+				}
+			}
 			if (forcedLabel !== undefined) {
 				throw new Error(
 					`Model ${model.id} does not support forced tool choice (requested: ${forcedLabel}). ` +

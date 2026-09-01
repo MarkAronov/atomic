@@ -51,6 +51,7 @@ import type {
 	ToolResultMessage,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
+import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
@@ -1308,8 +1309,14 @@ function buildAdditionalModelRequestFields(
  * - Without citations enabled, Converse degrades to plain text extraction rather than full visual
  *   PDF understanding. That limitation is documented rather than worked around here.
  *   https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ *
+ * `DocumentFormat` also has eight non-PDF members, but `format` is hardcoded to PDF because that
+ * is the only media type `DocumentContent` declares — and the seven office/markup formats have no
+ * Anthropic source variant to map onto. The block's own media type is therefore verified rather
+ * than read.
  */
 function createDocumentBlock(block: DocumentContent, index: number) {
+	assertSupportedDocumentMimeType(block);
 	const sanitized = (block.name ?? "")
 		.replace(/[^a-zA-Z0-9\s\-()[\]]/g, " ")
 		.replace(/\s+/g, " ")
@@ -1320,6 +1327,7 @@ function createDocumentBlock(block: DocumentContent, index: number) {
 		source: { bytes: base64ToBytes(block.data) },
 	};
 }
+
 function createImageBlock(mimeType: string, data: string) {
 	let format: ImageFormat;
 	switch (mimeType) {

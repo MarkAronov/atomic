@@ -312,14 +312,34 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 		expect(getModel("openrouter", "anthropic/claude-fable-5.1").compat?.supportsForcedToolChoice).toBe(false);
 	});
 
-	it.each(["required", "function"] as const)("rejects a %s tool choice", async (kind) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
-		const toolChoice =
-			kind === "required" ? "required" : ({ type: "function", function: { name: "double_number" } } as const);
+	/**
+	 * OpenAI's `ChatCompletionToolChoiceOption` is strictly wider than Anthropic's four-member
+	 * union, and four of its members force a tool call. `allowed_tools` is the one that depends on
+	 * a nested field: the SDK documents `mode: "auto"` as allowing the model "to pick from among
+	 * the allowed tools and generate a message", which constrains the candidate set rather than
+	 * forcing a call.
+	 */
+	const forcingShapes = [
+		["required", "required", "required"],
+		["function", { type: "function", function: { name: "double_number" } }, 'tool "double_number"'],
+		["custom", { type: "custom", custom: { name: "run_shell" } }, 'custom tool "run_shell"'],
+		[
+			"allowed_tools mode required",
+			{
+				type: "allowed_tools",
+				allowed_tools: { mode: "required", tools: [{ type: "function", function: { name: "double_number" } }] },
+			},
+			'allowed_tools (mode "required")',
+		],
+	] as const;
 
-		const message = await completionsErrorMessage(model, toolChoice);
+	it.each(forcingShapes)("rejects a %s tool choice and names it", async (_label, toolChoice, expectedLabel) => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+
+		const message = await completionsErrorMessage(model, toolChoice as OpenAICompletionsOptions["toolChoice"]);
 
 		expect(message).toMatch(FORCED_TOOL_CHOICE_ERROR);
+		expect(message).toContain(expectedLabel);
 		expect(message).toContain("auto");
 	});
 
@@ -331,17 +351,31 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 		expect(payload.tool_choice).toBe(toolChoice);
 	});
 
+	// The case that pins the `mode` distinction and would catch an over-broad fix: narrowing the
+	// candidate set is not forcing, so this shape must still reach the wire untouched.
+	it("passes allowed_tools with mode auto through unchanged", async () => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		const toolChoice: OpenAICompletionsOptions["toolChoice"] = {
+			type: "allowed_tools",
+			allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "double_number" } }] },
+		};
+
+		const payload = await captureCompletionsPayload(model, toolChoice);
+
+		expect(payload.tool_choice).toEqual(toolChoice);
+	});
+
 	// The scoping asymmetry that makes this rule different from the temperature one. Anthropic
 	// names Fable 5.1 and Mythos 5.1 as *exceptions* to forced tool use working, and OpenRouter's
 	// own `supported_parameters` agrees: `claude-fable-5` lists `tool_choice`, `claude-fable-5.1`
 	// does not. A Fable-family match — correct for temperature — would be wrong here.
-	it("leaves Claude Fable 5 able to force a tool", async () => {
+	it.each(forcingShapes)("leaves Claude Fable 5 able to force a tool (%s)", async (_label, toolChoice) => {
 		const model = getModel("openrouter", "anthropic/claude-fable-5");
 		expect(model.compat?.supportsForcedToolChoice).toBeUndefined();
 
-		const payload = await captureCompletionsPayload(model, "required");
+		const payload = await captureCompletionsPayload(model, toolChoice as OpenAICompletionsOptions["toolChoice"]);
 
-		expect(payload.tool_choice).toBe("required");
+		expect(payload.tool_choice).toEqual(toolChoice);
 	});
 
 	// The `latest` alias names no version, so no id rule can keep a claim about its target true.

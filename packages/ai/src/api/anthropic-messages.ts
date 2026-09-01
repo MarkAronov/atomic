@@ -14,7 +14,6 @@ import type {
 	AssistantMessage,
 	CacheRetention,
 	Context,
-	DocumentContent,
 	ImageContent,
 	Message,
 	Model,
@@ -33,6 +32,7 @@ import type {
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
+import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -121,9 +121,12 @@ const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 };
 
 /**
- * Convert content blocks to Anthropic API format
+ * Convert tool-result content blocks to Anthropic API format.
+ *
+ * Tool results carry text and images only. `DocumentContent` appears exclusively in user
+ * messages, which `convertMessages` serializes on its own path.
  */
-function convertContentBlocks(content: (TextContent | ImageContent | DocumentContent)[]):
+function convertContentBlocks(content: (TextContent | ImageContent)[]):
 	| string
 	| Array<
 			| { type: "text"; text: string }
@@ -135,39 +138,19 @@ function convertContentBlocks(content: (TextContent | ImageContent | DocumentCon
 						data: string;
 					};
 			  }
-			| {
-					type: "document";
-					source: { type: "base64"; media_type: "application/pdf"; data: string };
-					title?: string;
-			  }
 	  > {
 	// If only text blocks, return as concatenated string for simplicity
 	const hasImages = content.some((c) => c.type === "image");
-	const hasDocuments = content.some((c) => c.type === "document");
-	if (!hasImages && !hasDocuments) {
+	if (!hasImages) {
 		return sanitizeSurrogates(content.map((c) => (c as TextContent).text).join("\n"));
 	}
 
-	// If we have images or documents, convert to content block array
+	// If we have images, convert to content block array
 	const blocks = content.map((block) => {
 		if (block.type === "text") {
 			return {
 				type: "text" as const,
 				text: sanitizeSurrogates(block.text),
-			};
-		}
-		if (block.type === "document") {
-			// `BetaBase64PDFSource`: base64 data with a fixed `application/pdf` media type. PDFs
-			// ride Claude's vision path, so this needs no beta header.
-			// https://platform.claude.com/docs/en/build-with-claude/pdf-support
-			return {
-				type: "document" as const,
-				source: {
-					type: "base64" as const,
-					media_type: "application/pdf" as const,
-					data: block.data,
-				},
-				...(block.name ? { title: block.name } : {}),
 			};
 		}
 		return {
@@ -1465,7 +1448,10 @@ function convertMessages(
 					}
 					if (item.type === "document") {
 						// `BetaBase64PDFSource`. PDFs ride Claude's vision path, so no beta header.
+						// The media type is a fixed literal in that SDK type, so it is hardcoded here
+						// and the block's own field is verified rather than read.
 						// https://platform.claude.com/docs/en/build-with-claude/pdf-support
+						assertSupportedDocumentMimeType(item);
 						return {
 							type: "document",
 							source: {
