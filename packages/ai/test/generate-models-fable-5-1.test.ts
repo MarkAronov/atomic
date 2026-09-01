@@ -192,12 +192,11 @@ test("generates Claude Fable 5.1 with exact limits, pricing, thinking map, and c
 	assert.equal(model.maxTokens, 128_000);
 	assert.deepEqual(model.cost, { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 });
 
-	// The fixture feeds `["text", "image", "pdf"]`, matching what models.dev publishes, and the
-	// generator emits `["text", "image"]`. That agrees with Anthropic's own capability row for
-	// this model ("Input → output: Text and images → text"); PDF is documented as a platform
-	// feature routed through vision, carried identically by all 14 Anthropic entries, and Atomic
-	// has no document content block. See `docs/models.md` for the user-facing statement.
-	assert.deepEqual(model.input, ["text", "image"]);
+	// The fixture feeds `["text", "image", "pdf"]`, matching what upstream publishes, and the
+	// Anthropic Messages path keeps `pdf` because it can serialize a document block. The
+	// OpenRouter and Vercel assertions further down keep `["text", "image"]`, so this one test
+	// encodes the per-API gating rule from both sides.
+	assert.deepEqual(model.input, ["text", "image", "pdf"]);
 
 	// Adaptive thinking is always on, so `off` is denied. `minimal` is denied too: Anthropic
 	// publishes exactly five efforts for this model and `minimal` is not among them, and

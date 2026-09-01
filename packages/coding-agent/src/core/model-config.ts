@@ -165,7 +165,7 @@ const ModelDefinitionSchema = Type.Object({
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
-	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
+	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image"), Type.Literal("pdf")]))),
 	cost: Type.Optional(ModelCostSchema),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
@@ -178,7 +178,7 @@ const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
-	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
+	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image"), Type.Literal("pdf")]))),
 	cost: Type.Optional(
 		Type.Object({
 			input: Type.Optional(Type.Number()),

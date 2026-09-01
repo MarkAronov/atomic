@@ -1117,6 +1117,23 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 	return Object.keys(compat).length > 0 ? compat : undefined;
 }
 
+/**
+ * Input modalities for the two runtimes that can serialize a document block: the Anthropic
+ * Messages path and the Amazon Bedrock Converse path.
+ *
+ * PDF is a platform capability rather than a per-model one — "All active models support PDF
+ * processing" — so upstream metadata publishes it for every Claude entry. Gating on the *API*
+ * rather than the model is what keeps that honest: a provider that advertises PDF but has no
+ * document serializer here keeps `["text", "image"]`, so `Model.input` continues to describe what
+ * Atomic can actually send rather than what the upstream model would accept.
+ * https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ */
+function resolveDocumentCapableInput(m: ModelsDevModel): ("text" | "image" | "pdf")[] {
+	const modalities = m.modalities?.input;
+	if (!modalities?.includes("image")) return ["text"];
+	return modalities.includes("pdf") ? ["text", "image", "pdf"] : ["text", "image"];
+}
+
 function getBedrockBaseUrl(modelId: string): string {
 	return modelId.startsWith("eu.")
 		? "https://bedrock-runtime.eu-central-1.amazonaws.com"
@@ -1569,7 +1586,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "amazon-bedrock" as const,
 					baseUrl: getBedrockBaseUrl(id),
 					reasoning: m.reasoning === true,
-					input: (m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"]) as ("text" | "image")[],
+					input: resolveDocumentCapableInput(m) as ("text" | "image" | "pdf")[],
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,
@@ -1597,7 +1614,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "anthropic",
 					baseUrl: "https://api.anthropic.com",
 					reasoning: m.reasoning === true,
-					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					input: resolveDocumentCapableInput(m),
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,

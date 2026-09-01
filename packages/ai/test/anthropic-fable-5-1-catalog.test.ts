@@ -57,21 +57,12 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		expect(model.contextWindow).toBe(1_000_000);
 		expect(model.maxTokens).toBe(128_000);
 		expect(model.reasoning).toBe(true);
-		// `["text", "image"]` is not a narrowing away from a documented Fable 5.1 capability — it
-		// matches Anthropic's own capability row for this model, which reads
-		// `Input → output: Text and images → text`, on a page that never mentions PDF:
-		// https://platform.claude.com/docs/en/models/fable-5-1/overview
-		//
-		// models.dev carries a `pdf` input modality here, but it does so for all 14 Anthropic
-		// models identically, because Anthropic documents PDF as a platform feature — "All active
-		// models support PDF processing" — routed through the same vision path as images:
+		// PDF is a platform capability — "All active models support PDF processing" — routed
+		// through the same vision path as images, so upstream metadata publishes it for every
+		// Claude entry. Atomic advertises it only where a runtime can serialize a document block,
+		// which for this model means the Anthropic Messages and Bedrock Converse paths.
 		// https://platform.claude.com/docs/en/build-with-claude/pdf-support
-		//
-		// Atomic has no `DocumentContent` block and no code path that produces one, so widening
-		// this field would advertise a capability nothing can reach. Because the flag is uniform
-		// across the family, no per-model rule could express it either. `docs/models.md` states
-		// the gap for users.
-		expect(model.input).toEqual(["text", "image"]);
+		expect(model.input).toEqual(["text", "image", "pdf"]);
 		expect(model.cost).toEqual({ input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 });
 		expect(model.compat?.forceAdaptiveThinking).toBe(true);
 		expect(model.compat?.supportsStrictTools).toBe(true);

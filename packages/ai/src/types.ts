@@ -400,6 +400,30 @@ export interface ImageContent {
 	mimeType: string; // e.g., "image/jpeg", "image/png"
 }
 
+/**
+ * A document sent as model input, currently PDF only.
+ *
+ * Anthropic documents PDF as a platform capability — "All active models support PDF processing" —
+ * routed through the same vision path as images, so it is not a per-model modality. A model
+ * advertises it through `Model.input` containing `"pdf"`, which generated metadata sets only for
+ * the runtimes that can actually serialize a document block. Providers that cannot are sent a
+ * visible placeholder instead, exactly as they are for images they cannot accept.
+ * https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ */
+export interface DocumentContent {
+	type: "document";
+	/** Base64-encoded document bytes. Amazon Bedrock takes raw bytes and decodes this itself. */
+	data: string;
+	/** Currently always `application/pdf`; the field exists so other formats can be added later. */
+	mimeType: string;
+	/**
+	 * Optional caller-supplied label. Amazon Bedrock requires a name and warns that it "is
+	 * vulnerable to prompt injections", so the Bedrock path sanitizes this to the characters AWS
+	 * permits and falls back to a neutral generated name.
+	 */
+	name?: string;
+}
+
 export interface ToolCall {
 	type: "toolCall";
 	id: string;
@@ -451,7 +475,7 @@ export interface DeferredHandle {
 
 export interface UserMessage {
 	role: "user";
-	content: string | (TextContent | ImageContent)[];
+	content: string | (TextContent | ImageContent | DocumentContent)[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -929,7 +953,12 @@ export interface Model<TApi extends Api> {
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
-	input: ("text" | "image")[];
+	/**
+	 * Modalities Atomic can send to this model. `"pdf"` is set only where a runtime can serialize
+	 * a document block — the Anthropic Messages and Amazon Bedrock Converse paths — so a provider
+	 * that publishes PDF support but has no such path here stays at `["text", "image"]`.
+	 */
+	input: ("text" | "image" | "pdf")[];
 	cost: ModelCost;
 	contextWindow: number;
 	maxTokens: number;

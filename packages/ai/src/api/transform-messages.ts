@@ -12,6 +12,7 @@ import type {
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+const NON_DOCUMENT_USER_PLACEHOLDER = "(document omitted: model does not support document input)";
 
 /**
  * Whether the target model's API adjudicates thinking-block model binding itself.
@@ -34,8 +35,13 @@ function delegatesThinkingModelBinding<TApi extends Api>(model: Model<TApi>): bo
 	return compat?.delegatesThinkingModelBinding === true;
 }
 
-function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[] {
-	const result: TextContent[] = [];
+// Preserves the caller's block union minus images, so a user message keeps its document blocks
+// while a tool result — which cannot carry one — keeps its narrower type.
+function replaceImagesWithPlaceholder<TBlock extends { type: string }>(
+	content: TBlock[],
+	placeholder: string,
+): (Exclude<TBlock, ImageContent> | TextContent)[] {
+	const result: (Exclude<TBlock, ImageContent> | TextContent)[] = [];
 	let previousWasPlaceholder = false;
 
 	for (const block of content) {
@@ -47,8 +53,9 @@ function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], p
 			continue;
 		}
 
-		result.push(block);
-		previousWasPlaceholder = block.text === placeholder;
+		const kept = block as Exclude<TBlock, ImageContent>;
+		result.push(kept);
+		previousWasPlaceholder = kept.type === "text" && (kept as unknown as TextContent).text === placeholder;
 	}
 
 	return result;
@@ -59,7 +66,7 @@ function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model
 		return messages;
 	}
 
-	return messages.map((msg) => {
+	return messages.map((msg): Message => {
 		if (msg.role === "user" && Array.isArray(msg.content)) {
 			return {
 				...msg,
@@ -75,6 +82,38 @@ function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model
 		}
 
 		return msg;
+	});
+}
+
+/**
+ * Replace document blocks with a visible placeholder for models that cannot receive one.
+ *
+ * Mirrors the image downgrade: only the Anthropic Messages and Amazon Bedrock Converse paths can
+ * serialize a document, so every other provider — and any Claude mirror whose generated `input`
+ * omits `"pdf"` — gets a marker rather than a silently missing attachment or a rejected request.
+ * Documents only ever appear in user messages; tool results stay text/image-only.
+ */
+function downgradeUnsupportedDocuments<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
+	if (model.input.includes("pdf")) {
+		return messages;
+	}
+
+	return messages.map((msg) => {
+		if (msg.role !== "user" || !Array.isArray(msg.content)) return msg;
+		if (!msg.content.some((block) => block.type === "document")) return msg;
+
+		const content: (TextContent | ImageContent)[] = [];
+		let previousWasPlaceholder = false;
+		for (const block of msg.content) {
+			if (block.type === "document") {
+				if (!previousWasPlaceholder) content.push({ type: "text", text: NON_DOCUMENT_USER_PLACEHOLDER });
+				previousWasPlaceholder = true;
+				continue;
+			}
+			content.push(block);
+			previousWasPlaceholder = block.type === "text" && block.text === NON_DOCUMENT_USER_PLACEHOLDER;
+		}
+		return { ...msg, content };
 	});
 }
 
@@ -97,7 +136,10 @@ export function transformMessages<TApi extends Api>(
 	// Normalize null/undefined content from untyped callers (custom tools, hand-built
 	// histories, old session files) so downstream code can rely on the type contract.
 	const normalizedMessages = messages.map((msg) => (msg.content == null ? { ...msg, content: [] } : msg));
-	const imageAwareMessages = downgradeUnsupportedImages(normalizedMessages, model);
+	const imageAwareMessages = downgradeUnsupportedDocuments(
+		downgradeUnsupportedImages(normalizedMessages, model),
+		model,
+	);
 
 	// First pass: transform messages (unsupported image downgrade, thinking blocks, tool call ID normalization)
 	const transformed = imageAwareMessages.map((msg) => {

@@ -14,6 +14,7 @@ import {
 	ConversationRole,
 	ConverseStreamCommand,
 	type ConverseStreamMetadataEvent,
+	DocumentFormat,
 	ImageFormat,
 	type Message,
 	type SystemContentBlock,
@@ -32,6 +33,7 @@ import type {
 	AssistantMessage,
 	CacheRetention,
 	Context,
+	DocumentContent,
 	ImageContent,
 	Model,
 	ProviderEnv,
@@ -958,6 +960,9 @@ function convertMessages(
 							case "image":
 								content.push({ image: createImageBlock(c.mimeType, c.data) });
 								break;
+							case "document":
+								content.push({ document: createDocumentBlock(c, content.length) });
+								break;
 							default:
 								continue;
 						}
@@ -1290,6 +1295,31 @@ function buildAdditionalModelRequestFields(
 	return undefined;
 }
 
+/**
+ * Build a Bedrock `DocumentBlock`. Three things differ from the Anthropic path:
+ *
+ * - `name` is **required**, and AWS restricts it to alphanumerics, single whitespace runs,
+ *   hyphens, parentheses, and square brackets — then warns the field "is vulnerable to prompt
+ *   injections… we recommend that you specify a neutral name." Any caller-supplied name is
+ *   sanitized to that character set, and anything left empty falls back to a generated label.
+ * - `source` takes **raw bytes**, not base64: "If you use an Amazon Web Services SDK, you don't
+ *   need to encode the bytes in base64." So the base64 payload is decoded here, the opposite of
+ *   what the Anthropic converter does.
+ * - Without citations enabled, Converse degrades to plain text extraction rather than full visual
+ *   PDF understanding. That limitation is documented rather than worked around here.
+ *   https://platform.claude.com/docs/en/build-with-claude/pdf-support
+ */
+function createDocumentBlock(block: DocumentContent, index: number) {
+	const sanitized = (block.name ?? "")
+		.replace(/[^a-zA-Z0-9\s\-()[\]]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return {
+		format: DocumentFormat.PDF,
+		name: sanitized.length > 0 ? sanitized : `document ${index + 1}`,
+		source: { bytes: base64ToBytes(block.data) },
+	};
+}
 function createImageBlock(mimeType: string, data: string) {
 	let format: ImageFormat;
 	switch (mimeType) {

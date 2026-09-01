@@ -86,6 +86,8 @@ interface UsageIteration {
 	model: string;
 	input_tokens?: number;
 	output_tokens?: number;
+	cache_creation_input_tokens?: number;
+	cache_creation?: { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number };
 }
 
 /** The same stream, with a `usage.iterations` record on the final `message_delta`. */
@@ -290,6 +292,73 @@ describe("mid-output server-side fallback", () => {
 		}).result();
 
 		expect(result.usage.cost.total).toBeCloseTo(baseline.usage.cost.total, 10);
+	});
+
+	// A one-hour cache write bills at 2x base input, not at the five-minute write rate. The
+	// serving attempt already read `cache_creation` from `message_start`; the earlier attempts
+	// read it from their own `usage.iterations` entry, and without it an hour-long write on a
+	// declining attempt was charged as if it were a five-minute one.
+	it.each([
+		["one-hour", { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 }, "long"],
+		["five-minute", { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 1_000_000 }, "short"],
+	] as const)("prices an earlier attempt's %s cache write at its own rate", async (_label, split, kind) => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const baseline = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
+		}).result();
+
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(
+				createSseResponse(
+					eventsWithIterations([
+						{
+							type: "message",
+							model: "claude-fable-5-1",
+							output_tokens: 1,
+							cache_creation_input_tokens: 1_000_000,
+							cache_creation: split,
+						},
+					]),
+				),
+			),
+		}).result();
+
+		const added = result.usage.cost.cacheWrite - baseline.usage.cost.cacheWrite;
+		// 1M tokens: 2 x $10 input = $20.00 for the hour rate, $12.50 for the five-minute rate.
+		const expected = kind === "long" ? model.cost.input * 2 : model.cost.cacheWrite;
+		expect(added).toBeCloseTo(expected, 10);
+	});
+
+	// A mixed split must charge each portion at its own rate rather than all of it at either one.
+	it("prices a mixed cache-write split proportionally", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const baseline = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
+		}).result();
+
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(
+				createSseResponse(
+					eventsWithIterations([
+						{
+							type: "message",
+							model: "claude-fable-5-1",
+							output_tokens: 1,
+							cache_creation_input_tokens: 1_000_000,
+							cache_creation: { ephemeral_1h_input_tokens: 400_000, ephemeral_5m_input_tokens: 600_000 },
+						},
+					]),
+				),
+			),
+		}).result();
+
+		const added = result.usage.cost.cacheWrite - baseline.usage.cost.cacheWrite;
+		// 400k at 2 x $10 + 600k at $12.50 = $8.00 + $7.50 = $15.50.
+		const expected = (model.cost.input * 2 * 400_000 + model.cost.cacheWrite * 600_000) / 1_000_000;
+		expect(added).toBeCloseTo(expected, 10);
+		// Neither single-rate answer, which is what pins the aggregate-minus-1h arithmetic.
+		expect(added).not.toBeCloseTo(model.cost.input * 2, 10);
+		expect(added).not.toBeCloseTo(model.cost.cacheWrite, 10);
 	});
 });
 

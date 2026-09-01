@@ -14,6 +14,7 @@ import type {
 	AssistantMessage,
 	CacheRetention,
 	Context,
+	DocumentContent,
 	ImageContent,
 	Message,
 	Model,
@@ -122,7 +123,7 @@ const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 /**
  * Convert content blocks to Anthropic API format
  */
-function convertContentBlocks(content: (TextContent | ImageContent)[]):
+function convertContentBlocks(content: (TextContent | ImageContent | DocumentContent)[]):
 	| string
 	| Array<
 			| { type: "text"; text: string }
@@ -134,19 +135,39 @@ function convertContentBlocks(content: (TextContent | ImageContent)[]):
 						data: string;
 					};
 			  }
+			| {
+					type: "document";
+					source: { type: "base64"; media_type: "application/pdf"; data: string };
+					title?: string;
+			  }
 	  > {
 	// If only text blocks, return as concatenated string for simplicity
 	const hasImages = content.some((c) => c.type === "image");
-	if (!hasImages) {
+	const hasDocuments = content.some((c) => c.type === "document");
+	if (!hasImages && !hasDocuments) {
 		return sanitizeSurrogates(content.map((c) => (c as TextContent).text).join("\n"));
 	}
 
-	// If we have images, convert to content block array
+	// If we have images or documents, convert to content block array
 	const blocks = content.map((block) => {
 		if (block.type === "text") {
 			return {
 				type: "text" as const,
 				text: sanitizeSurrogates(block.text),
+			};
+		}
+		if (block.type === "document") {
+			// `BetaBase64PDFSource`: base64 data with a fixed `application/pdf` media type. PDFs
+			// ride Claude's vision path, so this needs no beta header.
+			// https://platform.claude.com/docs/en/build-with-claude/pdf-support
+			return {
+				type: "document" as const,
+				source: {
+					type: "base64" as const,
+					media_type: "application/pdf" as const,
+					data: block.data,
+				},
+				...(block.name ? { title: block.name } : {}),
 			};
 		}
 		return {
@@ -247,7 +268,10 @@ interface AnthropicUsageIteration {
 	input_tokens?: number;
 	output_tokens?: number;
 	cache_read_input_tokens?: number;
+	/** The aggregate cache-write count. `cache_creation` splits the same tokens by TTL. */
 	cache_creation_input_tokens?: number;
+	/** "Breakdown of cached tokens by TTL", per `BetaMessageIterationUsage`. */
+	cache_creation?: { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number } | null;
 }
 
 /**
@@ -297,7 +321,12 @@ function addEarlierAttemptCosts(
 			input: iteration.input_tokens ?? 0,
 			output: iteration.output_tokens,
 			cacheRead: iteration.cache_read_input_tokens ?? 0,
+			// `cacheWrite` stays the aggregate: `calculateCost` derives the 5-minute share by
+			// subtracting `cacheWrite1h` from it, so setting this to the 5-minute count instead
+			// would under-charge and adding the two together would double-charge. Without the 1h
+			// split, an hour-long write bills at the 5-minute rate rather than 2x base input.
 			cacheWrite: iteration.cache_creation_input_tokens ?? 0,
+			cacheWrite1h: iteration.cache_creation?.ephemeral_1h_input_tokens ?? 0,
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		};
@@ -1433,16 +1462,28 @@ function convertMessages(
 							type: "text",
 							text: sanitizeSurrogates(item.text),
 						};
-					} else {
+					}
+					if (item.type === "document") {
+						// `BetaBase64PDFSource`. PDFs ride Claude's vision path, so no beta header.
+						// https://platform.claude.com/docs/en/build-with-claude/pdf-support
 						return {
-							type: "image",
+							type: "document",
 							source: {
 								type: "base64",
-								media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+								media_type: "application/pdf",
 								data: item.data,
 							},
+							...(item.name ? { title: item.name } : {}),
 						};
 					}
+					return {
+						type: "image",
+						source: {
+							type: "base64",
+							media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+							data: item.data,
+						},
+					};
 				});
 				const filteredBlocks = blocks.filter((b) => {
 					if (b.type === "text") {
