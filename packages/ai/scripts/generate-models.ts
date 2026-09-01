@@ -17,6 +17,7 @@ import {
 import type {
 	AnthropicMessagesCompat,
 	Api,
+	BedrockCompat,
 	KnownProvider,
 	Model,
 	ModelCost,
@@ -833,6 +834,27 @@ function applyPreservedThinkingCompatMetadata(model: Model<Api>): void {
 	// id test is forward-safe rather than inventing a catalog entry for it.
 	if (model.id.includes("fable-5-1") || model.id.includes("mythos-5-1")) {
 		mergeAnthropicMessagesCompat(model, { supportsForcedToolChoice: false });
+	}
+}
+
+// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every request, and
+// OpenRouter's own `supported_parameters` for `anthropic/claude-fable-5.1` omits `temperature`.
+// The Anthropic Messages path already suppresses it via `isAnthropicTemperatureUnsupportedModel`;
+// the Bedrock Converse and OpenAI-completions paths emitted it unconditionally.
+// https://platform.claude.com/docs/en/build-with-claude/thinking
+//
+// Scoped to Claude Fable 5.1 rather than reusing the broader Anthropic predicate. That predicate
+// matches 23 Bedrock and 10 OpenAI-completions entries, and changing request bodies for 29 models
+// unrelated to this work is outside "the smallest production changes needed for the new model".
+// OpenRouter also reports `temperature` as *supported* for Opus 5 and Opus 4.8, contradicting
+// Anthropic upstream, so the predicate is not reliable at the mirror level either. Both notations
+// are matched: Bedrock uses dashes, OpenRouter and Vercel use a dot.
+function applyFableTemperatureCompatMetadata(model: Model<Api>): void {
+	if (!/fable-5[-.]1/.test(model.id)) return;
+	if (model.api === "bedrock-converse-stream") {
+		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsTemperature: false };
+	} else if (model.api === "openai-completions") {
+		model.compat = { ...(model.compat as OpenAICompletionsCompat | undefined), supportsTemperature: false };
 	}
 }
 
@@ -2946,6 +2968,7 @@ async function generateModels() {
 		applyThinkingLevelMetadata(model);
 		applyStrictToolCompatMetadata(model);
 		applyPreservedThinkingCompatMetadata(model);
+		applyFableTemperatureCompatMetadata(model);
 		applyOpenAIGrammarToolCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);
 		applyOpenAIExplicitPromptCacheMetadata(model);

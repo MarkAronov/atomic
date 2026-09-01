@@ -183,12 +183,18 @@ interface OpenAICompatCacheControl {
 
 type ResolvedOpenAICompletionsCompat = Omit<
 	Required<OpenAICompletionsCompat>,
-	"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
+	| "cacheControlFormat"
+	| "deferredToolsMode"
+	| "supportsThinkingTokenBudget"
+	| "thinkingTokenBudgetField"
+	| "supportsTemperature"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
+	/** Optional so callers that build a resolved compat literal need not restate the default. */
+	supportsTemperature?: OpenAICompletionsCompat["supportsTemperature"];
 };
 
 type ResolvedChatTemplateKwargValue = string | number | boolean | null;
@@ -862,7 +868,11 @@ function buildParams(
 		}
 	}
 
-	if (options?.temperature !== undefined) {
+	// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every request,
+	// and OpenRouter's own `supported_parameters` for that model omits `temperature`. Generated
+	// metadata marks such models `supportsTemperature: false`; every other model is unchanged.
+	// https://platform.claude.com/docs/en/build-with-claude/thinking
+	if (options?.temperature !== undefined && compat.supportsTemperature !== false) {
 		params.temperature = options.temperature;
 	}
 
@@ -1661,6 +1671,8 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		supportsDeveloperRole: isOpenRouterDeveloperRoleModel || (!isNonStandard && !isOpenRouter),
 		supportsReasoningEffort:
 			!isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia && !isAntLing,
+		// Models are assumed to accept `temperature`; generated metadata opts specific ones out.
+		supportsTemperature: true,
 		supportsUsageInStreaming: true,
 		supportsFinishReason: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
@@ -1714,6 +1726,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		supportsStore: model.compat.supportsStore ?? detected.supportsStore,
 		supportsDeveloperRole: model.compat.supportsDeveloperRole ?? detected.supportsDeveloperRole,
 		supportsReasoningEffort: model.compat.supportsReasoningEffort ?? detected.supportsReasoningEffort,
+		supportsTemperature: model.compat.supportsTemperature ?? detected.supportsTemperature,
 		supportsUsageInStreaming: model.compat.supportsUsageInStreaming ?? detected.supportsUsageInStreaming,
 		supportsFinishReason: model.compat.supportsFinishReason ?? detected.supportsFinishReason,
 		maxTokensField: model.compat.maxTokensField ?? detected.maxTokensField,

@@ -57,16 +57,20 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		expect(model.contextWindow).toBe(1_000_000);
 		expect(model.maxTokens).toBe(128_000);
 		expect(model.reasoning).toBe(true);
-		// models.dev publishes a third `pdf` input modality for this model, and Anthropic does
-		// accept PDFs as `document` content blocks. Atomic narrows to `["text", "image"]` because
-		// `Model.input` has no `"pdf"` member and there is no `DocumentContent` block for any
-		// provider to receive, so no Atomic code path could produce a PDF to send. Widening the
-		// field alone would advertise a capability nothing can reach.
+		// `["text", "image"]` is not a narrowing away from a documented Fable 5.1 capability — it
+		// matches Anthropic's own capability row for this model, which reads
+		// `Input → output: Text and images → text`, on a page that never mentions PDF:
+		// https://platform.claude.com/docs/en/models/fable-5-1/overview
 		//
-		// This is not a Fable 5.1 property: all 14 Anthropic models in the published catalog
-		// advertise `pdf`, and every one of them narrows here identically. Supporting it is a
-		// catalog-wide feature (public content type, converters for six provider APIs, and
-		// document ingestion), not a per-model fix. `docs/models.md` states the gap for users.
+		// models.dev carries a `pdf` input modality here, but it does so for all 14 Anthropic
+		// models identically, because Anthropic documents PDF as a platform feature — "All active
+		// models support PDF processing" — routed through the same vision path as images:
+		// https://platform.claude.com/docs/en/build-with-claude/pdf-support
+		//
+		// Atomic has no `DocumentContent` block and no code path that produces one, so widening
+		// this field would advertise a capability nothing can reach. Because the flag is uniform
+		// across the family, no per-model rule could express it either. `docs/models.md` states
+		// the gap for users.
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.cost).toEqual({ input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 });
 		expect(model.compat?.forceAdaptiveThinking).toBe(true);

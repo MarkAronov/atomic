@@ -254,7 +254,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
-					...(options.temperature !== undefined && { temperature: options.temperature }),
+					// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every
+					// request. Generated metadata marks such models `supportsTemperature: false`; every
+					// other model keeps sending the field exactly as before.
+					// https://platform.claude.com/docs/en/build-with-claude/thinking
+					...(options.temperature !== undefined &&
+						model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
 				},
 				toolConfig: convertToolConfig(context.tools, options.toolChoice, supportsStrictMode),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),

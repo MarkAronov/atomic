@@ -574,6 +574,14 @@ export interface OpenAICompletionsCompat {
 	supportsDeveloperRole?: boolean;
 	/** Whether the provider supports `reasoning_effort`. Default: auto-detected from URL. */
 	supportsReasoningEffort?: boolean;
+	/**
+	 * Whether the model accepts the `temperature` request field. Claude Fable 5.1 rejects
+	 * non-default `temperature`, `top_p`, and `top_k` on every request, and OpenRouter's own
+	 * `supported_parameters` for that model omits `temperature`. When false, the provider
+	 * omits the field.
+	 * Default: true.
+	 */
+	supportsTemperature?: boolean;
 	/** Whether the provider supports `stream_options: { include_usage: true }` for token usage in streaming responses. Default: true. */
 	supportsUsageInStreaming?: boolean;
 	/** Whether streamed responses include `finish_reason`. When false, pi infers `stop` or `toolUse` when the stream ends. Default: true. */
@@ -757,6 +765,13 @@ export interface AnthropicMessagesCompat {
 export interface BedrockCompat {
 	/** Whether the model supports Bedrock strict tool schemas. Default: false. */
 	supportsStrictMode?: boolean;
+	/**
+	 * Whether the model accepts `inferenceConfig.temperature`. Claude Fable 5.1 rejects
+	 * non-default `temperature`, `top_p`, and `top_k` on every request. When false, the
+	 * provider omits the field.
+	 * Default: true.
+	 */
+	supportsTemperature?: boolean;
 }
 
 /**
