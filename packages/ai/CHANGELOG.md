@@ -1,8 +1,13 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`5ce4afbd95ec10104c0e73866a745f602b592392`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/5ce4afbd95ec10104c0e73866a745f602b592392/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`b8b873b9872db04a938fb4357b5e8e824ddc051c`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/b8b873b9872db04a938fb4357b5e8e824ddc051c/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+### Fixed
+
+- `NO_PROXY` now matches a root domain and its subdomains consistently, and understands bracketed IPv6 hosts, bare IPv6 hosts, and port-scoped entries. Previously an entry such as `example.com` did not exempt `api.example.com`, and `[2001:db8::1]` was parsed as a host/port pair ([#8737](https://github.com/earendil-works/pi/pull/8737)).
+- Added a `supportsMaxOutputTokens` compatibility flag to `OpenAIResponsesCompat` (default `true`). Setting it to `false` omits `max_output_tokens` from openai-responses requests, for Codex-protocol gateways that reject the parameter with a 400 ([#8941](https://github.com/earendil-works/pi/pull/8941)).
 
 ## [0.9.16] - 2026-08-29
 

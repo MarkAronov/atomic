@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed selectors in `/thinking`, `/model`, `/scoped-models`, `/trust`, per-model thinking settings, and theme settings to keep active options marked while browsing. `/scoped-models` now uses consistent per-item toggles and strikes through unavailable models ([#8900](https://github.com/earendil-works/pi/pull/8900), [#8950](https://github.com/earendil-works/pi/pull/8950)).
+
+### Added
+
+- Documented the Zed integrated-terminal `keymap.json` bindings that make Zed emit the Kitty-protocol sequences Atomic reads for `Shift+Enter` and friends ([#8828](https://github.com/earendil-works/pi/pull/8828)).
+
+### Fixed
+
+- Fixed forking an in-memory (`--no-session`) session while a tool call was still running appending the aborted turn to the replacement session. The active turn is now settled before the fork ([#8937](https://github.com/earendil-works/pi/pull/8937)).
+- The built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tools now resolve relative paths against `ctx.cwd` when an extension supplies one, instead of the cwd captured when the tool was created ([#8627](https://github.com/earendil-works/pi/pull/8627)).
+- Custom provider model configs accept a `supportsMaxOutputTokens` compat flag, so openai-responses gateways that reject `max_output_tokens` can opt out ([#8941](https://github.com/earendil-works/pi/pull/8941)).
+
 ## [0.9.18-alpha.4] - 2026-09-01
 
 ### Changed
