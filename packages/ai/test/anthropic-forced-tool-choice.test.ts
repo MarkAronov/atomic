@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type AnthropicOptions, stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
+import { type OpenAICompletionsOptions, stream as streamCompletions } from "../src/api/openai-completions.ts";
 import { getModel } from "../src/compat.ts";
 import type { Context, Model, Tool } from "../src/types.ts";
 
@@ -123,6 +124,45 @@ async function bedrockErrorMessage(
 	return result.errorMessage ?? "";
 }
 
+interface CompletionsToolChoicePayload {
+	tool_choice?: unknown;
+}
+
+async function captureCompletionsPayload(
+	model: Model<"openai-completions">,
+	toolChoice: OpenAICompletionsOptions["toolChoice"],
+): Promise<CompletionsToolChoicePayload> {
+	let capturedPayload: CompletionsToolChoicePayload | undefined;
+
+	const s = streamCompletions({ ...model, baseUrl: "http://127.0.0.1:9/v1" }, makeContext(), {
+		apiKey: "fake-key",
+		toolChoice,
+		onPayload: (payload) => {
+			capturedPayload = payload as CompletionsToolChoicePayload;
+			throw new PayloadCaptured();
+		},
+	});
+
+	await s.result();
+
+	if (!capturedPayload) {
+		throw new Error("Expected completions payload to be captured before request failure");
+	}
+	return capturedPayload;
+}
+
+async function completionsErrorMessage(
+	model: Model<"openai-completions">,
+	toolChoice: OpenAICompletionsOptions["toolChoice"],
+): Promise<string> {
+	const s = streamCompletions({ ...model, baseUrl: "http://127.0.0.1:9/v1" }, makeContext(), {
+		apiKey: "fake-key",
+		toolChoice,
+	});
+	const result = await s.result();
+	return result.errorMessage ?? "";
+}
+
 /** The `anthropic-messages` mirrors of Claude Fable 5.1, read per provider so `getModel` narrows. */
 function anthropicMessagesFable51Mirrors(): Array<{ label: string; model: Model<"anthropic-messages"> }> {
 	return [
@@ -215,6 +255,60 @@ describe("forced tool choice on models that accept it", () => {
 		const payload = await captureBedrockPayload(model, "any");
 
 		expect(payload.toolConfig?.toolChoice).toEqual({ any: {} });
+	});
+});
+
+/**
+ * The OpenAI-completions mirror. `OpenAICompletionsOptions.toolChoice` is OpenAI's
+ * `ChatCompletionToolChoiceOption`, which expresses a forced choice as `"required"` or
+ * `{ type: "function", function: { name } }`, and the adapter forwarded it unconditionally.
+ *
+ * The failure mode here is worse than the 400 on the Anthropic path: OpenRouter drops parameters
+ * a model does not support, so the forced choice would vanish and the caller would get a
+ * plausible answer that quietly ignored the instruction.
+ */
+describe("forced tool choice on the OpenAI-completions mirror", () => {
+	it("marks openrouter/anthropic/claude-fable-5.1 as rejecting forced tool choice", () => {
+		expect(getModel("openrouter", "anthropic/claude-fable-5.1").compat?.supportsForcedToolChoice).toBe(false);
+	});
+
+	it.each(["required", "function"] as const)("rejects a %s tool choice", async (kind) => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		const toolChoice =
+			kind === "required" ? "required" : ({ type: "function", function: { name: "double_number" } } as const);
+
+		const message = await completionsErrorMessage(model, toolChoice);
+
+		expect(message).toMatch(FORCED_TOOL_CHOICE_ERROR);
+		expect(message).toContain("auto");
+	});
+
+	it.each(["auto", "none"] as const)("passes %s through unchanged", async (toolChoice) => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+
+		const payload = await captureCompletionsPayload(model, toolChoice);
+
+		expect(payload.tool_choice).toBe(toolChoice);
+	});
+
+	// The scoping asymmetry that makes this rule different from the temperature one. Anthropic
+	// names Fable 5.1 and Mythos 5.1 as *exceptions* to forced tool use working, and OpenRouter's
+	// own `supported_parameters` agrees: `claude-fable-5` lists `tool_choice`, `claude-fable-5.1`
+	// does not. A Fable-family match — correct for temperature — would be wrong here.
+	it("leaves Claude Fable 5 able to force a tool", async () => {
+		const model = getModel("openrouter", "anthropic/claude-fable-5");
+		expect(model.compat?.supportsForcedToolChoice).toBeUndefined();
+
+		const payload = await captureCompletionsPayload(model, "required");
+
+		expect(payload.tool_choice).toBe("required");
+	});
+
+	// The `latest` alias names no version, so no id rule can keep a claim about its target true.
+	// Leaving it unguarded is deliberate and documented, and is the opposite trade from
+	// temperature, where the family match was widened specifically to reach it.
+	it("deliberately leaves the unversioned latest alias unguarded", () => {
+		expect(getModel("openrouter", "~anthropic/claude-fable-latest").compat?.supportsForcedToolChoice).toBeUndefined();
 	});
 });
 

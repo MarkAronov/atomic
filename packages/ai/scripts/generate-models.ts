@@ -838,12 +838,24 @@ function applyPreservedThinkingCompatMetadata(model: Model<Api>): void {
 // rule is gated on the API that can express a forced choice, not on the provider. Mythos 5.1 is
 // named by the docs but is invite-only and absent from the live catalog, so its id test is
 // forward-safe rather than inventing a catalog entry.
+//
+// Deliberately version-scoped, unlike the Fable-family match used for `temperature` below. The
+// two restrictions are not symmetric: the sampling sentence names Claude Fable 5 alongside
+// Claude Fable 5.1, but this one names Fable 5.1 and Mythos 5.1 as *exceptions* to behavior that
+// otherwise works. OpenRouter's live metadata agrees — `anthropic/claude-fable-5` lists
+// `tool_choice` in `supported_parameters` while `anthropic/claude-fable-5.1` does not. Widening
+// this to the family would assert a restriction on Fable 5 that both sources contradict.
+//
+// The same reasoning leaves `~anthropic/claude-fable-latest` uncovered: an id naming no version
+// cannot keep such a claim true if the alias re-points at a model that accepts forced tool use.
 function applyForcedToolChoiceCompatMetadata(model: Model<Api>): void {
 	if (!/fable-5[-.]1|mythos-5[-.]1/.test(model.id)) return;
 	if (model.api === "anthropic-messages") {
 		mergeAnthropicMessagesCompat(model, { supportsForcedToolChoice: false });
 	} else if (model.api === "bedrock-converse-stream") {
 		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsForcedToolChoice: false };
+	} else if (model.api === "openai-completions") {
+		model.compat = { ...(model.compat as OpenAICompletionsCompat | undefined), supportsForcedToolChoice: false };
 	}
 }
 

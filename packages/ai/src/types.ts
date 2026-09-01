@@ -578,10 +578,20 @@ export interface OpenAICompletionsCompat {
 	 * Whether the model accepts the `temperature` request field. Claude Fable 5.1 rejects
 	 * non-default `temperature`, `top_p`, and `top_k` on every request, and OpenRouter's own
 	 * `supported_parameters` for that model omits `temperature`. When false, the provider
-	 * omits the field.
+	 * omits `temperature` and also strips `temperature`, `top_p`, and `top_k` from
+	 * `samplingParams`, which is otherwise merged last and would reopen them.
 	 * Default: true.
 	 */
 	supportsTemperature?: boolean;
+	/**
+	 * Whether the model accepts forced tool use (`tool_choice` `"required"` or
+	 * `{ type: "function", ... }`). Claude Fable 5.1 rejects it on every request, whichever
+	 * platform serves the model. When false, the provider rejects a forced choice with an error
+	 * rather than sending a request the model cannot honor. `"auto"` and `"none"` are never
+	 * altered. https://platform.claude.com/docs/en/build-with-claude/thinking
+	 * Default: true.
+	 */
+	supportsForcedToolChoice?: boolean;
 	/** Whether the provider supports `stream_options: { include_usage: true }` for token usage in streaming responses. Default: true. */
 	supportsUsageInStreaming?: boolean;
 	/** Whether streamed responses include `finish_reason`. When false, pi infers `stop` or `toolUse` when the stream ends. Default: true. */
