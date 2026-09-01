@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.18-alpha.3] - 2026-09-01
+
 ### Fixed
 
 - Recoverable Intercom disconnects during lazy initialization no longer print a misleading error and stack trace in the interactive UI; later calls still retry initialization.

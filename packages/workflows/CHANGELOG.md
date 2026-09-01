@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.18-alpha.3] - 2026-09-01
+
 ### Added
 
 - Workflow status text, interactive list/detail views, and the persistent `BACKGROUND` panel now identify materialized pending stages by display name and canonical stage ID, show exact Intercom targets only when pre-start delivery is available, and distinguish unavailable pending delivery truthfully.
