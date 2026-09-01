@@ -201,6 +201,8 @@ test("generates Claude Fable 5.1 with exact limits, pricing, thinking map, and c
 	assert.equal(model.compat?.supportsStrictTools, true);
 	assert.equal(model.compat?.delegatesThinkingModelBinding, true);
 	assert.equal(model.compat?.enforcesPreservedThinkingBinding, true);
+	// Claude Fable 5.1 rejects forced tool use on every request.
+	assert.equal(model.compat?.supportsForcedToolChoice, false);
 });
 
 test("resolves Claude Fable 5.1 fallback targets to exactly Opus 4.8 and Opus 5", () => {
@@ -208,10 +210,7 @@ test("resolves Claude Fable 5.1 fallback targets to exactly Opus 4.8 and Opus 5"
 	const fallbacks = model.compat?.allowedFallbackModels as Array<{ provider: string; model: string }> | undefined;
 
 	assert.ok(fallbacks, "expected allowedFallbackModels to be generated");
-	assert.deepEqual(
-		fallbacks.map((f) => f.model).sort(),
-		["claude-opus-4-8", "claude-opus-5"],
-	);
+	assert.deepEqual(fallbacks.map((f) => f.model).sort(), ["claude-opus-4-8", "claude-opus-5"]);
 	for (const fallback of fallbacks) assert.equal(fallback.provider, "anthropic");
 });
 
@@ -264,12 +263,14 @@ test("scopes preserved-thinking compat to first-party Anthropic models", () => {
 		assert.equal(compat.supportsStrictMode, undefined, id);
 	}
 
-	// Only Claude Fable 5.1 runs the conversation check. Fable 5 delegates model binding but is
-	// not opted into the prefix check, which pins the boundary between the two capabilities.
+	// Only Claude Fable 5.1 runs the conversation check and rejects forced tool use. Fable 5
+	// delegates model binding but is opted into neither, which pins the capability boundaries.
 	const fable5 = catalogs.anthropic["claude-fable-5"];
 	assert.equal(fable5.compat?.delegatesThinkingModelBinding, true);
 	assert.equal(fable5.compat?.enforcesPreservedThinkingBinding, undefined);
+	assert.equal(fable5.compat?.supportsForcedToolChoice, undefined);
 	assert.equal(catalogs.anthropic["claude-opus-5"].compat?.enforcesPreservedThinkingBinding, undefined);
+	assert.equal(catalogs.anthropic["claude-opus-5"].compat?.supportsForcedToolChoice, undefined);
 });
 
 test("emits no OpenRouter or Vercel Fable mirror when those live APIs return nothing", () => {

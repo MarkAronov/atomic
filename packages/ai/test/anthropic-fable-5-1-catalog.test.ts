@@ -61,8 +61,12 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		// accept PDFs as `document` content blocks. Atomic narrows to `["text", "image"]` because
 		// `Model.input` has no `"pdf"` member and there is no `DocumentContent` block for any
 		// provider to receive, so no Atomic code path could produce a PDF to send. Widening the
-		// field alone would advertise a capability nothing can reach. `docs/models.md` states this
-		// limitation for users; every other Claude entry narrows identically.
+		// field alone would advertise a capability nothing can reach.
+		//
+		// This is not a Fable 5.1 property: all 14 Anthropic models in the published catalog
+		// advertise `pdf`, and every one of them narrows here identically. Supporting it is a
+		// catalog-wide feature (public content type, converters for six provider APIs, and
+		// document ingestion), not a per-model fix. `docs/models.md` states the gap for users.
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.cost).toEqual({ input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 });
 		expect(model.compat?.forceAdaptiveThinking).toBe(true);
@@ -147,9 +151,7 @@ describe("Claude Fable 5.1 server-side fallback", () => {
 		const model = getModel("anthropic", "claude-fable-5-1");
 		const allowed = model.compat?.allowedFallbackModels ?? [];
 
-		expect(new Set(allowed.map((fallback) => fallback.model))).toEqual(
-			new Set(["claude-opus-4-8", "claude-opus-5"]),
-		);
+		expect(new Set(allowed.map((fallback) => fallback.model))).toEqual(new Set(["claude-opus-4-8", "claude-opus-5"]));
 		for (const fallback of allowed) {
 			expect(fallback.provider).toBe("anthropic");
 		}

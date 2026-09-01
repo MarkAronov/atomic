@@ -825,6 +825,15 @@ function applyPreservedThinkingCompatMetadata(model: Model<Api>): void {
 	if (model.id.includes("fable-5-1")) {
 		mergeAnthropicMessagesCompat(model, { enforcesPreservedThinkingBinding: true });
 	}
+
+	// "The exceptions are Claude Fable 5.1 and Claude Mythos 5.1, which reject forced tool use on
+	// every request with a 400 error. On those models, use `tool_choice: {"type": "auto"}`."
+	// https://platform.claude.com/docs/en/build-with-claude/thinking
+	// Mythos 5.1 is named by the docs but is invite-only and absent from the live catalog, so this
+	// id test is forward-safe rather than inventing a catalog entry for it.
+	if (model.id.includes("fable-5-1") || model.id.includes("mythos-5-1")) {
+		mergeAnthropicMessagesCompat(model, { supportsForcedToolChoice: false });
+	}
 }
 
 function applyStrictToolCompatMetadata(model: Model<Api>): void {

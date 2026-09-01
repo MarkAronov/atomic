@@ -218,7 +218,7 @@ In `models.json`, `headers` values must be strings. A `null` suppression marker 
 Current behavior:
 - `/model`, `--list-models`, and the interactive footer display entries by model `id`.
 - The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
-- `input` describes the modalities **Atomic can send**, not everything the upstream model accepts. `["text"]` and `["text", "image"]` are the only values. Several providers publish a third `pdf` input modality for Claude models, Claude Fable 5.1 included, and those models do accept PDFs through the Anthropic API as `document` content blocks. Atomic has no document content block and no path that produces one, so every Claude entry narrows to `["text", "image"]`. Sending a PDF is not supported today; extract its text first.
+- `input` describes the modalities **Atomic can send**, not everything the upstream model accepts. `["text"]` and `["text", "image"]` are the only values. Every Anthropic model in the published catalog — all 14 of them, Claude Fable 5.1 included — also advertises a `pdf` input modality, and those models do accept PDFs through the Anthropic API as `document` content blocks. Atomic has no document content block and no code path that produces one, so every Claude entry narrows to `["text", "image"]`. **PDF input is not supported for any model today**; extract the text first, for example with the `read` tool. This is a Claude-family gap rather than a per-model one, so it is not something a single model's metadata can fix.
 
 
 ### Sampling Parameters
@@ -494,6 +494,11 @@ By default, Atomic sends per-tool `eager_input_streaming: true`. If a proxy or A
 | `supportsLongCacheRetention`      | Whether the provider accepts Anthropic long cache retention (`cache_control.ttl: "1h"`) when cache retention is `long`. Default: `true`.                                                               |
 | `delegatesThinkingModelBinding`   | Whether the API decides for itself which thinking blocks the target model may read, dropping the rest. Default: `false`. See [Preserved thinking and model switches](#preserved-thinking-and-model-switches).                                    |
 | `enforcesPreservedThinkingBinding` | Whether the model rejects a thinking block replayed behind a changed conversation prefix. Default: `false`. When `true`, Atomic sends the `thinking-binding-controls-2026-08-01` beta header and `prefix_mismatch_behavior: "drop_block"`.  |
+| `supportsForcedToolChoice`        | Whether the model accepts forced tool use (`tool_choice` `any` or a named tool). Default: `true`. When `false`, Atomic downgrades a forced choice to `auto` rather than sending a request the model rejects. `auto` and `none` are never altered.  |
+
+### Forced tool use on Claude Fable 5.1
+
+Claude Fable 5.1 rejects forced tool use — `tool_choice: {"type": "any"}` and `{"type": "tool", ...}` — on every request with a 400, and Anthropic's guidance is to use `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead. Atomic's own agent loop only ever asks for `auto` or `none`, so no interactive session can hit this. It is reachable through the `@bastani/pi-ai` library's Anthropic `stream()` entry point, which accepts the wider Anthropic tool-choice shape, and for that model Atomic downgrades a forced choice to `auto` rather than sending a request that is certain to fail. Every other model passes forced choices through unchanged, and `auto` and `none` are never altered. Inspect `compat.supportsForcedToolChoice` if you need to branch before requesting.
 
 ### Preserved thinking and model switches
 

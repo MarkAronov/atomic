@@ -248,6 +248,7 @@ function getAnthropicCompat(
 		| "allowedFallbackModels"
 		| "enforcesPreservedThinkingBinding"
 		| "delegatesThinkingModelBinding"
+		| "supportsForcedToolChoice"
 	>
 > {
 	return {
@@ -851,6 +852,16 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+					// "After a mid-stream server-side fallback, the final `message_delta` event carries
+					// the array again with the serving model's entries."
+					// https://platform.claude.com/docs/en/build-with-claude/thinking
+					// This is a configured path for Claude Fable 5.1, whose generated metadata supplies
+					// `fallbacks`, so without this call the serving model's report would be dropped.
+					// No de-duplication is needed: the array is absent on an ordinary turn and empty
+					// when nothing was dropped, and `recordInputTransformations` returns early on both.
+					// The delta's entries describe the serving model, so they are distinct from
+					// `message_start`'s rather than a repeat of them.
+					recordInputTransformations(output, event);
 				}
 			}
 
@@ -1213,10 +1224,21 @@ function buildParams(
 	}
 
 	if (options?.toolChoice) {
-		if (typeof options.toolChoice === "string") {
-			params.tool_choice = { type: options.toolChoice };
+		const requested = options.toolChoice;
+		const isForced = requested === "any" || (typeof requested !== "string" && requested.type === "tool");
+		if (isForced && model.compat?.supportsForcedToolChoice === false) {
+			// "The exceptions are Claude Fable 5.1 and Claude Mythos 5.1, which reject forced tool
+			// use on every request with a 400 error. On those models, use
+			// `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead."
+			// https://platform.claude.com/docs/en/build-with-claude/thinking
+			// Reachable through the exported `stream()`, whose `AnthropicOptions.toolChoice` admits
+			// the forced shapes that the narrower public `ToolChoice` does not. Downgrading keeps
+			// the request answerable; sending it unchanged is a guaranteed provider rejection.
+			params.tool_choice = { type: "auto" };
+		} else if (typeof requested === "string") {
+			params.tool_choice = { type: requested };
 		} else {
-			params.tool_choice = options.toolChoice;
+			params.tool_choice = requested;
 		}
 	}
 

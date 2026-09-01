@@ -740,6 +740,17 @@ export interface AnthropicMessagesCompat {
 	 * Default: false.
 	 */
 	delegatesThinkingModelBinding?: boolean;
+	/**
+	 * Whether the model accepts forced tool use (`tool_choice: {"type": "any"}` or
+	 * `{"type": "tool", ...}`). Claude Fable 5.1 and Claude Mythos 5.1 reject it on every
+	 * request with a 400; Anthropic's guidance for those models is to use
+	 * `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead.
+	 * When false, the provider downgrades a forced choice to `auto` rather than sending a
+	 * request the model is guaranteed to reject. `auto` and `none` are never altered.
+	 * https://platform.claude.com/docs/en/build-with-claude/thinking
+	 * Default: true.
+	 */
+	supportsForcedToolChoice?: boolean;
 }
 
 /** Compatibility settings for Amazon Bedrock models. */

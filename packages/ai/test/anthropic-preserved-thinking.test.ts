@@ -3,7 +3,15 @@ import { describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
 import { getModel, streamSimple } from "../src/compat.ts";
-import type { AssistantMessage, Context, Message, Model, TextContent, ThinkingContent } from "../src/types.ts";
+import type {
+	AssistantMessage,
+	Context,
+	FetchFunction,
+	Message,
+	Model,
+	TextContent,
+	ThinkingContent,
+} from "../src/types.ts";
 
 /**
  * Preserved-thinking regressions for mid-conversation model switches.
@@ -55,11 +63,14 @@ async function capturePayloadAndHeaders(
 	const s = streamSimple({ ...model, baseUrl: "http://127.0.0.1:9" }, makeContext(), {
 		apiKey: "fake-key",
 		...(options?.reasoning ? { reasoning: options.reasoning } : {}),
-		fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		// Parameters are contextually typed by `FetchFunction`; naming DOM types such as
+		// `RequestInfo` here would not compile, because the package builds with `lib: ["ES2022"]`
+		// and `types: ["node"]` and has no DOM lib.
+		fetch: (async (_input, init) => {
 			const headers = new Headers(init?.headers);
 			betaHeader = headers.get("anthropic-beta") ?? "";
 			throw new PayloadCaptured();
-		}) as unknown as typeof globalThis.fetch,
+		}) as FetchFunction,
 		onPayload: (payload) => {
 			capturedPayload = payload as AnthropicThinkingPayload;
 		},
@@ -111,6 +122,7 @@ function historyFrom(sourceModelId: string): Message[] {
 			toolCallId: "toolu_1",
 			toolName: "double_number",
 			content: [{ type: "text", text: "42" }],
+			isError: false,
 			timestamp: Date.now(),
 		},
 		{ role: "user", content: "Thanks.", timestamp: Date.now() },
@@ -277,8 +289,15 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 	} as unknown as Anthropic;
 }
 
+interface Transformation {
+	type: string;
+	path: string;
+	reason: string;
+}
+
 function eventsWithInputTransformations(
-	transformations: Array<{ type: string; path: string; reason: string }> | undefined,
+	transformations: Transformation[] | undefined,
+	deltaTransformations?: Transformation[],
 ): Array<{ event: string; data: string }> {
 	const message: Record<string, unknown> = {
 		id: "msg_test",
@@ -286,6 +305,12 @@ function eventsWithInputTransformations(
 		usage: { input_tokens: 10, output_tokens: 0 },
 	};
 	if (transformations) message.input_transformations = transformations;
+	const messageDelta: Record<string, unknown> = {
+		type: "message_delta",
+		delta: { stop_reason: "end_turn" },
+		usage: { input_tokens: 10, output_tokens: 2 },
+	};
+	if (deltaTransformations) messageDelta.input_transformations = deltaTransformations;
 	return [
 		{ event: "message_start", data: JSON.stringify({ type: "message_start", message }) },
 		{
@@ -297,14 +322,7 @@ function eventsWithInputTransformations(
 			data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } }),
 		},
 		{ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) },
-		{
-			event: "message_delta",
-			data: JSON.stringify({
-				type: "message_delta",
-				delta: { stop_reason: "end_turn" },
-				usage: { input_tokens: 10, output_tokens: 2 },
-			}),
-		},
+		{ event: "message_delta", data: JSON.stringify(messageDelta) },
 		{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
 	];
 }
@@ -345,5 +363,61 @@ describe("dropped thinking blocks are observable", () => {
 		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
 
 		expect(result.diagnostics?.some((d) => d.type === "anthropic_input_transformations") ?? false).toBe(false);
+	});
+
+	// "After a mid-stream server-side fallback, the final `message_delta` event carries the array
+	// again with the serving model's entries."
+	// https://platform.claude.com/docs/en/build-with-claude/thinking
+	// Reachable for Claude Fable 5.1 specifically, because its generated metadata supplies
+	// `fallbacks` and the provider sends the server-side-fallback beta for it.
+	it("records dropped blocks reported only on the final message_delta", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const response = createSseResponse(
+			eventsWithInputTransformations(undefined, [
+				{ type: "thinking_dropped", path: "messages.2.content.0", reason: "model_binding_mismatch" },
+			]),
+		);
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		expect(result.stopReason).toBe("stop");
+		const diagnostic = result.diagnostics?.find((d) => d.type === "anthropic_input_transformations");
+		expect(diagnostic).toBeDefined();
+		expect(diagnostic?.details?.droppedBlockCount).toBe(1);
+		expect(diagnostic?.details?.reasons).toEqual(["model_binding_mismatch"]);
+		expect(diagnostic?.details?.paths).toEqual(["messages.2.content.0"]);
+	});
+
+	// Both events can report, and the delta's entries describe the serving model rather than
+	// repeating `message_start`'s, so both are recorded rather than de-duplicated away.
+	it("records both reports when message_start and message_delta each carry entries", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const response = createSseResponse(
+			eventsWithInputTransformations(
+				[{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" }],
+				[{ type: "thinking_dropped", path: "messages.3.content.0", reason: "model_binding_mismatch" }],
+			),
+		);
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
+		expect(diagnostics).toHaveLength(2);
+		expect(diagnostics[0].details?.paths).toEqual(["messages.1.content.0"]);
+		expect(diagnostics[1].details?.paths).toEqual(["messages.3.content.0"]);
+	});
+
+	// The empty-array guard is the de-duplication rule: an ordinary turn omits the field on the
+	// delta, and a nothing-dropped turn sends an empty array. Neither may add a second entry.
+	it("adds no second diagnostic when the delta reports an empty array", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const response = createSseResponse(
+			eventsWithInputTransformations(
+				[{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" }],
+				[],
+			),
+		);
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
+		expect(diagnostics).toHaveLength(1);
 	});
 });
