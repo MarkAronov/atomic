@@ -4,6 +4,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed background reconnect no longer strands a live Intercom session. The next attempt is now scheduled after reconnect ownership is released, so a session whose broker restarts recovers on its own with bounded backoff instead of staying invisible until the next explicit Intercom call. A failing explicit `intercom`, overlay, or startup connection now leaves the same background retry behind rather than cancelling the one already scheduled, and a connection attempt that fails before it suspends can no longer park a settled promise in the reconnect slot and block every later attempt.
+- Running workflow stages regain `intercom list` visibility and live routing on both their `<runId>:<stageName>` and `<runId>:<stageId>` targets after broker churn, instead of returning `Session not found` until something forced the stage session to reconnect.
+
 ## [0.9.18-alpha.3] - 2026-09-01
 
 ### Fixed
