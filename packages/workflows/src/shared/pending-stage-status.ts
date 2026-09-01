@@ -15,6 +15,7 @@ type PendingWorkflowRun = {
 	readonly id: string;
 	readonly status: RunStatus | "crashed";
 };
+export type PendingWorkflowRunStatusResolver = (runId: string) => RunStatus | "crashed" | undefined;
 
 function pendingStageTarget(
 	runId: string,
@@ -28,11 +29,16 @@ function pendingStageTarget(
 export function pendingWorkflowStageStatus(
 	run: PendingWorkflowRun,
 	stage: StageSnapshot,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 ): PendingWorkflowStageStatus | undefined {
 	if (stage.status !== "pending") return undefined;
-	const pendingStageDeliveryAvailable =
-		run.status !== "crashed" && !isTerminalRunStatus(run.status) && stage.pendingStageDeliveryAvailable === true;
 	const identity = pendingStageTarget(run.id, stage);
+	const owningRunStatus = identity.runId === run.id ? run.status : resolveOwningRunStatus?.(identity.runId);
+	const pendingStageDeliveryAvailable =
+		owningRunStatus !== undefined &&
+		owningRunStatus !== "crashed" &&
+		!isTerminalRunStatus(owningRunStatus) &&
+		stage.pendingStageDeliveryAvailable === true;
 	return {
 		stageId: identity.stageId,
 		name: stage.name,
@@ -44,9 +50,10 @@ export function pendingWorkflowStageStatus(
 
 export function pendingWorkflowStageStatuses(
 	run: Pick<RunSnapshot, "id" | "status" | "stages">,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 ): PendingWorkflowStageStatus[] {
 	return run.stages.flatMap((stage) => {
-		const pending = pendingWorkflowStageStatus(run, stage);
+		const pending = pendingWorkflowStageStatus(run, stage, resolveOwningRunStatus);
 		return pending === undefined ? [] : [pending];
 	});
 }

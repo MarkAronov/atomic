@@ -253,7 +253,7 @@ function pendingStageLabel(run: RunSnapshot, width = Number.POSITIVE_INFINITY): 
 		}
 	}
 
-	return `pending: … ${stages.length} more`;
+	return undefined;
 }
 
 function metaLine(run: RunSnapshot, now: number, width = Number.POSITIVE_INFINITY): string {

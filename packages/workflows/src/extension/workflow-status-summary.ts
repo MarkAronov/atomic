@@ -19,7 +19,7 @@ import {
 	isImpossibleRootLiveness,
 } from "../engine/run-liveness.js";
 import type { ExpandedWorkflowStage } from "../shared/expanded-workflow-graph.js";
-import type { PendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
+import type { PendingWorkflowRunStatusResolver, PendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
@@ -118,6 +118,8 @@ export interface WorkflowStatusControlLookup {
 
 export interface WorkflowStatusSummaryOptions {
 	readonly toolControlRegistry?: WorkflowStatusControlLookup;
+	/** Owning-run lifecycle authority for stages projected from nested child runs. */
+	readonly owningRunStatus?: PendingWorkflowRunStatusResolver;
 }
 
 /** Filtered, ordered status listing: `runs[i]` summarizes `snapshots[i]`. */
@@ -260,7 +262,7 @@ export function summarizeRunSnapshot(
 			name: stage.name,
 			status: stage.status,
 		})),
-		pendingStages: pendingWorkflowStageStatuses(run),
+		pendingStages: pendingWorkflowStageStatuses(run, options?.owningRunStatus),
 		tools: (run.toolNodes ?? []).map((tool) => {
 			const owner = tool as typeof tool & {
 				readonly runId?: string;

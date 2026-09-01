@@ -818,6 +818,74 @@ describe("run identity rows", () => {
 		assert.doesNotMatch(wide, /→ [^\n│,]*…/u);
 		assert.match(wide, /… 1 more/u);
 	});
+	test("omits pending metadata when it cannot fit without displacing tool and elapsed labels", () => {
+		const now = 1_000_000;
+		const pendingStages = [
+			makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+		];
+		const run: RunSnapshot = {
+			...makeRun(
+				"aaaaaaaa-1111-4111-8111-111111111111",
+				"publish",
+				"running",
+				[makeStage("build", "build", "running"), ...pendingStages],
+				now - 65_000,
+			),
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "tool:fetch-release-notes",
+					name: "fetch-release-notes",
+					argsHash: "fetch-release-notes",
+					ordinal: 0,
+					parentIds: [],
+					status: "running",
+					attachable: false,
+				},
+				{
+					kind: "tool",
+					id: "tool:verify-artifacts",
+					name: "verify-artifacts",
+					argsHash: "verify-artifacts",
+					ordinal: 1,
+					parentIds: [],
+					status: "pending",
+					attachable: false,
+				},
+			],
+		};
+		for (let width = 111; width <= 130; width++) {
+			const rendered = buildThemedWidgetLines(makeSnap([run]), undefined, width, now)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(rendered, /2 tools · fetch-release-notes · running, verify-artifacts · pending/u);
+			assert.match(rendered, /1m 5s/u);
+			assert.doesNotMatch(rendered, /pending:/u, `pending label must stay within its width budget at ${width}`);
+		}
+	});
+
+	test("omits pending metadata when a long workflow identity leaves no room", () => {
+		const now = 1_000_000;
+		const run = makeRun(
+			"aaaaaaaa-1111-4111-8111-111111111111",
+			"implementation-review-and-release-pipeline",
+			"running",
+			[
+				makeStage("review-a", "review", "pending", { pendingStageDeliveryAvailable: true }),
+				makeStage("review-b", "review", "pending", { pendingStageDeliveryAvailable: true }),
+			],
+			now - 65_000,
+		);
+		for (let width = 80; width <= 90; width++) {
+			const rendered = buildThemedWidgetLines(makeSnap([run]), undefined, width, now)
+				.map(stripAnsi)
+				.join("\n");
+			assert.match(rendered, /1m 5s/u);
+			assert.doesNotMatch(rendered, /pending:/u, `pending label must stay within its width budget at ${width}`);
+		}
+	});
+
 	test("keeps every widget border line at the collapsed breakpoint", () => {
 		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const snap = makeSnap([makeRun(runId, "narrow-run", "running")]);

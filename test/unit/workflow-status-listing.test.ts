@@ -225,9 +225,9 @@ describe("workflow tool status run listing", () => {
 		assert.match(text, /workflow answer answers pending prompts/);
 		assert.match(text, /workflow resume controls paused runs/);
 		assert.match(text, /Ordinary Intercom handles free-form workflow-stage communication at <runId>:<stageKey>/);
-		assert.match(text, /live delivery is immediate/);
-		assert.match(text, /known unstarted stages queue before their first model turn/);
-		assert.match(text, /Use Intercom ask once a reply-capable live session exists/);
+		assert.match(text, /live stage delivery is immediate/);
+		assert.match(text, /known pending stage `send` queues before its first model turn/);
+		assert.match(text, /`ask` requires a live reply-capable stage/);
 		assert.doesNotMatch(text, /workflow send/i);
 		assert.doesNotMatch(text, /send also takes stageId\/promptId/);
 
@@ -242,6 +242,20 @@ describe("workflow tool status run listing", () => {
 		assert.equal(parsed.runs[0]!.runId, activeId);
 		assert.equal(parsed.runs[0]!.awaitingInput[0]!.promptId, "prompt-1");
 		assert.equal(parsed.snapshots.length, 1);
+	});
+
+	test.sequential("status hint states each Intercom coaching rule exactly once", async () => {
+		const runId = `status-hint-${Date.now()}`;
+		store.recordRunStart({ ...makeInflightRun(runId), name: "hint-status" });
+		const result = await makeToolHandler()({ action: "status" }, {} as never);
+		const text = renderWorkflowToolContent(result, { action: "status" });
+		for (const rule of [
+			"live stage delivery is immediate",
+			"a known pending stage `send` queues before its first model turn",
+			"`ask` requires a live reply-capable stage",
+		]) {
+			assert.equal(text.split(rule).length - 1, 1, `expected one occurrence of ${rule}`);
+		}
 	});
 
 	test.sequential("/workflow status preserves deliverable pending-stage targets through the graph projection", async () => {
@@ -330,8 +344,29 @@ describe("workflow tool status run listing", () => {
 		assert.doesNotMatch(text, new RegExp(`${runId}:(offline|legacy)`));
 		assert.match(text, /… 2 more pending stages; use status with runId/);
 		assert.doesNotMatch(text, new RegExp(`${runId}:extra-(6|7)`));
-		assert.match(text, /pending stage send queues before the first model turn/);
-		assert.match(text, /ask requires a live reply-capable stage/);
+		assert.match(text, /pending stage `send` queues before its first model turn/);
+		assert.match(text, /`ask` requires a live reply-capable stage/);
+	});
+
+	test.sequential("status text singularizes exactly one pending stage omitted by its bound", async () => {
+		const runId = `status-pending-overflow-${Date.now()}`;
+		store.recordRunStart({
+			...makeInflightRun(runId),
+			name: "pending-overflow-status",
+			stages: Array.from({ length: 11 }, (_, index) => ({
+				id: `review-${index}`,
+				name: `review-${index}`,
+				status: "pending" as const,
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			})),
+		});
+
+		const result = await makeToolHandler()({ action: "status" }, {} as never);
+		const text = renderWorkflowToolContent(result, { action: "status" });
+		assert.match(text, /… 1 more pending stage; use status with runId/);
+		assert.doesNotMatch(text, /… 1 more pending stages/);
 	});
 
 	test.sequential("terminated runs never advertise pending-stage targets on tool, list, or detail surfaces", async () => {
@@ -451,6 +486,71 @@ describe("workflow tool status run listing", () => {
 			assert.ok(!rendered.includes(`${rootRunId}:${childRunId}:${childStageId}`), rendered);
 		}
 		assert.match(toolText, new RegExp(`review \\(${rootStageId}\\).*${rootRunId}:${rootStageId}`));
+	});
+
+	test.sequential("nested pending stages stop advertising targets when their owning child run terminates", async () => {
+		const advertisedTargets: string[] = [];
+		const missingUnavailableLabels: string[] = [];
+		for (const [index, terminalStatus] of ["failed", "cancelled", "killed", "completed"].entries()) {
+			store.clear();
+			const rootRunId = `${index + 1}1111111-1111-4111-8111-111111111111`;
+			const childRunId = `${index + 5}2222222-2222-4222-8222-222222222222`;
+			const childStageId = "child-review";
+			store.recordRunStart({
+				...makeInflightRun(rootRunId),
+				name: "root workflow",
+				stages: [
+					{
+						id: "child-boundary",
+						name: "workflow:child",
+						status: "running",
+						parentIds: [],
+						toolEvents: [],
+						replayKey: "workflow:child:1",
+						workflowChildRun: { alias: "child", workflow: "child workflow", runId: childRunId },
+					},
+				],
+			});
+			store.recordRunStart({
+				...makeInflightRun(childRunId),
+				name: "child workflow",
+				parentRunId: rootRunId,
+				parentStageId: "child-boundary",
+				rootRunId,
+				stages: [
+					{
+						id: childStageId,
+						name: "review",
+						status: "pending",
+						parentIds: [],
+						toolEvents: [],
+						pendingStageDeliveryAvailable: true,
+					},
+				],
+			});
+			store.recordRunEnd(childRunId, terminalStatus as "failed" | "cancelled" | "killed" | "completed");
+
+			const handler = makeToolHandler();
+			const listingResult = await handler({ action: "status" }, {} as never);
+			const rootDetailResult = await handler({ action: "status", runId: rootRunId }, {} as never);
+			const childDetailResult = await handler({ action: "status", runId: childRunId }, {} as never);
+			const target = `${childRunId}:${childStageId}`;
+			const surfaces = {
+				concise: renderWorkflowToolContent(listingResult, { action: "status" }),
+				toolCard: renderResult(listingResult, { plain: true, width: 200 }),
+				rootDetail: renderResult(rootDetailResult, { plain: true, width: 200 }),
+				childDetail: renderResult(childDetailResult, { plain: true, width: 200 }),
+			};
+			for (const [surface, rendered] of Object.entries(surfaces)) {
+				if (rendered.includes(target)) advertisedTargets.push(`${terminalStatus}:${surface}`);
+				if (!rendered.includes("delivery unavailable") && !rendered.includes("Intercom target=unavailable")) {
+					missingUnavailableLabels.push(`${terminalStatus}:${surface}`);
+				}
+			}
+		}
+
+		assert.deepEqual(advertisedTargets, []);
+		assert.deepEqual(missingUnavailableLabels, []);
 	});
 
 	test.sequential("status text output reports an empty filtered listing", async () => {

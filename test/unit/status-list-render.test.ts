@@ -582,7 +582,7 @@ describe("renderStatusList — populated", () => {
 		}
 	});
 
-	test("names pending stages and their steerable canonical targets within the card width", () => {
+	test("names pending targets and singularizes exactly one omitted stage within the card width", () => {
 		const run = makeRun({
 			id: "pending-run",
 			stages: [
@@ -597,7 +597,8 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /pending: review \(review-b\) → pending-run:review-b/);
 		assert.match(plain, /pending: offline \(offline\) · delivery unavailable/);
 		assert.doesNotMatch(plain, /pending-run:offline/);
-		assert.match(plain, /… 1 more pending stages/);
+		assert.match(plain, /… 1 more pending stage/);
+		assert.doesNotMatch(plain, /… 1 more pending stages/);
 		assert.doesNotMatch(plain, /pending-run:later/);
 		for (const line of renderStatusList([run], { width: 40 }).split("\n")) assert.equal(visibleWidth(line), 40);
 	});

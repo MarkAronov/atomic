@@ -18,6 +18,7 @@
  */
 
 import type { RunDetail } from "../runs/background/status.js";
+import type { PendingWorkflowRunStatusResolver } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
@@ -39,6 +40,8 @@ export interface RenderRunDetailOpts {
 	now?: number;
 	/** Optional render width (cells) for truncating long/wide values. */
 	width?: number;
+	/** Owning-run lifecycle authority for expanded child-run stages. */
+	owningRunStatus?: PendingWorkflowRunStatusResolver;
 }
 
 /**
@@ -47,15 +50,20 @@ export interface RenderRunDetailOpts {
 export function renderRunDetail(detail: RunDetail, opts: RenderRunDetailOpts = {}): string {
 	const now = opts.now ?? Date.now();
 	const width = Math.max(32, opts.width ?? 80);
-	if (opts.theme === undefined) return renderPlain(detail, now, width);
-	return renderThemed(detail, now, opts.theme, width);
+	if (opts.theme === undefined) return renderPlain(detail, now, width, opts.owningRunStatus);
+	return renderThemed(detail, now, opts.theme, width, opts.owningRunStatus);
 }
 
 // ---------------------------------------------------------------------------
 // Plain renderer — used by tests and headless consumers
 // ---------------------------------------------------------------------------
 
-function renderPlain(detail: RunDetail, now: number, width: number): string {
+function renderPlain(
+	detail: RunDetail,
+	now: number,
+	width: number,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+): string {
 	const out: string[] = [];
 	const stateBadge = stateLabel(detail);
 
@@ -75,7 +83,9 @@ function renderPlain(detail: RunDetail, now: number, width: number): string {
 		if (detail.stages.length === 0) out.push("  (no stages recorded yet) ");
 		else
 			for (const stage of detail.stages)
-				out.push(...renderStageRowsPlain(detail.runId, detail.status, stage, now, width - 4));
+				out.push(
+					...renderStageRowsPlain(detail.runId, detail.status, stage, now, width - 4, resolveOwningRunStatus),
+				);
 		out.push("");
 	}
 	if (tools.length > 0) {
@@ -106,7 +116,13 @@ function renderPlain(detail: RunDetail, now: number, width: number): string {
 // Themed renderer — ANSI Catppuccin chrome
 // ---------------------------------------------------------------------------
 
-function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: number): string {
+function renderThemed(
+	detail: RunDetail,
+	now: number,
+	theme: GraphTheme,
+	width: number,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+): string {
 	const out: string[] = [];
 	const muted = hexToAnsi(theme.textMuted);
 	const dim = hexToAnsi(theme.dim);
@@ -130,7 +146,17 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: 
 		if (detail.stages.length === 0) out.push(`  ${dim}(no stages recorded yet)${RESET} `);
 		else
 			for (const stage of detail.stages)
-				out.push(...renderStageRowsThemed(detail.runId, detail.status, stage, now, theme, width - 4));
+				out.push(
+					...renderStageRowsThemed(
+						detail.runId,
+						detail.status,
+						stage,
+						now,
+						theme,
+						width - 4,
+						resolveOwningRunStatus,
+					),
+				);
 		out.push("");
 	}
 	if (tools.length > 0) {
@@ -246,8 +272,9 @@ function pendingStageRows(
 	stage: StageSnapshot,
 	width: number,
 	theme?: GraphTheme,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 ): string[] {
-	const pending = pendingWorkflowStageStatus({ id: runId, status: runStatus }, stage);
+	const pending = pendingWorkflowStageStatus({ id: runId, status: runStatus }, stage, resolveOwningRunStatus);
 	if (pending === undefined) return [];
 	const value = pending.target ?? `${pending.stageId} · delivery unavailable`;
 	const label = pending.target === undefined ? "pending id" : "pending target";
@@ -270,10 +297,11 @@ function renderStageRowsPlain(
 	stage: StageSnapshot,
 	now: number,
 	width: number,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 ): string[] {
 	const rows = [
 		` ${stageLinePlain(stage, now, Math.max(1, width - 2))} `,
-		...pendingStageRows(runId, runStatus, stage, width),
+		...pendingStageRows(runId, runStatus, stage, width, undefined, resolveOwningRunStatus),
 	];
 	if (stage.error) {
 		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
@@ -288,10 +316,11 @@ function renderStageRowsThemed(
 	now: number,
 	theme: GraphTheme,
 	width: number,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 ): string[] {
 	const rows = [
 		` ${stageLineThemed(stage, now, theme, Math.max(1, width - 2))} `,
-		...pendingStageRows(runId, runStatus, stage, width, theme),
+		...pendingStageRows(runId, runStatus, stage, width, theme, resolveOwningRunStatus),
 	];
 	if (stage.error) {
 		const errFg = hexToAnsi(theme.error);
