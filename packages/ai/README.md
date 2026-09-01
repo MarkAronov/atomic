@@ -1202,6 +1202,7 @@ interface OpenAIResponsesCompat {
   supportsLongCacheRetention?: boolean; // Whether provider supports `prompt_cache_retention: "24h"` (default: true)
   supportsStrictMode?: boolean;      // Whether provider supports strict JSON-schema function tools (default: false; enabled in metadata for built-in OpenAI models)
   supportsOpenAIGrammarTools?: boolean; // Whether to emit OpenAI custom Lark/regex grammar tools; false falls back to normal function tools (default: false; the generated catalog enables it for capable models)
+  supportsMaxOutputTokens?: boolean; // Whether provider accepts `max_output_tokens`; false omits the parameter for Codex-protocol gateways that reject it with a 400 (default: true)
 }
 ```
 
@@ -1210,6 +1211,7 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 - **LiteLLM proxies**: May not support `store` field
 - **Custom inference servers**: May use non-standard field names
 - **Self-hosted endpoints**: May have different feature support
+- **Codex-protocol gateways**: May reject the `max_output_tokens` parameter
 
 ## Faux Provider for Tests
 
