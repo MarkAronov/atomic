@@ -827,30 +827,44 @@ function applyPreservedThinkingCompatMetadata(model: Model<Api>): void {
 		mergeAnthropicMessagesCompat(model, { enforcesPreservedThinkingBinding: true });
 	}
 
-	// "The exceptions are Claude Fable 5.1 and Claude Mythos 5.1, which reject forced tool use on
-	// every request with a 400 error. On those models, use `tool_choice: {"type": "auto"}`."
-	// https://platform.claude.com/docs/en/build-with-claude/thinking
-	// Mythos 5.1 is named by the docs but is invite-only and absent from the live catalog, so this
-	// id test is forward-safe rather than inventing a catalog entry for it.
-	if (model.id.includes("fable-5-1") || model.id.includes("mythos-5-1")) {
+}
+
+// "The exceptions are Claude Fable 5.1 and Claude Mythos 5.1, which reject forced tool use on
+// every request with a 400 error. On those models, use `tool_choice: {"type": "auto"}`."
+// https://platform.claude.com/docs/en/build-with-claude/thinking
+//
+// Unlike the preserved-thinking flags above, this is a property of the *model*, not of Anthropic's
+// first-party endpoint: every mirror routes to the same model and receives the same 400. So this
+// rule is gated on the API that can express a forced choice, not on the provider. Mythos 5.1 is
+// named by the docs but is invite-only and absent from the live catalog, so its id test is
+// forward-safe rather than inventing a catalog entry.
+function applyForcedToolChoiceCompatMetadata(model: Model<Api>): void {
+	if (!/fable-5[-.]1|mythos-5[-.]1/.test(model.id)) return;
+	if (model.api === "anthropic-messages") {
 		mergeAnthropicMessagesCompat(model, { supportsForcedToolChoice: false });
+	} else if (model.api === "bedrock-converse-stream") {
+		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsForcedToolChoice: false };
 	}
 }
 
 // Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every request, and
 // OpenRouter's own `supported_parameters` for `anthropic/claude-fable-5.1` omits `temperature`.
-// The Anthropic Messages path already suppresses it via `isAnthropicTemperatureUnsupportedModel`;
-// the Bedrock Converse and OpenAI-completions paths emitted it unconditionally.
-// https://platform.claude.com/docs/en/build-with-claude/thinking
+// The Anthropic Messages path already suppresses it via `isAnthropicTemperatureUnsupportedModel`,
+// which matches the whole Fable family; the Bedrock Converse and OpenAI-completions paths emitted
+// it unconditionally. https://platform.claude.com/docs/en/build-with-claude/thinking
 //
-// Scoped to Claude Fable 5.1 rather than reusing the broader Anthropic predicate. That predicate
-// matches 23 Bedrock and 10 OpenAI-completions entries, and changing request bodies for 29 models
-// unrelated to this work is outside "the smallest production changes needed for the new model".
-// OpenRouter also reports `temperature` as *supported* for Opus 5 and Opus 4.8, contradicting
-// Anthropic upstream, so the predicate is not reliable at the mirror level either. Both notations
-// are matched: Bedrock uses dashes, OpenRouter and Vercel use a dot.
+// Matched on the Fable family rather than on Fable 5.1 alone, for three reasons: the same doc
+// sentence names Claude Fable 5 alongside Claude Fable 5.1; the Anthropic Messages path already
+// covers both, so a narrower rule here would leave the three APIs inconsistent; and a version-
+// scoped id test cannot reach OpenRouter's `~anthropic/claude-fable-latest` alias, which names no
+// version yet carries Fable 5.1's pricing and omits `temperature` from its own
+// `supported_parameters`. Every matched entry is covered by that one documented sentence.
+//
+// Deliberately *not* driven from provider metadata: 79 of OpenRouter's 419 models omit
+// `temperature` from `supported_parameters`, including the GPT-5 family, and OpenRouter reports it
+// as supported for Opus 5 and Opus 4.8 in contradiction of Anthropic's own docs.
 function applyFableTemperatureCompatMetadata(model: Model<Api>): void {
-	if (!/fable-5[-.]1/.test(model.id)) return;
+	if (!/claude-fable/.test(model.id)) return;
 	if (model.api === "bedrock-converse-stream") {
 		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsTemperature: false };
 	} else if (model.api === "openai-completions") {
@@ -992,6 +1006,16 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	}
 	if (model.id.includes("fable-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
+	}
+	// Anthropic publishes exactly five efforts for Claude Fable 5.1 — low, medium, high, xhigh,
+	// max — and no `minimal`. `getSupportedThinkingLevels` includes any level the map leaves
+	// undefined, so on the sparse Anthropic-side maps `minimal` was offered as a sixth option.
+	// It is not an API error (`mapThinkingLevelToEffort` collapses it to `low`), but it is not a
+	// level the model publishes, so deny it explicitly. The OpenRouter entries already carry a
+	// full map with `minimal: null` from models.dev `reasoning_options`, so this is a no-op there.
+	// https://platform.claude.com/docs/en/models/fable-5-1/overview
+	if (/fable-5[-.]1/.test(model.id)) {
+		mergeThinkingLevelMap(model, { minimal: null });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true });
@@ -2968,6 +2992,7 @@ async function generateModels() {
 		applyThinkingLevelMetadata(model);
 		applyStrictToolCompatMetadata(model);
 		applyPreservedThinkingCompatMetadata(model);
+		applyForcedToolChoiceCompatMetadata(model);
 		applyFableTemperatureCompatMetadata(model);
 		applyOpenAIGrammarToolCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);

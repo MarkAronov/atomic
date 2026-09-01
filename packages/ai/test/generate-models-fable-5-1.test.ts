@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
+import { getSupportedThinkingLevels } from "../src/models.ts";
+import type { Api, Model } from "../src/types.ts";
 
 /**
  * Deterministic generator regression for Claude Fable 5.1.
@@ -19,14 +21,17 @@ import { afterEach, test } from "vitest";
  * two Fable 5.1 mirrors come from those providers' own live APIs rather than being invented by
  * Atomic — the "no invented provider mirrors" criterion, checked rather than asserted.
  *
- * Two things deliberately are NOT asserted here:
- * - The $20 one-hour cache write is not a catalog field. It is derived at request time as
- *   `input * 2` (`models.ts`), and is covered in `anthropic-cache-write-1h-cost.test.ts`.
- * - The five-level effort set is not in the generated `thinkingLevelMap`. Anthropic models skip
- *   models.dev `reasoning_options` because `supportsDirectReasoningEffort` is evaluated before
- *   `forceAdaptiveThinking` is set, so the map is `{off, xhigh, max}` and the remaining levels
- *   are resolved at runtime by `mapThinkingLevelToEffort`. Encoding five levels here would pin
- *   an expectation the generator does not produce. Effort coverage lives in the payload tests.
+ * One thing deliberately is NOT asserted here: the $20 one-hour cache write is not a catalog
+ * field. It is derived at request time as `input * 2` (`models.ts`) and is covered in
+ * `anthropic-cache-write-1h-cost.test.ts`.
+ *
+ * The five published efforts *are* asserted, but through `getSupportedThinkingLevels` rather than
+ * through the raw map. Anthropic models skip models.dev `reasoning_options`, because
+ * `supportsDirectReasoningEffort` is evaluated before `forceAdaptiveThinking` is set, so the
+ * generated map is sparse and the middle levels resolve at runtime. A level the map leaves
+ * undefined is *offered*, which is how `minimal` — an effort Anthropic does not publish for this
+ * model — became selectable. Asserting the resolved level list is what pins the objective's
+ * effort clause; asserting the map alone would not have caught it.
  */
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -194,9 +199,21 @@ test("generates Claude Fable 5.1 with exact limits, pricing, thinking map, and c
 	// has no document content block. See `docs/models.md` for the user-facing statement.
 	assert.deepEqual(model.input, ["text", "image"]);
 
-	// Adaptive thinking is always on: `off` is denied. `xhigh` and `max` need an explicit
-	// mapping; the remaining levels resolve at runtime.
-	assert.deepEqual(model.thinkingLevelMap, { off: null, xhigh: "xhigh", max: "max" });
+	// Adaptive thinking is always on, so `off` is denied. `minimal` is denied too: Anthropic
+	// publishes exactly five efforts for this model and `minimal` is not among them, and
+	// `getSupportedThinkingLevels` treats an unmapped level as available. `xhigh` and `max` need
+	// an explicit mapping; `low`, `medium`, and `high` resolve at runtime.
+	assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: null, xhigh: "xhigh", max: "max" });
+
+	// The assertion that actually encodes the objective's effort clause. The map alone would not
+	// have caught `minimal` leaking in, because it leaked through the *absence* of a mapping.
+	assert.deepEqual(getSupportedThinkingLevels(model as unknown as Model<Api>), [
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max",
+	]);
 
 	assert.equal(model.compat?.forceAdaptiveThinking, true);
 	assert.equal(model.compat?.supportsTemperature, false);
@@ -249,7 +266,12 @@ test("generates every published Bedrock profile with its own pricing and no inve
 	for (const id of Object.keys(bedrock)) {
 		assert.equal(bedrock[id].contextWindow, 1_000_000, id);
 		assert.equal(bedrock[id].maxTokens, 128_000, id);
-		assert.deepEqual(bedrock[id].thinkingLevelMap, { off: null, xhigh: "xhigh", max: "max" }, id);
+		assert.deepEqual(bedrock[id].thinkingLevelMap, { off: null, minimal: null, xhigh: "xhigh", max: "max" }, id);
+		assert.deepEqual(
+			getSupportedThinkingLevels(bedrock[id] as unknown as Model<Api>),
+			["low", "medium", "high", "xhigh", "max"],
+			id,
+		);
 	}
 });
 

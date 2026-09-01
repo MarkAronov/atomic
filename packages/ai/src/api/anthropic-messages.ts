@@ -1231,11 +1231,22 @@ function buildParams(
 			// use on every request with a 400 error. On those models, use
 			// `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead."
 			// https://platform.claude.com/docs/en/build-with-claude/thinking
-			// Reachable through the exported `stream()`, whose `AnthropicOptions.toolChoice` admits
-			// the forced shapes that the narrower public `ToolChoice` does not. Downgrading keeps
-			// the request answerable; sending it unchanged is a guaranteed provider rejection.
-			params.tool_choice = { type: "auto" };
-		} else if (typeof requested === "string") {
+			//
+			// Reject the request rather than rewriting it. Silently substituting `auto` would
+			// discard an explicit caller instruction and make `AnthropicOptions.toolChoice`'s
+			// declared shape a lie; the caller asked the model to call a tool, and quietly asking
+			// it to decide instead is a different request. Failing here matches how this package
+			// handles other explicitly requested capabilities a model cannot honor, and surfaces
+			// the remedy before a round trip that would 400 anyway. Callers that want the
+			// substitution can make it themselves, and can branch on
+			// `model.compat.supportsForcedToolChoice` to decide.
+			const requestedLabel = typeof requested === "string" ? requested : `tool "${requested.name}"`;
+			throw new Error(
+				`Model ${model.id} does not support forced tool choice (requested: ${requestedLabel}). ` +
+					`Use toolChoice "auto" with strict tool use or structured outputs instead.`,
+			);
+		}
+		if (typeof requested === "string") {
 			params.tool_choice = { type: requested };
 		} else {
 			params.tool_choice = requested;

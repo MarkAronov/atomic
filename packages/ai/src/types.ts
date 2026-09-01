@@ -753,8 +753,9 @@ export interface AnthropicMessagesCompat {
 	 * `{"type": "tool", ...}`). Claude Fable 5.1 and Claude Mythos 5.1 reject it on every
 	 * request with a 400; Anthropic's guidance for those models is to use
 	 * `tool_choice: {"type": "auto"}` with strict tool use or structured outputs instead.
-	 * When false, the provider downgrades a forced choice to `auto` rather than sending a
-	 * request the model is guaranteed to reject. `auto` and `none` are never altered.
+	 * When false, the provider rejects a forced choice with an error rather than sending a
+	 * request the model is guaranteed to refuse, or silently substituting a different one.
+	 * `auto` and `none` are never altered.
 	 * https://platform.claude.com/docs/en/build-with-claude/thinking
 	 * Default: true.
 	 */
@@ -765,6 +766,15 @@ export interface AnthropicMessagesCompat {
 export interface BedrockCompat {
 	/** Whether the model supports Bedrock strict tool schemas. Default: false. */
 	supportsStrictMode?: boolean;
+	/**
+	 * Whether the model accepts forced tool use (`toolChoice` `"any"` or `{ type: "tool" }`).
+	 * Claude Fable 5.1 rejects it on every request with a 400, whichever platform serves the
+	 * model. When false, the provider rejects a forced choice with an error rather than sending
+	 * a request that is guaranteed to fail. `auto` and `none` are never altered.
+	 * https://platform.claude.com/docs/en/build-with-claude/thinking
+	 * Default: true.
+	 */
+	supportsForcedToolChoice?: boolean;
 	/**
 	 * Whether the model accepts `inferenceConfig.temperature`. Claude Fable 5.1 rejects
 	 * non-default `temperature`, `top_p`, and `top_k` on every request. When false, the

@@ -261,7 +261,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					...(options.temperature !== undefined &&
 						model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
 				},
-				toolConfig: convertToolConfig(context.tools, options.toolChoice, supportsStrictMode),
+				toolConfig: convertToolConfig(context.tools, options.toolChoice, supportsStrictMode, model),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
@@ -1108,9 +1108,25 @@ function convertToolConfig(
 	tools: Tool[] | undefined,
 	toolChoice: BedrockOptions["toolChoice"],
 	supportsStrictMode: boolean,
+	model: Model<"bedrock-converse-stream">,
 ): ToolConfiguration | undefined {
 	if (!tools?.length) return undefined;
 	if (toolChoice === "none") return undefined;
+
+	// Claude Fable 5.1 rejects forced tool use on every request with a 400, whichever platform
+	// serves it. Reject rather than silently rewriting to `auto`, which would discard an explicit
+	// caller instruction. Mirrors the guard in `anthropic-messages.ts`.
+	// https://platform.claude.com/docs/en/build-with-claude/thinking
+	if (model.compat?.supportsForcedToolChoice === false) {
+		const isForced = toolChoice === "any" || (typeof toolChoice === "object" && toolChoice.type === "tool");
+		if (isForced) {
+			const requestedLabel = typeof toolChoice === "string" ? toolChoice : `tool "${toolChoice.name}"`;
+			throw new Error(
+				`Model ${model.id} does not support forced tool choice (requested: ${requestedLabel}). ` +
+					`Use toolChoice "auto" with strict tool use or structured outputs instead.`,
+			);
+		}
+	}
 
 	const bedrockTools: BedrockTool[] = tools.map((tool) => {
 		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
