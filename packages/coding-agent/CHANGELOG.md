@@ -13,7 +13,7 @@
 ### Fixed
 
 - Fixed forking an in-memory (`--no-session`) session while a tool call was still running appending the aborted turn to the replacement session. The active turn is now settled before the fork ([#8937](https://github.com/earendil-works/pi/pull/8937)).
-- The built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tools now resolve relative paths against `ctx.cwd` when an extension supplies one, instead of the cwd captured when the tool was created ([#8627](https://github.com/earendil-works/pi/pull/8627)).
+- The built-in `read`, `write`, `edit`, `search`, `find`, `ls`, `bash`, and `powershell` tools now resolve relative paths against `ctx.cwd` when an extension supplies one, instead of the cwd captured when the tool was created ([#8627](https://github.com/earendil-works/pi/pull/8627)). Atomic's `search` wrapper has no upstream counterpart; without this it returned content from the extension cwd while stamping hashline tags from the tool's original cwd, so a search result could not be edited.
 - Custom provider model configs accept a `supportsMaxOutputTokens` compat flag, so openai-responses gateways that reject `max_output_tokens` can opt out ([#8941](https://github.com/earendil-works/pi/pull/8941)).
 
 ## [0.9.18-alpha.4] - 2026-09-01
