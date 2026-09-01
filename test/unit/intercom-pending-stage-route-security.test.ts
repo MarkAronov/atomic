@@ -416,6 +416,17 @@ test("invocation roster control is directional across owned subgroups", async ()
 	]);
 	await owner.listSessions();
 	assert.deepEqual((await owner.listDirectory()).workflowStages.map((stage) => stage.stageId).sort(), ["a", "b"]);
+	// Regression: #2784. Pin the allow half of directory authorization so the
+	// sibling-deny assertions cannot pass through an over-restrictive predicate.
+	const ownerSubgroupDirectory = await owner.listDirectory(subgroupB);
+	assert.deepEqual(
+		ownerSubgroupDirectory.sessions.map((session) => session.name),
+		["member-b"],
+	);
+	assert.deepEqual(
+		ownerSubgroupDirectory.workflowStages.map((stage) => stage.stageId),
+		["b"],
+	);
 	assert.deepEqual(
 		(await memberA.listDirectory()).workflowStages.map((stage) => stage.stageId),
 		["a"],
