@@ -192,7 +192,10 @@ describe("preserved thinking across mid-conversation model switches", () => {
 	// The capability is explicit generated metadata, not a global Anthropic-compatible heuristic.
 	// A provider that is not documented to adjudicate signatures keeps the old flattening behavior.
 	it("does not replay foreign thinking to providers without the delegation capability", () => {
-		const target = getModel("opencode", "claude-fable-5-1");
+		// opencode zen rides `anthropic-messages` but is not documented to adjudicate signatures,
+		// so it never receives the capability. Uses Claude Fable 5 rather than 5.1 because a
+		// third-party mirror of a specific version can disappear from its provider's catalog.
+		const target = getModel("opencode", "claude-fable-5");
 		expect(target.compat?.delegatesThinkingModelBinding).toBeUndefined();
 
 		const history = historyFrom("claude-opus-5").map((msg) =>

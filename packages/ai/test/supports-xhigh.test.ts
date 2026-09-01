@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getModel, getSupportedThinkingLevels } from "../src/compat.ts";
+import { getModel, getModels, getProviders, getSupportedThinkingLevels } from "../src/compat.ts";
 
 describe("getSupportedThinkingLevels", () => {
 	it("includes max but not xhigh for Anthropic Opus 4.6 on anthropic-messages API", () => {
@@ -59,16 +59,26 @@ describe("getSupportedThinkingLevels", () => {
 		expect(levels).not.toContain("off");
 	});
 
-	it("includes low/medium/high/xhigh/max but not off for OpenCode Claude Fable 5.1", () => {
-		const model = getModel("opencode", "claude-fable-5-1");
-		expect(model).toBeDefined();
-		const levels = getSupportedThinkingLevels(model!);
-		expect(levels).toContain("low");
-		expect(levels).toContain("medium");
-		expect(levels).toContain("high");
-		expect(levels).toContain("xhigh");
-		expect(levels).toContain("max");
-		expect(levels).not.toContain("off");
+	// Every generated `anthropic-messages` mirror of the model, discovered rather than pinned: a
+	// third-party mirror can disappear from its provider's catalog (opencode zen dropped this one
+	// mid-branch), and that is not a regression in Atomic.
+	it("includes low/medium/high/xhigh/max but not off for every Claude Fable 5.1 mirror", () => {
+		const mirrors = getProviders()
+			.flatMap((provider) => getModels(provider))
+			.filter((model) => model.api === "anthropic-messages" && /claude-fable-5[-.]1/.test(model.id));
+
+		expect(mirrors.map((model) => `${model.provider}/${model.id}`)).toContain("anthropic/claude-fable-5-1");
+		for (const model of mirrors) {
+			const label = `${model.provider}/${model.id}`;
+			const levels = getSupportedThinkingLevels(model);
+			expect(levels, label).toContain("low");
+			expect(levels, label).toContain("medium");
+			expect(levels, label).toContain("high");
+			expect(levels, label).toContain("xhigh");
+			expect(levels, label).toContain("max");
+			expect(levels, label).not.toContain("off");
+			expect(levels, label).not.toContain("minimal");
+		}
 	});
 
 	it("does not include xhigh or max for Claude Sonnet 4.5", () => {

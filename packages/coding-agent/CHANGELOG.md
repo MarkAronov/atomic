@@ -5,7 +5,7 @@
 ### Added
 
 - Documented the Zed integrated-terminal `keymap.json` bindings that make Zed emit the Kitty-protocol sequences Atomic reads for `Shift+Enter` and friends ([#8828](https://github.com/earendil-works/pi/pull/8828)).
-- Claude Fable 5.1 (`claude-fable-5-1`) is now selectable in Atomic on the providers it has a Claude runtime integration for — currently Anthropic, Amazon Bedrock, opencode zen, OpenRouter, and the Vercel AI Gateway, with a provider "latest" alias such as OpenRouter's `~anthropic/claude-fable-latest` also routing to it. It offers a 1M-token context window, 128K maximum output, always-on adaptive thinking at exactly `low`, `medium`, `high`, `xhigh`, or `max`, and a $0.25 per million cache read against Claude Fable 5's $1.00. Published catalogs also list the model on Google Vertex and Azure, which Atomic does not generate. Run `--list-models` for the current set; provider catalogs change independently of Atomic releases.
+- Claude Fable 5.1 (`claude-fable-5-1`) is now selectable in Atomic on the providers it has a Claude runtime integration for — currently Anthropic, Amazon Bedrock, OpenRouter, and the Vercel AI Gateway, with a provider "latest" alias such as OpenRouter's `~anthropic/claude-fable-latest` also routing to it. It offers a 1M-token context window, 128K maximum output, always-on adaptive thinking at exactly `low`, `medium`, `high`, `xhigh`, or `max`, and a $0.25 per million cache read against Claude Fable 5's $1.00. Published catalogs also list the model on Google Vertex and Azure, which Atomic does not generate. Run `--list-models` for the current set; provider catalogs change independently of Atomic releases.
 
 ### Changed
 

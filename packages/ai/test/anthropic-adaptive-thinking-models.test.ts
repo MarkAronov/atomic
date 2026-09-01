@@ -12,7 +12,6 @@ const EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS = [
 	"kimi-coding/kimi-for-coding",
 	"kimi-coding/k3",
 	"kimi-coding/kimi-for-coding-highspeed",
-	"opencode/claude-fable-5-1",
 	"opencode/claude-opus-4-8",
 	"opencode/claude-opus-5",
 	"vercel-ai-gateway/anthropic/claude-opus-4.8",

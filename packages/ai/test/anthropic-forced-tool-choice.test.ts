@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { type AnthropicOptions, stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { type OpenAICompletionsOptions, stream as streamCompletions } from "../src/api/openai-completions.ts";
-import { getModel } from "../src/compat.ts";
-import type { Context, Model, Tool } from "../src/types.ts";
+import { getModel, getModels, getProviders } from "../src/compat.ts";
+import type { Api, Context, Model, Tool } from "../src/types.ts";
 
 /**
  * Forced tool choice on Claude Fable 5.1.
@@ -164,23 +164,35 @@ async function completionsErrorMessage(
 	return result.errorMessage ?? "";
 }
 
-/** The `anthropic-messages` mirrors of Claude Fable 5.1, read per provider so `getModel` narrows. */
+/**
+ * Every generated `anthropic-messages` mirror of Claude Fable 5.1, discovered from the catalog
+ * rather than hard-coded.
+ *
+ * Third-party mirrors come and go: opencode zen carried `claude-fable-5-1` earlier in this
+ * branch's life and had dropped it by the time this was written. Pinning a provider list here
+ * would make these tests fail on someone else's catalog change rather than on a real regression.
+ * The first-party Anthropic entry is asserted separately, since that one is the objective's
+ * actual subject and must always be present.
+ */
 function anthropicMessagesFable51Mirrors(): Array<{ label: string; model: Model<"anthropic-messages"> }> {
-	return [
-		{ label: "anthropic/claude-fable-5-1", model: getModel("anthropic", "claude-fable-5-1") },
-		{ label: "opencode/claude-fable-5-1", model: getModel("opencode", "claude-fable-5-1") },
-		{
-			label: "vercel-ai-gateway/anthropic/claude-fable-5.1",
-			model: getModel("vercel-ai-gateway", "anthropic/claude-fable-5.1"),
-		},
-	];
+	return getProviders()
+		.flatMap((provider) => getModels(provider) as Model<Api>[])
+		.filter(
+			(model): model is Model<"anthropic-messages"> =>
+				model.api === "anthropic-messages" && /claude-fable-5[-.]1/.test(model.id),
+		)
+		.map((model) => ({ label: `${model.provider}/${model.id}`, model }));
 }
 
 describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 	// Every mirror that can express a forced choice must carry the flag: the model returns the
 	// same 400 whichever platform serves it.
 	it("marks every anthropic-messages mirror as rejecting forced tool choice", () => {
-		for (const { label, model } of anthropicMessagesFable51Mirrors()) {
+		const mirrors = anthropicMessagesFable51Mirrors();
+
+		// The first-party entry is the objective's subject and must always be generated.
+		expect(mirrors.map((m) => m.label)).toContain("anthropic/claude-fable-5-1");
+		for (const { label, model } of mirrors) {
 			expect(model.compat?.supportsForcedToolChoice, label).toBe(false);
 		}
 	});
