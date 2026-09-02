@@ -114,6 +114,8 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		reason:
 			"Legacy workflow-stage targets in the `<runId>:<stageKey>` form are no longer supported. Use the canonical `workflow:<rootRunId>/<segment>` path form. Use `workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer` for this stage.",
 	});
+	// Slice 3 (D3): pattern targets route to the pending-stage bridge like unresolved
+	// exact targets; the broker no longer refuses them at parse time.
 	handleBrokerSend(
 		socket,
 		{ type: "send", to: `workflow:${RUN_ID}/reviewer-*`, message: message("pattern") },
@@ -121,12 +123,15 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		sessions,
 		new DeliveredMessageCache(),
 		(_target, value) => writes.push(value),
+		undefined,
+		undefined,
+		route,
 	);
-	assert.deepEqual(writes.at(-1), {
-		type: "delivery_failed",
-		messageId: "pattern",
-		reason: "Workflow-stage pattern targets are parsed but not yet supported",
-	});
+	assert.deepEqual(routed, [TARGET, `workflow:${RUN_ID}/reviewer-*`]);
+	// No delivery failure is written for the pattern target; the route owns the answer.
+	assert.equal(writes.length, 2);
+	assert.equal(writes.at(-1)?.type, "delivery_failed");
+	assert.equal((writes.at(-1) as { messageId?: string }).messageId, "legacy");
 });
 
 test("live workflow stage targets still deliver immediately before pending-stage fallback", () => {
@@ -319,21 +324,27 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		dispose();
 	});
 
-	test("refuses an unknown stage key under a known run without queueing", async () => {
+	test("accepts an unknown stage key speculatively as a sticky entry (slice 3, D3/D4)", async () => {
 		const { store, request, dispose } = harness();
 		const { payload, result } = await request("1", GROUP, "unknown-stage");
-		assert.equal(payload.handled, false);
-		assert.equal(result, undefined);
+		assert.equal(payload.handled, true);
+		assert.deepEqual(result, { outcome: "queued", position: 1, notInKnownSet: true });
+		// Exact lookups stay empty: the entry is sticky and keyed by the verbatim target.
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
+		const entry = store.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(entry?.sticky, true);
+		assert.equal(entry?.targetPath, `workflow:${RUN_ID}/unknown-stage`);
 		dispose();
 	});
 
 	test("validates the stage before refusing an ask", async () => {
 		const { store, request, dispose } = harness();
 		const ask = { ...message("ask"), expectsReply: true };
+		// A future-stage target refuses the ask through the sticky flow (slice 3).
 		const unknown = await request("ask", GROUP, "unknown-stage", ask);
-		assert.equal(unknown.payload.handled, false);
-		assert.equal(unknown.result, undefined);
+		assert.equal(unknown.payload.handled, true);
+		assert.deepEqual(unknown.result, { outcome: "refused", reason: PENDING_STAGE_ASK_REFUSAL });
+		assert.deepEqual(store.runs()[0]?.pendingStageMessages ?? [], []);
 		const pending = await request("ask", GROUP, "reviewer", ask);
 		assert.equal(pending.payload.handled, true);
 		assert.deepEqual(pending.result, {
