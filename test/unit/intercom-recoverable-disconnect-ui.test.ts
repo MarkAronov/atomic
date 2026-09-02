@@ -31,16 +31,16 @@ import { setImmediate as tick } from "node:timers/promises";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { runGenericHandlers } from "../../packages/coding-agent/src/core/extensions/runner-events.ts";
+import { runGenericHandlers } from "../../packages/coding-agent/src/core/extensions/runner-events.js";
 import type {
 	Extension,
 	ExtensionContext,
 	ExtensionError,
-} from "../../packages/coding-agent/src/core/extensions/types.ts";
+} from "../../packages/coding-agent/src/core/extensions/types.js";
 import intercom from "../../packages/intercom/index.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
-import { sleep } from "../helpers/runtime.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
