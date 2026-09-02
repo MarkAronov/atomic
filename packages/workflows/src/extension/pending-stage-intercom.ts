@@ -2,7 +2,11 @@ import { getDurableBackend } from "../durable/factory.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
-import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
+import {
+	stageMatchesPathPattern,
+	workflowBoundaryHops,
+	workflowBoundarySegments,
+} from "../shared/pending-stage-status.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type {
@@ -12,7 +16,7 @@ import type {
 	PendingStageSender,
 	PendingStickyStageMessageInput,
 } from "../shared/store-types.js";
-import { matchStagePathSegments, targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
+import { targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
 import {
 	formatWorkflowStageTarget,
 	parseWorkflowStageTarget,
@@ -158,21 +162,39 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			stageKey: destination.stage.id,
 			target: payload.target,
 		};
-		const live = destination.stage.sessionId !== undefined || destination.stage.sessionFile !== undefined;
-		if (payload.live === true || live) {
+		const stage = destination.stage;
+		const live = stage.sessionId !== undefined || stage.sessionFile !== undefined;
+		// A terminal stage (completed/skipped/failed — e.g. reviewer-a after iteration 1)
+		// cannot take a live forward: its alias is stale, so today's forward would fail
+		// with "Session not found" (round-1 review). D3 keeps exactly-once queueing only
+		// for materialized pending stages; a target that resolves to a terminal stage
+		// falls through to the sticky branch so the next matching occurrence receives it.
+		const stageTerminal = stage.status === "completed" || stage.status === "skipped" || stage.status === "failed";
+		if (payload.live === true || (live && !stageTerminal)) {
 			payload.handled = true;
 			payload.completion = validateLiveDelivery(activeStore, resolvedEvent).then((result) =>
 				result.outcome === "forward"
 					? {
 							outcome: "forward" as const,
-							target: stageRouteTarget(runs, rootRunId, destination.run.id, destination.stage.id),
+							target: stageRouteTarget(runs, rootRunId, destination.run.id, stage.id),
 						}
 					: result,
 			);
 			return;
 		}
-		const stage = knownUninitializedStage(destination.run, destination.stage.id);
-		if (stage === undefined) return;
+		const uninitializedStage = knownUninitializedStage(destination.run, stage.id);
+		if (uninitializedStage === undefined) {
+			// Not live (the branch above took every live send) and not an exact
+			// uninitialized stage: queue sticky for the next matching occurrence. Asks to
+			// a resolved-but-terminal stage keep today's unknown-target refusal — only
+			// future/pattern targets classify as pending_stage_ask_unsupported.
+			if (payload.message.expectsReply === true) return;
+			const stickyRoot = runs.find((candidate) => candidate.id === parsedTarget.rootRunId);
+			if (stickyRoot === undefined || isTerminalRunStatus(stickyRoot.status)) return;
+			payload.handled = true;
+			payload.completion = deliverStickyTarget(activeStore, runs, stickyRoot, payload, parsedTarget);
+			return;
+		}
 		payload.handled = true;
 		payload.completion = queueAndPersist(
 			activeStore,
@@ -461,7 +483,7 @@ async function deliverStickyTarget(
 	};
 }
 
-/** Live stages of the invocation whose depth-faithful name/id path matches the target segments. */
+/** Live stages of the invocation whose depth-faithful path (per D5 hop spellings) matches the target segments. */
 function matchingLiveStages(
 	runs: ReturnType<Store["runs"]>,
 	rootRunId: string,
@@ -478,8 +500,8 @@ function matchingLiveStages(
 	}[] = [];
 	for (const run of runs) {
 		if (durableRootRunIdForRun(runs, run.id) !== rootRunId) continue;
-		const boundaries = workflowBoundarySegments(runs, run.id);
-		if (boundaries === undefined) continue;
+		const hops = workflowBoundaryHops(runs, run.id);
+		if (hops === undefined) continue;
 		for (const stage of run.stages) {
 			const live = stage.sessionId !== undefined || stage.sessionFile !== undefined;
 			if (!live || stage.pendingStageDeliveryAvailable !== true) continue;
@@ -492,11 +514,12 @@ function matchingLiveStages(
 			) {
 				continue;
 			}
-			const idTarget = formatWorkflowStageTarget(rootRunId, ...boundaries, stage.id);
-			const nameTarget = formatWorkflowStageTarget(rootRunId, ...boundaries, stage.name);
-			const idMatch = matchStagePathSegments(patternSegments, idTarget.split("/").slice(1));
-			const nameMatch = matchStagePathSegments(patternSegments, nameTarget.split("/").slice(1));
-			if (idMatch || nameMatch) matches.push({ run, stage, target: idTarget });
+			const idTarget = formatWorkflowStageTarget(rootRunId, ...hops.map((hop) => hop.name), stage.id);
+			if (stageMatchesPathPattern(patternSegments, hops, [stage.id, stage.name])) {
+				// The forward target stays in the announced boundary-name form: the broker's
+				// live aliases are built from the roster's advertised targets.
+				matches.push({ run, stage, target: idTarget });
+			}
 		}
 	}
 	return matches;

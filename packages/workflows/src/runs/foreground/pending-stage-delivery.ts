@@ -10,10 +10,9 @@ type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 import { getDurableBackend } from "../../durable/factory.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../../durable/run-owner-backend.js";
 import { workflowPendingStageRouteCapability } from "../../shared/pending-stage-route-capability.js";
-import { workflowBoundarySegments } from "../../shared/pending-stage-status.js";
+import { stageMatchesPathPattern, workflowBoundaryHops } from "../../shared/pending-stage-status.js";
 import type { Store } from "../../shared/store.js";
 import type { PendingStageMessage } from "../../shared/store-types.js";
-import { matchStagePathSegments } from "../../shared/workflow-stage-path-matching.js";
 import { parseWorkflowStageTarget } from "../../shared/workflow-stage-target.js";
 
 const pendingDeliveryClaims = new WeakMap<Store, Set<string>>();
@@ -109,7 +108,13 @@ async function deliverPendingStageMessages(
 		throw new Error(`atomic-workflows: workflow run ${runId} has no durable owner for pending-stage delivery`);
 	}
 	for (const entry of entries) {
-		const releaseClaim = claimPendingDelivery(activeStore, entry.runId, entry.stageKey, entry.id);
+		// Sticky entries are claimed per (entry, delivering stage): the stageKey is the
+		// shared target path, so without the stage identity two concurrently draining
+		// matching stages (ctx.parallel) would race and the loser would silently skip
+		// the entry (round-1 review). Exact entries consume the whole entry on delivery,
+		// so their per-entry claim is already exclusive.
+		const claimOwner = entry.sticky === true ? `${entry.runId}\u0000${runId}:${stageId}` : entry.runId;
+		const releaseClaim = claimPendingDelivery(activeStore, claimOwner, entry.stageKey, entry.id);
 		if (releaseClaim === undefined) continue;
 		try {
 			await deliver(toPendingStageSender(entry), entry.message);
@@ -174,12 +179,11 @@ function stickyPendingStageEntriesForStage(
 	if (rootRunId === undefined) return [];
 	const rootRun = runs.find((run) => run.id === rootRunId);
 	if (rootRun === undefined) return [];
-	// `workflowBoundarySegments` already excludes the root hop, matching the coordinate
-	// system of a parsed target's segments (everything after `workflow:<rootRunId>/`).
-	const boundaries = workflowBoundarySegments(runs, runId);
-	if (boundaries === undefined) return [];
-	const idPath = [...boundaries, stageId];
-	const namePath = [...boundaries, stageName];
+	// Hops keep both depth-faithful spellings per ancestor (boundary-stage name or
+	// materialized child-run id, D5/D8 clarification), so a sticky target addressed
+	// through a materialized run id matches the same future stage as the name form.
+	const hops = workflowBoundaryHops(runs, runId);
+	if (hops === undefined) return [];
 	return (rootRun.pendingStageMessages ?? []).filter((entry) => {
 		if (entry.sticky !== true || entry.status !== "queued") return false;
 		const parsed = entry.targetPath === undefined ? undefined : parseWorkflowStageTarget(entry.targetPath);
@@ -187,7 +191,7 @@ function stickyPendingStageEntriesForStage(
 		if ((entry.deliveries ?? []).some((delivery) => delivery.runId === runId && delivery.stageId === stageId)) {
 			return false;
 		}
-		return matchStagePathSegments(parsed.segments, idPath) || matchStagePathSegments(parsed.segments, namePath);
+		return stageMatchesPathPattern(parsed.segments, hops, [stageId, stageName]);
 	});
 }
 
