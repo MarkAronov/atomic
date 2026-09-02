@@ -640,8 +640,7 @@ function collectLocalArrays(tokens: readonly Token[]): Map<string, readonly (rea
 		if (declaration === undefined) continue;
 		index = declaration.end - 1;
 		if (declaration.init[0]?.kind === "punct" && declaration.init[0]!.value === "[") {
-			const elements = arrayElements(declaration.init);
-			if (elements !== undefined) arrays.set(declaration.name, elements);
+			arrays.set(declaration.name, arrayElements(declaration.init));
 		}
 	}
 	return arrays;
