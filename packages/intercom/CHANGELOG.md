@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.18-alpha.5] - 2026-09-01
+
 ### Fixed
 
 - A failed background reconnect no longer strands a live Intercom session. The next attempt is now scheduled after reconnect ownership is released, so a session whose broker restarts recovers on its own with bounded backoff instead of staying invisible until the next explicit Intercom call. A failing explicit `intercom` or overlay connection now leaves the same background retry behind rather than cancelling the one already scheduled, and a connection attempt that fails before it suspends can no longer park a settled promise in the reconnect slot and block every later attempt.

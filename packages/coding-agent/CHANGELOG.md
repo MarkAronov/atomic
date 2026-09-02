@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.18-alpha.5] - 2026-09-01
+
 ### Added
 
 - Documented the Zed integrated-terminal `keymap.json` bindings that make Zed emit the Kitty-protocol sequences Atomic reads for `Shift+Enter` and friends ([#8828](https://github.com/earendil-works/pi/pull/8828)).
