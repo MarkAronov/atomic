@@ -23,7 +23,7 @@ import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
-const TARGET = `${RUN_ID}:reviewer`;
+const TARGET = `workflow:${RUN_ID}/reviewer`;
 
 const tempDirs: string[] = [];
 
@@ -57,8 +57,8 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 	const sessions = new Map([["sender-id", sender(socket)]]);
 	const writes: BrokerMessage[] = [];
 	const routed: string[] = [];
-	const route = (input: { readonly runId: string; readonly stageKey: string }): boolean => {
-		routed.push(`${input.runId}:${input.stageKey}`);
+	const route = (input: { readonly target: string }): boolean => {
+		routed.push(input.target);
 		return true;
 	};
 	handleBrokerSend(
@@ -92,6 +92,40 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 		messageId: "missing",
 		attemptId: undefined,
 		reason: "Session not found",
+	});
+
+	handleBrokerSend(
+		socket,
+		{ type: "send", to: `${RUN_ID}:reviewer`, message: message("legacy") },
+		"sender-id",
+		sessions,
+		new DeliveredMessageCache(),
+		(_target, value) => writes.push(value),
+		undefined,
+		undefined,
+		route,
+		undefined,
+		undefined,
+		() => TARGET,
+	);
+	assert.deepEqual(writes.at(-1), {
+		type: "delivery_failed",
+		messageId: "legacy",
+		reason:
+			"Legacy workflow-stage targets in the `<runId>:<stageKey>` form are no longer supported. Use the canonical `workflow:<rootRunId>/<segment>` path form. Use `workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer` for this stage.",
+	});
+	handleBrokerSend(
+		socket,
+		{ type: "send", to: `workflow:${RUN_ID}/reviewer-*`, message: message("pattern") },
+		"sender-id",
+		sessions,
+		new DeliveredMessageCache(),
+		(_target, value) => writes.push(value),
+	);
+	assert.deepEqual(writes.at(-1), {
+		type: "delivery_failed",
+		messageId: "pattern",
+		reason: "Workflow-stage pattern targets are parsed but not yet supported",
 	});
 });
 
@@ -189,14 +223,14 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 				requestId: string;
 				from: SessionInfo;
 				runId: string;
-				stageKey: string;
+				target: string;
 				message: Message;
 			} = {
 				handled: false,
 				requestId: `request-${id}`,
 				from: { ...sender({} as net.Socket).info, group },
 				runId: RUN_ID,
-				stageKey,
+				target: `workflow:${RUN_ID}/${stageKey}`,
 				message: messageOverride,
 			};
 			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
@@ -229,7 +263,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			{
 				stageId: "reviewer-id",
 				stageName: "reviewer",
-				target: `${RUN_ID}:reviewer-id`,
+				target: `workflow:${RUN_ID}/reviewer-id`,
 				lifecycle: "pending",
 				routeEligible: true,
 				group: `workflow:${RUN_ID}`,
@@ -249,7 +283,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		}
 		assert.deepEqual((await request("51", GROUP, "reviewer-id")).result, {
 			outcome: "refused",
-			reason: `Pending stage message queue is full (limit 50) for ${RUN_ID}:reviewer-id`,
+			reason: `Pending stage message queue is full (limit 50) for workflow:${RUN_ID}/reviewer-id`,
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 50);
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer-id").length, 50);
@@ -277,7 +311,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			).result,
 			{
 				outcome: "refused",
-				reason: `Intercom message ID 'stable' was already queued for ${RUN_ID}:reviewer-id with a different target, sender, or payload`,
+				reason: `Intercom message ID 'stable' was already queued for workflow:${RUN_ID}/reviewer-id with a different target, sender, or payload`,
 			},
 		);
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
@@ -400,13 +434,13 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			completion?: Promise<{ readonly outcome: "queued"; readonly position: number }>;
 			from: SessionInfo;
 			runId: string;
-			stageKey: string;
+			target: string;
 			message: Message;
 		} = {
 			handled: false,
 			from: sender({} as net.Socket).info,
 			runId: childRunId,
-			stageKey: "reviewer",
+			target: `workflow:${RUN_ID}/${childRunId}/reviewer`,
 			message: nestedMessage,
 		};
 
@@ -414,6 +448,16 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 
 		assert.equal(payload.handled, true);
 		assert.deepEqual(await payload.completion, { outcome: "queued", position: 1 });
+		const boundaryPayload: typeof payload = {
+			handled: false,
+			from: sender({} as net.Socket).info,
+			runId: RUN_ID,
+			target: `workflow:${RUN_ID}/workflow:child/reviewer`,
+			message: nestedMessage,
+		};
+		listeners.get("atomic:workflow-pending-stage-message")?.(boundaryPayload);
+		assert.equal(boundaryPayload.handled, true);
+		assert.deepEqual(await boundaryPayload.completion, { outcome: "queued", position: 1 });
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "root-reviewer")[0]?.message.id, rootMessage.id);
 		assert.equal(store.pendingStageMessagesFor(childRunId, "reviewer")[0]?.message.id, nestedMessage.id);
 		assert.equal(backend.getWorkflow(childRunId), undefined);

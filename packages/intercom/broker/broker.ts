@@ -14,15 +14,11 @@ import type {
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
 } from "../types.js";
+import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../workflow-stage-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
-import {
-  handleBrokerSend,
-  parsePendingStageTarget,
-  type BrokerConnectedSession,
-  type PendingStageRoute,
-} from "./send-handler.js";
+import { handleBrokerSend, type BrokerConnectedSession, type PendingStageRoute } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -59,8 +55,8 @@ interface PendingStageAcknowledgment {
   readonly senderSocket: net.Socket;
   readonly messageId: string;
   readonly attemptId?: string;
-  readonly runId: string;
-  readonly stageKey: string;
+	readonly runId: string;
+	readonly target: string;
 	readonly senderSessionId: string;
 	readonly sender: SessionInfo;
 	readonly message: Message;
@@ -139,19 +135,21 @@ function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): b
 function isWorkflowStageRosterAnnouncements(value: unknown, runId: string): value is WorkflowStageRosterAnnouncement[] {
 	return (
 		Array.isArray(value) &&
-		value.every(
-			(stage) =>
-				typeof stage === "object" &&
-				stage !== null &&
-				typeof (stage as WorkflowStageRosterAnnouncement).stageId === "string" &&
-				typeof (stage as WorkflowStageRosterAnnouncement).stageName === "string" &&
-				(stage as WorkflowStageRosterAnnouncement).target ===
-					`${runId}:${(stage as WorkflowStageRosterAnnouncement).stageId}` &&
-				((stage as WorkflowStageRosterAnnouncement).lifecycle === "pending" ||
-					(stage as WorkflowStageRosterAnnouncement).lifecycle === "running") &&
-				typeof (stage as WorkflowStageRosterAnnouncement).routeEligible === "boolean" &&
-				typeof (stage as WorkflowStageRosterAnnouncement).group === "string"
-		)
+		value.every((stage) => {
+			if (typeof stage !== "object" || stage === null) return false;
+			const announcement = stage as WorkflowStageRosterAnnouncement;
+			const parsed = parseWorkflowStageTarget(announcement.target);
+			return (
+				typeof announcement.stageId === "string" &&
+				typeof announcement.stageName === "string" &&
+				parsed?.kind === "path" &&
+				parsed.segments.at(-1) === announcement.stageId &&
+				(runId === parsed.rootRunId || parsed.segments.slice(0, -1).includes(runId)) &&
+				(announcement.lifecycle === "pending" || announcement.lifecycle === "running") &&
+				typeof announcement.routeEligible === "boolean" &&
+				typeof announcement.group === "string"
+			);
+		})
 	);
 }
 
@@ -227,21 +225,46 @@ class IntercomBroker {
       }
     }, 5000);
   }
-  private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
-    const registration = this.liveWorkflowStageRoutes.get(target);
-    if (registration === undefined) return undefined;
-		const parsedTarget = parsePendingStageTarget(target);
-		const currentOwner = parsedTarget === undefined ? undefined : this.pendingStageRoutes.get(parsedTarget.runId);
+	private pendingStageOwnerForTarget(
+		target: string,
+	): { readonly runId: string; readonly registration: PendingStageRouteRegistration } | undefined {
+		const parsed = parseWorkflowStageTarget(target);
+		if (parsed === undefined || parsed.kind !== "path") return undefined;
+		const invocationGroup = normalizeGroup(`workflow:${parsed.rootRunId}`);
+		let ownerRunId = parsed.rootRunId;
+		let registration = this.pendingStageRoutes.get(ownerRunId);
+		for (const segment of parsed.segments.slice(0, -1)) {
+			const candidate = this.pendingStageRoutes.get(segment);
+			if (candidate !== undefined && normalizeGroup(candidate.group) === invocationGroup) {
+				ownerRunId = segment;
+				registration = candidate;
+			}
+		}
+		return registration === undefined ? undefined : { runId: ownerRunId, registration };
+	}
+
+	private resolveLegacyWorkflowStageTarget = (runId: string, stageKey: string): string | undefined => {
+		const route = this.pendingStageRoutes.get(runId);
+		const roster = this.workflowRosters.get(runId);
+		if (route === undefined || roster === undefined || !route.group.startsWith("workflow:")) return undefined;
+		const matches = roster.stages.filter((stage) => stage.stageId === stageKey || stage.stageName === stageKey);
+		return matches.length === 1 ? matches[0]!.target : undefined;
+	};
+
+	private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
+		const registration = this.liveWorkflowStageRoutes.get(target);
+		if (registration === undefined) return undefined;
+		const currentOwner = this.pendingStageOwnerForTarget(target)?.registration;
 		if (currentOwner === undefined) return undefined;
 		if (currentOwner.capability !== registration.capability) {
 			this.liveWorkflowStageRoutes.delete(target);
 			return undefined;
 		}
-    const session = this.sessions.get(registration.sessionId);
-    if (session !== undefined) return session;
-    this.liveWorkflowStageRoutes.delete(target);
-    return undefined;
-  };
+		const session = this.sessions.get(registration.sessionId);
+		if (session !== undefined) return session;
+		this.liveWorkflowStageRoutes.delete(target);
+		return undefined;
+	};
 
 	private canInspectSelectedGroup(requester: ConnectedSession, selectedGroup: string): boolean {
 		const selected = normalizeGroup(selectedGroup);
@@ -270,13 +293,15 @@ class IntercomBroker {
 		target: ConnectedSession,
 		logicalTarget: string,
 	): boolean => {
-		const parsed = parsePendingStageTarget(logicalTarget);
-		const owner = parsed === undefined ? undefined : this.pendingStageRoutes.get(parsed.runId);
+		const owner = this.pendingStageOwnerForTarget(logicalTarget)?.registration;
 		const live = this.liveWorkflowStageRoutes.get(logicalTarget);
 		if (owner === undefined || live?.sessionId !== target.info.id) return false;
 		const targetGroup = target.registrationGroup ?? target.info.group ?? "default";
 		return this.canControlWorkflowInvocation(sender, owner.group) && invocationOwnsGroup(owner.group, targetGroup);
 	};
+
+	// `send`/`ask` always resolve this namespace as a stage target. `list({ group })`
+	// remains the only operation that interprets the same path as an owned subgroup.
 
 	private workflowStagesVisibleTo(requester: ConnectedSession, selectedGroup?: string): WorkflowStageRosterEntry[] {
 	const requesterGroups = sessionGroups(requester.info);
@@ -333,10 +358,14 @@ class IntercomBroker {
     stageKeys: readonly string[],
     capability: string,
   ): boolean {
-    const uniqueStageKeys = [...new Set(stageKeys)];
-    const targets = uniqueStageKeys.map((stageKey) => `${runId}:${stageKey}`);
-    for (const target of targets) {
-      const existing = this.liveWorkflowStageRoutes.get(target);
+		const uniqueStageKeys = [...new Set(stageKeys)];
+		const owner = this.pendingStageRoutes.get(runId);
+		if (owner === undefined || !owner.group.startsWith("workflow:")) return false;
+		const rootRunId = owner.group.slice("workflow:".length);
+		const prefix = runId === rootRunId ? [] : [runId];
+		const targets = uniqueStageKeys.map((stageKey) => formatWorkflowStageTarget(rootRunId, ...prefix, stageKey));
+		for (const target of targets) {
+			const existing = this.liveWorkflowStageRoutes.get(target);
       if (
         existing !== undefined &&
         existing.sessionId !== currentId &&
@@ -350,7 +379,7 @@ class IntercomBroker {
     }
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]
-        .filter(([, pending]) => pending.runId === runId && uniqueStageKeys.includes(pending.stageKey))
+				.filter(([, pending]) => pending.runId === runId && uniqueStageKeys.includes(parseWorkflowStageTarget(pending.target)?.segments.at(-1) ?? ""))
         .map(([pendingRequestId]) => pendingRequestId),
     );
     this.liveWorkflowStageRouteActivations.set(requestId, { sessionId: currentId, pendingRequestIds });
@@ -358,14 +387,15 @@ class IntercomBroker {
     return true;
   }
 
-  private routePendingStage = (route: PendingStageRoute): boolean => {
-    const ownerRegistration = this.pendingStageRoutes.get(route.runId);
-    if (ownerRegistration === undefined) return false;
-    const owner = this.sessions.get(ownerRegistration.sessionId);
-    if (owner === undefined) {
-      this.pendingStageRoutes.delete(route.runId);
-      return false;
-    }
+	private routePendingStage = (route: PendingStageRoute): boolean => {
+		const ownerMatch = this.pendingStageOwnerForTarget(route.target);
+		if (ownerMatch === undefined) return false;
+		const { runId, registration: ownerRegistration } = ownerMatch;
+		const owner = this.sessions.get(ownerRegistration.sessionId);
+		if (owner === undefined) {
+			this.pendingStageRoutes.delete(runId);
+			return false;
+		}
     if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
       writeMessage(route.socket, {
         type: "delivery_failed",
@@ -393,8 +423,8 @@ class IntercomBroker {
       senderSocket: route.socket,
       messageId: route.message.id,
       ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-      runId: route.runId,
-      stageKey: route.stageKey,
+			runId,
+			target: route.target,
 		senderSessionId: route.from.info.id,
 		sender: { ...route.from.info },
 		message: route.message,
@@ -410,8 +440,8 @@ class IntercomBroker {
 		...(route.from.registrationReturnAddress === undefined
 			? {}
 			: { senderReturnAddress: route.from.registrationReturnAddress }),
-      runId: route.runId,
-      stageKey: route.stageKey,
+			runId,
+			target: route.target,
       message: route.message,
 		...(route.liveTargetId === undefined ? {} : { live: true }),
     });
@@ -423,6 +453,7 @@ class IntercomBroker {
 		requestId: string,
 		outcome: "queued" | "delivered" | "forward" | "refused",
 		position: number | undefined,
+		forwardTarget: string | undefined,
 		reason: string | undefined,
 		reasonCode: "message_id_conflict" | undefined,
 	): void {
@@ -432,7 +463,7 @@ class IntercomBroker {
 		this.pendingStageAcknowledgments.delete(requestId);
 		this.releasePendingStageAcknowledgment(requestId);
 		if (outcome === "forward") {
-			this.forwardValidatedLiveStageMessage(pending);
+			this.forwardValidatedLiveStageMessage(pending, forwardTarget);
 			return;
 		}
 		if (outcome === "delivered") {
@@ -448,8 +479,7 @@ class IntercomBroker {
 				type: "queued",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				runId: pending.runId,
-				stageKey: pending.stageKey,
+				target: pending.target,
 				position,
 			});
 			return;
@@ -463,13 +493,13 @@ class IntercomBroker {
 		});
 	}
 
-	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment): void {
+	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment, forwardTarget?: string): void {
 		const from = this.sessions.get(pending.senderSessionId);
-		const target = this.resolveLiveWorkflowStage(`${pending.runId}:${pending.stageKey}`);
+		const target = this.resolveLiveWorkflowStage(forwardTarget ?? pending.target);
 		if (
 			from === undefined ||
 			target === undefined ||
-			target.info.id !== pending.liveTargetId ||
+			(pending.liveTargetId !== undefined && target.info.id !== pending.liveTargetId) ||
 			pending.signature === undefined
 		) {
 			writeMessage(pending.senderSocket, {
@@ -892,7 +922,7 @@ class IntercomBroker {
             (stageKey) =>
               typeof stageKey === "string" &&
               stageKey.length > 0 &&
-              parsePendingStageTarget(`${clientMessage.runId}:${stageKey}`) !== undefined,
+				!stageKey.includes("/") && !stageKey.includes("*")
           )
         ) {
           throw new Error("Invalid live workflow-stage route registration");
@@ -933,6 +963,8 @@ class IntercomBroker {
 				clientMessage.outcome !== "forward" &&
 				clientMessage.outcome !== "refused") ||
 			(clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
+			(clientMessage.target !== undefined && typeof clientMessage.target !== "string") ||
+			(clientMessage.outcome === "forward" && typeof clientMessage.target !== "string") ||
 			(clientMessage.reason !== undefined && typeof clientMessage.reason !== "string") ||
 			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict")
         ) {
@@ -943,6 +975,7 @@ class IntercomBroker {
           clientMessage.requestId,
           clientMessage.outcome,
           clientMessage.position,
+			clientMessage.target,
 			clientMessage.reason,
 			clientMessage.reasonCode,
         );
@@ -963,6 +996,7 @@ class IntercomBroker {
 				this.routePendingStage,
 				this.resolveLiveWorkflowStage,
 				this.canControlLiveWorkflowStage,
+				this.resolveLegacyWorkflowStageTarget,
 			);
 			break;
 		}

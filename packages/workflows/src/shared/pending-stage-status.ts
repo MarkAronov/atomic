@@ -1,6 +1,7 @@
 import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
 import { isTerminalRunStatus } from "./store-internal.js";
 import type { RunSnapshot, RunStatus, StageSnapshot } from "./store-types.js";
+import { formatWorkflowStageTarget } from "./workflow-stage-target.js";
 
 /** Actionable identity and pre-start delivery state for one materialized pending stage. */
 export interface PendingWorkflowStageStatus {
@@ -13,6 +14,7 @@ export interface PendingWorkflowStageStatus {
 }
 type PendingWorkflowRun = {
 	readonly id: string;
+	readonly rootRunId?: string;
 	readonly status: RunStatus | "crashed";
 };
 export type PendingWorkflowRunStatusResolver = (runId: string) => RunStatus | "crashed" | undefined;
@@ -33,6 +35,7 @@ export function pendingWorkflowStageStatus(
 ): PendingWorkflowStageStatus | undefined {
 	if (stage.status !== "pending") return undefined;
 	const identity = pendingStageTarget(run.id, stage);
+	const rootRunId = run.rootRunId ?? run.id;
 	const owningRunStatus = identity.runId === run.id ? run.status : resolveOwningRunStatus?.(identity.runId);
 	const pendingStageDeliveryAvailable =
 		owningRunStatus !== undefined &&
@@ -44,7 +47,15 @@ export function pendingWorkflowStageStatus(
 		name: stage.name,
 		lifecycle: "pending",
 		pendingStageDeliveryAvailable,
-		...(pendingStageDeliveryAvailable ? { target: `${identity.runId}:${identity.stageId}` } : {}),
+		...(pendingStageDeliveryAvailable
+			? {
+					target: formatWorkflowStageTarget(
+						rootRunId,
+						...(identity.runId === rootRunId ? [] : [identity.runId]),
+						identity.stageId,
+					),
+				}
+			: {}),
 	};
 }
 

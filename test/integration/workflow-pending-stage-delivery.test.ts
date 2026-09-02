@@ -14,7 +14,7 @@ import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
-const TARGET = `${RUN_ID}:reviewer`;
+const TARGET = `workflow:${RUN_ID}/reviewer`;
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
 const BROKER_STARTUP_TIMEOUT_MS = 10_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -603,7 +603,7 @@ test("the production owner route preserves pending delivery through tool restric
 			const messageId = `${scenario.name}-message`;
 			raw.send({
 				type: "send",
-				to: `${scenario.runId}:reviewer`,
+				to: `workflow:${scenario.runId}/reviewer`,
 				message: { id: messageId, timestamp: 1, content: { text: scenario.name } },
 			});
 			const acknowledgment = await raw.nextDeliveryAcknowledgment(messageId);
@@ -611,8 +611,7 @@ test("the production owner route preserves pending delivery through tool restric
 				assert.deepEqual(acknowledgment, {
 					type: "queued",
 					messageId,
-					runId: scenario.runId,
-					stageKey: "reviewer",
+					target: `workflow:${scenario.runId}/reviewer`,
 					position: 1,
 				});
 				assert.equal(store.pendingStageMessagesFor(scenario.runId, "reviewer").length, 1);
@@ -621,7 +620,7 @@ test("the production owner route preserves pending delivery through tool restric
 				assert.deepEqual(acknowledgment, {
 					type: "delivery_failed",
 					messageId,
-					reason: `Workflow stage ${scenario.runId}:reviewer cannot receive Intercom messages before startup`,
+					reason: `Workflow stage workflow:${scenario.runId}/reviewer cannot receive Intercom messages before startup`,
 				});
 				assert.deepEqual(store.runs()[0]?.pendingStageMessages ?? [], []);
 				assert.deepEqual(backend.getWorkflow(scenario.runId)?.pendingStageMessages, []);
@@ -782,7 +781,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		const queued = await executeIntercom(workflowSender, {
 			action: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: "queued invocation control",
 		});
 		assert.equal(queued.isError, false);
@@ -794,12 +793,12 @@ test("an invocation controls pending and live delivery into an owned isolated st
 		let roster: Array<{ target: string; group: string }> = [];
 		for (let attempt = 0; attempt < 20 && roster.length === 0; attempt += 1) {
 			const listed = await executeIntercom(workflowSender, { action: "list" });
-			if ((listed.content[0]?.text ?? "").includes(`target: \`${runId}:`)) {
-				roster = [{ target: `${runId}:${store.runs()[0]?.stages[0]?.id}`, group: isolatedGroup }];
+			if ((listed.content[0]?.text ?? "").includes(`target: \`workflow:${runId}/`)) {
+				roster = [{ target: `workflow:${runId}/${store.runs()[0]?.stages[0]?.id}`, group: isolatedGroup }];
 			}
 			if (roster.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
 		}
-		const stageTarget = `${runId}:${store.runs()[0]?.stages[0]?.id}`;
+		const stageTarget = `workflow:${runId}/${store.runs()[0]?.stages[0]?.id}`;
 		assert.deepEqual(roster, [{ target: stageTarget, group: isolatedGroup }]);
 
 		releaseStageInitialization.resolve();
@@ -893,7 +892,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 
 		const unknown = await executeIntercom(sender, {
 			action: "send",
-			to: `${RUN_ID}:unknown-stage`,
+			to: `workflow:${RUN_ID}/unknown-stage`,
 			message: "This target does not exist.",
 		});
 		assert.match(unknown.content[0]?.text ?? "", /Session not found/);
@@ -903,7 +902,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		for (const stageKey of ["unknown-stage", "completed-stage", "late-stage", "closed-stage"]) {
 			const ordinaryAskFailure = await executeIntercom(sender, {
 				action: "ask",
-				to: `${RUN_ID}:${stageKey}`,
+				to: `workflow:${RUN_ID}/${stageKey}`,
 				message: `Lifecycle validation for ${stageKey}`,
 			});
 			assert.match(ordinaryAskFailure.content[0]?.text ?? "", /Session not found/);
@@ -943,8 +942,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			messageId: result.details.messageId,
 			delivered: false,
 			queued: true,
-			runId: RUN_ID,
-			stageKey: "reviewer",
+			target: TARGET,
 			position: 1,
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
@@ -1074,7 +1072,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 
 		const unknownAfterInitialization = await executeIntercom(sender, {
 			action: "send",
-			to: `${RUN_ID}:unknown-stage`,
+			to: `workflow:${RUN_ID}/unknown-stage`,
 			message: "This target still does not exist.",
 		});
 		assert.match(unknownAfterInitialization.content[0]?.text ?? "", /Session not found/);
@@ -1357,12 +1355,11 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 		disposeFirstBridge = registerPendingStageIntercomBridge(firstOwner.pi as never, store);
 		await firstOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await raw.register("delivered-retry-sender", group);
-		raw.send({ type: "send", to: `${runId}:reviewer`, message });
+		raw.send({ type: "send", to: `workflow:${runId}/reviewer`, message });
 		assert.deepEqual(await raw.nextDeliveryAcknowledgment(message.id), {
 			type: "queued",
 			messageId: message.id,
-			runId,
-			stageKey: "reviewer",
+			target: `workflow:${runId}/reviewer`,
 			position: 1,
 		});
 		assert.equal(
@@ -1407,7 +1404,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 		disposeSecondBridge = registerPendingStageIntercomBridge(secondOwner.pi as never, reloadedStore);
 		await secondOwner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 
-		raw.send({ type: "send", to: `${runId}:reviewer-id`, message });
+		raw.send({ type: "send", to: `workflow:${runId}/reviewer-id`, message });
 		assert.deepEqual(await raw.nextDeliveryAcknowledgment(message.id), {
 			type: "delivered",
 			messageId: message.id,
@@ -1428,7 +1425,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 test("a drained message ID is revalidated by its durable owner after a broker restart", async () => {
 	const runId = "a9f23cf8-10c1-4b72-9cc6-9f6677961fd1";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const messageId = "drained-live-conflict";
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "live-conflict-writer" });
@@ -1482,8 +1479,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 			id: messageId,
 			delivered: false,
 			queued: true,
-			runId,
-			stageKey: "reviewer",
+			target: `workflow:${runId}/reviewer`,
 			position: 1,
 		});
 		const durableControl = {
@@ -1558,7 +1554,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 		});
 		await conflictingSender.register("changed-control-sender", group);
 		const conflicts = [
-			{ to: `${runId}:other`, message: durableControl },
+			{ to: `workflow:${runId}/other`, message: durableControl },
 			{ to: target, message: { ...durableControl, content: { ...durableControl.content, text: "changed text" } } },
 			{
 				to: target,
@@ -1726,7 +1722,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 test("raw malformed messages are rejected before durable mutation and valid optional fields survive DBOS reload", async () => {
 	const runId = "2f34ff35-9813-4a60-b7a3-24698cd01592";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "wire-validation-writer" });
 	writer.registerWorkflow({ workflowId: runId, name: "wire-validation", inputs: {}, status: "running", createdAt: 1 });
@@ -1796,30 +1792,30 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 		raw.send({ type: "send", to: target, message: validMessage });
 		const queued = await raw.next("queued", (frame) => frame.messageId === validMessage.id);
 		assert.equal(queued.position, 1);
-		raw.send({ type: "send", to: `${runId}:reviewer-id`, message: validMessage });
+		raw.send({ type: "send", to: `workflow:${runId}/reviewer-id`, message: validMessage });
 		assert.equal((await raw.next("queued", (frame) => frame.messageId === validMessage.id)).position, 1);
 		raw.send({
 			type: "send",
-			to: `${runId}:reviewer-id`,
+			to: `workflow:${runId}/reviewer-id`,
 			message: { ...validMessage, content: { ...validMessage.content, text: "conflicting reuse" } },
 		});
 		assert.deepEqual(await raw.next("delivery_failed", (frame) => frame.messageId === validMessage.id), {
 			type: "delivery_failed",
 			messageId: validMessage.id,
-			reason: `Intercom message ID '${validMessage.id}' was already queued for ${runId}:reviewer-id with a different target, sender, or payload`,
+			reason: `Intercom message ID '${validMessage.id}' was already queued for workflow:${runId}/reviewer-id with a different target, sender, or payload`,
 		});
 		for (let position = 2; position <= 50; position++) {
 			const message = { id: `capacity-${position}`, timestamp: position + 4, content: { text: String(position) } };
 			raw.send({
 				type: "send",
-				to: `${runId}:${position % 2 === 0 ? "reviewer-id" : "reviewer"}`,
+				to: `workflow:${runId}/${position % 2 === 0 ? "reviewer-id" : "reviewer"}`,
 				message,
 			});
 			assert.equal((await raw.next("queued", (frame) => frame.messageId === message.id)).position, position);
 		}
 		raw.send({
 			type: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: { id: "capacity-51", timestamp: 55, content: { text: "refused" } },
 		});
 		assert.match(
@@ -1879,7 +1875,7 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 		await sender.start();
 		const queued = await executeIntercom(sender, {
 			action: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: "ordinary handoff",
 		});
 		assert.equal(queued.details.queued, true);
@@ -1980,7 +1976,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		await ownerBefore.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		const queued = await executeIntercom(senderBefore, {
 			action: "send",
-			to: `${runId}:reviewer`,
+			to: `workflow:${runId}/reviewer`,
 			message: "scope changed before the broker restart",
 		});
 		assert.equal(queued.details.queued, true);

@@ -224,7 +224,11 @@ describe("workflow tool status run listing", () => {
 		assert.match(text, /promptId: prompt-1/);
 		assert.match(text, /workflow answer answers pending prompts/);
 		assert.match(text, /workflow resume controls paused runs/);
-		assert.match(text, /Ordinary Intercom handles free-form workflow-stage communication at <runId>:<stageKey>/);
+		assert.ok(
+			text.includes(
+				"Ordinary Intercom handles free-form workflow-stage communication at workflow:<rootRunId>/<segment>[/<segment>...]",
+			),
+		);
 		assert.match(text, /live stage delivery is immediate/);
 		assert.match(text, /known pending stage `send` queues before its first model turn/);
 		assert.match(text, /`ask` requires a live reply-capable stage/);
@@ -281,7 +285,7 @@ describe("workflow tool status run listing", () => {
 		const message = sent.find((entry) => (entry.details as { kind?: string } | undefined)?.kind === "status");
 		assert.ok(message, "expected the real slash handler to emit a status surface");
 		assert.equal(store.graphSnapshot().runs[0]?.stages[0]?.pendingStageDeliveryAvailable, true);
-		assert.match(message.content ?? "", new RegExp(`${runId}:review-a`));
+		assert.match(message.content ?? "", new RegExp(`workflow:${runId}/review-a`));
 		assert.doesNotMatch(message.content ?? "", /review \(review-a\) · delivery unavailable/);
 	});
 	test.sequential("status text enumerates pending stages with canonical Intercom targets and truthful delivery capability", async () => {
@@ -324,13 +328,13 @@ describe("workflow tool status run listing", () => {
 		assert.match(
 			text,
 			new RegExp(
-				`pending stage: review \\(review-a\\) lifecycle=pending pendingStageDeliveryAvailable=true Intercom target=${runId}:review-a`,
+				`pending stage: review \\(review-a\\) lifecycle=pending pendingStageDeliveryAvailable=true Intercom target=workflow:${runId}/review-a`,
 			),
 		);
 		assert.match(
 			text,
 			new RegExp(
-				`pending stage: review \\(review-b\\) lifecycle=pending pendingStageDeliveryAvailable=true Intercom target=${runId}:review-b`,
+				`pending stage: review \\(review-b\\) lifecycle=pending pendingStageDeliveryAvailable=true Intercom target=workflow:${runId}/review-b`,
 			),
 		);
 		assert.match(
@@ -341,9 +345,9 @@ describe("workflow tool status run listing", () => {
 			text,
 			/pending stage: legacy \(legacy\) lifecycle=pending pendingStageDeliveryAvailable=false Intercom target=unavailable/,
 		);
-		assert.doesNotMatch(text, new RegExp(`${runId}:(offline|legacy)`));
+		assert.doesNotMatch(text, new RegExp(`workflow:${runId}/(offline|legacy)`));
 		assert.match(text, /… 2 more pending stages; use status with runId/);
-		assert.doesNotMatch(text, new RegExp(`${runId}:extra-(6|7)`));
+		assert.doesNotMatch(text, new RegExp(`workflow:${runId}/extra-(6|7)`));
 		assert.match(text, /pending stage `send` queues before its first model turn/);
 		assert.match(text, /`ask` requires a live reply-capable stage/);
 	});
@@ -371,7 +375,7 @@ describe("workflow tool status run listing", () => {
 
 	test.sequential("terminated runs never advertise pending-stage targets on tool, list, or detail surfaces", async () => {
 		const runId = "ffffffff-1111-4111-8111-111111111111";
-		const target = `${runId}:review-a`;
+		const target = `workflow:${runId}/review-a`;
 		store.recordRunStart({
 			...makeInflightRun(runId),
 			name: "failed-pending-status",
@@ -469,7 +473,7 @@ describe("workflow tool status run listing", () => {
 			.find((route) => route.runId === childRunId)
 			?.stages.find((stage) => stage.stageId === childStageId)?.target;
 		dispose();
-		assert.equal(childRosterTarget, `${childRunId}:${childStageId}`);
+		assert.equal(childRosterTarget, `workflow:${rootRunId}/${childRunId}/${childStageId}`);
 
 		const handler = makeToolHandler();
 		const result = await handler({ action: "status" }, {} as never);
@@ -485,7 +489,7 @@ describe("workflow tool status run listing", () => {
 			assert.ok(rendered.includes(childRosterTarget), rendered);
 			assert.ok(!rendered.includes(`${rootRunId}:${childRunId}:${childStageId}`), rendered);
 		}
-		assert.match(toolText, new RegExp(`review \\(${rootStageId}\\).*${rootRunId}:${rootStageId}`));
+		assert.match(toolText, new RegExp(`review \\(${rootStageId}\\).*workflow:${rootRunId}/${rootStageId}`));
 	});
 
 	test.sequential("nested pending stages stop advertising targets when their owning child run terminates", async () => {
@@ -534,7 +538,7 @@ describe("workflow tool status run listing", () => {
 			const listingResult = await handler({ action: "status" }, {} as never);
 			const rootDetailResult = await handler({ action: "status", runId: rootRunId }, {} as never);
 			const childDetailResult = await handler({ action: "status", runId: childRunId }, {} as never);
-			const target = `${childRunId}:${childStageId}`;
+			const target = `workflow:${rootRunId}/${childRunId}/${childStageId}`;
 			const surfaces = {
 				concise: renderWorkflowToolContent(listingResult, { action: "status" }),
 				toolCard: renderResult(listingResult, { plain: true, width: 200 }),

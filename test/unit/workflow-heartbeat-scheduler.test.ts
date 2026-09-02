@@ -748,7 +748,11 @@ describe("workflow heartbeat delivery", () => {
 		assert.match(send.content, /send a local update to its affected stage/);
 		assert.match(send.content, /shared scope or acceptance criteria change/);
 		assert.match(send.content, /same authoritative Intercom update/);
-		assert.match(send.content, /every relevant live and known unstarted `<runId>:<stageKey>`/);
+		assert.ok(
+			send.content.includes(
+				"every relevant live and known unstarted `workflow:<rootRunId>/<segment>[/<segment>...]`",
+			),
+		);
 		assert.match(send.content, /worker-to-reviewer loop/);
 		assert.match(send.content, /Intercom delivers immediately to live stages/);
 		assert.match(send.content, /queues updates for known stages that have not started/);

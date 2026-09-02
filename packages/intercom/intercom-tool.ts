@@ -18,7 +18,7 @@ import {
 import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
-import { parsePendingStageTarget } from "./broker/send-handler.js";
+import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 
 async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
 	if (typeof client.listDirectory === "function") return client.listDirectory(group);
@@ -27,18 +27,15 @@ async function listDirectory(client: IntercomClient, group?: string): Promise<Se
 
 async function resolveReplySender(client: IntercomClient, logicalTarget: string, sendTarget: string): Promise<string> {
 	if (logicalTarget !== sendTarget) return sendTarget;
-	// #2784: only a canonical `<runId>:<stageKey>` target needs the roster lookup that maps it to
-	// the stage's live session id. Ordinary name/id asks resolve to themselves here, so gating on
-	// the canonical shape keeps them off the directory round-trip (and its timeout failure mode).
-	if (parsePendingStageTarget(logicalTarget) === undefined) return sendTarget;
-	// The broker registers BOTH `<runId>:<stageId>` and `<runId>:<stageName>` as live aliases, but the
-	// roster only publishes the id form. Match either alias, otherwise a name-addressed ask is
-	// delivered and then blocks to the 10-minute timeout because its waiter is keyed on a string
-	// inbound reply routing never produces.
+	// Only a canonical workflow path needs the roster lookup that maps it to the
+	// stage's live session id. Ordinary name/id asks stay off this directory round-trip.
+	if (parseWorkflowStageTarget(logicalTarget)?.kind !== "path") return sendTarget;
+	// The roster publishes the id form; live routing also registers the name form.
 	const stage = (await listDirectory(client)).workflowStages.find(
 		(candidate) =>
 			candidate.sessionId !== undefined &&
-			(candidate.target === logicalTarget || `${candidate.runId}:${candidate.stageName}` === logicalTarget),
+			(candidate.target === logicalTarget ||
+				withWorkflowStageTargetFinalSegment(candidate.target, candidate.stageName) === logicalTarget),
 	);
 	return stage?.sessionId ?? sendTarget;
 }
@@ -81,8 +78,10 @@ Sessions belong to an intercom group and can ONLY message sessions in the same g
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 
 For send, live session names and exact full session IDs remain supported. For a known
-workflow stage, use the exact \`<runId>:<stageKey>\` target; send messages to pending stages
-queue automatically.
+workflow stage, use the exact \`workflow:<rootRunId>/<segment>[/<segment>...]\` path; sends to pending
+stages queue automatically. Pattern paths containing \`*\` or \`**\` are recognized but not yet accepted.
+Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
+select the group.
 
 Usage:
   intercom({ action: "list" })                    → List sessions visible through your groups
@@ -108,7 +107,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Live session name, exact full session ID, or exact `<runId>:<stageKey>` for a known workflow stage; send messages to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, or exact `workflow:<rootRunId>/<segment>[/<segment>...]` for a known workflow stage; pattern paths are not yet accepted; sends to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -369,8 +368,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                   messageId: result.id,
                   delivered: false,
                   queued: true,
-                  runId: result.runId,
-                  stageKey: result.stageKey,
+					target: result.target,
                   position: result.position,
                 },
               };

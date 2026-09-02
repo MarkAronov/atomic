@@ -18,7 +18,7 @@ export { keepContext };
  */
 export const PENDING_STAGE_DELIVERY_GUIDANCE_LINES = [
   "Send material updates through Intercom to every affected workflow stage, including stages that have not started.",
-  "Atomic queues messages for known pending stages addressed as `<runId>:<stageKey>` and delivers them when their sessions initialize.",
+  "Atomic queues messages for known pending stages addressed as `workflow:<rootRunId>/<segment>[/<segment>...]` and delivers them when their sessions initialize.",
 ] as const;
 
 export const PENDING_STAGE_DELIVERY_GUIDANCE = PENDING_STAGE_DELIVERY_GUIDANCE_LINES.join("\n");

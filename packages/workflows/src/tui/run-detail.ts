@@ -84,7 +84,15 @@ function renderPlain(
 		else
 			for (const stage of detail.stages)
 				out.push(
-					...renderStageRowsPlain(detail.runId, detail.status, stage, now, width - 4, resolveOwningRunStatus),
+					...renderStageRowsPlain(
+						detail.runId,
+						detail.rootRunId,
+						detail.status,
+						stage,
+						now,
+						width - 4,
+						resolveOwningRunStatus,
+					),
 				);
 		out.push("");
 	}
@@ -149,6 +157,7 @@ function renderThemed(
 				out.push(
 					...renderStageRowsThemed(
 						detail.runId,
+						detail.rootRunId,
 						detail.status,
 						stage,
 						now,
@@ -268,13 +277,18 @@ function stageLineThemed(stage: StageSnapshot, now: number, theme: GraphTheme, w
 
 function pendingStageRows(
 	runId: string,
+	rootRunId: string | undefined,
 	runStatus: RunDetail["status"],
 	stage: StageSnapshot,
 	width: number,
 	theme?: GraphTheme,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 ): string[] {
-	const pending = pendingWorkflowStageStatus({ id: runId, status: runStatus }, stage, resolveOwningRunStatus);
+	const pending = pendingWorkflowStageStatus(
+		{ id: runId, ...(rootRunId === undefined ? {} : { rootRunId }), status: runStatus },
+		stage,
+		resolveOwningRunStatus,
+	);
 	if (pending === undefined) return [];
 	const value = pending.target ?? `${pending.stageId} · delivery unavailable`;
 	const label = pending.target === undefined ? "pending id" : "pending target";
@@ -293,6 +307,7 @@ function pendingStageRows(
 
 function renderStageRowsPlain(
 	runId: string,
+	rootRunId: string | undefined,
 	runStatus: RunDetail["status"],
 	stage: StageSnapshot,
 	now: number,
@@ -301,7 +316,7 @@ function renderStageRowsPlain(
 ): string[] {
 	const rows = [
 		` ${stageLinePlain(stage, now, Math.max(1, width - 2))} `,
-		...pendingStageRows(runId, runStatus, stage, width, undefined, resolveOwningRunStatus),
+		...pendingStageRows(runId, rootRunId, runStatus, stage, width, undefined, resolveOwningRunStatus),
 	];
 	if (stage.error) {
 		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
@@ -311,6 +326,7 @@ function renderStageRowsPlain(
 
 function renderStageRowsThemed(
 	runId: string,
+	rootRunId: string | undefined,
 	runStatus: RunDetail["status"],
 	stage: StageSnapshot,
 	now: number,
@@ -320,7 +336,7 @@ function renderStageRowsThemed(
 ): string[] {
 	const rows = [
 		` ${stageLineThemed(stage, now, theme, Math.max(1, width - 2))} `,
-		...pendingStageRows(runId, runStatus, stage, width, theme, resolveOwningRunStatus),
+		...pendingStageRows(runId, rootRunId, runStatus, stage, width, theme, resolveOwningRunStatus),
 	];
 	if (stage.error) {
 		const errFg = hexToAnsi(theme.error);

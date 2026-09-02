@@ -31,7 +31,7 @@ export function formatWorkflowHeartbeatNoticeText(details: WorkflowHeartbeatEven
 		"Consider the expanded workflow topology and match each update's reach to its impact: send a local update to " +
 		"its affected stage; when shared scope or acceptance " +
 		"criteria change, send the same authoritative Intercom update to every relevant live and known unstarted " +
-		"`<runId>:<stageKey>`, including each worker-to-reviewer loop. Intercom delivers immediately to live stages and " +
+		"`workflow:<rootRunId>/<segment>[/<segment>...]`, including each worker-to-reviewer loop. Intercom delivers immediately to live stages and " +
 		"queues updates for known stages that have not started, delivering them before their first model turn, so workers " +
 		"and reviewers begin with one consistent contract. " +
 		"Use `ask` once the target has a live session that can reply. " +

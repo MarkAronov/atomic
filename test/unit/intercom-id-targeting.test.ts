@@ -138,7 +138,7 @@ describe("Intercom full session ID targeting", () => {
 		// it blocked to the 10-minute timeout instead of settling.
 		const runId = "27840002-3528-413e-84c4-87a43e5037a2";
 		const stageSession = session("ee02315c-1111-4222-8333-123456789abc", "reviewer-stage");
-		const nameTarget = `${runId}:reviewer`;
+		const nameTarget = `workflow:${runId}/reviewer`;
 		let tool: Tool | undefined;
 		const client = {
 			sessionId: "self-session-id",
@@ -154,7 +154,7 @@ describe("Intercom full session ID targeting", () => {
 							runId,
 							stageId: "reviewer-id",
 							stageName: "reviewer",
-							target: `${runId}:reviewer-id`,
+							target: `workflow:${runId}/reviewer-id`,
 							lifecycle: "running" as const,
 							group: `workflow:${runId}/reviewers`,
 							sessionId: stageSession.id,

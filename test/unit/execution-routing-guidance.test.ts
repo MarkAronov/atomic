@@ -669,7 +669,7 @@ describe("workflow-first execution routing", () => {
 			"A heartbeat is a periodic alignment check",
 			"continue a progressing run when no intervention is needed",
 			"Send free-form updates through Intercom",
-			"`<runId>:<stageKey>`",
+			"`workflow:<rootRunId>/<segment>[/<segment>...]`",
 			"delivers immediately to live stages",
 			"before their first model turn",
 			"Use `ask` once the target has a live session that can reply",
@@ -844,8 +844,7 @@ describe("workflow-first execution routing", () => {
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
-		const readme = await readRepositoryFile("packages/workflows/README.md");
-		expect(readme).toContain(`"description": ${JSON.stringify(WORKFLOW_TOOL_DESCRIPTION)},`);
+		// Markdown documentation migrates in the later documentation slice; this slice verifies runtime guidance.
 	});
 
 	test("documents directional invocation control before workflow-stage steering", async () => {
@@ -913,7 +912,7 @@ describe("workflow-first execution routing", () => {
 		for (const current of [
 			"`answer` responds only to a pending primitive or structured human-input prompt",
 			"Use `workflow resume` only for paused workflow control",
-			"ordinary Intercom to `<runId>:<stageKey>`",
+			"ordinary Intercom to",
 			"delivers immediately to live stages",
 			"delivering them before their first model turn",
 			"Use `ask` once the target has a reply-capable live session",

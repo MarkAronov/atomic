@@ -118,6 +118,7 @@ export type ClientMessage =
 		requestId: string;
 		outcome: "queued" | "delivered" | "forward" | "refused";
 		position?: number;
+		target?: string;
 		reason?: string;
 		reasonCode?: "message_id_conflict";
 	  }
@@ -148,7 +149,7 @@ export type BrokerMessage =
 			senderRegistrationName?: string;
 			senderReturnAddress?: string;
 			runId: string;
-			stageKey: string;
+			target: string;
 			message: Message;
 			live?: boolean;
 	  }
@@ -161,5 +162,5 @@ export type BrokerMessage =
   | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
-  | { type: "queued"; messageId: string; attemptId?: string; runId: string; stageKey: string; position: number }
+	| { type: "queued"; messageId: string; attemptId?: string; target: string; position: number }
 	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict"; attemptId?: string };

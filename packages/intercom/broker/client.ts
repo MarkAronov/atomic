@@ -38,8 +38,7 @@ export interface SendResult {
   queued?: boolean;
   reason?: string;
 	reasonCode?: "message_id_conflict";
-  runId?: string;
-  stageKey?: string;
+	target?: string;
   position?: number;
 }
 
@@ -47,7 +46,7 @@ export interface PendingStageMessageRequest {
 	readonly requestId: string;
 	readonly from: SessionInfo;
 	readonly runId: string;
-	readonly stageKey: string;
+	readonly target: string;
 	readonly message: Message;
 	readonly senderRegistrationName?: string;
 	readonly senderReturnAddress?: string;
@@ -63,7 +62,7 @@ export interface PendingStageNotificationRequest {
 export type PendingStageMessageResult =
 	| { readonly outcome: "queued"; readonly position: number }
 	| { readonly outcome: "delivered" }
-	| { readonly outcome: "forward" }
+	| { readonly outcome: "forward"; readonly target: string }
 	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
 export interface PresenceUpdates {
   name?: string;
@@ -416,14 +415,14 @@ export class IntercomClient extends EventEmitter {
         break;
       }
 		case "pending_stage_message": {
-			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, stageKey, message, live } = brokerMessage;
+			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, target, message, live } = brokerMessage;
 			if (
 				typeof requestId !== "string" ||
 				!isSessionInfo(from) ||
 				(senderRegistrationName !== undefined && typeof senderRegistrationName !== "string") ||
 				(senderReturnAddress !== undefined && typeof senderReturnAddress !== "string") ||
 				typeof runId !== "string" ||
-				typeof stageKey !== "string" ||
+				typeof target !== "string" ||
 				!isMessage(message) ||
 				(live !== undefined && typeof live !== "boolean")
 			) {
@@ -435,7 +434,7 @@ export class IntercomClient extends EventEmitter {
 				...(senderRegistrationName === undefined ? {} : { senderRegistrationName }),
 				...(senderReturnAddress === undefined ? {} : { senderReturnAddress }),
 				runId,
-				stageKey,
+				target,
 				message,
 				...(live === true ? { live: true } : {}),
 			} satisfies PendingStageMessageRequest);
@@ -463,18 +462,17 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "queued": {
-        const { messageId, attemptId, runId, stageKey, position } = brokerMessage;
+		const { messageId, attemptId, target, position } = brokerMessage;
         if (
           typeof messageId !== "string" ||
           (attemptId !== undefined && typeof attemptId !== "string") ||
-          typeof runId !== "string" ||
-          typeof stageKey !== "string" ||
+			typeof target !== "string" ||
           typeof position !== "number" ||
           position < 1
         ) {
           throw new Error("Invalid queued message");
         }
-        const result = { id: messageId, delivered: false, queued: true, runId, stageKey, position } as const;
+		const result = { id: messageId, delivered: false, queued: true, target, position } as const;
         if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
         else this.pendingSends.resolve(messageId, attemptId, result);
         break;
@@ -803,15 +801,17 @@ export class IntercomClient extends EventEmitter {
 			socket,
 			result.outcome === "queued"
 				? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
-				: result.outcome === "refused"
-					? {
-							type: "pending_stage_message_result",
-							requestId,
-							outcome: "refused",
-							reason: result.reason,
-							...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
-						}
-					: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
+				: result.outcome === "forward"
+					? { type: "pending_stage_message_result", requestId, outcome: "forward", target: result.target }
+					: result.outcome === "refused"
+						? {
+								type: "pending_stage_message_result",
+								requestId,
+								outcome: "refused",
+								reason: result.reason,
+								...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
+							}
+						: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
 		);
 	}
 

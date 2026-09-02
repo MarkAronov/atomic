@@ -16,7 +16,7 @@ const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "icr-"));
 const socketPath = getBrokerSocketPath(process.platform, agentDir);
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
-const TARGET = `${RUN_ID}:reviewer`;
+const TARGET = `workflow:${RUN_ID}/reviewer`;
 const VICTIM_GROUP = `workflow:${RUN_ID}`;
 const ROUTE_CAPABILITY = "victim-workflow-route-capability";
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -150,7 +150,12 @@ async function registrationOutcome(client: WireClient, requestId: string): Promi
 
 async function forwardNextLiveMessage(owner: WireClient): Promise<BrokerMessage & { type: "pending_stage_message" }> {
 	const request = await owner.next("pending_stage_message", (frame) => frame.live === true);
-	owner.send({ type: "pending_stage_message_result", requestId: request.requestId, outcome: "forward" });
+	owner.send({
+		type: "pending_stage_message_result",
+		requestId: request.requestId,
+		outcome: "forward",
+		target: request.target,
+	});
 	return request;
 }
 
@@ -269,7 +274,7 @@ test("an invalid workflow-stage roster is rejected orderly and leaves no route r
 				{
 					stageId: "reviewer-id",
 					stageName: "reviewer",
-					target: `${runId}:reviewer-id`,
+					target: `workflow:${runId}/reviewer-id`,
 					lifecycle: "pending",
 					routeEligible: true,
 					group: "workflow:00000000-0000-4000-8000-000000000000/foreign",
@@ -333,7 +338,7 @@ test("workflow roster lists pending and running stages only inside its invocatio
 		{
 			stageId: "reviewer-id",
 			stageName: "reviewer",
-			target: `${runId}:reviewer-id`,
+			target: `workflow:${runId}/reviewer-id`,
 			lifecycle: "pending",
 			routeEligible: true,
 			group,
@@ -346,7 +351,7 @@ test("workflow roster lists pending and running stages only inside its invocatio
 			runId,
 			stageId: "reviewer-id",
 			stageName: "reviewer",
-			target: `${runId}:reviewer-id`,
+			target: `workflow:${runId}/reviewer-id`,
 			lifecycle: "pending",
 			group,
 		},
@@ -400,7 +405,7 @@ test("invocation roster control is directional across owned subgroups", async ()
 		{
 			stageId: "a",
 			stageName: "a",
-			target: `${runId}:a`,
+			target: `workflow:${runId}/a`,
 			lifecycle: "pending",
 			routeEligible: true,
 			group: subgroupA,
@@ -408,7 +413,7 @@ test("invocation roster control is directional across owned subgroups", async ()
 		{
 			stageId: "b",
 			stageName: "b",
-			target: `${runId}:b`,
+			target: `workflow:${runId}/b`,
 			lifecycle: "pending",
 			routeEligible: true,
 			group: subgroupB,
@@ -461,7 +466,7 @@ test("invocation roster control is directional across owned subgroups", async ()
 		[memberA, "subgroup-pending-escalation"],
 		[otherRun, "other-root-pending-escalation"],
 	] as const) {
-		const result = await sender.send(`${runId}:b`, { messageId, text: "must stay isolated" });
+		const result = await sender.send(`workflow:${runId}/b`, { messageId, text: "must stay isolated" });
 		assert.equal(result.delivered, false);
 		assert.equal(result.reason, "Target workflow run is in a different intercom group");
 	}
@@ -471,7 +476,7 @@ test("invocation roster control is directional across owned subgroups", async ()
 		[memberA, "subgroup-live-ask-escalation"],
 		[otherRun, "other-root-live-ask-escalation"],
 	] as const) {
-		const result = await sender.send(`${runId}:b`, {
+		const result = await sender.send(`workflow:${runId}/b`, {
 			messageId,
 			text: "must not ask across the boundary",
 			expectsReply: true,
@@ -504,7 +509,7 @@ test("an authenticated second-session replay publishes the roster without steali
 		{
 			stageId: "reviewer-id",
 			stageName: "reviewer",
-			target: `${runId}:reviewer-id`,
+			target: `workflow:${runId}/reviewer-id`,
 			lifecycle: "pending",
 			routeEligible: true,
 			group,
@@ -518,7 +523,7 @@ test("an authenticated second-session replay publishes the roster without steali
 			runId,
 			stageId: "reviewer-id",
 			stageName: "reviewer",
-			target: `${runId}:reviewer-id`,
+			target: `workflow:${runId}/reviewer-id`,
 			lifecycle: "pending",
 			group,
 		},
@@ -527,7 +532,7 @@ test("an authenticated second-session replay publishes the roster without steali
 	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const send = member.send(`${runId}:reviewer-id`, { text: "original owner must receive this" });
+	const send = member.send(`workflow:${runId}/reviewer-id`, { text: "original owner must receive this" });
 	const request = await pendingRequest;
 	assert.equal(request.message.content.text, "original owner must receive this");
 	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
@@ -535,7 +540,7 @@ test("an authenticated second-session replay publishes the roster without steali
 
 	await owner.disconnect();
 	assert.deepEqual((await member.listDirectory()).workflowStages, []);
-	const afterDisconnect = await member.send(`${runId}:reviewer-id`, { text: "route must be gone" });
+	const afterDisconnect = await member.send(`workflow:${runId}/reviewer-id`, { text: "route must be gone" });
 	assert.equal(afterDisconnect.delivered, false);
 	assert.equal(afterDisconnect.reason, "Session not found");
 });
@@ -563,7 +568,7 @@ test("production clients keep the pending owner and live stage connected when a 
 	const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const pendingSend = sender.send(`${runId}:pending-stage`, { text: "queue before stage startup" });
+	const pendingSend = sender.send(`workflow:${runId}/pending-stage`, { text: "queue before stage startup" });
 	const request = await pendingRequest;
 	assert.equal(request.message.content.text, "queue before stage startup");
 	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
@@ -572,19 +577,19 @@ test("production clients keep the pending owner and live stage connected when a 
 		id: pendingResult.id,
 		delivered: false,
 		queued: true,
-		runId,
-		stageKey: "pending-stage",
+		target: `workflow:${runId}/pending-stage`,
 		position: 1,
 	});
 
-	for (const target of ["ordinary-unknown", "2ca70520-338b-4740-a94c-d814b08b4155:reviewer"]) {
-		const unknownResult = await sender.send(target, { text: "ordinary miss" });
-		assert.deepEqual(unknownResult, {
-			id: unknownResult.id,
-			delivered: false,
-			reason: "Session not found",
-		});
-	}
+	const ordinaryUnknown = await sender.send("ordinary-unknown", { text: "ordinary miss" });
+	assert.deepEqual(ordinaryUnknown, {
+		id: ordinaryUnknown.id,
+		delivered: false,
+		reason: "Session not found",
+	});
+	const legacyUnknown = await sender.send("2ca70520-338b-4740-a94c-d814b08b4155:reviewer", { text: "legacy miss" });
+	assert.equal(legacyUnknown.delivered, false);
+	assert.match(legacyUnknown.reason ?? "", /Legacy workflow-stage targets/);
 	for (const [stageKey, reason] of [
 		[
 			"still-pending",
@@ -598,12 +603,12 @@ test("production clients keep the pending owner and live stage connected when a 
 		const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 			owner.once("pending_stage_message", resolveRequest);
 		});
-		const ask = sender.send(`${runId}:${stageKey}`, {
+		const ask = sender.send(`workflow:${runId}/${stageKey}`, {
 			text: `blocking question for ${stageKey}`,
 			expectsReply: true,
 		});
 		const request = await ownerValidation;
-		assert.equal(request.stageKey, stageKey);
+		assert.equal(request.target, `workflow:${runId}/${stageKey}`);
 		owner.respondPendingStageMessage(request.requestId, { outcome: "refused", reason });
 		const refusal = await ask;
 		assert.equal(refusal.delivered, false);
@@ -617,10 +622,13 @@ test("production clients keep the pending owner and live stage connected when a 
 	const liveValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const liveSendPromise = sender.send(`${runId}:reviewer`, { text: "deliver to live composite" });
+	const liveSendPromise = sender.send(`workflow:${runId}/reviewer`, { text: "deliver to live composite" });
 	const liveRequest = await liveValidation;
 	assert.equal(liveRequest.live, true);
-	owner.respondPendingStageMessage(liveRequest.requestId, { outcome: "forward" });
+	owner.respondPendingStageMessage(liveRequest.requestId, {
+		outcome: "forward",
+		target: `workflow:${runId}/reviewer-id`,
+	});
 	assert.equal((await liveSendPromise).delivered, true);
 	assert.equal((await liveMessage).content.text, "deliver to live composite");
 	const liveAskMessage = new Promise<Message>((resolveMessage) => {
@@ -629,10 +637,16 @@ test("production clients keep the pending owner and live stage connected when a 
 	const liveAskValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 		owner.once("pending_stage_message", resolveRequest);
 	});
-	const liveAskPromise = sender.send(`${runId}:reviewer-id`, { text: "live blocking question", expectsReply: true });
+	const liveAskPromise = sender.send(`workflow:${runId}/reviewer-id`, {
+		text: "live blocking question",
+		expectsReply: true,
+	});
 	const liveAskRequest = await liveAskValidation;
 	assert.equal(liveAskRequest.live, true);
-	owner.respondPendingStageMessage(liveAskRequest.requestId, { outcome: "forward" });
+	owner.respondPendingStageMessage(liveAskRequest.requestId, {
+		outcome: "forward",
+		target: `workflow:${runId}/reviewer-id`,
+	});
 	assert.equal((await liveAskPromise).delivered, true);
 	assert.equal((await liveAskMessage).content.text, "live blocking question");
 
@@ -870,7 +884,7 @@ test("stable return addresses restore nameless and duplicate-name recipients acr
 		const pendingRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
 			ownerBefore.once("pending_stage_message", resolveRequest);
 		});
-		const send = recipient.client.send(`${runId}:reviewer`, {
+		const send = recipient.client.send(`workflow:${runId}/reviewer`, {
 			text: `queued by ${recipient.key}`,
 			messageId: `return-address-${recipient.key}`,
 		});
@@ -1032,7 +1046,7 @@ test("immutable workflow authority rejects a default-group attacker that presenc
 
 	sender.send({
 		type: "send",
-		to: `${runId}:reviewer`,
+		to: `workflow:${runId}/reviewer`,
 		message: { id: "after-attacker-first-rejection", timestamp: 1, content: { text: "not attacker-owned" } },
 	});
 	assert.deepEqual(await sender.next("delivery_failed"), {
@@ -1067,7 +1081,7 @@ test("immutable workflow authority rejects a default-group attacker that presenc
 	const legitimateValidation = forwardNextLiveMessage(legitimateOwner);
 	sender.send({
 		type: "send",
-		to: `${runId}:reviewer`,
+		to: `workflow:${runId}/reviewer`,
 		message: { id: "after-legitimate-registration", timestamp: 2, content: { text: "legitimate owner only" } },
 	});
 	assert.equal((await legitimateValidation).message.id, "after-legitimate-registration");
@@ -1114,7 +1128,7 @@ test("broker rejects cross-group pending-route impersonation before route mutati
 test("broker rejects same-group replacement of an active pending route owner", async () => {
 	const runId = "eaf2d23d-e52f-44a4-95b0-91c2109cbf34";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const legitimate = new WireClient();
 	const attacker = new WireClient();
 	const sender = new WireClient();
@@ -1169,7 +1183,7 @@ test("broker rejects same-group replacement of an active pending route owner", a
 test("broker rejects an attacker-first live route without the workflow capability", async () => {
 	const runId = "78c47adc-8cab-466f-a902-5d9ca2521c2c";
 	const group = `workflow:${runId}`;
-	const target = `${runId}:reviewer`;
+	const target = `workflow:${runId}/reviewer`;
 	const owner = new WireClient();
 	const attacker = new WireClient();
 	const legitimate = new WireClient();
@@ -1326,7 +1340,7 @@ test("live composite route replacement requires the old owner to disconnect", as
 	const attemptTransitionValidation = forwardNextLiveMessage(owner);
 	sender.send({
 		type: "send",
-		to: `${transitionRunId}:reviewer`,
+		to: `workflow:${transitionRunId}/reviewer`,
 		message: { id: "stage-attempt-transition", timestamp: 3, content: { text: "transition message" } },
 	});
 	assert.equal((await attemptTransitionValidation).message.id, "stage-attempt-transition");

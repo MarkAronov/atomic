@@ -429,7 +429,7 @@ describe("lazy intercom registration", () => {
 		const targetDescription = (intercomTool.parameters as { properties?: { to?: { description?: string } } })
 			.properties?.to?.description;
 		const guidance = `${intercomTool.description}\n${targetDescription ?? ""}`;
-		assert.match(guidance, /`<runId>:<stageKey>`/);
+		assert.ok(guidance.includes("`workflow:<rootRunId>/<segment>[/<segment>...]`"));
 		assert.match(guidance, /pending stage.*queue automatically/i);
 		assert.match(guidance, /live session/i);
 	});
