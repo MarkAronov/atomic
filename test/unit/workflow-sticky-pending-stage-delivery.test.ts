@@ -756,6 +756,8 @@ interface StickyBridgeHarness {
 			| { readonly outcome: "refused"; readonly reason: string }
 			| undefined;
 	}>;
+	/** Replay the broker's confirmation of which forward targets were actually written to. */
+	confirm(messageId: string, target: string, deliveredTargets: readonly string[]): Promise<boolean>;
 	dispose(): void;
 }
 
@@ -840,7 +842,25 @@ function stickyBridgeFixture(
 			result: payload.completion === undefined ? undefined : await payload.completion,
 		};
 	};
-	return { store, backend, emitted, request, dispose };
+	const confirm: StickyBridgeHarness["confirm"] = async (messageId, target, deliveredTargets) => {
+		const payload: {
+			handled: boolean;
+			completion?: Promise<boolean>;
+			runId: string;
+			messageId: string;
+			target: string;
+			deliveredTargets: readonly string[];
+		} = {
+			handled: false,
+			runId: ROOT_RUN_ID,
+			messageId,
+			target,
+			deliveredTargets,
+		};
+		listeners.get("atomic:workflow-sticky-live-delivered")?.(payload);
+		return payload.completion === undefined ? false : await payload.completion;
+	};
+	return { store, backend, emitted, request, confirm, dispose };
 }
 
 describe("pending-stage bridge sticky delivery", () => {
@@ -1066,28 +1086,48 @@ describe("pending-stage bridge sticky delivery", () => {
 		dispose();
 	});
 
-	test("records live matches, returns forward targets, and never re-records on a dedup retry", async () => {
+	test("records a live delivery only after the broker confirms the write, and a dedup retry re-forwards the unconfirmed target", async () => {
 		const harness = stickyBridgeFixture([
 			baseStage({ id: "live-id", name: "orchestrator-1", status: "running", sessionId: "session-live" }),
 			baseStage({ id: "future-id", name: "orchestrator-2" }),
 		]);
-		const first = await harness.request("broadcast", { target: `workflow:${ROOT_RUN_ID}/**` });
+		const target = `workflow:${ROOT_RUN_ID}/**`;
+		const first = await harness.request("broadcast", { target });
 		assert.equal(first.result?.outcome, "queued");
 		assert.equal(first.handled, true);
 		if (first.result?.outcome !== "queued") return;
 		assert.deepEqual(first.result.forwardTargets, [`${GROUP}/live-id`]);
+		// Nothing is in the ledger until the broker reports the socket write succeeded
+		// (review P1: a recipient that drops between answer and write must not be marked delivered).
 		const entry = harness.store.runs()[0]?.pendingStageMessages?.[0];
-		assert.equal(entry?.deliveryCount, 1);
-		assert.deepEqual(
-			entry?.deliveries?.map((delivery) => delivery.stageId),
-			["live-id"],
-		);
+		assert.equal(entry?.deliveryCount ?? 0, 0);
 		assert.equal(entry?.status, "queued");
 
-		const retry = await harness.request("broadcast", { target: `workflow:${ROOT_RUN_ID}/**` });
+		// The broker could not reach the stage: a retried send forwards to it again.
+		const retryBeforeConfirm = await harness.request("broadcast", { target });
+		assert.equal(retryBeforeConfirm.result?.outcome, "queued");
+		if (retryBeforeConfirm.result?.outcome !== "queued") return;
+		assert.deepEqual(retryBeforeConfirm.result.forwardTargets, [`${GROUP}/live-id`]);
+
+		// The broker confirms the write; the ledger records exactly that stage once.
+		const messageId = entry?.message.id ?? "";
+		assert.equal(await harness.confirm(messageId, target, [`${GROUP}/live-id`]), true);
+		const confirmed = harness.store.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(confirmed?.deliveryCount, 1);
+		assert.deepEqual(
+			confirmed?.deliveries?.map((delivery) => delivery.stageId),
+			["live-id"],
+		);
+		// A duplicate confirmation is a no-op, and a confirmation for a target the
+		// broker did not actually reach records nothing.
+		assert.equal(await harness.confirm(messageId, target, [`${GROUP}/live-id`]), false);
+		assert.equal(await harness.confirm(messageId, target, [`${GROUP}/unknown-id`]), false);
+		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+
+		// Once confirmed, a dedup retry has nothing left to forward.
+		const retry = await harness.request("broadcast", { target });
 		assert.deepEqual(retry.result, { outcome: "queued", position: 1, notInKnownSet: true });
-		const afterRetry = harness.store.runs()[0]?.pendingStageMessages?.[0];
-		assert.equal(afterRetry?.deliveryCount, 1);
+		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
 		harness.dispose();
 	});
 

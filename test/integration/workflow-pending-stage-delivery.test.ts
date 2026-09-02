@@ -1932,6 +1932,79 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 	}
 });
 
+test("the workflow owner session receives its own undeliverable notice when it is the sender", async () => {
+	// The launching session commonly joins its own invocation group and steers a stage from
+	// there. Its undeliverable notice then targets the very session that owns the pending
+	// route, which the broker refuses as a self-send; the host must admit it locally instead.
+	const runId = "5d2c9a1e-6f3b-4c8d-9e0f-1a2b3c4d5e6f";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const owner = extensionFixture("self-notice-owner", "self-notice-owner", undefined, group);
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	try {
+		await owner.start();
+		store.recordRunStart({
+			id: runId,
+			name: "self-notice",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "self-notice",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		const queued = await executeIntercom(owner, {
+			action: "send",
+			to: `workflow:${runId}/reviewer`,
+			message: "self-steer before the reviewer exists",
+		});
+		assert.equal(queued.details.queued, true);
+		assert.ok(queued.details.messageId);
+
+		const failureVisible = owner.waitForInjectedCount(1);
+		const notified = waitForStoreState(
+			store,
+			() => store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt !== undefined,
+		);
+		store.recordStageEnd(runId, {
+			id: "reviewer-id",
+			name: "reviewer",
+			status: "skipped",
+			parentIds: [],
+			toolEvents: [],
+			skippedReason: "fail-fast",
+		});
+		await failureVisible;
+		await notified;
+		const failure = owner.injectedMessages[0];
+		assert.match(failure?.content ?? "", /could not receive intercom message:.*skipped.*fail-fast/i);
+		assert.equal(failure?.details?.message?.replyTo, queued.details.messageId);
+		assert.equal(typeof store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt, "string");
+		assert.equal(owner.injectedMessages.length, 1);
+	} finally {
+		disposeBridge();
+		await owner.shutdown();
+	}
+});
+
 test("a reconnected logical sender receives its durable undeliverable notice after a broker restart", async () => {
 	const runId = "33333333-3333-4333-8333-333333333333";
 	const group = `workflow:${runId}`;

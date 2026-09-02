@@ -57,6 +57,14 @@ export interface PendingStageMessageRequest {
 	readonly live?: boolean;
 }
 
+/** Broker → route owner: the live stage targets a sticky broadcast was actually written to. */
+export interface StickyLiveDeliveredNotice {
+	readonly runId: string;
+	readonly messageId: string;
+	readonly target: string;
+	readonly deliveredTargets: readonly string[];
+}
+
 export interface PendingStageNotificationRequest {
 	readonly requestId: string;
 	readonly from: SessionInfo;
@@ -482,6 +490,25 @@ export class IntercomClient extends EventEmitter {
 				from,
 				message,
 			} satisfies PendingStageNotificationRequest);
+			break;
+		}
+		case "sticky_live_delivered": {
+			const { runId, messageId, target, deliveredTargets } = brokerMessage;
+			if (
+				typeof runId !== "string" ||
+				typeof messageId !== "string" ||
+				typeof target !== "string" ||
+				!Array.isArray(deliveredTargets) ||
+				!deliveredTargets.every((entry) => typeof entry === "string")
+			) {
+				throw new Error("Invalid sticky live-delivery event");
+			}
+			this.emit("sticky_live_delivered", {
+				runId,
+				messageId,
+				target,
+				deliveredTargets,
+			} satisfies StickyLiveDeliveredNotice);
 			break;
 		}
       case "live_workflow_stage_route_registered": {

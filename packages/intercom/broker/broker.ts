@@ -611,8 +611,21 @@ class IntercomBroker {
 		if (outcome === "queued" && typeof position === "number" && position > 0) {
 			// Slice 3 (D6/D9): a sticky pattern entry answers `queued` once while any
 			// matching live stages receive the message now, as ordinary inbound
-			// messages with the original sender identity.
-			this.deliverStickyBroadcast(pending, forwardTargets);
+			// messages with the original sender identity. The owner records a live
+			// delivery only for the targets this write actually reached, so a stage
+			// that dropped between the owner's answer and this write is not marked
+			// delivered and a retried send re-forwards to it.
+			const deliveredTargets = this.deliverStickyBroadcast(pending, forwardTargets);
+			const ownerSocket = this.sessions.get(currentId)?.socket;
+			if (deliveredTargets.length > 0 && ownerSocket !== undefined) {
+				writeMessage(ownerSocket, {
+					type: "sticky_live_delivered",
+					runId: pending.runId,
+					messageId: pending.messageId,
+					target: pending.target,
+					deliveredTargets,
+				});
+			}
 			writeMessage(pending.senderSocket, {
 				type: "queued",
 				messageId: pending.messageId,
@@ -696,25 +709,26 @@ class IntercomBroker {
 	private deliverStickyBroadcast(
 		pending: PendingStageAcknowledgment,
 		forwardTargets: readonly string[] | undefined,
-	): boolean {
-		if (forwardTargets === undefined || forwardTargets.length === 0) return false;
+	): string[] {
+		if (forwardTargets === undefined || forwardTargets.length === 0) return [];
 		const parsedPending = parseWorkflowStageTarget(pending.target);
-		if (parsedPending === undefined) return false;
+		if (parsedPending === undefined) return [];
 		const invocationGroup = normalizeGroup(`workflow:${parsedPending.rootRunId}`);
-		let delivered = 0;
+		const delivered: string[] = [];
 		for (const target of forwardTargets) {
 			const targetSession = this.resolveLiveWorkflowStage(target);
 			if (targetSession === undefined) continue;
 			const targetGroup = targetSession.registrationGroup ?? targetSession.info.group ?? "default";
 			if (!invocationOwnsGroup(invocationGroup, normalizeGroup(targetGroup))) continue;
+			if (targetSession.socket.destroyed || targetSession.socket.writableEnded) continue;
 			writeMessage(targetSession.socket, { type: "message", from: pending.sender, message: pending.message });
-			delivered += 1;
+			delivered.push(target);
 		}
 		// Deliberately NOT recorded in the delivered-message cache (round-1 review): the
 		// sticky ledger in the workflow host is the durable dedupe authority, so a retry
 		// re-routes to the host, dedupes there, and the sender's ack stays `queued`
 		// instead of flipping to `delivered` between attempts.
-		return delivered > 0;
+		return delivered;
 	}
 
 	private failPendingStageNotification(

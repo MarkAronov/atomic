@@ -30,6 +30,8 @@ import {
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+/** Broker → owner: the live stages a sticky broadcast was actually written to (D3 ledger input). */
+const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_ASK_REFUSAL =
 	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
@@ -211,10 +213,16 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			stage.pendingStageDeliveryAvailable === true,
 		);
 	});
+	const stickySubscription = pi.events?.on?.(STICKY_LIVE_DELIVERED_EVENT, (payload) => {
+		if (disposed || !isStickyLiveDeliveredEvent(payload) || payload.handled) return;
+		payload.handled = true;
+		payload.completion = recordConfirmedStickyDeliveries(activeStore, payload);
+	});
 	const dispose = (): void => {
 		disposed = true;
 		unsubscribeStore();
 		if (typeof subscription === "function") subscription();
+		if (typeof stickySubscription === "function") stickySubscription();
 	};
 	pi.on?.("session_shutdown", dispose);
 	return dispose;
@@ -553,27 +561,79 @@ async function deliverStickyTarget(
 		}
 		return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
 	}
-	const forwardTargets: string[] = [];
-	if (!result.deduplicated && liveMatches.length > 0) {
-		const recorded = await activeStore.recordPendingStageMessageDeliveries(
-			rootRunId,
-			result.entry.id,
-			liveMatches.map((match) => ({
-				runId: match.run.id,
-				stageId: match.stage.id,
-				...(match.stage.name === match.stage.id ? {} : { stageName: match.stage.name }),
-			})),
-			new Date().toISOString(),
-			backend,
-		);
-		if (recorded) forwardTargets.push(...liveMatches.map((match) => match.target));
-	}
+	// Live matches are forwarded by the broker, which then reports the targets it actually
+	// wrote to (STICKY_LIVE_DELIVERED_EVENT); only those enter the durable ledger. Recording
+	// before the write would mark a stage that blipped as delivered forever, and a retried
+	// send would never re-forward to it. A dedup retry therefore re-forwards exactly the
+	// live matches the ledger has not confirmed yet.
+	const recordedDeliveries = result.entry.deliveries ?? [];
+	const forwardTargets = liveMatches
+		.filter(
+			(match) =>
+				!recordedDeliveries.some(
+					(delivery) => delivery.runId === match.run.id && delivery.stageId === match.stage.id,
+				),
+		)
+		.map((match) => match.target);
 	return {
 		outcome: "queued",
 		position: result.position ?? 1,
 		...(notInKnownSet === undefined ? {} : { notInKnownSet }),
 		...(forwardTargets.length === 0 ? {} : { forwardTargets }),
 	};
+}
+
+interface StickyLiveDeliveredEvent {
+	handled: boolean;
+	completion?: Promise<boolean>;
+	readonly runId: string;
+	readonly messageId: string;
+	readonly target: string;
+	readonly deliveredTargets: readonly string[];
+}
+
+function isStickyLiveDeliveredEvent(value: unknown): value is StickyLiveDeliveredEvent {
+	if (typeof value !== "object" || value === null) return false;
+	const event = value as Partial<StickyLiveDeliveredEvent>;
+	return (
+		typeof event.handled === "boolean" &&
+		typeof event.runId === "string" &&
+		typeof event.messageId === "string" &&
+		typeof event.target === "string" &&
+		Array.isArray(event.deliveredTargets) &&
+		event.deliveredTargets.every((target) => typeof target === "string")
+	);
+}
+
+/** Record the live deliveries the broker confirmed for one sticky entry (exactly-once per stage). */
+async function recordConfirmedStickyDeliveries(activeStore: Store, event: StickyLiveDeliveredEvent): Promise<boolean> {
+	const parsedTarget = parseWorkflowStageTarget(event.target);
+	if (parsedTarget === undefined) return false;
+	const runs = activeStore.runs();
+	const rootRunId = parsedTarget.rootRunId;
+	const rootRun = runs.find((candidate) => candidate.id === rootRunId);
+	const entry = rootRun?.pendingStageMessages?.find(
+		(candidate) => candidate.sticky === true && candidate.message.id === event.messageId,
+	);
+	if (rootRun === undefined || entry === undefined) return false;
+	const delivered = new Set(event.deliveredTargets);
+	const records = matchingLiveStages(runs, rootRunId, parsedTarget.segments)
+		.filter((match) => delivered.has(match.target))
+		.map((match) => ({
+			runId: match.run.id,
+			stageId: match.stage.id,
+			...(match.stage.name === match.stage.id ? {} : { stageName: match.stage.name }),
+		}));
+	if (records.length === 0) return false;
+	const backend = durableBackendForRun(getDurableBackend(), runs, rootRunId);
+	if (backend === undefined) return false;
+	return activeStore.recordPendingStageMessageDeliveries(
+		rootRunId,
+		entry.id,
+		records,
+		new Date().toISOString(),
+		backend,
+	);
 }
 
 /** Live stages of the invocation whose depth-faithful path (per D5 hop spellings) matches the target segments. */
