@@ -2160,6 +2160,7 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
 	intercom(sender.pi as never);
 	let liveStage: ReturnType<typeof extensionFixture> | undefined;
+	let raw: RawBrokerClient | undefined;
 
 	try {
 		await owner.start();
@@ -2185,6 +2186,9 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await sender.start();
+		raw = new RawBrokerClient();
+		rawClients.add(raw);
+		await raw.register("sticky-raw-sender", GROUP);
 
 		// A live iteration registered under the depth-faithful live aliases.
 		const liveDelivery = createWorkflowPendingStageDelivery(store, RUN_ID, "orchestrator-2-id", "orchestrator-2");
@@ -2213,6 +2217,42 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		await liveStage.waitForInjectedCount(1);
 		assert.match(liveStage.injectedMessages[0]?.content ?? "", /Broadcast to the whole invocation\./);
 		assert.match(liveStage.injectedMessages[0]?.content ?? "", /\*\*📨 From stage-a\*\*/);
+
+		// Round-1 review, finding 8: a retried sticky broadcast (same message id) re-routes
+		// to the host ledger and acks `queued` again — never `delivered` from the broker's
+		// in-memory delivered-message cache — without re-broadcasting to the live stage.
+		const rawBroadcastId = "sticky-raw-broadcast";
+		const rawBroadcast = {
+			type: "send",
+			to: `workflow:${RUN_ID}/**`,
+			message: { id: rawBroadcastId, timestamp: 5, content: { text: "Raw broadcast to the invocation." } },
+		};
+		raw.send(rawBroadcast);
+		assert.deepEqual(await raw.nextDeliveryAcknowledgment(rawBroadcastId), {
+			type: "queued",
+			messageId: rawBroadcastId,
+			target: `workflow:${RUN_ID}/**`,
+			position: 2,
+		});
+		await liveStage.waitForInjectedCount(2);
+		assert.equal(
+			liveStage.injectedMessages.filter(({ content }) => content?.includes("Raw broadcast to the invocation."))
+				.length,
+			1,
+		);
+		raw.send(rawBroadcast);
+		assert.deepEqual(await raw.nextDeliveryAcknowledgment(rawBroadcastId), {
+			type: "queued",
+			messageId: rawBroadcastId,
+			target: `workflow:${RUN_ID}/**`,
+			position: 2,
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 100));
+		assert.equal(
+			liveStage.injectedMessages.filter(({ content }) => content?.includes("Raw broadcast to the invocation."))
+				.length,
+			1,
+		);
 
 		// D3: a pattern send is queued sticky for every future matching iteration.
 		const pattern = await executeIntercom(sender, {
@@ -2255,13 +2295,18 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		await iterationDelivery.deliverPending((_from, message) => {
 			prelude.push(message.content.text);
 		});
-		assert.deepEqual(prelude, ["Broadcast to the whole invocation.", "Steer all orchestrator iterations."]);
+		assert.deepEqual(prelude, [
+			"Broadcast to the whole invocation.",
+			"Raw broadcast to the invocation.",
+			"Steer all orchestrator iterations.",
+		]);
 
 		const entries = () => store.runs()[0]?.pendingStageMessages ?? [];
-		const broadcastEntry = entries().find((entry) => entry.targetPath === `workflow:${RUN_ID}/**`);
+		const broadcastEntries = entries().filter((entry) => entry.targetPath === `workflow:${RUN_ID}/**`);
+		assert.equal(broadcastEntries.length, 2);
 		const patternEntry = entries().find((entry) => entry.targetPath === `workflow:${RUN_ID}/orchestrator-*`);
-		assert.equal(broadcastEntry?.deliveryCount, 2);
-		assert.equal(broadcastEntry?.status, "queued");
+		assert.ok(broadcastEntries.every((entry) => entry.deliveryCount === 2));
+		assert.ok(broadcastEntries.every((entry) => entry.status === "queued"));
 		// The pattern also matched the live orchestrator-2 at send time (D6: patterns
 		// deliver immediately to live matches), so its ledger holds two deliveries.
 		assert.equal(patternEntry?.deliveryCount, 2);
@@ -2271,7 +2316,7 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		await iterationDelivery.deliverPending((_from, message) => {
 			prelude.push(`repeat:${message.content.text}`);
 		});
-		assert.equal(prelude.length, 2);
+		assert.equal(prelude.length, 3);
 
 		// Iteration 4 receives both entries again: sticky delivery is per future stage.
 		await createWorkflowPendingStageDelivery(store, RUN_ID, "orchestrator-4-id", "orchestrator-4").deliverPending(
@@ -2279,16 +2324,24 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 				prelude.push(`orchestrator-4:${message.content.text}`);
 			},
 		);
-		assert.deepEqual(prelude.slice(-2), [
+		assert.deepEqual(prelude.slice(-3), [
 			"orchestrator-4:Broadcast to the whole invocation.",
+			"orchestrator-4:Raw broadcast to the invocation.",
 			"orchestrator-4:Steer all orchestrator iterations.",
 		]);
-		assert.equal(broadcastEntry?.deliveryCount, 2);
-		assert.equal(entries().find((entry) => entry.targetPath === `workflow:${RUN_ID}/**`)?.deliveryCount, 3);
+		assert.ok(
+			entries()
+				.filter((entry) => entry.targetPath === `workflow:${RUN_ID}/**`)
+				.every((entry) => entry.deliveryCount === 3),
+		);
 	} finally {
 		if (liveStage !== undefined) await liveStage.shutdown();
 		disposeBridge();
 		await sender.shutdown();
 		await owner.shutdown();
+		if (raw !== undefined) {
+			await raw.close();
+			rawClients.delete(raw);
+		}
 	}
 });

@@ -297,14 +297,17 @@ function baseStage(
 	};
 }
 
-function rootFixture(stage = baseStage(), possibleStages?: readonly string[]) {
+function rootFixture(
+	stage: ReturnType<typeof baseStage> | ReturnType<typeof baseStage>[] = baseStage(),
+	possibleStages?: readonly string[],
+) {
 	const store = createStore();
 	store.recordRunStart({
 		id: ROOT_RUN_ID,
 		name: "flow",
 		inputs: {},
 		status: "running",
-		stages: [stage],
+		stages: Array.isArray(stage) ? stage : [stage],
 		startedAt: 1,
 		...(possibleStages === undefined ? {} : { possibleStages }),
 	});
@@ -436,6 +439,99 @@ describe("pre-start sticky drain", () => {
 		);
 	});
 
+	test("concurrently draining matching stages each receive the sticky entry (parallel reviewers)", async () => {
+		const { store, backend } = rootFixture([
+			baseStage({ id: "reviewer-a-id", name: "reviewer-a", status: "pending", sessionId: undefined }),
+			baseStage({ id: "reviewer-b-id", name: "reviewer-b", status: "pending", sessionId: undefined }),
+		]);
+		const queued = await store.queueStickyStageMessage(
+			stickyInput("bcast", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		assert.equal(queued?.ok, true);
+
+		const delivered: string[] = [];
+		const drainFor = (stageId: string, stageName: string) =>
+			createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stageId, stageName).deliverPending(
+				async (_from, msg) => {
+					// Real drains await admission I/O; the overlap is what exposed the
+					// shared-claim race (round-1 review, findings 1 and 4).
+					await new Promise<void>((resolve) => setTimeout(resolve, 20));
+					delivered.push(`${stageName}:${msg.id}`);
+				},
+			);
+		await Promise.all([drainFor("reviewer-a-id", "reviewer-a"), drainFor("reviewer-b-id", "reviewer-b")]);
+		assert.deepEqual(delivered.sort(), ["reviewer-a:bcast", "reviewer-b:bcast"]);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
+	});
+
+	test("accepts the materialized child run id as a boundary segment (D5)", async () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "slice-boundary",
+					name: "slice-2-implement",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child", runId: CHILD_RUN_ID },
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: CHILD_RUN_ID,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: ROOT_RUN_ID,
+			parentStageId: "slice-boundary",
+			rootRunId: ROOT_RUN_ID,
+			stages: [baseStage({ id: "child-reviewer-id", name: "reviewer-a" })],
+			startedAt: 2,
+		});
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		for (const target of [
+			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-*`,
+			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-a`,
+		]) {
+			assert.equal(
+				(await store.queueStickyStageMessage(stickyInput(target, target), GROUP, GROUP, backend))?.ok,
+				true,
+				target,
+			);
+		}
+
+		const delivered: string[] = [];
+		await createWorkflowPendingStageDelivery(store, CHILD_RUN_ID, "child-reviewer-id", "reviewer-a").deliverPending(
+			(_from, msg) => {
+				delivered.push(msg.id);
+			},
+		);
+		assert.deepEqual(delivered.sort(), [
+			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-*`,
+			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-a`,
+		]);
+		const counts = store
+			.runs()
+			.find((run) => run.id === ROOT_RUN_ID)
+			?.pendingStageMessages?.map((entry) => [entry.targetPath, entry.deliveryCount]);
+		assert.deepEqual(counts, [
+			[`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-*`, 1],
+			[`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-a`, 1],
+		]);
+	});
+
 	test("ready() gates on sticky-only queues", async () => {
 		const { store, backend } = rootFixture(baseStage({ status: "pending", sessionId: undefined }));
 		const delivery = createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3");
@@ -521,6 +617,73 @@ describe("sticky entries in durable metadata", () => {
 		// The legacy entry hydrates with no sticky fields at all.
 		assert.equal(parsed?.pendingStageMessages?.[0]?.sticky, undefined);
 		assert.equal(parsed?.pendingStageMessages?.[0]?.targetPath, undefined);
+	});
+
+	test("a sticky delivery ledger survives a DBOS reload and never redelivers (resume/replay exactly-once)", async () => {
+		const sdk = createMockSdk();
+		const first = new DbosDurableBackend(sdk);
+		first.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(first);
+		const store = createStore();
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [baseStage(), baseStage({ id: "orch-4-id", name: "orchestrator-4" })],
+			startedAt: 1,
+		});
+		assert.equal(
+			(
+				await store.queueStickyStageMessage(
+					stickyInput("resume", `workflow:${ROOT_RUN_ID}/orchestrator-*`),
+					GROUP,
+					GROUP,
+					first,
+				)
+			)?.ok,
+			true,
+		);
+		const before: string[] = [];
+		await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3").deliverPending(
+			(_from, msg) => {
+				before.push(msg.id);
+			},
+		);
+		assert.deepEqual(before, ["resume"]);
+
+		await first.flush(ROOT_RUN_ID);
+		const second = new DbosDurableBackend(sdk);
+		await second.hydrateWorkflow(ROOT_RUN_ID);
+		const hydrated = [...(second.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])];
+		assert.equal(hydrated[0]?.deliveryCount, 1);
+		const resumed = createStore();
+		resumed.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [baseStage(), baseStage({ id: "orch-4-id", name: "orchestrator-4" })],
+			pendingStageMessages: hydrated,
+			startedAt: 2,
+		});
+
+		// Re-draining the already-delivered stage must not redeliver (the hydrated ledger
+		// record for (runId, stageId) is the exactly-once authority across restarts).
+		const sameStage = createWorkflowPendingStageDelivery(resumed, ROOT_RUN_ID, "orch-3-id", "orchestrator-3");
+		assert.equal(sameStage.ready(), undefined);
+		const after: string[] = [];
+		await sameStage.deliverPending((_from, msg) => {
+			after.push(`repeat:${msg.id}`);
+		});
+		// ...while the next iteration still receives the entry.
+		await createWorkflowPendingStageDelivery(resumed, ROOT_RUN_ID, "orch-4-id", "orchestrator-4").deliverPending(
+			(_from, msg) => {
+				after.push(msg.id);
+			},
+		);
+		assert.deepEqual(after, ["resume"]);
+		assert.equal(resumed.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
 	});
 
 	test("a sticky entry survives a DBOS backend reload", async () => {
@@ -795,6 +958,112 @@ describe("pending-stage bridge sticky delivery", () => {
 			reason: `Workflow run ${ROOT_RUN_ID} terminated with status completed before any stage matching workflow:${ROOT_RUN_ID}/orchestrator-* started`,
 		});
 		terminalHarnessDispose();
+	});
+
+	test("queues sticky when the target resolves to one terminal stage instead of forwarding to a dead alias", async () => {
+		// Round-1 review, finding 6: reviewer-a completed in iteration 1 (its stale
+		// sessionId used to route the send to `forward` and die with Session not found).
+		const harness = stickyBridgeFixture(
+			baseStage({ id: "rev-a-1", name: "reviewer-a", status: "completed", sessionId: "stale-session" }),
+			{ possibleStages: ["reviewer-a", "pull-request"] },
+		);
+		const { result } = await harness.request("next-iteration", { target: `workflow:${ROOT_RUN_ID}/reviewer-a` });
+		assert.equal(result?.outcome, "queued");
+		if (result?.outcome !== "queued") return;
+		assert.equal(result.notInKnownSet, undefined);
+		const entry = harness.store.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(entry?.sticky, true);
+		assert.equal(entry?.targetPath, `workflow:${ROOT_RUN_ID}/reviewer-a`);
+		assert.equal(entry?.status, "queued");
+		harness.dispose();
+	});
+
+	test("live matching honors the materialized child run id as a boundary segment (D5)", async () => {
+		// Round-1 review, findings 0/2/5: a pattern addressed through the child run id
+		// must match the child's live stage just like the boundary-name spelling.
+		const childRunId = testRunId("sticky-live-child");
+		const store = createStore();
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			possibleStages: ["slice-*/reviewer-*"],
+			stages: [
+				{
+					id: "slice-boundary",
+					name: "slice-2-implement",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: ROOT_RUN_ID,
+			parentStageId: "slice-boundary",
+			rootRunId: ROOT_RUN_ID,
+			stages: [
+				baseStage({ id: "child-reviewer-id", name: "reviewer-a", status: "running", sessionId: "live-child" }),
+			],
+			startedAt: 2,
+		});
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		const listeners = new Map<string, (payload: unknown) => void>();
+		const dispose = registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit() {},
+					on(event: string, listener: (payload: unknown) => void) {
+						listeners.set(event, listener);
+						return () => listeners.delete(event);
+					},
+				},
+			},
+			store,
+		);
+		const send = async (id: string, target: string) => {
+			const payload: {
+				handled: boolean;
+				completion?: Promise<
+					| { readonly outcome: "queued"; readonly position: number; readonly forwardTargets?: readonly string[] }
+					| { readonly outcome: "refused"; readonly reason: string }
+				>;
+				requestId: string;
+				from: SessionInfo;
+				runId: string;
+				target: string;
+				message: PendingStageMessageInput["message"];
+			} = {
+				handled: false,
+				requestId: id,
+				from: senderInfo(),
+				runId: ROOT_RUN_ID,
+				target,
+				message: message(id),
+			};
+			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
+			return payload.completion === undefined ? undefined : await payload.completion;
+		};
+		// The forward target stays in the announced boundary-name form (broker-resolvable).
+		const viaRunId = await send("via-run-id", `workflow:${ROOT_RUN_ID}/${childRunId}/reviewer-*`);
+		assert.equal(viaRunId?.outcome, "queued");
+		if (viaRunId?.outcome !== "queued") return;
+		assert.deepEqual(viaRunId.forwardTargets, [`workflow:${ROOT_RUN_ID}/slice-2-implement/child-reviewer-id`]);
+		const viaName = await send("via-name", `workflow:${ROOT_RUN_ID}/slice-2-implement/reviewer-*`);
+		assert.equal(viaName?.outcome, "queued");
+		if (viaName?.outcome !== "queued") return;
+		assert.deepEqual(viaName.forwardTargets, [`workflow:${ROOT_RUN_ID}/slice-2-implement/child-reviewer-id`]);
+		dispose();
 	});
 
 	test("records live matches, returns forward targets, and never re-records on a dedup retry", async () => {
