@@ -10,8 +10,14 @@ import type {
 	PendingStageMessageInput,
 	PendingStageQueueResult,
 	PendingStageSender,
+	PendingStickyStageMessageInput,
 } from "../shared/store-types.js";
-import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../shared/workflow-stage-target.js";
+import { matchStagePathSegments, targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
+import {
+	formatWorkflowStageTarget,
+	parseWorkflowStageTarget,
+	type WorkflowStageTarget,
+} from "../shared/workflow-stage-target.js";
 
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
@@ -30,7 +36,12 @@ interface WorkflowEventSurface {
 interface PendingStageMessageEvent {
 	handled: boolean;
 	completion?: Promise<
-		| { readonly outcome: "queued"; readonly position: number }
+		| {
+				readonly outcome: "queued";
+				readonly position: number;
+				readonly notInKnownSet?: true;
+				readonly forwardTargets?: readonly string[];
+		  }
 		| { readonly outcome: "delivered" }
 		| { readonly outcome: "forward"; readonly target: string }
 		| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" }
@@ -119,8 +130,26 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
 		const runs = activeStore.runs();
+		const parsedTarget = parseWorkflowStageTarget(payload.target);
+		if (parsedTarget === undefined) return;
 		const destination = resolveMaterializedStage(runs, payload.target);
-		if (destination === undefined) return;
+		if (destination === undefined) {
+			// Slice 3 (D3/D4): an unresolved target (future stage, glob, or `**`) is accepted
+			// speculatively as a sticky entry in the root run's durable bucket.
+			if (payload.live === true) return;
+			const rootRun = runs.find((candidate) => candidate.id === parsedTarget.rootRunId);
+			if (rootRun === undefined) return;
+			payload.handled = true;
+			payload.completion = deliverStickyTarget(activeStore, runs, rootRun, payload, parsedTarget).then(
+				(value) => {
+					return value;
+				},
+				(error: Error) => {
+					throw error;
+				},
+			);
+			return;
+		}
 		const rootRunId = durableRootRunIdForRun(runs, destination.run.id);
 		if (rootRunId === undefined) return;
 		const resolvedEvent = {
@@ -183,7 +212,7 @@ function isPendingStageMessageEvent(value: unknown): value is PendingStageMessag
 		(event.live === undefined || typeof event.live === "boolean") &&
 		typeof event.runId === "string" &&
 		typeof event.target === "string" &&
-		parseWorkflowStageTarget(event.target)?.kind === "path" &&
+		parseWorkflowStageTarget(event.target) !== undefined &&
 		typeof event.from?.id === "string" &&
 		(event.from.name === undefined || typeof event.from.name === "string") &&
 		(event.senderRegistrationName === undefined || typeof event.senderRegistrationName === "string") &&
@@ -338,6 +367,141 @@ async function queueAndPersist(
 	return { outcome: "queued", position: result.position };
 }
 
+/**
+ * Slice 3 sticky delivery (D3/D4/D5/D6): persist one entry in the ROOT run's durable
+ * bucket and answer `queued` (with `notInKnownSet` for speculative accepts). Matching
+ * live stages are recorded as delivered immediately; the broker forwards the message to
+ * them through the ordinary inbound admission path with the sender identity (D9).
+ */
+async function deliverStickyTarget(
+	activeStore: Store,
+	runs: ReturnType<Store["runs"]>,
+	rootRun: ReturnType<Store["runs"]>[number],
+	event: PendingStageMessageEvent & {
+		readonly from: PendingStageSender;
+		readonly target: string;
+		readonly message: PendingStageMessageInput["message"];
+	},
+	parsedTarget: WorkflowStageTarget,
+): Promise<
+	| {
+			readonly outcome: "queued";
+			readonly position: number;
+			readonly notInKnownSet?: true;
+			readonly forwardTargets?: readonly string[];
+	  }
+	| { readonly outcome: "refused"; readonly reason: string }
+> {
+	const rootRunId = rootRun.id;
+	const runGroup = workflowInvocationIntercomGroup(rootRunId);
+	if (event.message.expectsReply === true) {
+		return { outcome: "refused", reason: PENDING_STAGE_ASK_REFUSAL };
+	}
+	if (isTerminalRunStatus(rootRun.status)) {
+		return {
+			outcome: "refused",
+			reason: `Workflow run ${rootRunId} terminated with status ${rootRun.status} before any stage matching ${event.target} started`,
+		};
+	}
+	const notInKnownSet = targetSegmentsInPossibleStages(parsedTarget.segments, rootRun.possibleStages ?? [])
+		? undefined
+		: true;
+	const liveMatches = matchingLiveStages(runs, rootRunId, parsedTarget.segments);
+	const backend = durableBackendForRun(getDurableBackend(), runs, rootRunId);
+	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
+	const senderGroup = event.from.groups?.includes(runGroup) === true ? runGroup : event.from.group;
+	const request: PendingStickyStageMessageInput = {
+		runId: rootRunId,
+		stageKey: event.target,
+		from: event.from,
+		...(event.senderRegistrationName === undefined ? {} : { senderRegistrationName: event.senderRegistrationName }),
+		...(event.senderReturnAddress === undefined ? {} : { senderReturnAddress: event.senderReturnAddress }),
+		message: event.message,
+		queuedAt: new Date().toISOString(),
+		targetPath: event.target,
+		...(notInKnownSet === undefined ? {} : { notInKnownSet }),
+	};
+	const result = await activeStore.queueStickyStageMessage(request, senderGroup, runGroup, backend);
+	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
+	if (!result.ok) {
+		if (result.reason === "capacity") {
+			return {
+				outcome: "refused",
+				reason: `Pending stage message queue is full (limit ${result.limit}) for ${event.target}`,
+			};
+		}
+		if (result.reason === "message_id_conflict") {
+			return {
+				outcome: "refused",
+				reason: `Intercom message ID '${result.messageId}' was already queued for ${event.target} with a different target, sender, or payload`,
+			};
+		}
+		return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
+	}
+	const forwardTargets: string[] = [];
+	if (!result.deduplicated && liveMatches.length > 0) {
+		const recorded = await activeStore.recordPendingStageMessageDeliveries(
+			rootRunId,
+			result.entry.id,
+			liveMatches.map((match) => ({
+				runId: match.run.id,
+				stageId: match.stage.id,
+				...(match.stage.name === match.stage.id ? {} : { stageName: match.stage.name }),
+			})),
+			new Date().toISOString(),
+			backend,
+		);
+		if (recorded) forwardTargets.push(...liveMatches.map((match) => match.target));
+	}
+	return {
+		outcome: "queued",
+		position: result.position ?? 1,
+		...(notInKnownSet === undefined ? {} : { notInKnownSet }),
+		...(forwardTargets.length === 0 ? {} : { forwardTargets }),
+	};
+}
+
+/** Live stages of the invocation whose depth-faithful name/id path matches the target segments. */
+function matchingLiveStages(
+	runs: ReturnType<Store["runs"]>,
+	rootRunId: string,
+	patternSegments: readonly string[],
+): {
+	readonly run: ReturnType<Store["runs"]>[number];
+	readonly stage: ReturnType<Store["runs"]>[number]["stages"][number];
+	readonly target: string;
+}[] {
+	const matches: {
+		readonly run: ReturnType<Store["runs"]>[number];
+		readonly stage: ReturnType<Store["runs"]>[number]["stages"][number];
+		readonly target: string;
+	}[] = [];
+	for (const run of runs) {
+		if (durableRootRunIdForRun(runs, run.id) !== rootRunId) continue;
+		const boundaries = workflowBoundarySegments(runs, run.id);
+		if (boundaries === undefined) continue;
+		for (const stage of run.stages) {
+			const live = stage.sessionId !== undefined || stage.sessionFile !== undefined;
+			if (!live || stage.pendingStageDeliveryAvailable !== true) continue;
+			if (
+				stage.status !== "pending" &&
+				stage.status !== "running" &&
+				stage.status !== "awaiting_input" &&
+				stage.status !== "paused" &&
+				stage.status !== "blocked"
+			) {
+				continue;
+			}
+			const idTarget = formatWorkflowStageTarget(rootRunId, ...boundaries, stage.id);
+			const nameTarget = formatWorkflowStageTarget(rootRunId, ...boundaries, stage.name);
+			const idMatch = matchStagePathSegments(patternSegments, idTarget.split("/").slice(1));
+			const nameMatch = matchStagePathSegments(patternSegments, nameTarget.split("/").slice(1));
+			if (idMatch || nameMatch) matches.push({ run, stage, target: idTarget });
+		}
+	}
+	return matches;
+}
+
 function knownUninitializedStage(
 	run: ReturnType<Store["runs"]>[number],
 	stageKey: string,
@@ -374,6 +538,15 @@ function pendingStageUndeliverableReason(
 	run: ReturnType<Store["runs"]>[number],
 	entry: PendingStageMessage,
 ): string | undefined {
+	// Sticky entries (D3) stay deliverable until the ROOT run terminates; there is no
+	// per-stage skipped branch because any future matching stage must still receive them.
+	if (entry.sticky === true) {
+		const target = entry.targetPath ?? entry.stageKey;
+		if (isTerminalRunStatus(run.status)) {
+			return `Workflow run ${run.id} terminated with status ${run.status} before any stage matching ${target} started`;
+		}
+		return undefined;
+	}
 	const stage = pendingStageDestination(run, entry);
 	if (run.status === "cancelled") {
 		return `Workflow run ${run.id} terminated with status cancelled before stage ${entry.stageKey} started`;
@@ -415,6 +588,24 @@ export async function settleUndeliverablePendingStageMessages(
 		}
 		for (const snapshotEntry of run.pendingStageMessages ?? []) {
 			let entry = snapshotEntry;
+			if (
+				entry.status === "queued" &&
+				entry.sticky === true &&
+				(entry.deliveryCount ?? 0) > 0 &&
+				isTerminalRunStatus(run.status)
+			) {
+				if (
+					await activeStore.settleStickyPendingStageMessageDelivered(
+						run.id,
+						entry.id,
+						new Date().toISOString(),
+						backend,
+					)
+				) {
+					settled += 1;
+				}
+				continue;
+			}
 			if (entry.status === "queued") {
 				const reason = pendingStageUndeliverableReason(run, entry);
 				if (reason === undefined) continue;

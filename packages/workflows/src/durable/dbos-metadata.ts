@@ -238,6 +238,11 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 		},
 		queuedAt: entry.queuedAt,
 		...(entry.admissionOrder !== undefined ? { admissionOrder: entry.admissionOrder } : {}),
+		...(entry.sticky === undefined ? {} : { sticky: entry.sticky }),
+		...(entry.targetPath === undefined ? {} : { targetPath: entry.targetPath }),
+		...(entry.notInKnownSet === undefined ? {} : { notInKnownSet: entry.notInKnownSet }),
+		...(entry.deliveries === undefined ? {} : { deliveries: entry.deliveries.map((delivery) => ({ ...delivery })) }),
+		...(entry.deliveryCount === undefined ? {} : { deliveryCount: entry.deliveryCount }),
 		status: entry.status,
 		...(entry.deliveredAt !== undefined ? { deliveredAt: entry.deliveredAt } : {}),
 		...(entry.undeliverableReason !== undefined ? { undeliverableReason: entry.undeliverableReason } : {}),
@@ -273,6 +278,15 @@ function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
 			(typeof value.admissionOrder === "number" &&
 				Number.isSafeInteger(value.admissionOrder) &&
 				value.admissionOrder > 0)) &&
+		(value.sticky === undefined || value.sticky === true) &&
+		(value.targetPath === undefined || typeof value.targetPath === "string") &&
+		(value.notInKnownSet === undefined || value.notInKnownSet === true) &&
+		(value.deliveries === undefined ||
+			(Array.isArray(value.deliveries) && value.deliveries.every(isPendingStageDelivery))) &&
+		(value.deliveryCount === undefined ||
+			(typeof value.deliveryCount === "number" &&
+				Number.isSafeInteger(value.deliveryCount) &&
+				value.deliveryCount >= 0)) &&
 		(value.status === "queued" || value.status === "delivered" || value.status === "undeliverable") &&
 		(value.deliveredAt === undefined || typeof value.deliveredAt === "string") &&
 		(value.undeliverableReason === undefined || typeof value.undeliverableReason === "string") &&
@@ -280,6 +294,17 @@ function isPendingStageMessage(value: WorkflowSerializableValue): boolean {
 		(value.undeliverableNotifiedAt === undefined || typeof value.undeliverableNotifiedAt === "string") &&
 		isPendingStageSender(value.from) &&
 		isPendingStageIntercomMessage(value.message)
+	);
+}
+
+/** Slice 3 sticky-delivery record; immutable once written. */
+function isPendingStageDelivery(value: WorkflowSerializableValue): boolean {
+	if (!isSerializableObject(value)) return false;
+	return (
+		typeof value.runId === "string" &&
+		typeof value.stageId === "string" &&
+		(value.stageName === undefined || typeof value.stageName === "string") &&
+		typeof value.deliveredAt === "string"
 	);
 }
 
