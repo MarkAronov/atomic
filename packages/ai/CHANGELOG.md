@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added `compat.vllmPriority` to the OpenAI Completions compatibility options. When set, it is sent as the top-level `priority` request field; lower values are handled earlier and the vLLM server default is `0`, so it only takes effect when vLLM runs with `--scheduling-policy priority`. Setting it on a background or batch model defers that model's long prefills behind interactive sessions. Off by default and never set on the generated catalog ([#9004](https://github.com/earendil-works/pi/pull/9004)).
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Added

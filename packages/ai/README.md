@@ -1194,6 +1194,7 @@ interface OpenAICompletionsCompat {
   cacheControlFormat?: 'anthropic';  // Anthropic-style cache_control on system prompt, last tool, and last user/assistant text content
   openRouterRouting?: OpenRouterRouting; // OpenRouter routing preferences (default: {})
   vercelGatewayRouting?: VercelGatewayRouting; // Vercel AI Gateway routing preferences (default: {})
+  vllmPriority?: number;             // vLLM scheduler priority sent as the top-level `priority` field; lower values are handled earlier and the server default is 0, so it only applies under `--scheduling-policy priority` (default: unset)
 }
 
 interface OpenAIResponsesCompat {

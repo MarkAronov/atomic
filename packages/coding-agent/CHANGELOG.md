@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `models.json` now accepts `compat.vllmPriority` on `openai-completions` models. Atomic sends it as the top-level `priority` request field, which vLLM uses to order queued requests when it runs with `--scheduling-policy priority`; lower values are handled earlier and the server default is `0`. Set it on a background or batch model so its long prefills queue behind interactive sessions ([#9004](https://github.com/earendil-works/pi/pull/9004)).
+
 ### Changed
 
 - The `edit` tool's model-facing hashline guidance now includes compact worked examples and anti-patterns for commonly rejected patch shapes, and correctly identifies native Rust tree-sitter block resolution as primary with the brace/indent heuristic as its fallback. The hashline reference documentation is now a specification covering inputs, verified tolerated shapes, outputs, worked examples, limits, literal error messages, and warnings.
