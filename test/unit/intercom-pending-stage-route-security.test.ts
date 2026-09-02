@@ -334,6 +334,110 @@ test("a live-route registration with a non-segment stage key is refused orderly 
 	assert.equal(stage.closeHadError, false, "a non-segment stage key must not destroy the socket with an error");
 });
 
+test("a roster target anchored at another invocation root is rejected", async () => {
+	// Regression: review round 2 — depth-faithful roster targets carry boundary-name
+	// segments, so validation anchors them at the registration's invocation group root
+	// instead of the announcing run id. A foreign root must still be rejected.
+	const rootId = "8b4c5d6e-7f80-4a9b-bc0d-1e2f3a4b5c6d";
+	const foreignRoot = "9c5d6e7f-8091-4b0a-ad1e-2f3a4b5c6d7e";
+	const childRunId = "aadb5e6f-7182-4293-9e04-3f4a5b6c7d8e";
+	const group = `workflow:${rootId}`;
+	const owner = new WireClient();
+	await register(owner, "foreign-root-owner", group);
+	owner.send({
+		type: "register_pending_stage_route",
+		runId: childRunId,
+		group,
+		capability: "foreign-root-capability",
+		stages: [
+			{
+				stageId: "reviewer-id",
+				stageName: "reviewer",
+				target: `workflow:${foreignRoot}/workflow:child/reviewer-id`,
+				lifecycle: "pending",
+				routeEligible: true,
+				group,
+			},
+		],
+	});
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false);
+});
+
+test("nested live stages register depth-faithful aliases derived from the announced roster", async () => {
+	// Regression: review round 2, D8 clarification — the roster publishes the depth-faithful
+	// id-form target, and the broker derives both live aliases from it so a nested stage is
+	// addressable by its depth-faithful id and name forms.
+	const rootId = "bcec6f70-91a2-4c1b-be2f-3a4b5c6d7e8f";
+	const childRunId = "cdfd7a81-a2b3-4d2c-af3a-4b5c6d7e8f9a";
+	const group = `workflow:${rootId}`;
+	const capability = "nested-depth-faithful-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [owner, stage, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("nested-owner", group));
+	await stage.connect(productionRegistration("nested-stage", group));
+	await sender.connect(productionRegistration("nested-sender", group));
+
+	// Production topology registers every run in the invocation, root included; the root
+	// route is what boundary-name-form targets resolve through when no middle segment is
+	// a registered run id.
+	owner.registerPendingStageRoute(rootId, group, capability);
+	// The roster's advertised target is depth-faithful; validation must anchor it at the
+	// invocation group root even though the announcing run is the nested child run.
+	owner.registerPendingStageRoute(childRunId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootId}/workflow:child/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	const directory = await owner.listDirectory();
+	assert.equal(directory.workflowStages[0]?.lifecycle, "pending");
+	assert.equal(directory.workflowStages.length, 1);
+	assert.equal(directory.workflowStages[0]?.target, `workflow:${rootId}/workflow:child/reviewer-id`);
+
+	stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], capability);
+	await stage.listSessions();
+	const liveDirectory = await sender.listDirectory();
+	const liveEntry = liveDirectory.workflowStages[0];
+	assert.equal(liveEntry?.lifecycle, "running");
+	assert.equal(liveEntry?.sessionId, stage.sessionId);
+
+	const deliver = async (target: string, text: string): Promise<void> => {
+		const stageMessage = new Promise<Message>((resolveMessage) => {
+			stage.once("message", (_from, message) => resolveMessage(message));
+		});
+		const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+			owner.once("pending_stage_message", resolveRequest);
+		});
+		const send = sender.send(target, { text });
+		const request = await ownerValidation;
+		assert.equal(request.live, true, target);
+		owner.respondPendingStageMessage(request.requestId, {
+			outcome: "forward",
+			target: `workflow:${rootId}/workflow:child/reviewer-id`,
+		});
+		assert.equal((await send).delivered, true, target);
+		assert.equal((await stageMessage).content.text, text, target);
+	};
+	// Both depth-faithful forms resolve to the live stage session.
+	await deliver(`workflow:${rootId}/workflow:child/reviewer-id`, "id form");
+	await deliver(`workflow:${rootId}/workflow:child/reviewer`, "name form");
+});
+
 function productionRegistration(name: string | undefined, group: string) {
 	return {
 		...(name === undefined ? {} : { name }),

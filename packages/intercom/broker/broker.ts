@@ -14,7 +14,11 @@ import type {
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
 } from "../types.js";
-import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../workflow-stage-target.js";
+import {
+	formatWorkflowStageTarget,
+	parseWorkflowStageTarget,
+	withWorkflowStageTargetFinalSegment,
+} from "../workflow-stage-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
@@ -132,7 +136,14 @@ function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): b
 	return candidate === owner || candidate.startsWith(`${owner}/`);
 }
 
-function isWorkflowStageRosterAnnouncements(value: unknown, runId: string): value is WorkflowStageRosterAnnouncement[] {
+function isWorkflowStageRosterAnnouncements(
+	value: unknown,
+	runId: string,
+	invocationGroup: string,
+): value is WorkflowStageRosterAnnouncement[] {
+	const groupRootRunId = invocationGroup.startsWith("workflow:")
+		? invocationGroup.slice("workflow:".length)
+		: undefined;
 	return (
 		Array.isArray(value) &&
 		value.every((stage) => {
@@ -144,7 +155,13 @@ function isWorkflowStageRosterAnnouncements(value: unknown, runId: string): valu
 				typeof announcement.stageName === "string" &&
 				parsed?.kind === "path" &&
 				parsed.segments.at(-1) === announcement.stageId &&
-				(runId === parsed.rootRunId || parsed.segments.slice(0, -1).includes(runId)) &&
+				// Depth-faithful targets are anchored at the invocation root even when the
+				// announcing run is a nested descendant whose run id appears in no segment
+				// position (boundary-name segments). The runId conditions keep the flat
+				// shortcut form valid for hosts that have not adopted the clarified form.
+				((groupRootRunId !== undefined && groupRootRunId === parsed.rootRunId) ||
+					runId === parsed.rootRunId ||
+					parsed.segments.slice(0, -1).includes(runId)) &&
 				(announcement.lifecycle === "pending" || announcement.lifecycle === "running") &&
 				typeof announcement.routeEligible === "boolean" &&
 				typeof announcement.group === "string"
@@ -362,8 +379,23 @@ class IntercomBroker {
 		const owner = this.pendingStageRoutes.get(runId);
 		if (owner === undefined || !owner.group.startsWith("workflow:")) return false;
 		const rootRunId = owner.group.slice("workflow:".length);
-		const prefix = runId === rootRunId ? [] : [runId];
-		const targets = uniqueStageKeys.map((stageKey) => formatWorkflowStageTarget(rootRunId, ...prefix, stageKey));
+		// D8 clarification: advertised targets are depth-faithful, so the live aliases must be
+		// depth-faithful too. The roster publishes the id-form target per stage; the name form
+		// swaps its final segment. Without a roster entry, fall back to the flat run-id prefix
+		// (still an accepted resolver input).
+		const roster = this.workflowRosters.get(runId);
+		const targets = uniqueStageKeys.map((stageKey) => {
+			const entry = roster?.stages.find((stage) => stage.stageId === stageKey || stage.stageName === stageKey);
+			const entryTarget = entry === undefined ? undefined : parseWorkflowStageTarget(entry.target);
+			if (entry !== undefined && entryTarget?.kind === "path") {
+				if (stageKey !== entry.stageName) return entry.target;
+				return (
+					withWorkflowStageTargetFinalSegment(entry.target, entry.stageName) ?? entry.target
+				);
+			}
+			const prefix = runId === rootRunId ? [] : [runId];
+			return formatWorkflowStageTarget(rootRunId, ...prefix, stageKey);
+		});
 		for (const target of targets) {
 			const existing = this.liveWorkflowStageRoutes.get(target);
       if (
@@ -885,7 +917,11 @@ class IntercomBroker {
         }
         if (
           clientMessage.stages !== undefined &&
-          (!isWorkflowStageRosterAnnouncements(clientMessage.stages, clientMessage.runId) ||
+          (!isWorkflowStageRosterAnnouncements(
+            clientMessage.stages,
+            clientMessage.runId,
+            normalizeGroup(clientMessage.group),
+          ) ||
             !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
         ) {
           writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow-stage roster" });

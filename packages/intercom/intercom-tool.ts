@@ -25,46 +25,101 @@ async function listDirectory(client: IntercomClient, group?: string): Promise<Se
 	return { sessions: await client.listSessions(group), workflowStages: [] };
 }
 
-async function resolveReplySender(client: IntercomClient, logicalTarget: string, sendTarget: string): Promise<string> {
-	if (logicalTarget !== sendTarget) return sendTarget;
+type ReplySenderResolution =
+	| { readonly kind: "resolved"; readonly sessionId: string }
+	| { readonly kind: "unresolved" }
+	| { readonly kind: "ambiguous"; readonly reason: string };
+
+/**
+ * Map a canonical workflow-stage target to the live session id its reply will arrive
+ * from. `unresolved` keeps today's behavior of keying the waiter on the send target
+ * (ordinary miss handling); `ambiguous` must refuse the ask — keying on the raw path
+ * string is the #2784 hang-to-timeout class because inbound reply routing only ever
+ * produces the stage session's id or name.
+ */
+async function resolveReplySender(
+	client: IntercomClient,
+	logicalTarget: string,
+	sendTarget: string,
+): Promise<ReplySenderResolution> {
+	if (logicalTarget !== sendTarget) return { kind: "unresolved" };
 	// Only a canonical workflow path needs the roster lookup that maps it to the
 	// stage's live session id. Ordinary name/id asks stay off this directory round-trip.
-	if (parseWorkflowStageTarget(logicalTarget)?.kind !== "path") return sendTarget;
-	// The roster publishes the id form; live routing also registers the name form.
+	const parsedTarget = parseWorkflowStageTarget(logicalTarget);
+	if (parsedTarget?.kind !== "path") return { kind: "unresolved" };
+	// The roster publishes the depth-faithful id form; live routing also registers the name
+	// form (final segment swapped). Sibling stages can share a boundary name, so more than
+	// one alias may match — that is an ambiguous target, not a first-match wins.
 	const stages = (await listDirectory(client)).workflowStages;
-	const stage = stages.find(
+	const aliasMatches = stages.filter(
 		(candidate) =>
 			candidate.sessionId !== undefined &&
 			(candidate.target === logicalTarget ||
 				withWorkflowStageTargetFinalSegment(candidate.target, candidate.stageName) === logicalTarget),
 	);
-	if (stage?.sessionId !== undefined) return stage.sessionId;
-	// Boundary-stage-name forms (`workflow:<root>/<boundary>/<stage>`) match neither alias:
-	// the directory cannot verify the boundary→child-run mapping, so match on the final
-	// stage segment under the same invocation root and require exactly one live candidate.
-	const parsedTarget = parseWorkflowStageTarget(logicalTarget);
-	const finalSegment = parsedTarget?.segments.at(-1);
-	if (parsedTarget !== undefined && finalSegment !== undefined) {
-		const liveSessionIds = new Set(
-			stages
-				.filter((candidate) => {
-					if (candidate.sessionId === undefined) return false;
-					if (candidate.stageId !== finalSegment && candidate.stageName !== finalSegment) return false;
-					const parsedCandidate = parseWorkflowStageTarget(candidate.target);
-					return (
-						parsedCandidate !== undefined &&
-						parsedCandidate.rootRunId === parsedTarget.rootRunId &&
-						parsedCandidate.segments.length > 1
-					);
-				})
-				.map((candidate) => candidate.sessionId),
-		);
-		if (liveSessionIds.size === 1) {
-			const [onlySessionId] = liveSessionIds;
-			if (onlySessionId !== undefined) return onlySessionId;
-		}
+	const aliasSessionIds = new Set(aliasMatches.map((candidate) => candidate.sessionId));
+	if (aliasSessionIds.size > 1) {
+		return {
+			kind: "ambiguous",
+			reason: `multiple live workflow stages share the target "${logicalTarget}"`,
+		};
 	}
-	return sendTarget;
+	if (aliasSessionIds.size === 1) {
+		const [onlySessionId] = aliasSessionIds;
+		if (onlySessionId !== undefined) return { kind: "resolved", sessionId: onlySessionId };
+	}
+	// Boundary forms (`workflow:<root>/<boundary...>/<stage>`) match neither alias. Start from
+	// every live nested candidate under the same invocation root whose final segment matches,
+	// then narrow to candidates whose boundary segments agree with the target's (the candidate
+	// target's segment at that depth, or the owning run id at the candidate's own depth).
+	const finalSegment = parsedTarget.segments.at(-1);
+	const middleSegments = parsedTarget.segments.slice(0, -1);
+	const boundaryAgrees = (candidate: WorkflowStageRosterEntry): boolean => {
+		const parsedCandidate = parseWorkflowStageTarget(candidate.target);
+		if (
+			parsedCandidate === undefined ||
+			parsedCandidate.rootRunId !== parsedTarget.rootRunId ||
+			parsedCandidate.segments.length < 2
+		) {
+			return false;
+		}
+		if (middleSegments.length === 0) return true;
+		const candidateMiddles = parsedCandidate.segments.slice(0, -1);
+		return middleSegments.every((segment, index) => {
+			const owningRunIdentity = index === candidateMiddles.length - 1 ? candidate.runId : undefined;
+			return segment === candidateMiddles[index] || segment === owningRunIdentity;
+		});
+	};
+	const looseCandidates = stages.filter((candidate) => {
+		if (candidate.sessionId === undefined) return false;
+		if (candidate.stageId !== finalSegment && candidate.stageName !== finalSegment) return false;
+		const parsedCandidate = parseWorkflowStageTarget(candidate.target);
+		return (
+			parsedCandidate !== undefined &&
+			parsedCandidate.rootRunId === parsedTarget.rootRunId &&
+			parsedCandidate.segments.length >= 2
+		);
+	});
+	const strictMatches = looseCandidates.filter(boundaryAgrees);
+	const strictSessionIds = new Set(strictMatches.map((candidate) => candidate.sessionId));
+	if (strictSessionIds.size === 1) {
+		const [onlySessionId] = strictSessionIds;
+		if (onlySessionId !== undefined) return { kind: "resolved", sessionId: onlySessionId };
+	}
+	// Never key a waiter on the raw path when the final segment names several live stages:
+	// inbound reply routing could never correlate it, so the ask would block to its timeout.
+	const looseSessionIds = new Set(looseCandidates.map((candidate) => candidate.sessionId));
+	if (looseSessionIds.size > 1 || strictSessionIds.size > 1) {
+		return {
+			kind: "ambiguous",
+			reason: `multiple live workflow stages share the final segment "${finalSegment}" under different boundaries`,
+		};
+	}
+	if (looseSessionIds.size === 1) {
+		const [onlySessionId] = looseSessionIds;
+		if (onlySessionId !== undefined) return { kind: "resolved", sessionId: onlySessionId };
+	}
+	return { kind: "unresolved" };
 }
 
 function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
@@ -520,7 +575,18 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			// Canonical workflow targets must remain canonical on the send path so the
 			// broker can authorize invocation-to-subgroup control. The waiter, however,
 			// correlates the actual inbound stage session identity.
-			const replyFrom = await resolveReplySender(connectedClient, to, sendTo);
+			const replySender = await resolveReplySender(connectedClient, to, sendTo);
+			if (replySender.kind === "ambiguous") {
+				return {
+					content: [{
+						type: "text",
+						text: `Message to "${to}" is ambiguous: ${replySender.reason}. Use the exact target shown by intercom list.`,
+					}],
+					isError: true,
+					details: { error: true },
+				};
+			}
+			const replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
 			const admission = beginReplyWait(replyFrom, questionId, _signal);
             if (!admission.ok) {
               const text = admission.reason === "busy"
