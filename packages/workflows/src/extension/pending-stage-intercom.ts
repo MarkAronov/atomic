@@ -16,7 +16,11 @@ import type {
 	PendingStageSender,
 	PendingStickyStageMessageInput,
 } from "../shared/store-types.js";
-import { targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
+import {
+	matchStagePathSegments,
+	splitStagePathSegments,
+	targetSegmentsInPossibleStages,
+} from "../shared/workflow-stage-path-matching.js";
 import {
 	formatWorkflowStageTarget,
 	parseWorkflowStageTarget,
@@ -122,6 +126,10 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 						routeEligible: true,
 						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
 					})),
+				// D7 (slice 4): only the root run's roster registration carries the invocation's
+				// possible-future rows. Presence replaces, so a terminal root publishes `[]` and
+				// the broker drops the rows.
+				...(run.id === rootRunId ? { possibleStages: possibleStageRows(runs, rootRunId, run) } : {}),
 			});
 		}
 		sweepPromise = sweepPromise
@@ -221,6 +229,91 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 function stageRouteTarget(runs: ReturnType<Store["runs"]>, rootRunId: string, runId: string, stageId: string): string {
 	const boundarySegments = runId === rootRunId ? [] : workflowBoundarySegments(runs, runId);
 	return formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [runId]), stageId);
+}
+
+/**
+ * D7 (slice 4): possible-future rows for `intercom list`, derived from the persisted
+ * scan (D10) plus the root run's sticky queue. Glob-free scan entries that already
+ * name a route-eligible materialized stage are suppressed (they are announced as
+ * materialized roster rows); pattern entries stay listed because future occurrences
+ * still match them (D2/D3). The run-wide `workflow:<root>/**` broadcast row (D6) is
+ * present whenever the root run is non-terminal, even with an empty scan; a terminal
+ * root yields `[]` so the broker drops every future row.
+ */
+function possibleStageRows(
+	runs: ReturnType<Store["runs"]>,
+	rootRunId: string,
+	rootRun: ReturnType<Store["runs"]>[number],
+): { readonly target: string; readonly queuedCount: number }[] {
+	if (isTerminalRunStatus(rootRun.status)) return [];
+	const stickyQueued = (rootRun.pendingStageMessages ?? []).filter(
+		(entry) => entry.sticky === true && entry.status === "queued",
+	);
+	const stickySegments = (entry: PendingStageMessage): readonly string[] | undefined => {
+		const parsed = parseWorkflowStageTarget(entry.targetPath ?? entry.stageKey);
+		return parsed?.rootRunId === rootRunId ? parsed.segments : undefined;
+	};
+	// The run-wide broadcast bucket (`workflow:<root>/**`) is its own target (D6): its
+	// entries are counted on the broadcast row only, never on the scan rows below — a
+	// bidirectional glob match would otherwise inflate every row with the same count.
+	const scanEntries = stickyQueued.filter((entry) => {
+		const segments = stickySegments(entry);
+		return !(segments !== undefined && segments.length === 1 && segments[0] === "**");
+	});
+	const rows: { readonly target: string; readonly queuedCount: number }[] = [];
+	for (const scanEntry of rootRun.possibleStages ?? []) {
+		const rowSegments = splitStagePathSegments(scanEntry);
+		if (rowSegments.length === 0 || rowSegments.some((segment) => segment.length === 0)) continue;
+		if (
+			!rowSegments.some((segment) => segment.includes("*")) &&
+			materializedStageMatches(runs, rootRunId, rowSegments)
+		) {
+			continue;
+		}
+		rows.push({
+			target: formatWorkflowStageTarget(rootRunId, ...rowSegments),
+			queuedCount: scanEntries.filter((entry) => {
+				const segments = stickySegments(entry);
+				if (segments === undefined) return false;
+				return matchStagePathSegments(rowSegments, segments) || matchStagePathSegments(segments, rowSegments);
+			}).length,
+		});
+	}
+	rows.push({
+		target: formatWorkflowStageTarget(rootRunId, "**"),
+		queuedCount: stickyQueued.filter((entry) => {
+			const segments = stickySegments(entry);
+			return segments !== undefined && segments.length === 1 && segments[0] === "**";
+		}).length,
+	});
+	return rows;
+}
+
+/** True when a glob-free scan entry names a route-eligible materialized stage of the invocation. */
+function materializedStageMatches(
+	runs: ReturnType<Store["runs"]>,
+	rootRunId: string,
+	entrySegments: readonly string[],
+): boolean {
+	for (const run of runs) {
+		if (durableRootRunIdForRun(runs, run.id) !== rootRunId) continue;
+		const hops = workflowBoundaryHops(runs, run.id);
+		if (hops === undefined) continue;
+		for (const stage of run.stages) {
+			if (stage.pendingStageDeliveryAvailable !== true) continue;
+			if (
+				stage.status !== "pending" &&
+				stage.status !== "running" &&
+				stage.status !== "awaiting_input" &&
+				stage.status !== "paused" &&
+				stage.status !== "blocked"
+			) {
+				continue;
+			}
+			if (stageMatchesPathPattern(entrySegments, hops, [stage.id, stage.name])) return true;
+		}
+	}
+	return false;
 }
 
 function isPendingStageMessageEvent(value: unknown): value is PendingStageMessageEvent &
