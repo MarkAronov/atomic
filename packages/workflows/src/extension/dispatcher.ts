@@ -198,11 +198,14 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				try {
 					const scan = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
 					possibleStages = scan.stages;
-					// D1: a scan that sees nothing surfaces its warnings; partial
-					// results with discovered stages stay quiet (builtin closures
-					// legitimately contain unresolvable helper step arrays).
-					if (possibleStages.length === 0) {
-						for (const warning of scan.warnings) console.warn(`atomic-workflows: ${warning}`);
+					// D1: scan warnings surface at launch as one aggregate line,
+					// bounded so builtin-internal partials do not spam stderr.
+					if (scan.warnings.length > 0) {
+						const shown = scan.warnings.slice(0, 3).join(" | ");
+						const suffix = scan.warnings.length > 3 ? " | ..." : "";
+						console.warn(
+							`atomic-workflows: possible-stages scan produced ${scan.warnings.length} warning(s): ${shown}${suffix}`,
+						);
 					}
 				} catch {
 					possibleStages = undefined;

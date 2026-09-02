@@ -382,6 +382,8 @@ interface FileUnit {
 	readonly definitionName: string | undefined;
 	/** True when the file contains a bare workflow-definition call (wrapper chunks do not). */
 	readonly hasWorkflowCall: boolean;
+	/** Local names that invoke the workflow factory (builtin keywords + import aliases). */
+	readonly workflowNames: ReadonlySet<string>;
 }
 
 function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
@@ -396,6 +398,10 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 	const localValues = collectLocalValues(tokens);
 	const imports = collectImports(tokens);
 	collectExportFroms(tokens, imports);
+	const workflowNames = new Set<string>(["workflow", "defineWorkflow"]);
+	for (const [local, binding] of imports) {
+		if (binding.importedName === "workflow") workflowNames.add(local);
+	}
 	return {
 		tokens,
 		imports,
@@ -404,8 +410,9 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 		localInits: collectLocalInits(tokens),
 		localStepFactories: collectLocalStepFactories(tokens),
 		localValues,
-		definitionName: collectDefinitionName(tokens, localValues),
-		hasWorkflowCall: tokens.some((_, index) => isBareWorkflowCall(tokens, index)),
+		definitionName: collectDefinitionName(tokens, localValues, workflowNames),
+		hasWorkflowCall: tokens.some((_, index) => isBareWorkflowCall(tokens, index, workflowNames)),
+		workflowNames,
 	};
 }
 
@@ -730,11 +737,13 @@ function collectLocalInits(tokens: readonly Token[]): Map<string, readonly Token
  * carry no visible call and yield `undefined`.
  */
 /** A bare (non-member) `workflow(`/`defineWorkflow(` call, type arguments allowed. */
-function isBareWorkflowCall(tokens: readonly Token[], index: number): boolean {
+function isBareWorkflowCall(tokens: readonly Token[], index: number, workflowNames: ReadonlySet<string>): boolean {
 	const token = tokens[index];
 	if (token === undefined) return false;
-	if (token.kind !== "ident" || (token.value !== "workflow" && token.value !== "defineWorkflow")) return false;
+	if (token.kind !== "ident" || !workflowNames.has(token.value)) return false;
 	const previous = tokens[index - 1];
+	// `function workflow(` declares the factory; only invocations count.
+	if (previous?.kind === "ident" && previous.value === "function") return false;
 	if (previous?.kind === "punct" && (previous.value === "." || previous.value === "?.")) return false;
 	let cursor = index + 1;
 	if (tokens[cursor]?.kind === "punct" && tokens[cursor]!.value === "<") {
@@ -753,9 +762,13 @@ function isBareWorkflowCall(tokens: readonly Token[], index: number): boolean {
  * (pure re-exports) carry no call and yield `undefined`. A literal, static
  * template, or local-const name resolves; anything else is invisible.
  */
-function collectDefinitionName(tokens: readonly Token[], localValues: ReadonlyMap<string, Token>): string | undefined {
+function collectDefinitionName(
+	tokens: readonly Token[],
+	localValues: ReadonlyMap<string, Token>,
+	workflowNames: ReadonlySet<string>,
+): string | undefined {
 	for (let index = 0; index < tokens.length; index += 1) {
-		if (!isBareWorkflowCall(tokens, index)) continue;
+		if (!isBareWorkflowCall(tokens, index, workflowNames)) continue;
 		let cursor = index + 1;
 		if (tokens[cursor]?.kind === "punct" && tokens[cursor]!.value === "<") {
 			const close = matchBracket(tokens, cursor, "<", ">");

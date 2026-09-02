@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { afterAll, describe, test } from "vitest";
+import { afterAll, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
@@ -17,7 +18,14 @@ import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { coercePossibleStages } from "../../packages/workflows/src/shared/possible-stages.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { makeDirectorySync, makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
+import {
+	makeDirectorySync,
+	makeTempDirectory,
+	moduleDir,
+	removeTempDirectory,
+	sleep,
+	writeTextSync,
+} from "../helpers/runtime.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const SCANNED = ["orchestrator-*", "pull-request", "reviewer-error"] as const;
@@ -345,6 +353,88 @@ describe("possible-stages admission wiring (D10)", () => {
 		}
 		assert.ok(snapshot !== undefined, "wired run should be admitted");
 		assert.deepEqual(snapshot.possibleStages, ["alpha", "beta-*"]);
+	});
+
+	test("every extension runtime construction site threads the scan resolver", () => {
+		// Regression (review round 4): runtimeForContext built a per-context
+		// runtime without resolvePossibleStageEntry, so workflow-tool launches
+		// persisted an empty set. All construction sites must thread it.
+		const sourcePath = join(
+			moduleDir(import.meta.url),
+			"..",
+			"..",
+			"packages",
+			"workflows",
+			"src",
+			"extension",
+			"extension-runtime-state.ts",
+		);
+		const source = readFileSync(sourcePath, "utf-8");
+		const sites = source.split("createExtensionRuntime({").slice(1);
+		assert.ok(sites.length >= 3, `expected at least 3 construction sites, found ${sites.length}`);
+		for (const [index, site] of sites.entries()) {
+			assert.ok(
+				site.includes("resolvePossibleStageEntry"),
+				`createExtensionRuntime site #${index + 1} does not thread resolvePossibleStageEntry`,
+			);
+		}
+	});
+
+	test("dispatch surfaces scan warnings as one aggregate launch line", async () => {
+		const workflowsDir = join(WIRE_DIR, ".atomic", "workflows");
+		makeDirectorySync(workflowsDir, { recursive: true });
+		writeTextSync(
+			join(workflowsDir, "partial-scan.ts"),
+			[
+				`import { workflow } from "@bastani/workflows";`,
+				`export default workflow({`,
+				`  name: "partial-scan",`,
+				`  description: "",`,
+				`  inputs: {},`,
+				`  outputs: {},`,
+				`  run: async (ctx) => {`,
+				`    await ctx.stage("good-stage");`,
+				`    await ctx.parallel(warmIndices.map((index) => steps[index]));`,
+				`    return {};`,
+				`  },`,
+				`});`,
+			].join("\n"),
+			"utf-8",
+		);
+		setDurableBackend(createInMemoryTestBackend());
+		const discovery = await discoverWorkflows({
+			cwd: WIRE_DIR,
+			homeDir: join(WIRE_DIR, "home"),
+			includeBundled: false,
+		});
+		const source = discovery.sources.find((entry) => entry.id === "partial-scan");
+		assert.ok(source?.filePath !== undefined);
+		const store = createStore();
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			await dispatch(
+				{ action: "run", workflow: "partial-scan" },
+				{
+					registry: discovery.registry,
+					store,
+					resolvePossibleStageEntry: (normalizedName) =>
+						normalizedName === "partial-scan" ? source.filePath : undefined,
+				},
+			);
+			let snapshot: import("../../packages/workflows/src/shared/store-types.js").RunSnapshot | undefined;
+			for (let attempt = 0; attempt < 100 && snapshot === undefined; attempt += 1) {
+				await sleep(20);
+				snapshot = store.runs().find((candidate) => candidate.name === "partial-scan");
+			}
+			assert.ok(snapshot !== undefined);
+			const aggregate = warnSpy.mock.calls
+				.map((call) => call.join(" "))
+				.filter((text) => text.includes("possible-stages scan produced"));
+			assert.equal(aggregate.length, 1, JSON.stringify(warnSpy.mock.calls));
+			assert.match(aggregate[0] ?? "", /1 warning\(s\):/);
+		} finally {
+			warnSpy.mockRestore();
+		}
 	});
 
 	test("a missing entry path never blocks launch and hydrates an empty set", async () => {

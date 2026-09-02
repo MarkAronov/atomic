@@ -344,6 +344,7 @@ export function createWorkflowExtensionRuntimeState(
 			persistence: persistenceRef.current,
 			mcp: mcpPort,
 			config: runtimeConfigRef.current,
+			resolvePossibleStageEntry,
 			models,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,

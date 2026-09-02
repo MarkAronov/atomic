@@ -797,6 +797,83 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.deepEqual(result.stages, ["café-1", "café-literal", "hexA"]);
 	});
 
+	test("function declarations of the factory do not hide real definitions", () => {
+		// Regression (review round 4): `function workflow(spec)` declarations
+		// counted as definition calls, so a bundled SDK chunk was excluded from
+		// closures and the entry re-root landed on the wrong module.
+		writeFixture(
+			"sdk-helper.ts",
+			`
+				function workflow(spec) {
+					return spec;
+				}
+				export function launch(spec) {
+					return workflow(spec);
+				}
+			`,
+		);
+		writeFixture(
+			"decl-impl.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				var decl_default = workflow({
+					name: "decl",
+					run: async (ctx) => {
+						await ctx.stage("decl-step");
+					},
+				});
+				export { decl_default as default };
+			`,
+		);
+		// The wrapper imports the declaration-only helper BEFORE the impl.
+		writeFixture(
+			"decl-wrapper.ts",
+			`
+				import "./sdk-helper.js";
+				import { decl_default } from "./decl-impl.js";
+				export { decl_default as default };
+			`,
+		);
+		const result = scanPossibleStagesFromSource(join(TEST_DIR, "decl-wrapper.ts"));
+		assert.deepEqual(result.stages, ["decl-step"]);
+	});
+
+	test("workflow factories reached through import aliases are recognized", () => {
+		writeFixture(
+			"alias-child.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "alias-child",
+					run: async (ctx) => {
+						await ctx.stage("alias-child-step");
+					},
+				});
+			`,
+		);
+		const result = scanFile(
+			"alias-entry.ts",
+			`
+				import { workflow as wf } from "@bastani/workflows";
+				import aliasChild from "./alias-child.js";
+				export default wf({
+					name: "alias-entry",
+					run: async (ctx) => {
+						await ctx.stage("alias-entry-stage");
+						await ctx.workflow(aliasChild);
+					},
+				});
+			`,
+		);
+		// The aliased factory call makes this file a definition: its own stages
+		// stay and the child nests (no wrapper re-root at the child).
+		assert.deepEqual(result.stages, [
+			"alias-entry-stage",
+			"workflow:alias-child",
+			"workflow:alias-child/alias-child-step",
+		]);
+	});
+
 	test("resolution failures warn and never throw; the partial set survives", () => {
 		const missingChild = scanFile(
 			"missing-child-parent.ts",
