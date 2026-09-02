@@ -443,8 +443,16 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 messageId: result.id,
                 timestamp: Date.now(),
               });
+              const notInKnownSet = result.notInKnownSet === true;
               return {
-                content: [{ type: "text", text: `Message queued for ${to}` }],
+                content: [
+                  {
+                    type: "text",
+                    text: notInKnownSet
+                      ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
+                      : `Message queued for ${to}`,
+                  },
+                ],
                 isError: false,
                 details: {
                   messageId: result.id,
@@ -452,6 +460,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                   queued: true,
 					target: result.target,
                   position: result.position,
+                  ...(notInKnownSet ? { notInKnownSet: true } : {}),
                 },
               };
             }

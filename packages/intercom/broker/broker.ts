@@ -34,6 +34,7 @@ import {
 	setSessionGroups,
 } from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
+import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -248,8 +249,17 @@ class IntercomBroker {
 		target: string,
 	): { readonly runId: string; readonly registration: PendingStageRouteRegistration } | undefined {
 		const parsed = parseWorkflowStageTarget(target);
-		if (parsed === undefined || parsed.kind !== "path") return undefined;
+		if (parsed === undefined) return undefined;
 		const invocationGroup = normalizeGroup(`workflow:${parsed.rootRunId}`);
+		// Slice 3 (D3/D6): pattern and `**` targets are anchored at the invocation root
+		// registration — glob segments name no nested run, and the sticky entry lives in
+		// the root run's durable bucket.
+		if (parsed.kind !== "path") {
+			const rootRegistration = this.pendingStageRoutes.get(parsed.rootRunId);
+			return rootRegistration !== undefined && normalizeGroup(rootRegistration.group) === invocationGroup
+				? { runId: parsed.rootRunId, registration: rootRegistration }
+				: undefined;
+		}
 		let ownerRunId = parsed.rootRunId;
 		let registration = this.pendingStageRoutes.get(ownerRunId);
 		for (const segment of parsed.segments.slice(0, -1)) {
@@ -428,11 +438,22 @@ class IntercomBroker {
 					// boundary-form pendings settle on the root registration while the going-live
 					// stage may register under its nested child run.
 					const parsedPending = parseWorkflowStageTarget(pending.target);
-					return (
-						parsedPending !== undefined &&
-						parsedPending.rootRunId === rootRunId &&
-						uniqueStageKeys.includes(parsedPending.segments.at(-1) ?? "")
-					);
+					if (parsedPending === undefined || parsedPending.rootRunId !== rootRunId) return false;
+					if (parsedPending.kind !== "path") {
+						// Slice 3: sticky pattern pendings hold the going-live barrier when the
+						// stage's advertised depth-faithful target matches the pattern.
+						return uniqueStageKeys.some((stageKey) => {
+							const entry = roster?.stages.find(
+								(candidate) => candidate.stageId === stageKey || candidate.stageName === stageKey,
+							);
+							const parsedEntry = entry === undefined ? undefined : parseWorkflowStageTarget(entry.target);
+							if (parsedEntry === undefined) {
+								return matchStagePathSegments(parsedPending.segments, parsedPending.segments);
+							}
+							return matchStagePathSegments(parsedPending.segments, parsedEntry.segments);
+						});
+					}
+					return uniqueStageKeys.includes(parsedPending.segments.at(-1) ?? "");
 				})
         .map(([pendingRequestId]) => pendingRequestId),
     );
@@ -510,6 +531,8 @@ class IntercomBroker {
 		forwardTarget: string | undefined,
 		reason: string | undefined,
 		reasonCode: "message_id_conflict" | undefined,
+		notInKnownSet?: true,
+		forwardTargets?: readonly string[],
 	): void {
 		const pending = this.pendingStageAcknowledgments.get(requestId);
 		if (pending === undefined || pending.ownerSessionId !== currentId) return;
@@ -529,12 +552,17 @@ class IntercomBroker {
 			return;
 		}
 		if (outcome === "queued" && typeof position === "number" && position > 0) {
+			// Slice 3 (D6/D9): a sticky pattern entry answers `queued` once while any
+			// matching live stages receive the message now, as ordinary inbound
+			// messages with the original sender identity.
+			this.deliverStickyBroadcast(pending, forwardTargets);
 			writeMessage(pending.senderSocket, {
 				type: "queued",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
 				target: pending.target,
 				position,
+				...(notInKnownSet === true ? { notInKnownSet: true } : {}),
 			});
 			return;
 		}
@@ -603,6 +631,35 @@ class IntercomBroker {
 		});
 	}
 
+
+	/**
+	 * Slice 3 (D6/D9): deliver a sticky broadcast to the live stages the host validated,
+	 * each as an ordinary inbound message frame carrying the original sender identity.
+	 */
+	private deliverStickyBroadcast(
+		pending: PendingStageAcknowledgment,
+		forwardTargets: readonly string[] | undefined,
+	): boolean {
+		if (forwardTargets === undefined || forwardTargets.length === 0) return false;
+		const parsedPending = parseWorkflowStageTarget(pending.target);
+		if (parsedPending === undefined) return false;
+		const invocationGroup = normalizeGroup(`workflow:${parsedPending.rootRunId}`);
+		let delivered = 0;
+		for (const target of forwardTargets) {
+			const targetSession = this.resolveLiveWorkflowStage(target);
+			if (targetSession === undefined) continue;
+			const targetGroup = targetSession.registrationGroup ?? targetSession.info.group ?? "default";
+			if (!invocationOwnsGroup(invocationGroup, normalizeGroup(targetGroup))) continue;
+			writeMessage(targetSession.socket, { type: "message", from: pending.sender, message: pending.message });
+			delivered += 1;
+		}
+		// One dedupe record under the sender's original signature: a retry of the same
+		// logical send must be acknowledged without re-broadcasting.
+		if (delivered > 0 && pending.signature !== undefined) {
+			this.deliveredMessages.record(pending.messageId, pending.signature);
+		}
+		return delivered > 0;
+	}
 
 	private failPendingStageNotification(
 		socket: net.Socket,
@@ -1042,7 +1099,11 @@ class IntercomBroker {
 			(clientMessage.target !== undefined && typeof clientMessage.target !== "string") ||
 			(clientMessage.outcome === "forward" && typeof clientMessage.target !== "string") ||
 			(clientMessage.reason !== undefined && typeof clientMessage.reason !== "string") ||
-			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict")
+			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict") ||
+			(clientMessage.notInKnownSet !== undefined && clientMessage.notInKnownSet !== true) ||
+			(clientMessage.forwardTargets !== undefined &&
+				(!Array.isArray(clientMessage.forwardTargets) ||
+					!clientMessage.forwardTargets.every((entry) => typeof entry === "string")))
         ) {
           throw new Error("Invalid pending-stage message result");
         }
@@ -1054,6 +1115,8 @@ class IntercomBroker {
 			clientMessage.target,
 			clientMessage.reason,
 			clientMessage.reasonCode,
+			clientMessage.notInKnownSet === true ? true : undefined,
+			Array.isArray(clientMessage.forwardTargets) ? [...clientMessage.forwardTargets] : undefined,
         );
         break;
       }

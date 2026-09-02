@@ -138,12 +138,14 @@ export function handleBrokerSend(
     return;
   }
 	const workflowTarget = parseWorkflowStageTarget(trimmedTo);
-	if (workflowTarget !== undefined && workflowTarget.kind !== "path") {
+	// Slice 3 (D3): asks to pattern/future stage targets stay refused; `send` is queued
+	// sticky by the workflow host, so the refusal must happen before any live delivery.
+	if (workflowTarget !== undefined && workflowTarget.kind !== "path" && message.expectsReply === true) {
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
 			...(attemptId ? { attemptId } : {}),
-			reason: "Workflow-stage pattern targets are parsed but not yet supported",
+			reason: PENDING_STAGE_ASK_REFUSAL,
 		});
 		return;
 	}

@@ -40,6 +40,8 @@ export interface SendResult {
 	reasonCode?: "message_id_conflict";
 	target?: string;
   position?: number;
+  /** D4 speculative accept: the sticky target is not in the run's persisted possible-stage set. */
+  notInKnownSet?: true;
 }
 
 export interface PendingStageMessageRequest {
@@ -60,7 +62,12 @@ export interface PendingStageNotificationRequest {
 }
 
 export type PendingStageMessageResult =
-	| { readonly outcome: "queued"; readonly position: number }
+	| {
+			readonly outcome: "queued";
+			readonly position: number;
+			readonly notInKnownSet?: true;
+			readonly forwardTargets?: readonly string[];
+	  }
 	| { readonly outcome: "delivered" }
 	| { readonly outcome: "forward"; readonly target: string }
 	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
@@ -462,17 +469,25 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "queued": {
-		const { messageId, attemptId, target, position } = brokerMessage;
+		const { messageId, attemptId, target, position, notInKnownSet } = brokerMessage;
         if (
           typeof messageId !== "string" ||
           (attemptId !== undefined && typeof attemptId !== "string") ||
 			typeof target !== "string" ||
           typeof position !== "number" ||
-          position < 1
+          position < 1 ||
+			(notInKnownSet !== undefined && notInKnownSet !== true)
         ) {
           throw new Error("Invalid queued message");
         }
-		const result = { id: messageId, delivered: false, queued: true, target, position } as const;
+		const result = {
+			id: messageId,
+			delivered: false,
+			queued: true,
+			target,
+			position,
+			...(notInKnownSet === true ? { notInKnownSet: true as const } : {}),
+		} as const;
         if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
         else this.pendingSends.resolve(messageId, attemptId, result);
         break;
@@ -800,7 +815,14 @@ export class IntercomClient extends EventEmitter {
 		writeMessage(
 			socket,
 			result.outcome === "queued"
-				? { type: "pending_stage_message_result", requestId, outcome: "queued", position: result.position }
+				? {
+						type: "pending_stage_message_result",
+						requestId,
+						outcome: "queued",
+						position: result.position,
+						...(result.notInKnownSet === true ? { notInKnownSet: true as const } : {}),
+						...(result.forwardTargets === undefined ? {} : { forwardTargets: [...result.forwardTargets] }),
+					}
 				: result.outcome === "forward"
 					? { type: "pending_stage_message_result", requestId, outcome: "forward", target: result.target }
 					: result.outcome === "refused"
