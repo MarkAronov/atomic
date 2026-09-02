@@ -438,6 +438,64 @@ test("nested live stages register depth-faithful aliases derived from the announ
 	await deliver(`workflow:${rootId}/workflow:child/reviewer`, "name form");
 });
 
+test("a nested live-route registration waits for in-flight boundary-form pendings before acking", async () => {
+	// Regression: review round 3 (P3) — a boundary-form pending settles on the root
+	// registration while the going-live stage registers under its child run id; the
+	// activation barrier must still hold the route ack until that pending settles.
+	const rootId = "dfee8b92-a3b4-4e3d-8f40-5a6b7c8d9e0f";
+	const childRunId = "e0ff9ca3-b4c5-4f4e-8051-6b7c8d9e0f1a";
+	const group = `workflow:${rootId}`;
+	const capability = "activation-barrier-capability";
+	const owner = new IntercomClient();
+	const stage = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [owner, stage, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("barrier-owner", group));
+	await stage.connect(productionRegistration("barrier-stage", group));
+	await sender.connect(productionRegistration("barrier-sender", group));
+
+	owner.registerPendingStageRoute(rootId, group, capability);
+	owner.registerPendingStageRoute(childRunId, group, capability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootId}/workflow:child/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await owner.listSessions();
+
+	const ownerValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const send = sender.send(`workflow:${rootId}/workflow:child/reviewer`, { text: "in-flight boundary pending" });
+	const request = await ownerValidation;
+	assert.equal(request.live, undefined);
+
+	let routeRegistered = false;
+	const registration = stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], capability);
+	void registration.then(() => {
+		routeRegistered = true;
+	});
+	await owner.listSessions();
+	assert.equal(routeRegistered, false, "the route ack must wait for the in-flight boundary-form pending to settle");
+
+	owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+	const queuedResult = await send;
+	assert.equal(queuedResult.queued, true);
+	const deadline = Date.now() + 2000;
+	while (!routeRegistered && Date.now() < deadline) {
+		await new Promise((resolveTick) => setTimeout(resolveTick, 5));
+	}
+	assert.equal(routeRegistered, true, "the route ack lands once the pending settles");
+	await registration;
+});
+
 function productionRegistration(name: string | undefined, group: string) {
 	return {
 		...(name === undefined ? {} : { name }),

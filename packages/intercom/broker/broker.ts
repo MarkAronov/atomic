@@ -411,7 +411,17 @@ class IntercomBroker {
     }
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]
-				.filter(([, pending]) => pending.runId === runId && uniqueStageKeys.includes(parseWorkflowStageTarget(pending.target)?.segments.at(-1) ?? ""))
+				.filter(([, pending]) => {
+					// Match in-flight pendings of the whole invocation, not just this run's own:
+					// boundary-form pendings settle on the root registration while the going-live
+					// stage may register under its nested child run.
+					const parsedPending = parseWorkflowStageTarget(pending.target);
+					return (
+						parsedPending !== undefined &&
+						parsedPending.rootRunId === rootRunId &&
+						uniqueStageKeys.includes(parsedPending.segments.at(-1) ?? "")
+					);
+				})
         .map(([pendingRequestId]) => pendingRequestId),
     );
     this.liveWorkflowStageRouteActivations.set(requestId, { sessionId: currentId, pendingRequestIds });
