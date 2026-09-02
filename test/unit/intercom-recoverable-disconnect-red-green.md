@@ -100,3 +100,67 @@ inspects the rejection. That in-flight window is the production shape: the clien
 fails pending requests from `onClose`. A *fresh* call made after the socket has
 already closed observes `Not connected` instead, which is deliberately left
 actionable.
+
+## Review round 1 — the observed channel, and the missing retry owner
+
+Review found that the two boundaries above are real but were **not** the channel
+that leaked in run `16a9f7ed-e55a-44b4-b89f-3b63ef9197a2`. In that stage
+transcript the only `Client disconnected` occurrences are `subagent` **tool
+results** at steps 32/36/38/40 — the tool returned the bare string as its whole
+result four times while the stage kept running. `grep -c "Extension error"` on
+that transcript is 0.
+
+The observed path is the advisory supervisor-authorization request:
+`broker/client.ts` `failPending` rejects it, `packages/intercom/index.ts` set
+`request.completion` with no classification and no catch,
+`packages/subagents/src/intercom/supervisor-authorization.ts` rethrows every
+non-stale error, and `subagent-executor-single.ts:192` awaits it inside the run
+`try`. Review also found that swallowing the warm-up failure left no retry
+owner, so a stage holding queued pending messages parks on
+`pendingStageDelivery.ready()` — which `stage-runner-controller.ts:1218` awaits
+with no timeout — with no signal at all.
+
+Both are covered by tests driving the real production entry points:
+`requestSupervisorAuthorization` itself, and a `pendingStageDelivery` modeled on
+the real `ready`/`deliverPending` contract.
+
+### Red — the two new guards reverted
+
+Only `.catch` on the authorization completion and the `scheduleWarmUpRetry` call
+were removed; everything else was left in place.
+
+```sh
+npx vitest --run --project unit test/unit/intercom-recoverable-disconnect-ui.test.ts
+```
+
+```text
+ Test Files  1 failed (1)
+      Tests  3 failed | 14 passed (17)
+```
+
+Each failure is the finding itself, not a proxy for it:
+
+```text
+× resolves undefined so a recoverable disconnect never becomes the subagent run result
+  IntercomClientDisconnectedError: Client disconnected
+
+× retries after a recoverable warm-up disconnect and unparks the stage
+  Error: Test timed out in 30000ms.
+
+× reports once when the bounded attempts run out
+  Error: timed out waiting for the expected condition
+```
+
+The first is the exact rejection that became the subagent run result. The second
+is the stage parked on `ready()` for the full 30 s budget with nothing to unpark
+it. The third is the missing diagnostic: no report is ever emitted.
+
+### Green — with the guards
+
+```text
+ Test Files  1 passed (1)
+      Tests  17 passed (17)
+```
+
+Run three consecutive times with no flake. Captured red output:
+`/tmp/red-round2.txt`.

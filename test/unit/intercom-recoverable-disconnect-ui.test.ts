@@ -39,11 +39,22 @@ import type {
 } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import intercom from "../../packages/intercom/index.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
+import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
+import { sleep } from "../helpers/runtime.ts";
 
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const EXTENSION_PATH = "<intercom>";
+
+/** Poll until `predicate` holds, so a timer-driven retry is awaited rather than slept through. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() > deadline) throw new Error("timed out waiting for the expected condition");
+		await sleep(5);
+	}
+}
 
 type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
 type ImportResult = { error: unknown } | { module: HeavyModule };
@@ -73,14 +84,47 @@ function relayFailureLogs(): ConsoleErrorCall[] {
 	);
 }
 
+/**
+ * A `pendingStageDelivery` modeled on the real contract in
+ * `packages/workflows/src/runs/foreground/pending-stage-delivery.ts`: `ready()`
+ * returns a promise that only a successful `deliverPending()` resolves, and the
+ * only production caller of `deliverPending()` is the heavy module's
+ * `session_start` replay. A stage that owns queued messages parks on that
+ * promise inside `stage-runner-controller`, with no timeout.
+ */
+function pendingStageDeliveryWithQueuedMessages() {
+	let resolveReady: (() => void) | undefined;
+	let settled = false;
+	const readyPromise = new Promise<void>((resolve) => {
+		resolveReady = resolve;
+	});
+	const delivery = {
+		routeCapability: "test-capability",
+		deliverPending: async () => {
+			delivery.deliverPendingCalls += 1;
+			settled = true;
+			resolveReady?.();
+		},
+		ready: () => readyPromise,
+		deliverPendingCalls: 0,
+		get readySettled() {
+			return settled;
+		},
+	};
+	return delivery;
+}
+
+type PendingStageDelivery = ReturnType<typeof pendingStageDeliveryWithQueuedMessages>;
+
 /** A workflow-stage `session_start` context carrying a pending stage delivery. */
-function workflowStageContext(): ExtensionContext {
+function workflowStageContext(pendingStageDelivery?: PendingStageDelivery): ExtensionContext {
 	return {
 		cwd: process.cwd(),
 		hasUI: true,
 		orchestrationContext: {
 			kind: "workflow-stage",
-			pendingStageDelivery: {
+			workflowStageName: "implementation",
+			pendingStageDelivery: pendingStageDelivery ?? {
 				routeCapability: "test-capability",
 				deliverPending: async () => {},
 				ready: () => undefined,
@@ -89,10 +133,20 @@ function workflowStageContext(): ExtensionContext {
 	} as never;
 }
 
+type StageContext = {
+	orchestrationContext?: { pendingStageDelivery?: { deliverPending: (deliver: () => void) => Promise<void> } };
+};
+
 function successfulHeavyModule(onSessionStart?: (ctx: unknown) => void): HeavyModule {
 	return {
 		default(heavyPi) {
-			if (onSessionStart) heavyPi.on("session_start", (_event, ctx) => onSessionStart(ctx));
+			// Mirrors `packages/intercom/index-heavy.ts`, which drains the stage's
+			// pending deliveries from its own `session_start` handler.
+			heavyPi.on("session_start", async (_event, ctx) => {
+				onSessionStart?.(ctx);
+				const delivery = (ctx as StageContext).orchestrationContext?.pendingStageDelivery;
+				if (delivery) await delivery.deliverPending(() => {});
+			});
 			heavyPi.registerTool({
 				name: "intercom",
 				label: "Intercom",
@@ -106,7 +160,7 @@ function successfulHeavyModule(onSessionStart?: (ctx: unknown) => void): HeavyMo
 	};
 }
 
-function fixture(importResults: ImportResult[]) {
+function fixture(importResults: ImportResult[], warmUpRetryDelaysMs?: readonly number[]) {
 	const handlers = new Map<string, ExtensionEventHandler[]>();
 	const eventListeners = new Map<string, PiEventListener[]>();
 	const tools = new Map<string, ToolDefinition>();
@@ -142,6 +196,7 @@ function fixture(importResults: ImportResult[]) {
 			if ("error" in result) throw result.error;
 			return result.module;
 		},
+		...(warmUpRetryDelaysMs ? { warmUpRetryDelaysMs } : {}),
 	});
 
 	/**
@@ -178,10 +233,19 @@ function fixture(importResults: ImportResult[]) {
 			return imports;
 		},
 		emittedPiEvents,
+		/** The same event bus `requestSupervisorAuthorization` is handed in production. */
+		piEvents: pi.events as never,
 		/** Drives `session_start` through the host boundary and returns what the UI would show. */
 		async emitSessionStart(ctx: ExtensionContext = workflowStageContext()): Promise<ExtensionError[]> {
 			const reported: ExtensionError[] = [];
 			const event: SessionStartEvent = { type: "session_start", reason: "startup" };
+			await runGenericHandlers([hostExtension()], ctx, event as never, (error) => reported.push(error));
+			return reported;
+		},
+		/** Drives `session_shutdown` the way the host runner does. */
+		async emitSessionShutdown(ctx: ExtensionContext = workflowStageContext()): Promise<ExtensionError[]> {
+			const reported: ExtensionError[] = [];
+			const event = { type: "session_shutdown", reason: "quit" };
 			await runGenericHandlers([hostExtension()], ctx, event as never, (error) => reported.push(error));
 			return reported;
 		},
@@ -356,5 +420,115 @@ describe("Intercom recoverable disconnect at the lazy event-relay boundary", () 
 		assert.deepEqual(relayFailureLogs(), [
 			[`Intercom event relay failed (${PENDING_STAGE_UNDELIVERABLE_EVENT}):`, terminal],
 		]);
+	});
+});
+
+describe("Intercom recoverable disconnect at the supervisor-authorization channel", () => {
+	// This is the channel that actually leaked in Goal run
+	// 16a9f7ed-e55a-44b4-b89f-3b63ef9197a2: the `subagent` tool returned the bare
+	// string "Client disconnected" as its entire result, four times, while the
+	// stage kept running. `requestSupervisorAuthorization` rethrows every
+	// non-stale error, and `subagent-executor-single.ts` awaits it inside the run
+	// `try`, so the message became the run result.
+	test("resolves undefined so a recoverable disconnect never becomes the subagent run result", async () => {
+		const current = fixture([{ error: new IntercomClientDisconnectedError() }]);
+
+		const authorization = await requestSupervisorAuthorization(current.piEvents, "child-agent");
+
+		assert.equal(authorization, undefined, "the launch proceeds with supervisor metadata omitted");
+		assert.deepEqual(consoleErrorCalls, []);
+	});
+
+	test("still rejects a non-recoverable authorization failure so a claimed provider aborts launch", async () => {
+		const importError = new Error("Cannot import Intercom heavy module");
+		const current = fixture([{ error: importError }]);
+
+		await assert.rejects(requestSupervisorAuthorization(current.piEvents, "child-agent"), importError);
+	});
+
+	test("still rejects when the heavy module registers no authorization provider", async () => {
+		const current = fixture([{ module: successfulHeavyModule() }]);
+
+		await assert.rejects(
+			requestSupervisorAuthorization(current.piEvents, "child-agent"),
+			/Intercom supervisor authorization provider is unavailable/,
+		);
+	});
+});
+
+describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
+	// A stage carrying queued pending messages parks on
+	// `pendingStageDelivery.ready()` in `stage-runner-controller`, with no
+	// timeout. Only a successful heavy-module replay calls `deliverPending()`, so
+	// silently discarding the warm-up failure would leave that stage waiting with
+	// no owner and no signal.
+	test("retries after a recoverable warm-up disconnect and unparks the stage", async () => {
+		const delivery = pendingStageDeliveryWithQueuedMessages();
+		const current = fixture(
+			[{ error: new IntercomClientDisconnectedError() }, { module: successfulHeavyModule() }],
+			[1],
+		);
+
+		const reported = await current.emitSessionStart(workflowStageContext(delivery));
+		assert.deepEqual(reported, [], "the stage is not shown an error while recovery is still ahead");
+		assert.equal(delivery.readySettled, false, "the stage is parked until a replay delivers");
+
+		await delivery.ready();
+
+		assert.equal(current.imports, 2, "the wrapper owns the retry; no explicit Intercom call was needed");
+		assert.equal(delivery.deliverPendingCalls, 1);
+		assert.deepEqual(consoleErrorCalls, []);
+	});
+
+	test("reports once when the bounded attempts run out", async () => {
+		const delivery = pendingStageDeliveryWithQueuedMessages();
+		const current = fixture(
+			[
+				{ error: new IntercomClientDisconnectedError() },
+				{ error: new IntercomClientDisconnectedError() },
+				{ error: new IntercomClientDisconnectedError() },
+			],
+			[1, 1],
+		);
+
+		const reported = await current.emitSessionStart(workflowStageContext(delivery));
+		await waitFor(() => consoleErrorCalls.length > 0);
+
+		assert.deepEqual(reported, []);
+		assert.equal(current.imports, 3, "one warm-up attempt plus the two scheduled retries");
+		assert.equal(consoleErrorCalls.length, 1, "exactly one terminal diagnostic, not one per attempt");
+		const [message] = consoleErrorCalls[0] ?? [];
+		assert.match(
+			String(message),
+			/Intercom could not reconnect for workflow stage "implementation" after 2 attempts/,
+		);
+		assert.equal(delivery.readySettled, false);
+	});
+
+	test("cancels the retry on session shutdown without another attempt", async () => {
+		const delivery = pendingStageDeliveryWithQueuedMessages();
+		const current = fixture(
+			[{ error: new IntercomClientDisconnectedError() }, { module: successfulHeavyModule() }],
+			[40],
+		);
+
+		await current.emitSessionStart(workflowStageContext(delivery));
+		const shutdownReported = await current.emitSessionShutdown();
+		await sleep(120);
+
+		assert.deepEqual(shutdownReported, []);
+		assert.equal(current.imports, 1, "the cancelled retry never fires a second import");
+		assert.deepEqual(consoleErrorCalls, []);
+	});
+
+	test("does not retry a non-recoverable warm-up failure", async () => {
+		const delivery = pendingStageDeliveryWithQueuedMessages();
+		const current = fixture([{ error: new Error("Cannot import Intercom heavy module") }], [1]);
+
+		const reported = await current.emitSessionStart(workflowStageContext(delivery));
+		await sleep(30);
+
+		assert.equal(reported.length, 1, "a non-recoverable failure stays immediately actionable");
+		assert.equal(current.imports, 1, "and is not retried");
 	});
 });

@@ -19,7 +19,9 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 
-- A recoverable broker disconnect no longer surfaces as a workflow-stage error. Eager stage warm-up during `session_start` and the background event relays used to push `Client disconnected` into the host extension-error channel and log `Intercom event relay failed …` into the stage output while the stage was still running and lazy re-initialization was still recovering. Relay acknowledgements are unchanged, and protocol, authentication, configuration, non-recoverable initialization, terminal relay, and user-initiated failures stay visible.
+- A recoverable broker disconnect no longer surfaces as a workflow-stage failure. Most visibly, a subagent launch no longer aborts with `Client disconnected` as its entire result: the supervisor-authorization request is advisory, so a transient disconnect now lets the launch proceed with supervisor metadata omitted, exactly as a runtime with no provider already did. Eager stage warm-up during `session_start` no longer reports the disconnect through the host extension-error channel, and the background event relays no longer log `Intercom event relay failed …` into the stage output.
+- A workflow-stage warm-up that loses the broker now has a retry owner. Previously nothing rescheduled it, so a stage holding queued pending messages could wait indefinitely for a delivery that never came. The wrapper now retries the warm-up on the same bounded reconnect backoff and reports once if the attempts run out, naming the stage.
+- Recoverable-disconnect classification is by error type raised inside the broker client rather than by message text, so protocol, authentication, configuration, non-recoverable initialization, terminal relay, exhausted-retry, user-initiated, and identically worded unrelated failures all stay visible and actionable.
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

@@ -6,6 +6,7 @@ import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
+import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -34,6 +35,12 @@ type ActiveLifecycleState = {
 };
 interface LightweightIntercomOptions {
 	importHeavy?: () => Promise<{ default: (pi: ExtensionAPI) => void | Promise<void> }>;
+	/**
+	 * Internal test seam: the warm-up retry schedule in milliseconds. Production
+	 * uses the shared reconnect backoff; a test supplies short delays so the
+	 * bounded retry can be driven without waiting out the real schedule.
+	 */
+	warmUpRetryDelaysMs?: readonly number[];
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -137,6 +144,17 @@ function reportRelayFailure(eventName: string, error: unknown): void {
 	if (isRecoverableIntercomDisconnect(error)) return;
 	console.error(`Intercom event relay failed (${eventName}):`, error);
 }
+
+/**
+ * Bounded attempts for the workflow-stage warm-up retry.
+ *
+ * A stage that carries queued pending messages parks on
+ * `pendingStageDelivery.ready()`, which only a successful heavy-module replay
+ * resolves. Silently discarding a recoverable warm-up disconnect would leave
+ * that stage waiting with no owner and no signal, so the wrapper retries on the
+ * shared reconnect backoff and reports once when the attempts run out.
+ */
+const WARM_UP_RETRY_ATTEMPTS = 5;
 
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
@@ -278,6 +296,73 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		);
 		return promise;
 	}
+	type WarmUpRetry = { lease: IntercomLease; generation: number; timer: ReturnType<typeof setTimeout> | null; cancelled: boolean };
+	let warmUpRetry: WarmUpRetry | null = null;
+	function cancelWarmUpRetry(): void {
+		if (!warmUpRetry) return;
+		warmUpRetry.cancelled = true;
+		if (warmUpRetry.timer) clearTimeout(warmUpRetry.timer);
+		warmUpRetry = null;
+	}
+	function warmUpRetryDelay(attempt: number): number | undefined {
+		const schedule = options.warmUpRetryDelaysMs;
+		if (schedule) return schedule[attempt];
+		return attempt < WARM_UP_RETRY_ATTEMPTS ? reconnectDelayMs(attempt) : undefined;
+	}
+	/**
+	 * Own the recovery for a workflow-stage warm-up that lost the broker.
+	 *
+	 * `session_start` returns immediately so the host is not blocked on backoff,
+	 * and exactly one retry chain runs per lease: each attempt re-checks that the
+	 * lease and lifecycle generation are still current, so shutdown, reload, and
+	 * session replacement abort it silently instead of racing a stale context or
+	 * building a second client. A success drains the stage's pending deliveries
+	 * through the normal `session_start` replay; running out of attempts is the
+	 * terminal case the objective requires to stay visible.
+	 */
+	function scheduleWarmUpRetry(ctx: ExtensionContext, lease: IntercomLease, generation: number, stageName: string): void {
+		if (warmUpRetry) return;
+		const state: WarmUpRetry = { lease, generation, timer: null, cancelled: false };
+		warmUpRetry = state;
+		const clearOwner = (): void => {
+			if (warmUpRetry === state) warmUpRetry = null;
+		};
+		const stale = (): boolean =>
+			state.cancelled || activeLease !== lease || lease.retired || sessionSnapshot?.generation !== generation;
+		const attemptAt = (attempt: number): void => {
+			const delay = warmUpRetryDelay(attempt);
+			if (delay === undefined) {
+				clearOwner();
+				console.error(
+					`Intercom could not reconnect for workflow stage "${stageName}" after ${attempt} attempts; queued stage messages remain undelivered until an Intercom call succeeds.`,
+				);
+				return;
+			}
+			const timer = setTimeout(() => {
+				state.timer = null;
+				if (stale()) {
+					clearOwner();
+					return;
+				}
+				void loadHeavy(ctx).then(clearOwner, (error: unknown) => {
+					if (stale()) {
+						clearOwner();
+						return;
+					}
+					// A non-recoverable failure is already reported by loadHeavy's own
+					// rejection handler; retrying it would only repeat that diagnostic.
+					if (!isRecoverableIntercomDisconnect(error)) {
+						clearOwner();
+						return;
+					}
+					attemptAt(attempt + 1);
+				});
+			}, delay);
+			timer.unref?.();
+			state.timer = timer;
+		};
+		attemptAt(0);
+	}
   let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
   const activateTypedContactSupervisor = (): void => {
     const activeTools = pi.getActiveTools();
@@ -321,17 +406,22 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     }
     const generation = ++lifecycleGeneration;
     sessionSnapshot = { event, ctx, generation, lease };
+    cancelWarmUpRetry();
     if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.pendingStageDelivery !== undefined) {
+      const stageName = ctx.orchestrationContext.workflowStageName;
       try {
         await loadHeavy(ctx);
       } catch (error) {
-        // Eager stage warm-up is Intercom's own initiative, not the user's. A
-        // recoverable broker disconnect here leaves the failed attempt
-        // discarded, so the next tool call, relay, or lifecycle event
-        // reconnects; letting it escape would make the host runner report a
-        // `session_start` extension error and paint "Client disconnected" over
-        // a stage that is still running. Everything else still escapes.
+        // Eager stage warm-up is Intercom's own initiative, not the user's.
+        // Letting a recoverable disconnect escape would make the host runner
+        // report a `session_start` extension error and paint "Client
+        // disconnected" over a stage that is still running. Recovery is not
+        // left to chance either: this branch hands the failure to a bounded
+        // retry owner, because a stage carrying queued messages parks on
+        // `pendingStageDelivery.ready()` until a replay delivers them.
+        // Everything else still escapes.
         if (!isRecoverableIntercomDisconnect(error)) throw error;
+        scheduleWarmUpRetry(ctx, lease, generation, stageName);
       }
     } else if (loadedHeavy) {
       await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
@@ -341,6 +431,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;
 		retireLifecycleLease(lease, { event, ctx, generation });
+		cancelWarmUpRetry();
 		const retiredHeavy = loadedHeavy?.heavy ?? null;
 		const retiredAttempt = heavyAttempt?.lease === lease ? heavyAttempt.promise : null;
 		const retiredReplay = replayAttempt?.lease === lease ? replayAttempt.promise : null;
@@ -436,13 +527,27 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
 		const request = payload as SupervisorAuthorizationRequest;
 		if (typeof request.childName !== "string" || !request.childName.trim() || request.completion) return;
-		request.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
-			handle.assertCurrent();
-			const forwarded: SupervisorAuthorizationRequest = { childName: request.childName };
-			await dispatchEventHandlers(handle.heavy, SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, forwarded);
-			if (!forwarded.completion) throw new Error("Intercom supervisor authorization provider is unavailable");
-			return await forwarded.completion;
-		});
+		request.completion = loadHeavy(latestLifecycleContext())
+			.then(async (handle) => {
+				handle.assertCurrent();
+				const forwarded: SupervisorAuthorizationRequest = { childName: request.childName };
+				await dispatchEventHandlers(handle.heavy, SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, forwarded);
+				if (!forwarded.completion) throw new Error("Intercom supervisor authorization provider is unavailable");
+				return await forwarded.completion;
+			})
+			.catch((error: unknown) => {
+				// Supervisor authorization is advisory. `requestSupervisorAuthorization`
+				// already resolves `undefined` when the parent runtime is gone, and a
+				// runtime with no provider simply omits supervisor metadata rather than
+				// exposing a broken channel. A recoverable broker disconnect is the same
+				// situation: rejecting instead aborts the launch and makes
+				// "Client disconnected" the subagent's entire run result, which is the
+				// leak this fix exists to close. The child connects lazily anyway, so it
+				// requests its own capability once the broker is back. Every other
+				// failure — including a claimed provider that failed — still aborts.
+				if (isRecoverableIntercomDisconnect(error)) return undefined;
+				throw error;
+			});
 	});
 	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
 		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;
