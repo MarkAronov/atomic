@@ -1610,3 +1610,216 @@ test("live composite route replacement requires the old owner to disconnect", as
 	await sender.next("delivered", (frame) => frame.messageId === "stage-attempt-transition");
 	assert.equal((await nextAttempt.next("message")).message.content.text, "transition message");
 });
+
+function possibleStageRowsFixture(runId: string) {
+	return [
+		{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 2 },
+		{ target: `workflow:${runId}/child-boundary/reviewer-a`, queuedCount: 0 },
+		{ target: `workflow:${runId}/**`, queuedCount: 1 },
+	];
+}
+
+test("possible future rows are listed inside the invocation, refreshed, and cleared at terminal", async () => {
+	const runId = "d7000001-0000-4000-8000-000000000001";
+	const group = `workflow:${runId}`;
+	const capability = "future-rows-capability";
+	const owner = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("future-owner", group));
+	await member.connect(productionRegistration("future-member", group));
+	await outsider.connect(productionRegistration("future-outsider", "other-group"));
+
+	owner.registerPendingStageRoute(runId, group, capability, [], possibleStageRowsFixture(runId));
+	await owner.listSessions();
+
+	// Inside the invocation group: every future row with kind, canonical target, and count.
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, [
+		{ kind: "workflow-future-stage", runId, target: `workflow:${runId}/orchestrator-*`, queuedCount: 2, group },
+		{
+			kind: "workflow-future-stage",
+			runId,
+			target: `workflow:${runId}/child-boundary/reviewer-a`,
+			queuedCount: 0,
+			group,
+		},
+		{ kind: "workflow-future-stage", runId, target: `workflow:${runId}/**`, queuedCount: 1, group },
+	]);
+	// Outside: nothing new.
+	assert.deepEqual((await outsider.listDirectory()).workflowFutureStages, []);
+
+	// Read-only peek: the invocation group shows the rows; another group does not.
+	assert.equal((await member.listDirectory(group)).workflowFutureStages.length, 3);
+	assert.equal((await member.listDirectory("other-group")).workflowFutureStages.length, 0);
+
+	// Count refresh: a re-registration replaces the stored rows wholesale.
+	owner.registerPendingStageRoute(
+		runId,
+		group,
+		capability,
+		[],
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 5 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+	assert.deepEqual(
+		(await member.listDirectory()).workflowFutureStages.map(({ target, queuedCount }) => ({ target, queuedCount })),
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 5 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+
+	// Terminal (D7): an empty announcement drops every future row.
+	owner.registerPendingStageRoute(runId, group, capability, [], []);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
+});
+
+test("a nested run's re-announcement preserves the root's possible-stage rows", async () => {
+	const rootId = "d7000002-0000-4000-8000-000000000002";
+	const childRunId = "d7000003-0000-4000-8000-000000000003";
+	const group = `workflow:${rootId}`;
+	const rootCapability = "future-root-capability";
+	const childCapability = "future-child-capability";
+	const owner = new IntercomClient();
+	const child = new IntercomClient();
+	const member = new IntercomClient();
+	for (const client of [owner, child, member]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("future-root-owner", group));
+	await child.connect(productionRegistration("future-child-owner", group));
+	await member.connect(productionRegistration("future-member-2", group));
+
+	owner.registerPendingStageRoute(
+		rootId,
+		group,
+		rootCapability,
+		[],
+		[
+			{ target: `workflow:${rootId}/child-boundary/reviewer-a`, queuedCount: 1 },
+			{ target: `workflow:${rootId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+	// The nested run publishes its own materialized roster without a possibleStages field;
+	// its re-announcement must not clobber the root's rows.
+	child.registerPendingStageRoute(childRunId, group, childCapability, [
+		{
+			stageId: "reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootId}/child-boundary/reviewer-id`,
+			lifecycle: "pending",
+			routeEligible: true,
+			group,
+		},
+	]);
+	await child.listSessions();
+	assert.deepEqual(
+		(await member.listDirectory()).workflowFutureStages.map(({ target, queuedCount }) => ({
+			target,
+			queuedCount,
+		})),
+		[
+			{ target: `workflow:${rootId}/child-boundary/reviewer-a`, queuedCount: 1 },
+			{ target: `workflow:${rootId}/**`, queuedCount: 0 },
+		],
+	);
+});
+
+test("future rows disappear when the owning run's owner disconnects", async () => {
+	const runId = "d7000004-0000-4000-8000-000000000004";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const member = new IntercomClient();
+	realClients.add(member);
+	member.on("error", () => {});
+	await register(owner, "future-disconnect-owner", group);
+	await member.connect(productionRegistration("future-member-3", group));
+
+	owner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "future-disconnect-capability",
+		possibleStages: [{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 1 }],
+	});
+	// Route registration is fire-and-forget; settle with a list round-trip.
+	await member.listSessions();
+	await new Promise((resolveSettle) => setTimeout(resolveSettle, 50));
+	assert.equal((await member.listDirectory()).workflowFutureStages.length, 1);
+
+	owner.send({ type: "unregister" });
+	// The broker does not end the socket on unregister; mirror the host client, which
+	// destroys its side after writing the frame.
+	owner.socket.destroy();
+	await owner.closed;
+	await member.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
+});
+
+test("an invalid possible-stage roster is refused orderly without registering the route", async () => {
+	const runId = "d7000005-0000-4000-8000-000000000005";
+	const foreignRunId = "d7000006-0000-4000-8000-000000000006";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	const observer = new WireClient();
+	await register(owner, "future-invalid-owner", group);
+	await register(observer, "future-invalid-observer", group);
+
+	owner.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "future-invalid-capability",
+			possibleStages: [{ target: `workflow:${foreignRunId}/orchestrator-*`, queuedCount: 0 }],
+		},
+		{ type: "list", requestId: "must-not-run-after-invalid-possible" },
+	]);
+	assert.deepEqual(await owner.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow possible-stage roster",
+	});
+	await owner.closed;
+	assert.deepEqual(owner.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(owner.closeHadError, false);
+	assert.equal(
+		owner.received.some(
+			(frame) => frame.type === "sessions" && frame.requestId === "must-not-run-after-invalid-possible",
+		),
+		false,
+	);
+
+	observer.send({ type: "list", requestId: "invalid-possible-barrier" });
+	const listed = await observer.next("sessions", (frame) => frame.requestId === "invalid-possible-barrier");
+	assert.deepEqual(listed.workflowFutureStages ?? [], []);
+
+	// Non-integer and negative counts are refused the same way.
+	const owner2 = new WireClient();
+	await register(owner2, "future-invalid-owner-2", group);
+	owner2.sendBatch([
+		{
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "future-invalid-capability-2",
+			possibleStages: [{ target: `workflow:${runId}/orchestrator-*`, queuedCount: -1 }],
+		},
+		{ type: "list", requestId: "must-not-run-after-negative-count" },
+	]);
+	assert.deepEqual(await owner2.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Invalid workflow possible-stage roster",
+	});
+	await owner2.closed;
+	assert.deepEqual(owner2.rejectionLifecycle, ["registration_failed", "end", "close"]);
+});

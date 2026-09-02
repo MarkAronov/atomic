@@ -12,6 +12,8 @@ import type {
 	SessionDirectory,
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
+	WorkflowFutureStageRosterEntry,
+	WorkflowPossibleStageAnnouncement,
 } from "../types.js";
 import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
@@ -89,6 +91,24 @@ function toError(error: unknown): Error {
 }
 
 
+
+function isWorkflowFutureStageRosterEntries(value: unknown): value is WorkflowFutureStageRosterEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as WorkflowFutureStageRosterEntry).kind === "workflow-future-stage" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).runId === "string" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).target === "string" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).queuedCount === "number" &&
+				Number.isInteger((entry as WorkflowFutureStageRosterEntry).queuedCount) &&
+				(entry as WorkflowFutureStageRosterEntry).queuedCount >= 0 &&
+				typeof (entry as WorkflowFutureStageRosterEntry).group === "string",
+		)
+	);
+}
 function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRosterEntry[] {
 	return (
 		Array.isArray(value) &&
@@ -365,19 +385,24 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "sessions": {
-		const { requestId, sessions, workflowStages } = brokerMessage;
+		const { requestId, sessions, workflowStages, workflowFutureStages } = brokerMessage;
 		if (
 			typeof requestId !== "string" ||
 			!Array.isArray(sessions) ||
 			!sessions.every(isSessionInfo) ||
-			(workflowStages !== undefined && !isWorkflowStageRosterEntries(workflowStages))
+			(workflowStages !== undefined && !isWorkflowStageRosterEntries(workflowStages)) ||
+			(workflowFutureStages !== undefined && !isWorkflowFutureStageRosterEntries(workflowFutureStages))
 		) {
 			throw new Error("Invalid sessions message");
 		}
 		const pending = this.pendingLists.get(requestId);
 		if (!pending) return;
 		this.pendingLists.delete(requestId);
-		pending.resolve({ sessions, workflowStages: workflowStages ?? [] });
+		pending.resolve({
+			sessions,
+			workflowStages: workflowStages ?? [],
+			workflowFutureStages: workflowFutureStages ?? [],
+		});
 		break;
 	  }
       case "groups": {
@@ -781,8 +806,16 @@ export class IntercomClient extends EventEmitter {
 	group: string,
 	capability: string,
 	stages?: WorkflowStageRosterAnnouncement[],
+	possibleStages?: WorkflowPossibleStageAnnouncement[],
   ): void {
-	writeMessage(this.requireActiveSocket(), { type: "register_pending_stage_route", runId, group, capability, stages });
+	writeMessage(this.requireActiveSocket(), {
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability,
+		stages,
+		possibleStages,
+	});
   }
 
   registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {

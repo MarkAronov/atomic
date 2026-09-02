@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
-import type { SessionDirectory, SessionInfo, WorkflowStageRosterEntry } from "./types.js";
+import type { SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
@@ -22,7 +22,7 @@ import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from ".
 
 async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
 	if (typeof client.listDirectory === "function") return client.listDirectory(group);
-	return { sessions: await client.listSessions(group), workflowStages: [] };
+	return { sessions: await client.listSessions(group), workflowStages: [], workflowFutureStages: [] };
 }
 
 type ReplySenderResolution =
@@ -125,6 +125,13 @@ async function resolveReplySender(
 function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
 	return `- **${stage.stageName}** — workflow stage [${stage.lifecycle.toUpperCase()}] — target: \`${stage.target}\`${
 		stage.sessionId === undefined ? "" : ` — intercom session: ${stage.sessionId}`
+	}`;
+}
+
+/** D7 (slice 4): one possible-future row from the run's persisted scan (or the `**` broadcast row). */
+function formatWorkflowFutureStageRow(stage: WorkflowFutureStageRosterEntry): string {
+	return `- future workflow stage \`${stage.target}\` — ${stage.queuedCount} queued message${
+		stage.queuedCount === 1 ? "" : "s"
 	}`;
 }
 
@@ -354,6 +361,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			  const rows = [
 				...peeked.sessions.map((session) => formatSessionListRow(session, currentSession.cwd, session.id === mySessionId)),
 				...peeked.workflowStages.map(formatWorkflowStageRow),
+				...(peeked.workflowFutureStages ?? []).map(formatWorkflowFutureStageRow),
 			  ];
 			  const section = rows.length === 0
 				? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions or workflow stages in this group.`
@@ -366,6 +374,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 					groups: ownGroups,
 					peekGroup: requestedGroup,
 					workflowStages: peeked.workflowStages,
+					...((peeked.workflowFutureStages?.length ?? 0) === 0
+						? {}
+						: { workflowFutureStages: peeked.workflowFutureStages }),
 				},
 			  };
             }
@@ -375,6 +386,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			const visibleRows = [
 				...otherSessions.map((session) => formatSessionListRow(session, currentSession.cwd, false)),
 				...ownDirectory.workflowStages.map(formatWorkflowStageRow),
+				...(ownDirectory.workflowFutureStages ?? []).map(formatWorkflowFutureStageRow),
 			];
 			const otherSection = visibleRows.length === 0
 				? "**Other sessions and workflow stages:**\nNo other sessions or workflow stages share any of your groups."
@@ -389,6 +401,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 				...(ownDirectory.workflowStages.length === 0
 					? {}
 					: { workflowStages: ownDirectory.workflowStages }),
+				...((ownDirectory.workflowFutureStages?.length ?? 0) === 0
+					? {}
+					: { workflowFutureStages: ownDirectory.workflowFutureStages }),
 			  },
             };
           } catch (error) {

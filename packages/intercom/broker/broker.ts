@@ -13,6 +13,8 @@ import type {
 	SupervisorRegistration,
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
+	WorkflowPossibleStageAnnouncement,
+	WorkflowFutureStageRosterEntry,
 } from "../types.js";
 import {
 	formatWorkflowStageTarget,
@@ -52,6 +54,7 @@ interface WorkflowRosterRegistration {
 	readonly ownerSessionId: string;
 	readonly group: string;
 	readonly stages: WorkflowStageRosterAnnouncement[];
+	readonly possibleStages?: readonly WorkflowPossibleStageAnnouncement[];
 }
 
 
@@ -168,6 +171,30 @@ function isWorkflowStageRosterAnnouncements(
 				(announcement.lifecycle === "pending" || announcement.lifecycle === "running") &&
 				typeof announcement.routeEligible === "boolean" &&
 				typeof announcement.group === "string"
+			);
+		})
+	);
+}
+function isWorkflowPossibleStageAnnouncements(
+	value: unknown,
+	runId: string,
+	invocationGroup: string,
+): value is WorkflowPossibleStageAnnouncement[] {
+	const groupRootRunId = invocationGroup.startsWith("workflow:")
+		? invocationGroup.slice("workflow:".length)
+		: undefined;
+	return (
+		Array.isArray(value) &&
+		value.every((row) => {
+			if (typeof row !== "object" || row === null) return false;
+			const announcement = row as WorkflowPossibleStageAnnouncement;
+			const parsed = parseWorkflowStageTarget(announcement.target);
+			return (
+				parsed !== undefined &&
+				((groupRootRunId !== undefined && groupRootRunId === parsed.rootRunId) || runId === parsed.rootRunId) &&
+				typeof announcement.queuedCount === "number" &&
+				Number.isInteger(announcement.queuedCount) &&
+				announcement.queuedCount >= 0
 			);
 		})
 	);
@@ -374,6 +401,36 @@ class IntercomBroker {
 	}
 	return entries;
   }
+
+	/**
+	 * D7 (slice 4): possible-future rows published with the run's persisted scan. Visible
+	 * only from inside the invocation — a membership in `workflow:<rootRunId>` or in an
+	 * owned subgroup (`workflow:<rootRunId>/…`). The read-only peek filter keeps the
+	 * invocation-group rows out of every other group's view.
+	 */
+	private workflowFutureStagesVisibleTo(
+		requester: ConnectedSession,
+		selectedGroup?: string,
+	): WorkflowFutureStageRosterEntry[] {
+		const requesterGroups = sessionGroups(requester.info);
+		const selected = selectedGroup === undefined ? undefined : normalizeGroup(selectedGroup);
+		const entries: WorkflowFutureStageRosterEntry[] = [];
+		for (const [runId, roster] of this.workflowRosters) {
+			if (roster.possibleStages === undefined || roster.possibleStages.length === 0) continue;
+			if (![...requesterGroups].some((group) => invocationOwnsGroup(roster.group, group))) continue;
+			if (selected !== undefined && selected !== roster.group) continue;
+			for (const row of roster.possibleStages) {
+				entries.push({
+					kind: "workflow-future-stage",
+					runId,
+					target: row.target,
+					queuedCount: row.queuedCount,
+					group: roster.group,
+				});
+			}
+		}
+		return entries;
+	}
 
   private acknowledgeLiveWorkflowStageRoute(requestId: string): void {
     const activation = this.liveWorkflowStageRouteActivations.get(requestId);
@@ -929,6 +986,7 @@ class IntercomBroker {
 			requestId: clientMessage.requestId,
 			sessions,
 			workflowStages: this.workflowStagesVisibleTo(requester, clientMessage.group),
+			workflowFutureStages: this.workflowFutureStagesVisibleTo(requester, clientMessage.group),
 		});
         break;
       }
@@ -1006,15 +1064,35 @@ class IntercomBroker {
           socket.end();
           return;
         }
+        if (
+          clientMessage.possibleStages !== undefined &&
+          !isWorkflowPossibleStageAnnouncements(
+            clientMessage.possibleStages,
+            clientMessage.runId,
+            normalizeGroup(clientMessage.group),
+          )
+        ) {
+          writeMessage(socket, { type: "registration_failed", reason: "Invalid workflow possible-stage roster" });
+          socket.end();
+          return;
+        }
+        // D7 (slice 4): presence replaces, absence keeps — a terminal root publishes `[]`
+        // so the broker drops every future row, while nested runs' re-announcements (which
+        // never carry the field) preserve the root's rows.
+        const possibleStages =
+          clientMessage.possibleStages !== undefined
+            ? clientMessage.possibleStages
+            : this.workflowRosters.get(clientMessage.runId)?.possibleStages;
         if (activeExisting !== undefined && activeExisting.sessionId !== currentId) {
           // A stage replays the process-shared owner announcement before registering its live aliases.
           // It may publish the materialized roster, but the original workflow owner must continue to
           // handle pending delivery and own roster cleanup.
-          if (clientMessage.stages !== undefined) {
+          if (clientMessage.stages !== undefined || possibleStages !== undefined) {
             this.workflowRosters.set(clientMessage.runId, {
               ownerSessionId: activeExisting.sessionId,
               group: ownerGroup,
-              stages: clientMessage.stages,
+              stages: clientMessage.stages ?? [],
+              ...(possibleStages === undefined ? {} : { possibleStages }),
             });
           }
           break;
@@ -1024,11 +1102,12 @@ class IntercomBroker {
           group: ownerGroup,
           capability: clientMessage.capability,
         });
-        if (clientMessage.stages !== undefined) {
+        if (clientMessage.stages !== undefined || possibleStages !== undefined) {
           this.workflowRosters.set(clientMessage.runId, {
             ownerSessionId: currentId,
             group: ownerGroup,
-            stages: clientMessage.stages,
+            stages: clientMessage.stages ?? [],
+            ...(possibleStages === undefined ? {} : { possibleStages }),
           });
         }
         break;

@@ -25,10 +25,26 @@ export interface WorkflowStageRosterEntry {
 	readonly sessionId?: string;
 }
 
+export interface WorkflowPossibleStageAnnouncement {
+	/** Canonical depth-faithful path target, e.g. `workflow:<rootRunId>/orchestrator-*`. */
+	readonly target: string;
+	/** Current number of queued sticky entries matching this target. */
+	readonly queuedCount: number;
+}
+
+export interface WorkflowFutureStageRosterEntry {
+	readonly kind: "workflow-future-stage";
+	readonly runId: string;
+	readonly target: string;
+	readonly queuedCount: number;
+	readonly group: string;
+}
+
 export interface SessionDirectory {
 	readonly sessions: SessionInfo[];
-	readonly workflowStages: WorkflowStageRosterEntry[];
-}
+ 	readonly workflowStages: WorkflowStageRosterEntry[];
+	readonly workflowFutureStages: WorkflowFutureStageRosterEntry[];
+ }
 
 export interface WorkflowStageRosterAnnouncement {
 	readonly stageId: string;
@@ -105,7 +121,7 @@ export type ClientMessage =
 			attemptId?: string;
 	  }
 	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
-  | { type: "register_pending_stage_route"; runId: string; group: string; capability: string; stages?: WorkflowStageRosterAnnouncement[] }
+ | { type: "register_pending_stage_route"; runId: string; group: string; capability: string; stages?: WorkflowStageRosterAnnouncement[]; possibleStages?: WorkflowPossibleStageAnnouncement[] }
   | {
       type: "register_live_workflow_stage_route";
       requestId: string;
@@ -136,7 +152,7 @@ export type ClientMessage =
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }
   | { type: "registration_failed"; reason: string }
-  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[] }
+ | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[] }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }

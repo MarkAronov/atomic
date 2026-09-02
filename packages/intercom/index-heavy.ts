@@ -9,7 +9,7 @@ import {
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message, WorkflowStageRosterAnnouncement } from "./types.js";
+import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
@@ -59,10 +59,14 @@ interface PendingStageRouteRegistrationEvent {
 	readonly group: string;
 	readonly capability: string;
 	readonly stages?: WorkflowStageRosterAnnouncement[];
+	readonly possibleStages?: WorkflowPossibleStageAnnouncement[];
 	completion?: Promise<void>;
 }
 
-type PendingStageRouteRegistration = Pick<PendingStageRouteRegistrationEvent, "group" | "capability" | "stages">;
+type PendingStageRouteRegistration = Pick<
+	PendingStageRouteRegistrationEvent,
+	"group" | "capability" | "stages" | "possibleStages"
+>;
 
 interface PendingStageRouteClientState {
 	route: PendingStageRouteRegistration;
@@ -701,7 +705,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!existing) pendingStageRouteClients.set(runId, state);
 	if (state.client?.isConnected()) {
 		state.route = route;
-		state.client.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability, route.stages);
+		state.client.registerPendingStageRoute(
+			runId,
+			normalizeGroup(route.group),
+			route.capability,
+			route.stages,
+			route.possibleStages,
+		);
 		return;
 	}
 	if (state.promise) {
@@ -724,7 +734,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         await nextClient.disconnect();
         throw new Error("Intercom runtime no longer active");
       }
-      nextClient.registerPendingStageRoute(runId, normalizeGroup(route.group), route.capability, route.stages);
+      nextClient.registerPendingStageRoute(
+        runId,
+        normalizeGroup(route.group),
+        route.capability,
+        route.stages,
+        route.possibleStages,
+      );
       await nextClient.listSessions();
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         await nextClient.disconnect();
@@ -766,7 +782,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   ): Promise<void> {
     const routeGroup = normalizeGroup(route.group);
     if (clientRegistrationGroup === routeGroup) {
-      activeClient.registerPendingStageRoute(runId, routeGroup, route.capability, route.stages);
+      activeClient.registerPendingStageRoute(
+        runId,
+        routeGroup,
+        route.capability,
+        route.stages,
+        route.possibleStages,
+      );
       return;
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
@@ -889,6 +911,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		group: payload.group,
 		capability: payload.capability,
 		...(payload.stages === undefined ? {} : { stages: payload.stages }),
+		...(payload.possibleStages === undefined ? {} : { possibleStages: payload.possibleStages }),
 	});
     const completion = ensureConnected("background").then((activeClient) =>
       registerPendingStageRoute(activeClient, payload.runId, payload),
