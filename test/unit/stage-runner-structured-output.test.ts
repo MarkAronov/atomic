@@ -821,6 +821,57 @@ describe("createStageContext — structured_output correction exhaustion and mod
 		]);
 	});
 
+	test("fails with the contract error once every candidate has exhausted its budget", async () => {
+		const calls: string[] = [];
+		const prompts: string[] = [];
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				const model =
+					typeof options.model === "string"
+						? options.model
+						: `${String(options.model?.provider)}/${options.model?.id}`;
+				calls.push(model);
+				return makeMockSession({
+					async prompt(promptText) {
+						prompts.push(promptText);
+					},
+				}).session;
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					schema: SCHEMA,
+				},
+			}),
+		) as InternalStageContext;
+
+		await assert.rejects(ctx.prompt("partition the work"), /must finish by calling structured_output/);
+		// Each candidate spends its own budget: two candidates, four prompts each.
+		assert.deepEqual(calls, ["anthropic/primary", "openai/fallback"]);
+		assert.equal(prompts.length, 8);
+		assert.equal(prompts[4], "partition the work");
+		const meta = ctx.__modelFallbackMeta();
+		assert.deepEqual(
+			meta.modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
+			[
+				{ model: "anthropic/primary", success: false },
+				{ model: "anthropic/primary", success: false },
+				{ model: "anthropic/primary", success: false },
+				{ model: "anthropic/primary", success: false },
+				{ model: "openai/fallback", success: false },
+				{ model: "openai/fallback", success: false },
+				{ model: "openai/fallback", success: false },
+				{ model: "openai/fallback", success: false },
+			],
+		);
+		assert.equal(meta.warnings?.length, 1);
+		assert.match(meta.warnings?.[0] ?? "", /^\[fallback\] anthropic\/primary failed: /);
+	});
+
 	test("a successful correction on the current candidate never reaches the fallback", async () => {
 		const calls: string[] = [];
 		const disposed: string[] = [];
