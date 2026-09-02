@@ -733,13 +733,16 @@ describe("createStageContext — structured_output correction exhaustion and mod
 			],
 		);
 		for (const attempt of meta.modelAttempts?.slice(0, 4) ?? []) {
-			assert.match(attempt.error ?? "", /must finish by calling structured_output/);
-			// Diagnosability: the error names the shape of the turn.
-			assert.match(attempt.error ?? "", /no assistant message/);
+			assert.equal(
+				attempt.error,
+				"atomic-workflows: stage configured with schema must finish by calling structured_output. The model produced no assistant message after the prompt",
+			);
 		}
 		assert.equal(meta.modelAttempts?.[4]?.error, undefined);
+		// The standard warning supplies its own sentence break, so the composed
+		// text reads as one sentence rather than doubling the period.
 		assert.deepEqual(meta.warnings, [
-			`[fallback] anthropic/primary failed: ${meta.modelAttempts?.[0]?.error}. Retrying with openai/fallback.`,
+			"[fallback] anthropic/primary failed: atomic-workflows: stage configured with schema must finish by calling structured_output. The model produced no assistant message after the prompt. Retrying with openai/fallback.",
 		]);
 	});
 
