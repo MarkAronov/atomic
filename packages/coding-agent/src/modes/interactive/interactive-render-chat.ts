@@ -452,6 +452,13 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	}
 	flushMessages();
 	if (this.settingsManager.getShowCacheMissNotices()) {
+		for (const entry of sessionEntries) {
+			for (const message of sessionEntryToContextMessages(entry)) {
+				if (message.role === "assistant" && message.stopReason !== "aborted" && message.stopReason !== "error") {
+					this.maybeShowAssistantDiagnostics(message);
+				}
+			}
+		}
 		for (const miss of collectCacheMisses(sessionEntries, {
 			getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model),
 		}).values()) {

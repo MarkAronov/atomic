@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Container } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
+import type { SessionEntry } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -61,5 +62,39 @@ describe("InteractiveMode assistant diagnostics", () => {
 		};
 		maybeShowAssistantDiagnostics.call(disabled, message);
 		expect(disabled.chatContainer.children).toHaveLength(0);
+	});
+
+	test("replays persisted Anthropic thinking-drop diagnostics once", () => {
+		initTheme("dark");
+		const chatContainer = new Container();
+		const entry: SessionEntry = {
+			type: "message",
+			id: "m1",
+			parentId: null,
+			timestamp: new Date(1).toISOString(),
+			message,
+		};
+		const mode = {
+			pendingTools: new Map(),
+			deferredRenderedUserInputs: [],
+			deferredRenderedUserInputComponents: new Map(),
+			footer: { invalidate: () => undefined },
+			updateEditorBorderColor: () => undefined,
+			chatContainer,
+			settingsManager: { getShowCacheMissNotices: () => true },
+			session: { modelRuntime: { getModel: () => undefined } },
+			ui: { requestRender: () => undefined },
+			addRenderedChatEntry: () => new Text("assistant response", 0, 0),
+			maybeShowAssistantDiagnostics: Reflect.get(InteractiveMode.prototype, "maybeShowAssistantDiagnostics"),
+			renderDeferredUserInput: () => undefined,
+		};
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: SessionEntry[],
+		) => void;
+
+		renderSessionEntries.call(mode, [entry]);
+		const output = stripAnsi(chatContainer.render(120).join("\n"));
+		expect(output.match(/Anthropic dropped/g)).toHaveLength(1);
 	});
 });

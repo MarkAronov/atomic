@@ -702,11 +702,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
+		let inputTransformations: AnthropicInputTransformation[] | undefined;
+
 		try {
 			let client: Anthropic;
 			let isOAuth: boolean;
 			let usageModel = model;
-			let inputTransformations: AnthropicInputTransformation[] | undefined;
 
 			if (options?.client) {
 				client = options.client;
@@ -734,7 +735,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				const created = createClient(
 					model,
 					apiKey,
-					options?.interleavedThinking ?? true,
+					model.reasoning && options?.thinkingEnabled === true && (options.interleavedThinking ?? true),
 					shouldUseFineGrainedToolStreamingBeta(model, context),
 					shouldUseServerSideFallbackBeta(model),
 					options?.headers,
@@ -982,10 +983,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
-					// A final fallback delta supersedes the request-start report with the
-					// serving model's transformations. Emit once after the stream so one
-					// provider report cannot produce duplicate diagnostics or UI notices.
-					inputTransformations = getInputTransformations(event) ?? inputTransformations;
+					// A non-empty final fallback report supersedes the request-start report with
+					// the serving model's transformations. An empty report must not erase drops
+					// already reported at message_start.
+					const servingTransformations = getInputTransformations(event);
+					if (servingTransformations && servingTransformations.length > 0) {
+						inputTransformations = servingTransformations;
+					}
 					addEarlierAttemptCosts(output, model, usageModel, event);
 				}
 			}
@@ -1005,6 +1009,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			if (
+				inputTransformations &&
+				!output.diagnostics?.some((diagnostic) => diagnostic.type === "anthropic_input_transformations")
+			) {
+				recordInputTransformations(output, inputTransformations);
+			}
 			for (const block of output.content) {
 				delete (block as { index?: number }).index;
 				// partialJson is only a streaming scratch buffer; never persist it.

@@ -408,9 +408,9 @@ describe("dropped thinking blocks are observable", () => {
 		expect(diagnostics[0].details?.paths).toEqual(["messages.3.content.0"]);
 	});
 
-	// An explicit empty serving report supersedes the request-start report: nothing was dropped
-	// from the request that ultimately produced the answer.
-	it("emits no diagnostic when the serving report is empty", async () => {
+	// An empty serving report does not erase a real request-start report. There is still only one
+	// diagnostic because the reports are reconciled before emission.
+	it("preserves the request-start diagnostic when the serving report is empty", async () => {
 		const model = getModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations(
@@ -421,6 +421,23 @@ describe("dropped thinking blocks are observable", () => {
 		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
 
 		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
-		expect(diagnostics).toHaveLength(0);
+		expect(diagnostics).toHaveLength(1);
+		expect(diagnostics[0].details?.paths).toEqual(["messages.1.content.0"]);
+	});
+
+	it("preserves the request-start diagnostic when the stream fails mid-response", async () => {
+		const model = getModel("anthropic", "claude-fable-5-1");
+		const events = eventsWithInputTransformations([
+			{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
+		]);
+		events[1] = { event: "content_block_start", data: "{invalid" };
+		const result = await streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(createSseResponse(events)),
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		const diagnostics = result.diagnostics?.filter((d) => d.type === "anthropic_input_transformations") ?? [];
+		expect(diagnostics).toHaveLength(1);
+		expect(diagnostics[0].details?.paths).toEqual(["messages.1.content.0"]);
 	});
 });
