@@ -806,6 +806,29 @@ describe("hashline file tool parity", () => {
 		expect(written).not.toContain("[big.txt#");
 		expect(written).not.toContain("[Showing lines ");
 	});
+	// Pi sync (e583b290, upstream #8979): the write confirmation dropped its byte
+	// count, so the copied-chrome footer matcher had to widen. Both the current
+	// wording and the pre-e583b290 wording must still be recognised, because a
+	// resumed session's transcript can carry either.
+	it.each([
+		["current", "Successfully wrote to dest.txt"],
+		["pre-e583b290", "Successfully wrote 12 bytes to dest.txt"],
+	])("strips a copied %s write confirmation before write", async (_wording, confirmation) => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "one\ntwo\nthree\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore });
+		const snapshot = text(
+			await read.execute("read-confirm", { path: "source.txt" }, undefined, undefined, {} as ExtensionContext),
+		);
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-confirm",
+			{ path: "dest.txt", content: `${snapshot}\n${confirmation}` },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+	});
 
 	it("strips copied nested search output before write", async () => {
 		const dir = await createTempDir();

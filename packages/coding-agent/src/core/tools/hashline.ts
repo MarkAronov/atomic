@@ -108,15 +108,17 @@ export function stripKnownHashlineCopiedContentWithMeta(
 	let lastCopiedLineNumber: number | undefined;
 	// Trailing tool chrome a model is likely to copy along with the hashline
 	// body: the read/search continuation footers, the write tool's own
-	// `Successfully wrote N bytes to <path>` confirmation (and its stripped-
-	// note), and `Resolved …` conflict footers. These never carry a line
-	// number, so they mark the end of the numbered body — they must not abort
-	// stripping the way an arbitrary non-row line would.
+	// `Successfully wrote to <path>` confirmation (and its stripped-note), and
+	// `Resolved …` conflict footers. These never carry a line number, so they
+	// mark the end of the numbered body — they must not abort stripping the way
+	// an arbitrary non-row line would. The optional `N bytes ` group keeps the
+	// pre-e583b290 wording matchable, because a resumed session's transcript can
+	// still carry confirmations written before that message changed.
 	const isToolFooter = (line: string): boolean =>
 		line.trim() === "" ||
 		/^\[\d+ more lines in file\./.test(line) ||
 		/^\[Showing lines /.test(line) ||
-		/^Successfully wrote \d+ bytes to /.test(line) ||
+		/^Successfully wrote (?:\d+ bytes )?to /.test(line) ||
 		/^Resolved \d+ conflicts?/.test(line) ||
 		/^Resolved conflict \d+/.test(line) ||
 		/^Note: stripped copied hashline/.test(line) ||
@@ -146,8 +148,8 @@ export function stripKnownHashlineCopiedContentWithMeta(
 	}
 
 	// Header + only tool chrome (e.g. a copied write confirmation
-	// `Successfully wrote N bytes to <path>`) names a known snapshot with no
-	// numbered body to recover — resolve to the snapshot's stored content.
+	// `Successfully wrote to <path>`) names a known snapshot with no numbered
+	// body to recover — resolve to the snapshot's stored content.
 	if (onlyFooter) return { content: snapshot.content, stripped: true };
 	return { content, stripped: false };
 }

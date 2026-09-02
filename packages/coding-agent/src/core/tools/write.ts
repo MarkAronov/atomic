@@ -368,7 +368,7 @@ export function createWriteToolDefinition(
 					content: [
 						{
 							type: "text",
-							text: `Successfully wrote ${stripped.content.length} bytes to ${path}${strippedHashlineNote(stripped.stripped)}`,
+							text: `Successfully wrote to ${path}${strippedHashlineNote(stripped.stripped)}`,
 						},
 					],
 					details: { resolvedPath: resolvedArchive.archivePath },
@@ -429,7 +429,7 @@ export function createWriteToolDefinition(
 					content: [
 						{
 							type: "text",
-							text: `Successfully wrote ${stripped.content.length} bytes to ${path}${strippedHashlineNote(stripped.stripped)}`,
+							text: `Successfully wrote to ${path}${strippedHashlineNote(stripped.stripped)}`,
 						},
 					],
 					details: {},
@@ -480,7 +480,7 @@ export function createWriteToolDefinition(
 					content: [
 						{
 							type: "text",
-							text: `${header}\nSuccessfully wrote ${writeContent.length} bytes to ${path}${strippedHashlineNote(stripped.stripped)}`,
+							text: `${header}\nSuccessfully wrote to ${path}${strippedHashlineNote(stripped.stripped)}`,
 						},
 					],
 					details: { resolvedPath: absolutePath, ...(madeExecutable ? { madeExecutable } : {}) },
