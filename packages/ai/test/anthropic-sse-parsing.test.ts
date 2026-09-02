@@ -79,6 +79,41 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 }
 
 describe("Anthropic raw SSE parsing", () => {
+	it("records one redacted diagnostic using the serving model's dropped-thinking report", async () => {
+		const events = minimalAnthropicEvents.map((event) => ({ ...event }));
+		events[0].data = JSON.stringify({
+			type: "message_start",
+			message: {
+				id: "msg_transformations",
+				model: "claude-fable-5-1",
+				usage: { input_tokens: 12, output_tokens: 0 },
+				input_transformations: [
+					{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
+				],
+			},
+		});
+		const delta = JSON.parse(events[4].data) as Record<string, unknown>;
+		delta.input_transformations = [
+			{ type: "thinking_dropped", path: "messages.3.content.0", reason: "model_binding_mismatch" },
+		];
+		events[4].data = JSON.stringify(delta);
+		const result = await streamAnthropic(
+			getModel("anthropic", "claude-fable-5-1"),
+			{ messages: [{ role: "user", content: "Hello", timestamp: 1 }] },
+			{ client: createFakeAnthropicClient(createSseResponse(events)) },
+		).result();
+
+		expect(result.diagnostics).toHaveLength(1);
+		expect(result.diagnostics?.[0]).toEqual({
+			type: "anthropic_input_transformations",
+			timestamp: expect.any(Number),
+			details: {
+				droppedBlockCount: 1,
+				reasons: ["model_binding_mismatch"],
+				paths: ["messages.3.content.0"],
+			},
+		});
+	});
 	it("repairs malformed SSE JSON and malformed streamed tool JSON", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const context: Context = {

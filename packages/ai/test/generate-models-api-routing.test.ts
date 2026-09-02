@@ -13,9 +13,19 @@ afterEach(() => {
 	for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
 });
 
-type GeneratedProviderCatalog = Record<string, Record<string, { id: string; api: string }>>;
+type GeneratedModel = {
+	id: string;
+	api: string;
+	baseUrl: string;
+	compat?: { supportsMidConvoEffort?: boolean };
+};
+type GeneratedProviderCatalog = Record<string, Record<string, GeneratedModel>>;
 
-function generateProviderCatalogs(catalog: unknown, providers: readonly string[]): GeneratedProviderCatalog {
+function generateProviderCatalogs(
+	catalog: unknown,
+	providers: readonly string[],
+	openRouterModels: readonly unknown[] = [],
+): GeneratedProviderCatalog {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-api-routing-"));
 	temporaryRoots.push(fixtureRoot);
 	const isolatedPackageRoot = join(fixtureRoot, "package");
@@ -28,9 +38,11 @@ function generateProviderCatalogs(catalog: unknown, providers: readonly string[]
 	writeFileSync(
 		preloadPath,
 		`const catalog = ${JSON.stringify(catalog)};\n` +
+			`const openRouterModels = ${JSON.stringify(openRouterModels)};\n` +
 			`globalThis.fetch = async (input) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
+			`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: openRouterModels }), { status: 200 });\n` +
 			`  return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`};\n`,
 	);
@@ -55,7 +67,7 @@ function generateProviderCatalogs(catalog: unknown, providers: readonly string[]
 		// `--json-output` writes one flat model map per provider, with `api` on each model.
 		catalogs[provider] = JSON.parse(readFileSync(join(outputPath, `providers/${provider}.json`), "utf8")) as Record<
 			string,
-			{ id: string; api: string }
+			GeneratedModel
 		>;
 	}
 	return catalogs;
@@ -128,4 +140,40 @@ test("routes GitHub Copilot Claude Fable models through anthropic-messages", () 
 		"gemini-3-pro": "openai-completions",
 		"gpt-5.2": "openai-responses",
 	});
+});
+
+// Regression for upstream pi 4e69b0c: OpenRouter Claude models use its native
+// Anthropic Messages transport, while batch and non-Anthropic models retain the
+// OpenAI-compatible endpoint.
+test("routes eligible OpenRouter Claude models through anthropic-messages", () => {
+	const openRouterModels = [
+		{
+			id: "anthropic/claude-fable-5.1",
+			name: "Claude Fable 5.1",
+			context_length: 128_000,
+			pricing: { prompt: "0.000001", completion: "0.000002" },
+			supported_parameters: ["reasoning", "tools"],
+		},
+		{
+			id: "anthropic/claude-fable-5.1:batch",
+			name: "Claude Fable 5.1 Batch",
+			context_length: 128_000,
+			pricing: { prompt: "0.000001", completion: "0.000002" },
+			supported_parameters: ["reasoning", "tools"],
+		},
+		{
+			id: "openai/gpt-5",
+			name: "GPT 5",
+			context_length: 128_000,
+			pricing: { prompt: "0.000001", completion: "0.000002" },
+			supported_parameters: ["reasoning", "tools"],
+		},
+	];
+
+	const { openrouter } = generateProviderCatalogs({}, ["openrouter"], openRouterModels);
+	assert.equal(openrouter["anthropic/claude-fable-5.1"].api, "anthropic-messages");
+	assert.equal(openrouter["anthropic/claude-fable-5.1"].baseUrl, "https://openrouter.ai/api");
+	assert.equal(openrouter["anthropic/claude-fable-5.1"].compat?.supportsMidConvoEffort, true);
+	assert.equal(openrouter["anthropic/claude-fable-5.1:batch"].api, "openai-completions");
+	assert.equal(openrouter["openai/gpt-5"].api, "openai-completions");
 });
