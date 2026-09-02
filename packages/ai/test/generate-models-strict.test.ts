@@ -12,7 +12,9 @@ afterEach(() => {
 	for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
 });
 
-function runOpenRouterRetryFixture(mode: "transient-success" | "transient-failure" | "http-429" | "http-400") {
+function runOpenRouterRetryFixture(
+	mode: "transient-success" | "transient-failure" | "http-429" | "http-400" | "cyclic-self" | "cyclic-mutual",
+) {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-models-retry-"));
 	temporaryRoots.push(fixtureRoot);
 	const isolatedPackageRoot = join(fixtureRoot, "package");
@@ -51,6 +53,18 @@ function runOpenRouterRetryFixture(mode: "transient-success" | "transient-failur
 			`    }\n` +
 			`    if (mode === "http-429") return new Response("rate limited", { status: 429 });\n` +
 			`    if (mode === "http-400") return new Response("bad request", { status: 400 });\n` +
+			`    if (mode === "cyclic-self") {\n` +
+			`      const error = new Error("cyclic self");\n` +
+			`      error.cause = error;\n` +
+			`      throw error;\n` +
+			`    }\n` +
+			`    if (mode === "cyclic-mutual") {\n` +
+			`      const error = new Error("cyclic mutual");\n` +
+			`      const cause = new Error("cyclic mutual cause");\n` +
+			`      error.cause = cause;\n` +
+			`      cause.cause = error;\n` +
+			`      throw error;\n` +
+			`    }\n` +
 			`    const error = new TypeError("fetch failed");\n` +
 			`    error.cause = Object.assign(new Error("connection timed out"), { code: "ETIMEDOUT" });\n` +
 			`    throw error;\n` +
@@ -120,6 +134,19 @@ describe("strict model generation", () => {
 		expect(result.status).toBe(1);
 		expect(output).toContain("OpenRouter API returned 400");
 		expect(output).not.toContain("retrying");
+	});
+
+	it.each([
+		["self-referential", "cyclic-self", "cyclic self"],
+		["mutually referential", "cyclic-mutual", "cyclic mutual"],
+	] as const)("handles a %s model-catalog error cause without overflowing", (_description, mode, message) => {
+		const result = runOpenRouterRetryFixture(mode);
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status).toBe(1);
+		expect(output).toContain(message);
+		expect(output).not.toContain("retrying");
+		expect(output).not.toContain("RangeError: Maximum call stack size exceeded");
 	});
 
 	it("fails before mutating generated data when an Individual model loses tool support", () => {

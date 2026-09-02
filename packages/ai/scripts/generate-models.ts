@@ -101,14 +101,15 @@ const TRANSIENT_NETWORK_ERROR_CODES = new Set([
 	"UND_ERR_HEADERS_TIMEOUT",
 ]);
 
-function isTransientNetworkError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
+function isTransientNetworkError(error: unknown, visited = new Set<Error>()): boolean {
+	if (!(error instanceof Error) || visited.has(error)) return false;
+	visited.add(error);
 	if (error.name === "AbortError" || error.name === "TimeoutError") return true;
 	if (error instanceof TypeError && error.message === "fetch failed") return true;
 
 	const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
 	if (code && TRANSIENT_NETWORK_ERROR_CODES.has(code)) return true;
-	return "cause" in error && isTransientNetworkError(error.cause);
+	return "cause" in error && isTransientNetworkError(error.cause, visited);
 }
 
 function isRetryableHttpStatus(status: number): boolean {
