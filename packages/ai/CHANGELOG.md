@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.18-alpha.5] - 2026-09-01
+
 ### Added
 
 - Added first-class Claude Fable 5.1 (`claude-fable-5-1`) support to the generated catalogs, for the providers Atomic has a matching runtime integration for. Each entry carries the model's 1,000,000-token context window, 128,000-token maximum output, and that provider's own pricing, including the reduced $0.25 per million cache read (a quarter of Claude Fable 5's rate) and the US-only inference premium on the Amazon Bedrock `us.` profile. Adaptive thinking is always on, `off` is denied, and exactly the five efforts Anthropic publishes — `low`, `medium`, `high`, `xhigh`, `max` — are selectable, with the `high` default preserved. Provider catalogs move independently of releases, so the exact mirror set tracks them rather than being fixed here; a provider "latest" alias may also route to Fable 5.1 without naming it.
