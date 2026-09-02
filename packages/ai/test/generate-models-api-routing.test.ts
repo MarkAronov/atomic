@@ -38,7 +38,14 @@ function generateProviderCatalogs(catalog: unknown, providers: readonly string[]
 	const outputPath = join(fixtureRoot, "catalog");
 	const result = spawnSync(
 		process.execPath,
-		["--import", pathToFileURL(preloadPath).href, "scripts/generate-models.ts", "--json-only", "--json-output", outputPath],
+		[
+			"--import",
+			pathToFileURL(preloadPath).href,
+			"scripts/generate-models.ts",
+			"--json-only",
+			"--json-output",
+			outputPath,
+		],
 		{ cwd: isolatedPackageRoot, encoding: "utf8", timeout: 30_000 },
 	);
 	assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
@@ -85,16 +92,13 @@ test("routes every Fireworks GLM model through openai-completions", () => {
 
 	const { fireworks } = generateProviderCatalogs(catalog, ["fireworks"]);
 
-	assert.deepEqual(
-		Object.fromEntries(Object.entries(fireworks).map(([id, model]) => [id, model.api])),
-		{
-			"accounts/fireworks/models/glm-5p2": "openai-completions",
-			"accounts/fireworks/routers/glm-5p2-fast": "openai-completions",
-			"accounts/fireworks/models/glm-5p3": "openai-completions",
-			"accounts/fireworks/models/glm-5p3-flash": "openai-completions",
-			"accounts/fireworks/models/deepseek-v4": "anthropic-messages",
-		},
-	);
+	assert.deepEqual(Object.fromEntries(Object.entries(fireworks).map(([id, model]) => [id, model.api])), {
+		"accounts/fireworks/models/glm-5p2": "openai-completions",
+		"accounts/fireworks/routers/glm-5p2-fast": "openai-completions",
+		"accounts/fireworks/models/glm-5p3": "openai-completions",
+		"accounts/fireworks/models/glm-5p3-flash": "openai-completions",
+		"accounts/fireworks/models/deepseek-v4": "anthropic-messages",
+	});
 });
 
 // Regression for upstream pi 69afa105 (closes upstream #8961): GitHub Copilot
@@ -117,14 +121,11 @@ test("routes GitHub Copilot Claude Fable models through anthropic-messages", () 
 
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
 
-	assert.deepEqual(
-		Object.fromEntries(Object.entries(copilot).map(([id, model]) => [id, model.api])),
-		{
-			"claude-fable-5": "anthropic-messages",
-			"claude-fable-5-1": "anthropic-messages",
-			"claude-sonnet-4": "anthropic-messages",
-			"gemini-3-pro": "openai-completions",
-			"gpt-5.2": "openai-responses",
-		},
-	);
+	assert.deepEqual(Object.fromEntries(Object.entries(copilot).map(([id, model]) => [id, model.api])), {
+		"claude-fable-5": "anthropic-messages",
+		"claude-fable-5-1": "anthropic-messages",
+		"claude-sonnet-4": "anthropic-messages",
+		"gemini-3-pro": "openai-completions",
+		"gpt-5.2": "openai-responses",
+	});
 });
