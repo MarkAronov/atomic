@@ -288,10 +288,6 @@ export class StageSessionController {
 		return this.lastPromptStartIndex;
 	}
 
-	get latestStructuredOutputToolError(): string | undefined {
-		return this.latestStructuredOutputToolErrorValue;
-	}
-
 	resetStructuredOutputToolError(): void {
 		this.latestStructuredOutputToolErrorValue = undefined;
 	}
