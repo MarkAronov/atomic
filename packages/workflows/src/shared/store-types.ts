@@ -530,6 +530,8 @@ export interface RunSnapshot {
 	pendingPrompt?: PendingPrompt;
 	/** Durable messages queued for workflow stages that have not started yet. */
 	pendingStageMessages?: PendingStageMessage[];
+	/** Possible stage targets from the D1 static scan; root runs only; empty when not scanned (D10). */
+	possibleStages?: readonly string[];
 }
 
 export interface StoreSnapshot {

@@ -266,6 +266,11 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 					? { gitWorktreeRoot: existing.handle.gitWorktreeRoot }
 					: {}),
 			pendingStageMessages: handle.pendingStageMessages ?? existing?.handle.pendingStageMessages ?? [],
+			...(handle.possibleStages !== undefined
+				? { possibleStages: handle.possibleStages }
+				: existing?.handle.possibleStages !== undefined
+					? { possibleStages: existing.handle.possibleStages }
+					: {}),
 			...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
 			completedCheckpoints,
 			pendingPrompts,

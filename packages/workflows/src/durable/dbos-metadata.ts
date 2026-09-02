@@ -1,3 +1,4 @@
+import { coercePossibleStages } from "../shared/possible-stages.js";
 import type { PendingStageMessage, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
@@ -55,6 +56,13 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			promptReservationEpoch: metadata.promptReservationEpoch,
 			...(metadata.pendingStageMessages !== undefined
 				? { pendingStageMessages: serializePendingStageMessages(metadata.pendingStageMessages) }
+				: {}),
+			...(metadata.possibleStages !== undefined
+				? {
+						possibleStages: Array.isArray(metadata.possibleStages)
+							? [...metadata.possibleStages]
+							: metadata.possibleStages,
+					}
 				: {}),
 			...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
 			...(metadata.transitionClaimId !== undefined ? { transitionClaimId: metadata.transitionClaimId } : {}),
@@ -143,6 +151,9 @@ function parseDurableWorkflowMetadata(
 	const serialized = value as Record<string, WorkflowSerializableValue | undefined>;
 	const pendingStageMessages = parsePendingStageMessages(serialized.pendingStageMessages);
 	if (pendingStageMessages === null) return undefined;
+	// Corrupt possible-stages values are dropped (hydrating as an empty set on
+	// read) rather than rejecting the whole record: the scan is advisory (D4).
+	const possibleStages = coercePossibleStages(serialized.possibleStages);
 	const metadata = value as Partial<DurableWorkflowMetadata>;
 	if (
 		metadata.workflowId !== workflowId ||
@@ -179,10 +190,13 @@ function parseDurableWorkflowMetadata(
 		(metadata.gitWorktreeRoot !== undefined && typeof metadata.gitWorktreeRoot !== "string")
 	)
 		return undefined;
-	const { origin, ...metadataWithoutOrigin } = metadata;
+	const { origin, possibleStages: rawPossibleStages, ...metadataWithoutOrigin } = metadata;
+	void rawPossibleStages;
 	return {
 		...metadataWithoutOrigin,
 		pendingStageMessages,
+		// Only the validated value re-enters; corrupt shapes were dropped above.
+		...(possibleStages !== undefined ? { possibleStages } : {}),
 		...(isWorkflowActor(origin) ? { origin } : {}),
 	} as DurableWorkflowMetadata;
 }
