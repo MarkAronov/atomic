@@ -495,7 +495,18 @@ class IntercomBroker {
 
 	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment, forwardTarget?: string): void {
 		const from = this.sessions.get(pending.senderSessionId);
-		const target = this.resolveLiveWorkflowStage(forwardTarget ?? pending.target);
+		// The route owner chooses the live alias for boundary-form targets, so bind its
+		// forward answer to the sender's own invocation: a target under any other rootRunId
+		// could deliver a sender's message into a different invocation, bypassing the
+		// sender's group authorization on the ordinary send path.
+		const destination = forwardTarget ?? pending.target;
+		const parsedDestination = parseWorkflowStageTarget(destination);
+		const parsedPending = parseWorkflowStageTarget(pending.target);
+		const crossInvocation =
+			parsedDestination === undefined ||
+			parsedPending === undefined ||
+			parsedDestination.rootRunId !== parsedPending.rootRunId;
+		const target = crossInvocation ? undefined : this.resolveLiveWorkflowStage(destination);
 		if (
 			from === undefined ||
 			target === undefined ||
@@ -918,14 +929,21 @@ class IntercomBroker {
           !Array.isArray(clientMessage.stageKeys) ||
           clientMessage.stageKeys.length < 1 ||
           clientMessage.stageKeys.length > 2 ||
-          !clientMessage.stageKeys.every(
-            (stageKey) =>
-              typeof stageKey === "string" &&
-              stageKey.length > 0 &&
-				!stageKey.includes("/") && !stageKey.includes("*")
-          )
+          !clientMessage.stageKeys.every((stageKey) => typeof stageKey === "string" && stageKey.length > 0)
         ) {
           throw new Error("Invalid live workflow-stage route registration");
+        }
+        if (!clientMessage.stageKeys.every((stageKey) => !stageKey.includes("/") && !stageKey.includes("*"))) {
+          // A stage name containing "/" or "*" cannot be a canonical path segment, but throwing
+          // here reaches the framing reader's onError and destroys the stage session's whole
+          // broker connection. Refuse orderly like every neighbouring rejection; host clients
+          // filter such name keys and register the stage-id key instead.
+          writeMessage(socket, {
+            type: "registration_failed",
+            reason: "Live workflow-stage route keys must be single path segments",
+          });
+          socket.end();
+          return;
         }
         const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
         const registeringSession = this.sessions.get(currentId);

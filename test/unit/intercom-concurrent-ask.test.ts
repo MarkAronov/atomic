@@ -229,6 +229,86 @@ describe("concurrent blocking intercom requests", () => {
 		}
 	});
 
+	test("keys a boundary-form workflow stage ask on the stage's live session", async () => {
+		// Regression: review round 1, #2784 hang class — a nested stage addressed by its
+		// boundary-stage-name path must key the reply waiter on the stage's live session id,
+		// the only identity inbound reply routing produces, not on the unmatchable path string.
+		const rootRunId = "4ac72924-c452-4e5f-9e63-2435722109f7";
+		const childRunId = "22222222-2222-4222-8222-222222222222";
+		const stageSessionId = "nested-stage-session-id";
+		const stageEntry = {
+			kind: "workflow-stage" as const,
+			runId: childRunId,
+			stageId: "child-reviewer-id",
+			stageName: "reviewer",
+			target: `workflow:${rootRunId}/${childRunId}/child-reviewer-id`,
+			lifecycle: "running" as const,
+			group: `workflow:${rootRunId}`,
+			sessionId: stageSessionId,
+		};
+		const tools = new Map<string, Tool>();
+		const slot = new ReplyWaiterRegistry();
+		const waiterKeys: string[] = [];
+		const sent: Array<{ to: string }> = [];
+		const client = {
+			sessionId: "self-id",
+			listDirectory: async () => ({ sessions: [], workflowStages: [stageEntry] }),
+			async send(to: string, message: { messageId?: string; text: string }) {
+				sent.push({ to });
+				return { id: message.messageId ?? "sent", delivered: true };
+			},
+		};
+		const pi = {
+			registerTool(tool: Tool & { name: string }) {
+				tools.set(tool.name, tool);
+			},
+			appendEntry() {},
+		};
+		registerIntercomTool(
+			pi as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				resolveSessionTarget: async (_client: object, target: string) => target,
+				beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => {
+					waiterKeys.push(from);
+					return slot.begin(from, replyTo, signal);
+				},
+				confirmSend: false,
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		const context = { sessionManager: { getSessionId: () => "self-session" }, hasUI: false };
+		const tool = tools.get("intercom");
+		assert.ok(tool);
+		const execution = tool.execute(
+			"call",
+			{ action: "ask", to: `workflow:${rootRunId}/workflow:child/reviewer`, message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		await settles(() => sent.length === 1, "the boundary-form ask sends its question");
+		const waiter = slot.pending()[0];
+		assert.ok(waiter, "the boundary-form ask reserves one reply waiter");
+		assert.equal(waiterKeys[0], stageSessionId);
+		assert.equal(waiter.from, stageSessionId);
+		const routed = routeIncomingReply(
+			waiter,
+			{ ...from, id: stageSessionId, name: "reviewer" },
+			{
+				id: "stage-reply",
+				timestamp: Date.now(),
+				replyTo: waiter.replyTo,
+				content: { text: "Approved" },
+			},
+		);
+		assert.equal(routed, true);
+		const result = await execution;
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.text ?? "", /Approved/);
+	});
+
 	test("concurrent supervisor waits have one winner and a deterministic refusal", async () => {
 		const current = fixture({ send: { delayMs: 10 } });
 		const winner = current.supervise();

@@ -31,13 +31,40 @@ async function resolveReplySender(client: IntercomClient, logicalTarget: string,
 	// stage's live session id. Ordinary name/id asks stay off this directory round-trip.
 	if (parseWorkflowStageTarget(logicalTarget)?.kind !== "path") return sendTarget;
 	// The roster publishes the id form; live routing also registers the name form.
-	const stage = (await listDirectory(client)).workflowStages.find(
+	const stages = (await listDirectory(client)).workflowStages;
+	const stage = stages.find(
 		(candidate) =>
 			candidate.sessionId !== undefined &&
 			(candidate.target === logicalTarget ||
 				withWorkflowStageTargetFinalSegment(candidate.target, candidate.stageName) === logicalTarget),
 	);
-	return stage?.sessionId ?? sendTarget;
+	if (stage?.sessionId !== undefined) return stage.sessionId;
+	// Boundary-stage-name forms (`workflow:<root>/<boundary>/<stage>`) match neither alias:
+	// the directory cannot verify the boundary→child-run mapping, so match on the final
+	// stage segment under the same invocation root and require exactly one live candidate.
+	const parsedTarget = parseWorkflowStageTarget(logicalTarget);
+	const finalSegment = parsedTarget?.segments.at(-1);
+	if (parsedTarget !== undefined && finalSegment !== undefined) {
+		const liveSessionIds = new Set(
+			stages
+				.filter((candidate) => {
+					if (candidate.sessionId === undefined) return false;
+					if (candidate.stageId !== finalSegment && candidate.stageName !== finalSegment) return false;
+					const parsedCandidate = parseWorkflowStageTarget(candidate.target);
+					return (
+						parsedCandidate !== undefined &&
+						parsedCandidate.rootRunId === parsedTarget.rootRunId &&
+						parsedCandidate.segments.length > 1
+					);
+				})
+				.map((candidate) => candidate.sessionId),
+		);
+		if (liveSessionIds.size === 1) {
+			const [onlySessionId] = liveSessionIds;
+			if (onlySessionId !== undefined) return onlySessionId;
+		}
+	}
+	return sendTarget;
 }
 
 function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {

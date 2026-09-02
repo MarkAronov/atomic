@@ -818,11 +818,19 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         }
         const orchestration = contextAtStart.orchestrationContext;
         if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
-          await nextClient.registerLiveWorkflowStageRoute(
-            orchestration.workflowRunId,
-            [orchestration.workflowStageId, orchestration.workflowStageName],
-            orchestration.pendingStageDelivery.routeCapability,
+          // A stage name containing "/" or "*" is not a canonical path segment; register the
+          // always-valid stage-id key so the stage stays live-addressable without tripping the
+          // broker's single-segment key validation.
+          const liveStageKeys = [orchestration.workflowStageId, orchestration.workflowStageName].filter(
+            (stageKey) => !stageKey.includes("/") && !stageKey.includes("*"),
           );
+          if (liveStageKeys.length > 0) {
+            await nextClient.registerLiveWorkflowStageRoute(
+              orchestration.workflowRunId,
+              liveStageKeys,
+              orchestration.pendingStageDelivery.routeCapability,
+            );
+          }
         }
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();

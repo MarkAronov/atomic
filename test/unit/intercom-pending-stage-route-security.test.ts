@@ -304,6 +304,36 @@ test("an invalid workflow-stage roster is rejected orderly and leaves no route r
 	assert.deepEqual(listed.workflowStages ?? [], []);
 });
 
+test("a live-route registration with a non-segment stage key is refused orderly without destroying the socket", async () => {
+	// Review round 1: the canonical grammar cannot express '/' or '*' inside one path
+	// segment, but throwing into the framing reader severs the stage session's whole
+	// broker connection. Refuse with registration_failed and a graceful end, like every
+	// neighbouring rejection in this handler.
+	const runId = "7f5a6a8b-4c3d-4e2f-9a8b-5d6c7b8a9f0e";
+	const group = `workflow:${runId}`;
+	const owner = new WireClient();
+	await register(owner, "segment-key-owner", group);
+	owner.send({ type: "register_pending_stage_route", runId, group, capability: "segment-key-capability" });
+	assert.equal(await registrationOutcome(owner, "segment-key-route-processed"), "acknowledged");
+
+	const stage = new WireClient();
+	await register(stage, "segment-key-stage", group);
+	stage.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "segment-key-live-route",
+		runId,
+		stageKeys: ["docs/update"],
+		capability: "segment-key-capability",
+	});
+	assert.deepEqual(await stage.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Live workflow-stage route keys must be single path segments",
+	});
+	await stage.closed;
+	assert.deepEqual(stage.rejectionLifecycle, ["registration_failed", "end", "close"]);
+	assert.equal(stage.closeHadError, false, "a non-segment stage key must not destroy the socket with an error");
+});
+
 function productionRegistration(name: string | undefined, group: string) {
 	return {
 		...(name === undefined ? {} : { name }),
@@ -655,6 +685,74 @@ test("production clients keep the pending owner and live stage connected when a 
 	assert.equal(sender.isConnected(), true);
 	await Promise.all([owner.listSessions(), stage.listSessions(), sender.listSessions()]);
 	assert.equal(brokerOutput.includes("write after end"), false);
+});
+
+test("an owner forward answer cannot redirect a sender's message to another invocation", async () => {
+	// Review round 1: the pending-route owner chooses the live alias for boundary-form
+	// targets, so the broker must bind its forward answer to the pending target's
+	// invocation root — otherwise an owner could deliver a sender's message into a
+	// different invocation's live stage, bypassing the sender's group authorization.
+	const rootA = "5d3d4d6f-8fa8-4c7a-bdaa-2b6d5ba2c333";
+	const rootB = "6e4e5e7a-9ab9-4d8b-9ebb-3c7e6cb3d444";
+	const groupA = `workflow:${rootA}`;
+	const groupB = `workflow:${rootB}`;
+	const capabilityA = "invocation-a-route-capability";
+	const capabilityB = "invocation-b-route-capability";
+	const ownerA = new IntercomClient();
+	const stageA = new IntercomClient();
+	const ownerB = new IntercomClient();
+	const stageB = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [ownerA, stageA, ownerB, stageB, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await ownerA.connect(productionRegistration("invocation-a-owner", groupA));
+	await stageA.connect(productionRegistration("invocation-a-stage", groupA));
+	await ownerB.connect(productionRegistration("invocation-b-owner", groupB));
+	await stageB.connect(productionRegistration("invocation-b-stage", groupB));
+	await sender.connect(productionRegistration("invocation-cross-sender", groupA));
+
+	ownerA.registerPendingStageRoute(rootA, groupA, capabilityA);
+	ownerB.registerPendingStageRoute(rootB, groupB, capabilityB);
+	await ownerA.listSessions();
+	await ownerB.listSessions();
+	// Both stages go live so a forged forward would have a real destination.
+	await stageA.registerLiveWorkflowStageRoute(rootA, ["reviewer-id", "reviewer"], capabilityA);
+	await stageB.registerLiveWorkflowStageRoute(rootB, ["reviewer-id", "reviewer"], capabilityB);
+	await stageA.listSessions();
+	await stageB.listSessions();
+
+	const ownerAValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		ownerA.once("pending_stage_message", resolveRequest);
+	});
+	const crossSend = sender.send(`workflow:${rootA}/workflow:alpha/reviewer`, { text: "cross-invocation probe" });
+	const request = await ownerAValidation;
+	assert.equal(request.live, undefined);
+	// The route owner answers with another invocation's live stage — the broker must refuse.
+	ownerA.respondPendingStageMessage(request.requestId, {
+		outcome: "forward",
+		target: `workflow:${rootB}/reviewer-id`,
+	});
+	const refused = await crossSend;
+	assert.equal(refused.delivered, false);
+	assert.equal(refused.reason, "Session not found");
+
+	// The same-root forward the bridge legitimately produces still delivers.
+	const stageAMessage = new Promise<Message>((resolveMessage) => {
+		stageA.once("message", (_from, message) => resolveMessage(message));
+	});
+	const legitimateValidation = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		ownerA.once("pending_stage_message", resolveRequest);
+	});
+	const legitimateSend = sender.send(`workflow:${rootA}/reviewer`, { text: "same invocation still delivers" });
+	const legitimateRequest = await legitimateValidation;
+	ownerA.respondPendingStageMessage(legitimateRequest.requestId, {
+		outcome: "forward",
+		target: `workflow:${rootA}/reviewer-id`,
+	});
+	assert.equal((await legitimateSend).delivered, true);
+	assert.equal((await stageAMessage).content.text, "same invocation still delivers");
 });
 
 test("pending-stage notifications prefer an exact live UUID and fail closed across reconnect alias trust controls", async () => {

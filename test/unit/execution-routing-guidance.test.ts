@@ -845,6 +845,8 @@ describe("workflow-first execution routing", () => {
 		expect(registered?.description).toContain("pause/resume/interrupt/quit runs");
 		expect(registered?.description).not.toMatch(/workflow send|action ['"]send['"]/i);
 		// Markdown documentation migrates in the later documentation slice; this slice verifies runtime guidance.
+		// The removed README↔WORKFLOW_TOOL_DESCRIPTION parity assertion must be restored when that
+		// documentation slice migrates packages/workflows/README.md to the canonical path targets.
 	});
 
 	test("documents directional invocation control before workflow-stage steering", async () => {
