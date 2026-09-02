@@ -13,6 +13,8 @@
 ### Fixed
 
 - Fixed proxied plain-HTTP provider requests hanging after a tool call by tunneling them with CONNECT ([#8134](https://github.com/earendil-works/pi/issues/8134)).
+- Fixed GitHub Copilot Claude Fable models to run through the Anthropic Messages adapter, so a selected thinking level reaches the provider instead of being dropped ([#8961](https://github.com/earendil-works/pi/issues/8961)).
+- Fixed every Fireworks GLM model to use the OpenAI-compatible completions endpoint. Previously only the `glm-5p2` family did, so newer entries such as `glm-5p3` were served over the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
