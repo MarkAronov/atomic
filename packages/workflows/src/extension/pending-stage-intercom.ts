@@ -85,10 +85,6 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		for (const run of runs) {
 			const rootRunId = durableRootRunIdForRun(runs, run.id);
 			if (rootRunId === undefined) continue;
-			// D8 clarification: the advertised target is depth-faithful — one boundary segment
-			// per ancestor hop (boundary-stage name, else the materialized child-run id). The
-			// flat run-id shortcut stays an accepted resolver input but is no longer advertised.
-			const boundarySegments = run.id === rootRunId ? [] : workflowBoundarySegments(runs, run.id);
 			pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
@@ -106,7 +102,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 					.map((stage) => ({
 						stageId: stage.id,
 						stageName: stage.name,
-						target: formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [run.id]), stage.id),
+						target: stageRouteTarget(runs, rootRunId, run.id, stage.id),
 						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
 						routeEligible: true,
 						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
@@ -140,11 +136,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 				result.outcome === "forward"
 					? {
 							outcome: "forward" as const,
-							target: formatWorkflowStageTarget(
-								rootRunId,
-								...(destination.run.id === rootRunId ? [] : [destination.run.id]),
-								destination.stage.id,
-							),
+							target: stageRouteTarget(runs, rootRunId, destination.run.id, destination.stage.id),
 						}
 					: result,
 			);
@@ -167,6 +159,17 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	};
 	pi.on?.("session_shutdown", dispose);
 	return dispose;
+}
+
+/**
+ * Canonical id-form target for one stage of `runId`, depth-faithful per the D8
+ * clarification: one boundary segment per ancestor hop (boundary-stage name when it
+ * is a valid single segment, else the materialized child-run id). Identical to the
+ * roster announcement target, which is what the broker registers live aliases from.
+ */
+function stageRouteTarget(runs: ReturnType<Store["runs"]>, rootRunId: string, runId: string, stageId: string): string {
+	const boundarySegments = runId === rootRunId ? [] : workflowBoundarySegments(runs, runId);
+	return formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [runId]), stageId);
 }
 
 function isPendingStageMessageEvent(value: unknown): value is PendingStageMessageEvent &

@@ -622,6 +622,98 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		);
 		dispose();
 	});
+	test("forwards live nested stages through the depth-faithful alias the broker registered", async () => {
+		// Regression: review round 3 — the bridge answers a boundary-form send at a live
+		// nested stage with outcome "forward" and a canonical target. That target must be
+		// the depth-faithful id-form alias the broker registered from the roster; the flat
+		// run-id shortcut is no longer a registered alias, so it resolves to nothing.
+		const childRunId = "55e6f7a8-192a-4b3c-be4d-6f7a8b9c0d1e";
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: RUN_ID,
+			parentStageId: "child-boundary",
+			rootRunId: RUN_ID,
+			stages: [
+				{
+					id: "live-reviewer-id",
+					name: "reviewer",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "stage:reviewer:1",
+					pendingStageDeliveryAvailable: true,
+					sessionId: "live-reviewer-session",
+				},
+			],
+			startedAt: 2,
+		});
+		const listeners = new Map<string, (payload: unknown) => void>();
+		const routeAnnouncements: Array<{ runId: string; stages: Array<{ stageId: string; target: string }> }> = [];
+		const dispose = registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit(event: string, payload: Record<string, unknown>) {
+						if (event === "atomic:workflow-pending-stage-route") {
+							routeAnnouncements.push(
+								payload as { runId: string; stages: Array<{ stageId: string; target: string }> },
+							);
+						}
+					},
+					on(event: string, listener: (payload: unknown) => void) {
+						listeners.set(event, listener);
+						return () => listeners.delete(event);
+					},
+				},
+			},
+			store,
+		);
+		const childAnnouncement = routeAnnouncements.find((announcement) => announcement.runId === childRunId);
+		const advertisedTarget = childAnnouncement?.stages.find((stage) => stage.stageId === "live-reviewer-id")?.target;
+		assert.equal(advertisedTarget, `workflow:${RUN_ID}/workflow:child/live-reviewer-id`);
+		const payload: {
+			handled: boolean;
+			completion?: Promise<{ readonly outcome: "forward"; readonly target: string }>;
+			from: SessionInfo;
+			runId: string;
+			target: string;
+			message: Message;
+		} = {
+			handled: false,
+			from: sender({} as net.Socket).info,
+			runId: RUN_ID,
+			target: `workflow:${RUN_ID}/workflow:child/reviewer`,
+			message: message("live-boundary", 200),
+		};
+		listeners.get("atomic:workflow-pending-stage-message")?.(payload);
+		assert.equal(payload.handled, true);
+		assert.ok(payload.completion, "the live boundary-form send must settle");
+		const completion = await payload.completion;
+		assert.equal(completion.outcome, "forward");
+		assert.equal(completion.target, advertisedTarget);
+		dispose();
+	});
 });
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {
