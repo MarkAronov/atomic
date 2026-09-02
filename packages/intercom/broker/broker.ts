@@ -82,6 +82,8 @@ interface PendingStageNotificationAcknowledgment {
 interface LiveWorkflowStageRouteRegistration {
   readonly sessionId: string;
   readonly capability: string;
+  /** Run whose route registration authorized this alias; capabilities are per run. */
+  readonly runId: string;
 }
 
 interface LiveWorkflowStageRouteActivation {
@@ -271,9 +273,19 @@ class IntercomBroker {
 	private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
 		const registration = this.liveWorkflowStageRoutes.get(target);
 		if (registration === undefined) return undefined;
-		const currentOwner = this.pendingStageOwnerForTarget(target)?.registration;
-		if (currentOwner === undefined) return undefined;
-		if (currentOwner.capability !== registration.capability) {
+		// The alias is owned by the run that registered it: route capabilities are per run,
+		// and for boundary-form targets the depth-first owner resolution selects the root
+		// registration, whose capability legitimately differs from the nested stage's own.
+		// Validate staleness against the alias's own run registration and require the alias
+		// to stay anchored inside the target's invocation.
+		const ownRegistration = this.pendingStageRoutes.get(registration.runId);
+		const parsed = parseWorkflowStageTarget(target);
+		if (
+			ownRegistration === undefined ||
+			ownRegistration.capability !== registration.capability ||
+			parsed === undefined ||
+			normalizeGroup(ownRegistration.group) !== normalizeGroup(`workflow:${parsed.rootRunId}`)
+		) {
 			this.liveWorkflowStageRoutes.delete(target);
 			return undefined;
 		}
@@ -407,7 +419,7 @@ class IntercomBroker {
       }
     }
     for (const target of targets) {
-      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability });
+      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability, runId });
     }
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]

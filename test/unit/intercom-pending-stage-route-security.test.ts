@@ -376,7 +376,9 @@ test("nested live stages register depth-faithful aliases derived from the announ
 	const rootId = "bcec6f70-91a2-4c1b-be2f-3a4b5c6d7e8f";
 	const childRunId = "cdfd7a81-a2b3-4d2c-af3a-4b5c6d7e8f9a";
 	const group = `workflow:${rootId}`;
-	const capability = "nested-depth-faithful-capability";
+	// Production shape: every run announces its own random route capability.
+	const rootCapability = "nested-root-route-capability";
+	const childCapability = "nested-child-route-capability";
 	const owner = new IntercomClient();
 	const stage = new IntercomClient();
 	const sender = new IntercomClient();
@@ -391,10 +393,10 @@ test("nested live stages register depth-faithful aliases derived from the announ
 	// Production topology registers every run in the invocation, root included; the root
 	// route is what boundary-name-form targets resolve through when no middle segment is
 	// a registered run id.
-	owner.registerPendingStageRoute(rootId, group, capability);
+	owner.registerPendingStageRoute(rootId, group, rootCapability);
 	// The roster's advertised target is depth-faithful; validation must anchor it at the
 	// invocation group root even though the announcing run is the nested child run.
-	owner.registerPendingStageRoute(childRunId, group, capability, [
+	owner.registerPendingStageRoute(childRunId, group, childCapability, [
 		{
 			stageId: "reviewer-id",
 			stageName: "reviewer",
@@ -409,7 +411,7 @@ test("nested live stages register depth-faithful aliases derived from the announ
 	assert.equal(directory.workflowStages.length, 1);
 	assert.equal(directory.workflowStages[0]?.target, `workflow:${rootId}/workflow:child/reviewer-id`);
 
-	stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], capability);
+	stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], childCapability);
 	await stage.listSessions();
 	const liveDirectory = await sender.listDirectory();
 	const liveEntry = liveDirectory.workflowStages[0];
@@ -445,7 +447,8 @@ test("a nested live-route registration waits for in-flight boundary-form pending
 	const rootId = "dfee8b92-a3b4-4e3d-8f40-5a6b7c8d9e0f";
 	const childRunId = "e0ff9ca3-b4c5-4f4e-8051-6b7c8d9e0f1a";
 	const group = `workflow:${rootId}`;
-	const capability = "activation-barrier-capability";
+	const rootCapability = "barrier-root-route-capability";
+	const childCapability = "barrier-child-route-capability";
 	const owner = new IntercomClient();
 	const stage = new IntercomClient();
 	const sender = new IntercomClient();
@@ -457,8 +460,8 @@ test("a nested live-route registration waits for in-flight boundary-form pending
 	await stage.connect(productionRegistration("barrier-stage", group));
 	await sender.connect(productionRegistration("barrier-sender", group));
 
-	owner.registerPendingStageRoute(rootId, group, capability);
-	owner.registerPendingStageRoute(childRunId, group, capability, [
+	owner.registerPendingStageRoute(rootId, group, rootCapability);
+	owner.registerPendingStageRoute(childRunId, group, childCapability, [
 		{
 			stageId: "reviewer-id",
 			stageName: "reviewer",
@@ -478,7 +481,7 @@ test("a nested live-route registration waits for in-flight boundary-form pending
 	assert.equal(request.live, undefined);
 
 	let routeRegistered = false;
-	const registration = stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], capability);
+	const registration = stage.registerLiveWorkflowStageRoute(childRunId, ["reviewer-id", "reviewer"], childCapability);
 	void registration.then(() => {
 		routeRegistered = true;
 	});
