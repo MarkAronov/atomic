@@ -18,7 +18,10 @@
  */
 
 import type { RunDetail } from "../runs/background/status.js";
-import type { PendingWorkflowRunStatusResolver } from "../shared/pending-stage-status.js";
+import type {
+	PendingWorkflowRunStatusResolver,
+	WorkflowBoundarySegmentsResolver,
+} from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
@@ -42,6 +45,8 @@ export interface RenderRunDetailOpts {
 	width?: number;
 	/** Owning-run lifecycle authority for expanded child-run stages. */
 	owningRunStatus?: PendingWorkflowRunStatusResolver;
+	/** Depth-faithful boundary-chain authority for advertised pending-stage targets. */
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver;
 }
 
 /**
@@ -50,8 +55,10 @@ export interface RenderRunDetailOpts {
 export function renderRunDetail(detail: RunDetail, opts: RenderRunDetailOpts = {}): string {
 	const now = opts.now ?? Date.now();
 	const width = Math.max(32, opts.width ?? 80);
-	if (opts.theme === undefined) return renderPlain(detail, now, width, opts.owningRunStatus);
-	return renderThemed(detail, now, opts.theme, width, opts.owningRunStatus);
+	if (opts.theme === undefined) {
+		return renderPlain(detail, now, width, opts.owningRunStatus, opts.resolveBoundarySegments);
+	}
+	return renderThemed(detail, now, opts.theme, width, opts.owningRunStatus, opts.resolveBoundarySegments);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +70,7 @@ function renderPlain(
 	now: number,
 	width: number,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string {
 	const out: string[] = [];
 	const stateBadge = stateLabel(detail);
@@ -92,6 +100,7 @@ function renderPlain(
 						now,
 						width - 4,
 						resolveOwningRunStatus,
+						resolveBoundarySegments,
 					),
 				);
 		out.push("");
@@ -130,6 +139,7 @@ function renderThemed(
 	theme: GraphTheme,
 	width: number,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string {
 	const out: string[] = [];
 	const muted = hexToAnsi(theme.textMuted);
@@ -164,6 +174,7 @@ function renderThemed(
 						theme,
 						width - 4,
 						resolveOwningRunStatus,
+						resolveBoundarySegments,
 					),
 				);
 		out.push("");
@@ -283,11 +294,13 @@ function pendingStageRows(
 	width: number,
 	theme?: GraphTheme,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const pending = pendingWorkflowStageStatus(
 		{ id: runId, ...(rootRunId === undefined ? {} : { rootRunId }), status: runStatus },
 		stage,
 		resolveOwningRunStatus,
+		resolveBoundarySegments,
 	);
 	if (pending === undefined) return [];
 	const value = pending.target ?? `${pending.stageId} · delivery unavailable`;
@@ -313,10 +326,20 @@ function renderStageRowsPlain(
 	now: number,
 	width: number,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const rows = [
 		` ${stageLinePlain(stage, now, Math.max(1, width - 2))} `,
-		...pendingStageRows(runId, rootRunId, runStatus, stage, width, undefined, resolveOwningRunStatus),
+		...pendingStageRows(
+			runId,
+			rootRunId,
+			runStatus,
+			stage,
+			width,
+			undefined,
+			resolveOwningRunStatus,
+			resolveBoundarySegments,
+		),
 	];
 	if (stage.error) {
 		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
@@ -333,10 +356,20 @@ function renderStageRowsThemed(
 	theme: GraphTheme,
 	width: number,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const rows = [
 		` ${stageLineThemed(stage, now, theme, Math.max(1, width - 2))} `,
-		...pendingStageRows(runId, rootRunId, runStatus, stage, width, theme, resolveOwningRunStatus),
+		...pendingStageRows(
+			runId,
+			rootRunId,
+			runStatus,
+			stage,
+			width,
+			theme,
+			resolveOwningRunStatus,
+			resolveBoundarySegments,
+		),
 	];
 	if (stage.error) {
 		const errFg = hexToAnsi(theme.error);

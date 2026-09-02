@@ -9,6 +9,11 @@ import { beforeEach, describe, test } from "vitest";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import type { WorkflowRunStatusSummary } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
+import {
+	pendingWorkflowStageStatus,
+	workflowBoundarySegments,
+} from "../../packages/workflows/src/shared/pending-stage-status.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import {
 	assert,
@@ -473,7 +478,9 @@ describe("workflow tool status run listing", () => {
 			.find((route) => route.runId === childRunId)
 			?.stages.find((stage) => stage.stageId === childStageId)?.target;
 		dispose();
-		assert.equal(childRosterTarget, `workflow:${rootRunId}/${childRunId}/${childStageId}`);
+		// D8 clarification: the advertised target is depth-faithful — the child boundary's
+		// stage name is the middle segment, not the child run id shortcut.
+		assert.equal(childRosterTarget, `workflow:${rootRunId}/workflow:child/${childStageId}`);
 
 		const handler = makeToolHandler();
 		const result = await handler({ action: "status" }, {} as never);
@@ -565,5 +572,66 @@ describe("workflow tool status run listing", () => {
 			statusFilter: "paused",
 		});
 		assert.match(text, /runs: none \(statusFilter: paused\)/);
+	});
+});
+
+describe("pending stage status target form", () => {
+	test("advertises the depth-faithful target when the boundary chain is available", () => {
+		// Regression: review round 2, D8 clarification — status surfaces print the
+		// depth-faithful target (one boundary segment per ancestor hop) when the run
+		// snapshots are available, and keep the flat run-id shortcut otherwise.
+		const rootRunId = "4ac72924-c452-4e5f-9e63-2435722109f7";
+		const childRunId = "22222222-2222-4222-8222-222222222222";
+		const store = createStore();
+		store.recordRunStart({
+			id: rootRunId,
+			name: "root",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: rootRunId,
+			parentStageId: "child-boundary",
+			rootRunId,
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "stage:reviewer:1",
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 2,
+		});
+		const [child] = store.runs().filter((run) => run.id === childRunId);
+		assert.ok(child);
+		const reviewerStage = child.stages[0]!;
+		const withChain = pendingWorkflowStageStatus(
+			child,
+			reviewerStage,
+			() => "running",
+			(runId) => workflowBoundarySegments(store.runs(), runId),
+		);
+		assert.equal(withChain?.target, `workflow:${rootRunId}/workflow:child/reviewer-id`);
+		const withoutChain = pendingWorkflowStageStatus(child, reviewerStage, () => "running");
+		assert.equal(withoutChain?.target, `workflow:${rootRunId}/${childRunId}/reviewer-id`);
 	});
 });

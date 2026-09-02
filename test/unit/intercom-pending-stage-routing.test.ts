@@ -487,10 +487,11 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		);
 		dispose();
 	});
-	test("routes the advertised flat grandchild target through the root durable owner", async () => {
-		// Regression: review round 1 — announceRoutes and status surfaces advertise
-		// `workflow:<root>/<grandchildRunId>/<stageId>` for depth-2 runs, so a run-id segment
-		// must resolve at any depth under the parsed root, not only as a direct child.
+	test("round-trips the advertised depth-faithful grandchild target through the root durable owner", async () => {
+		// Regression: review round 2, D8 clarification — the advertised target for a depth-2
+		// stage carries one boundary segment per ancestor hop (boundary-stage name, else the
+		// materialized child-run id). The advertised string must resolve, and the flat
+		// run-id shortcut stays an accepted input.
 		const childRunId = "331b6cd2-6f86-4a58-9b8f-0f4b39e0a111";
 		const grandchildRunId = "44c2d7e3-7a97-4b69-ac9a-1a5c4af1b222";
 		const store = createStore();
@@ -557,11 +558,18 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
 		setDurableBackend(backend);
+		const routeAnnouncements: Array<{ runId: string; stages: Array<{ stageId: string; target: string }> }> = [];
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const dispose = registerPendingStageIntercomBridge(
 			{
 				events: {
-					emit() {},
+					emit(event: string, payload: Record<string, unknown>) {
+						if (event === "atomic:workflow-pending-stage-route") {
+							routeAnnouncements.push(
+								payload as { runId: string; stages: Array<{ stageId: string; target: string }> },
+							);
+						}
+					},
 					on(event: string, listener: (payload: unknown) => void) {
 						listeners.set(event, listener);
 						return () => listeners.delete(event);
@@ -570,6 +578,14 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			},
 			store,
 		);
+		const grandchildAnnouncement = routeAnnouncements.find((announcement) => announcement.runId === grandchildRunId);
+		assert.ok(grandchildAnnouncement, "the grandchild run announces its route");
+		const advertisedTarget = grandchildAnnouncement.stages.find(
+			(stage) => stage.stageId === "grandchild-reviewer-id",
+		)?.target;
+		assert.equal(advertisedTarget, `workflow:${RUN_ID}/workflow:child/workflow:grandchild/grandchild-reviewer-id`);
+		// The child run's only stage is its own boundary (not delivery-eligible), so its
+		// announcement carries no stage rows; the grandchild's is the advertised one above.
 		const deliver = async (target: string, runId: string, messageId: string, position: number): Promise<void> => {
 			const payload: {
 				handled: boolean;
@@ -589,18 +605,20 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			assert.equal(payload.handled, true, target);
 			assert.deepEqual(await payload.completion, { outcome: "queued", position }, target);
 		};
-		// The flat form `announceRoutes` and status surfaces advertise for depth-2 runs.
-		await deliver(`workflow:${RUN_ID}/${grandchildRunId}/grandchild-reviewer-id`, grandchildRunId, "gc-flat", 1);
+		// Round-trip: the exact advertised string resolves.
+		await deliver(advertisedTarget!, RUN_ID, "gc-advertised", 1);
+		// The flat run-id shortcut stays an accepted resolver input.
+		await deliver(`workflow:${RUN_ID}/${grandchildRunId}/grandchild-reviewer-id`, grandchildRunId, "gc-flat", 2);
 		// The fully-spelled form through every materialized run segment.
 		await deliver(
 			`workflow:${RUN_ID}/${childRunId}/${grandchildRunId}/grandchild-reviewer-id`,
 			grandchildRunId,
 			"gc-spelled",
-			2,
+			3,
 		);
 		assert.deepEqual(
 			store.pendingStageMessagesFor(grandchildRunId, "grandchild-reviewer-id").map((entry) => entry.message.id),
-			["gc-flat", "gc-spelled"],
+			["gc-advertised", "gc-flat", "gc-spelled"],
 		);
 		dispose();
 	});

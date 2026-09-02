@@ -2,6 +2,7 @@ import { getDurableBackend } from "../durable/factory.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
+import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type {
@@ -84,6 +85,10 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		for (const run of runs) {
 			const rootRunId = durableRootRunIdForRun(runs, run.id);
 			if (rootRunId === undefined) continue;
+			// D8 clarification: the advertised target is depth-faithful — one boundary segment
+			// per ancestor hop (boundary-stage name, else the materialized child-run id). The
+			// flat run-id shortcut stays an accepted resolver input but is no longer advertised.
+			const boundarySegments = run.id === rootRunId ? [] : workflowBoundarySegments(runs, run.id);
 			pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
@@ -101,7 +106,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 					.map((stage) => ({
 						stageId: stage.id,
 						stageName: stage.name,
-						target: formatWorkflowStageTarget(rootRunId, ...(run.id === rootRunId ? [] : [run.id]), stage.id),
+						target: formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [run.id]), stage.id),
 						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
 						routeEligible: true,
 						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
