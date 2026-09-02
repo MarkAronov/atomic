@@ -22,7 +22,7 @@ const CONCURRENT_WAIT_TIMEOUT_MS = 40;
 const RETAINED_REAP_TIMEOUT_MS = 2_000;
 
 afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 function requiredBinding(): NativeBinding {
