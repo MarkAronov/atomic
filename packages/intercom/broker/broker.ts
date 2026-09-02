@@ -653,11 +653,10 @@ class IntercomBroker {
 			writeMessage(targetSession.socket, { type: "message", from: pending.sender, message: pending.message });
 			delivered += 1;
 		}
-		// One dedupe record under the sender's original signature: a retry of the same
-		// logical send must be acknowledged without re-broadcasting.
-		if (delivered > 0 && pending.signature !== undefined) {
-			this.deliveredMessages.record(pending.messageId, pending.signature);
-		}
+		// Deliberately NOT recorded in the delivered-message cache (round-1 review): the
+		// sticky ledger in the workflow host is the durable dedupe authority, so a retry
+		// re-routes to the host, dedupes there, and the sender's ack stays `queued`
+		// instead of flipping to `delivered` between attempts.
 		return delivered > 0;
 	}
 
