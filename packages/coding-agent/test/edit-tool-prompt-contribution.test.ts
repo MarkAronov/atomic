@@ -40,13 +40,13 @@ describe("edit tool hashline prompt contribution", () => {
 		}
 		assert.ok(guidance.includes("[src/a.ts#0A3B]"));
 		assert.ok(guidance.includes("[src/b.ts#1F7C]"));
-		assert.ok(guidance.includes("first decorator"));
-		assert.ok(guidance.includes("doc-comment"));
+		assert.ok(guidance.includes("Python folds `@cache` and `def` into one node"));
+		assert.ok(guidance.includes("doc- or line-comments"));
 	});
 
 	test("shows the measured invalid shapes and their corrections", () => {
 		for (const antiPattern of [
-			"`-` rows / bare context rows are invalid",
+			"`-` rows are rejected; bare context rows are auto-prefixed and inserted as literal content",
 			"replace block 238:+export const value = 1;",
 			"delete 2..3:\n+replacement",
 			"empty `insert` / `replace`",
@@ -56,6 +56,18 @@ describe("edit tool hashline prompt contribution", () => {
 		// These two messages are inline in hashline-engine/parser.ts rather than exported constants.
 		assert.ok(guidance.includes("payload line has no preceding hunk header"));
 		assert.ok(guidance.includes("`delete N..M` has no colon and no body"));
+	});
+
+	test("does not tell the model that sibling attributes or comments sweep the construct", () => {
+		assert.match(guidance, /Python folds `@dec` and `def` into one node/i);
+		assert.match(guidance, /TypeScript\/Java annotations/i);
+		assert.match(guidance, /Rust `#\[attr\]` and doc- or line-comments resolve alone/i);
+		assert.ok(guidance.includes("duplicates the construct"));
+		assert.ok(guidance.includes("use explicit 'replace N..M:'"));
+		assert.doesNotMatch(
+			guidance,
+			/(?:attribute|doc-comment)[\s\S]{0,160}(?:sweep both|include it with the construct)/i,
+		);
 	});
 
 	test("quotes the exported empty-insert rejection", () => {
@@ -105,7 +117,7 @@ describe("edit tool hashline prompt contribution", () => {
 			"replace block 238:+export const value = 1;",
 			"delete 2..3:\n+replacement",
 			"empty `insert` / `replace`",
-			"`-` rows / bare context rows are invalid",
+			"bare context rows are auto-prefixed and inserted as literal content",
 			"If you remember nothing else:",
 			"1. RE-GROUND AFTER EVERY EDIT.",
 			"2. RANGES ARE TIGHT.",

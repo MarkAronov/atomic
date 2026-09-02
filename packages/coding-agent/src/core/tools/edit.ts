@@ -49,7 +49,7 @@ export const editToolSystemPromptContribution = Object.freeze({
 		"hashline edit format: a header ending in ':' is followed by '+TEXT' body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
 		"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert head:' / 'insert tail:' insert at file start/end. Block ops ('replace block N:', 'delete block N', 'insert after block N:') resolve the exact syntactic node BEGINNING on N through the native Rust tree-sitter `blockRangeAt` primitive in `@bastani/atomic-natives`; the brace/indent heuristic is the fallback only when the native binding is unavailable. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
 		"Body rows appear only under a ':' header and start on the NEXT line. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
-		"Block anchors: decorators, attributes, and doc-comments are separate nodes; point N at the first decorator to sweep both it and the construct. A standalone line-comment is never swept — use 'replace N..M:'. 'insert after block N:' takes the opener, never the closer or last visible line. Confirm the result echo: 'replace block N → resolved lines A-B (K lines)'; insert-after adds '; body lands after line B'. Resolution fails for an unsupported language, blank line or pure closing delimiter, no node beginning on N, or an unparsable block; use explicit 'replace N..M:' or 'insert after M:' instead.",
+		"Block anchors: 'replace block N' resolves the outermost node BEGINNING on N. Where a language folds a decorator/annotation into its construct (Python folds `@dec` and `def` into one node; TypeScript/Java annotations also fold), anchoring at the first decorator sweeps both. Rust `#[attr]` and doc- or line-comments resolve alone; replacing there with a construct body duplicates the construct, so use explicit 'replace N..M:' to take both. Confirm the result echo: 'replace block N → resolved lines A-B (K lines)'. 'insert after block N:' takes the opener, never the closer; insert-after echoes '; body lands after line B'. Resolution fails for an unsupported language, blank/closer line, no node beginning on N, or an unparsable block; use 'replace N..M:' or 'insert after M:' instead.",
 		"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Parallel edit calls that share a [path#TAG] are applied as one snapshot batch. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
 		"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
 		[
@@ -68,7 +68,7 @@ export const editToolSystemPromptContribution = Object.freeze({
 			"replace 3..3:",
 			'+    msg = f"Hi, {name}"',
 			"```",
-			"Replace the decorated block (anchoring at line 2 would keep/orphan line 1); doc-comments have the same separate-node caveat:",
+			"Replace the decorated Python block (Python folds `@cache` and `def` into one node; anchoring at line 2 would keep/orphan line 1). For a Rust attribute or doc- or line-comment, use explicit `replace N..M:` to take both it and the construct:",
 			"```text",
 			"[greet.py#A1B2]",
 			"replace block 1:",
@@ -129,7 +129,7 @@ export const editToolSystemPromptContribution = Object.freeze({
 		[
 			"Anti-patterns:",
 			"```text",
-			"# WRONG — `-` rows / bare context rows are invalid: `-` rows are not valid; the range already names the lines being changed. For a literal `-` line, write `+-…`.",
+			"# WRONG — `-` rows are rejected; bare context rows are auto-prefixed and inserted as literal content: `-` rows are not valid; the range already names the lines being changed. For a literal `-` line, write `+-…`.",
 			"replace 3..3:",
 			'    msg = "Hello"',
 			"-   print(msg)",

@@ -57,9 +57,11 @@ and `+` alone inserts a blank line. There are no old-text or context rows. To in
 
 `replace block`, `delete block`, and `insert after block` first use the native Rust tree-sitter `blockRangeAt` primitive
 from `@bastani/atomic-natives`. The brace/indent heuristic is used only as a fallback when the native binding is
-unavailable. Resolution selects exactly the syntactic node beginning on N. A leading decorator, attribute, or doc-comment
-can be a separate node: point N at the first decorator to include it with the construct. A standalone line-comment is not
-swept into the node; use `replace N..M:` or `delete N..M` with explicit lines.
+unavailable. Resolution selects the outermost syntactic node beginning on N. Where a language folds a decorator or
+annotation into its construct—Python `@dec` plus `def`, and TypeScript/Java annotations—anchoring at the first decorator
+resolves both. A Rust `#[attr]` and doc- or line-comments are separate sibling nodes: anchoring there resolves that node
+alone, and replacing it with a construct body duplicates the untouched construct. Use `replace N..M:` or `delete N..M`
+with explicit lines to take both, and confirm the `→ resolved lines A-B (K lines)` echo before continuing.
 
 For `insert after block N:`, N is the opener, never the closing delimiter or last visible line. If the last line is already
 known, use `insert after M:`. A successful resolution is echoed as
@@ -92,10 +94,11 @@ Atomic's hand parser deliberately accepts these non-canonical shapes:
   nonblank row has a `LINE:`/`*LINE:` read-output prefix, those prefixes are stripped as a pasted snapshot; mixed rows and
   explicit `+` rows are preserved. A body made entirely of quoted or numeric values keeps its numeric keys.
 - Repeated sections for the same authored path are merged in first-occurrence order when their tags do not conflict.
-- A comment line beginning with `#` is skipped only before the first operation in a section. Once a hunk is open, a `#`
-  line is body content: under `delete` it triggers the delete-takes-no-body rejection; under a body-bearing hunk it is
-  auto-prefixed and written as a literal line. Blank layout rows before a body or after its final row are ignored; proven
-  interior blank body rows are preserved.
+- A run of comment lines beginning with `#` is skipped only when an operation header is the immediately next token. If a
+  blank line, end of input, or the next `[PATH#TAG]` header intervenes, the deferred comment is replayed as body content and
+  rejected with the payload-line error. Once a hunk is open, a `#` line is body content: under `delete` it triggers the
+  delete-takes-no-body rejection; under a body-bearing hunk it is auto-prefixed and written as a literal line. Blank layout
+  rows before a body or after its final row are ignored; proven interior blank body rows are preserved.
 
 The parser does **not** tolerate `delete N..M:` or a body under `delete`/`delete block`, `-` diff rows, apply-patch file
 sentinels inside the patch, unified-diff/`@@` hunk headers, bare numeric hunk headers, malformed/absent section headers,
@@ -267,8 +270,11 @@ angle-bracketed names stand for runtime substitutions. Parser errors that origin
 - `line N: line anchor "<digits>" is not a safe integer; line numbers must be positive safe integers no greater than 9007199254740991.`
 - `line N: expected a line number such as "119", "112", "7"; got "<input>". Use [PATH#hash] from your latest read for file-version binding.`
 - `Line N does not exist (file has M lines)`
-- `Invalid line reference. Expected a bare line number from read/search output plus the section header content-hash tag (for example [src/foo.ts#1A2B] and line "160"). Received "<input>".`
-- `Line number must be >= 1, got N in "<input>".`
+- `Invalid line reference. Expected a bare line number from read/search output plus the section header content-hash tag (for example [src/foo.ts#1A2B] and line "160") Received "abc"..`
+- `Line number must be >= 1, got 0 in "0".`
+
+These two messages are retained by the low-level `parseTag` helper but currently have no caller in Atomic, so the `edit`
+tool cannot emit them.
 
 ### Ranges, bodies, and hunk conflicts
 
