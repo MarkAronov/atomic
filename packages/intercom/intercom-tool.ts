@@ -166,9 +166,14 @@ Use this to communicate findings, request help, or coordinate work with other se
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 
-For send, live session names and exact full session IDs remain supported. For a known
-workflow stage, use the exact \`workflow:<rootRunId>/<segment>[/<segment>...]\` path; sends to pending
-stages queue automatically. Pattern paths containing \`*\` or \`**\` are recognized but not yet accepted.
+For send, live session names and exact full session IDs remain supported. Workflow-stage targets use
+\`workflow:<rootRunId>/<segment>[/<segment>...]\`; a segment may be a stage name, run id, or glob
+(\`*\` matches one segment and may be embedded, while \`**\` matches any depth). Use \`intercom list\`
+inside the invocation group to see live, pending, and possible future targets with queued counts.
+\`workflow:<rootRunId>/**\` reaches every live stage immediately and remains sticky for every future
+stage until the root run terminates; narrower name or pattern sends likewise reach every future match.
+A valid target outside the known set queues speculatively with a \`notInKnownSet\` warning and settles
+undeliverable at terminal only if never delivered. Use \`ask\` only for a live, reply-capable target.
 Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
 select the group.
 
@@ -196,7 +201,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Live session name, exact full session ID, or exact `workflow:<rootRunId>/<segment>[/<segment>...]` for a known workflow stage; pattern paths are not yet accepted; sends to pending stages queue automatically (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
