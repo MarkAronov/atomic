@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { afterAll, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import {
 	encodeMetadata,
 	metadataStepName,
@@ -14,6 +15,7 @@ import { discoverWorkflows } from "../../packages/workflows/src/extension/discov
 import { coercePossibleStages } from "../../packages/workflows/src/shared/possible-stages.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeDirectorySync, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
+import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const SCANNED = ["orchestrator-*", "pull-request", "reviewer-error"] as const;
 
@@ -104,6 +106,32 @@ describe("possible-stages persistence (D10)", () => {
 			},
 		);
 		assert.deepEqual(storeWithoutHandle.runs().find((candidate) => candidate.id === "ps-run-4")?.possibleStages, []);
+	});
+
+	test("possibleStages reaches DBOS metadata and hydrates in a fresh process", async () => {
+		// Regression (review round 1): toMetadata() omitted possibleStages, so
+		// the value lived only in the in-process mirror and a fresh-process
+		// resume hydrated an empty set.
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		const store = createStore();
+		await run(
+			plain,
+			{},
+			{
+				runId: "ps-dbos-1",
+				store,
+				durableBackend: backend,
+				durableRootBackend: backend,
+				possibleStages: [...SCANNED],
+			},
+		);
+		await backend.flush("ps-dbos-1");
+		// A fresh backend has an empty in-memory mirror; the scan must come
+		// back from the durable metadata payload alone.
+		const fresh = new DbosDurableBackend(sdk);
+		await fresh.hydrateWorkflow("ps-dbos-1");
+		assert.deepEqual(fresh.getWorkflow("ps-dbos-1")?.possibleStages, [...SCANNED]);
 	});
 
 	test("continuations inherit the source run's persisted scan", async () => {

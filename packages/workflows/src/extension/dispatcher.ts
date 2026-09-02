@@ -191,10 +191,16 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			// admission; a missing entry or scan failure is fine (undefined),
 			// the scan itself never blocks launch.
 			const entryPath = opts.resolvePossibleStageEntry?.(def.normalizedName);
-			const possibleStages =
-				entryPath === undefined
-					? undefined
-					: scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth }).stages;
+			let possibleStages: readonly string[] | undefined;
+			if (entryPath !== undefined) {
+				// Belt-and-braces around the scanner's never-throw discipline:
+				// a discovery failure must never block launch (D1).
+				try {
+					possibleStages = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth }).stages;
+				} catch {
+					possibleStages = undefined;
+				}
+			}
 			let launch: ReturnType<typeof launchDetachedUntilStartup>;
 			try {
 				launch = launchDetachedUntilStartup(def, inputs, {

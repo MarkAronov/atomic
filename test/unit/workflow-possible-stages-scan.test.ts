@@ -359,6 +359,137 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		]);
 	});
 
+	test("named-export and aliased-default child definitions nest instead of leaking flat", () => {
+		writeFixture(
+			"named-grand.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export const grand = workflow({
+					name: "named-grand",
+					run: async (ctx) => {
+						await ctx.stage("grand-step");
+					},
+				});
+			`,
+		);
+		writeFixture(
+			"alias-child.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				const child = workflow({
+					name: "alias-child",
+					run: async (ctx) => {
+						await ctx.stage("alias-step");
+					},
+				});
+				export default child;
+			`,
+		);
+		const result = scanFile(
+			"named-children-parent.ts",
+			`
+				import { grand } from "./named-grand.js";
+				import aliasChild from "./alias-child.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "named-children-parent",
+					run: async (ctx) => {
+						await ctx.workflow(grand);
+						await ctx.workflow(aliasChild);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, [
+			"workflow:alias-child",
+			"workflow:alias-child/alias-step",
+			"workflow:named-grand",
+			"workflow:named-grand/grand-step",
+		]);
+	});
+
+	test("wrapper modules with no visible definition fall back to the kebab boundary", () => {
+		writeFixture(
+			"kebab-impl.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export const def = workflow({
+					name: "camel-child",
+					run: async (ctx) => {
+						await ctx.stage("impl-step");
+					},
+				});
+			`,
+		);
+		// Shipped-layout shape: a re-export wrapper whose default binding has no
+		// authored name in this file.
+		writeFixture(
+			"kebab-wrapper.ts",
+			`
+				import { def } from "./kebab-impl.js";
+				export { def as default };
+			`,
+		);
+		const result = scanFile(
+			"kebab-parent.ts",
+			`
+				import camelChild from "./kebab-wrapper.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "kebab-parent",
+					run: async (ctx) => {
+						await ctx.workflow(camelChild);
+					},
+				});
+			`,
+		);
+		assert.ok(result.stages.includes("workflow:camel-child"), JSON.stringify(result.stages));
+		assert.ok(result.stages.includes("workflow:camel-child/impl-step"), JSON.stringify(result.stages));
+	});
+
+	test("computed child references map to a glob boundary with a warning", () => {
+		const result = scanFile(
+			"computed-child.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "computed-child",
+					run: async (ctx) => {
+						await ctx.stage("kept");
+						await ctx.workflow(defs[0], {});
+						await ctx.workflow(ns.default, {});
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, ["kept", "workflow:*"]);
+		assert.equal(
+			result.warnings.filter((warning) => warning.includes("could not be resolved")).length,
+			2,
+			JSON.stringify(result.warnings),
+		);
+	});
+
+	test("unrecognized .map step builders warn instead of dropping silently", () => {
+		const result = scanFile(
+			"opaque-map.ts",
+			`
+				export default workflow({
+					name: "opaque-map",
+					run: async (ctx) => {
+						await ctx.parallel(warmIndices.map((index) => steps[index]));
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, []);
+		assert.equal(
+			result.warnings.some((warning) => warning.includes("not statically visible")),
+			true,
+			JSON.stringify(result.warnings),
+		);
+	});
+
 	test("resolution failures warn and never throw; the partial set survives", () => {
 		const missingChild = scanFile(
 			"missing-child-parent.ts",

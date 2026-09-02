@@ -682,30 +682,27 @@ function collectLocalInits(tokens: readonly Token[]): Map<string, readonly Token
 	return inits;
 }
 
-/** Authored `name` of a file's default-exported `workflow({ name: "...", ... })`. */
+/**
+ * Authored `name` of a file's workflow definition, recognized from the first
+ * `workflow({ name: "...", ... })` call — whether reached via
+ * `export default workflow(...)`, a named export, or a local const re-exported
+ * as default. Bundled chunk wrappers (e.g. `export { x_default as default }`)
+ * carry no visible call and yield `undefined`.
+ */
 function collectDefinitionName(tokens: readonly Token[]): string | undefined {
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index]!;
-		const isExportDefault =
-			token.kind === "ident" &&
-			token.value === "export" &&
-			tokens[index + 1]?.kind === "ident" &&
-			tokens[index + 1]!.value === "default";
-		if (!isExportDefault) continue;
-		for (let scan = index + 2; scan < Math.min(index + 16, tokens.length); scan += 1) {
-			const current = tokens[scan]!;
-			if (current.kind === "punct" && current.value === "(") {
-				const inner = balancedRange(tokens, scan, "(", ")");
-				if (inner === undefined || inner.length < 3) return undefined;
-				const nameToken = directObjectFieldValue(inner.slice(1, -1), "name");
-				if (nameToken?.kind === "string") return nameToken.value;
-				if (nameToken?.kind === "template" && !nameToken.value.includes("${")) {
-					return nameToken.value.slice(1, -1);
-				}
-				return undefined;
-			}
-			if (current.kind === "punct" && (current.value === ";" || current.value === "}")) break;
+		if (token.kind !== "ident" || (token.value !== "workflow" && token.value !== "defineWorkflow")) continue;
+		const open = tokens[index + 1];
+		if (open?.kind !== "punct" || open.value !== "(") continue;
+		const inner = balancedRange(tokens, index + 1, "(", ")");
+		if (inner === undefined || inner.length < 3) return undefined;
+		const nameToken = directObjectFieldValue(inner.slice(1, -1), "name");
+		if (nameToken?.kind === "string") return nameToken.value;
+		if (nameToken?.kind === "template" && !nameToken.value.includes("${")) {
+			return nameToken.value.slice(1, -1);
 		}
+		return undefined;
 	}
 	return undefined;
 }
@@ -836,14 +833,20 @@ class PossibleStagesScanner {
 			childReference.length === 1 && childReference[0]!.kind === "ident"
 				? unit.imports.get(childReference[0]!.value)
 				: undefined;
-		const fallbackName = binding?.importedName ?? childReference[0]!.value;
+		// D2: a statically unknown child reference (member/call expression) maps
+		// to a glob boundary; imported names fall back to their kebab form,
+		// matching the engine's normalized names for camelCase barrel exports.
+		const fallbackName =
+			childReference.length === 1 && childReference[0]!.kind === "ident"
+				? (binding?.importedName ?? childReference[0]!.value)
+				: "*";
 		const childPath = this.resolveChildPath(binding, path);
 		let boundaryName: string;
 		if (explicitStage !== undefined) {
 			boundaryName = argumentNamePattern(explicitStage, unit);
 		} else {
 			const authoredName = childPath === undefined ? undefined : this.unitFor(childPath)?.definitionName;
-			const normalized = safeNormalize(authoredName ?? fallbackName);
+			const normalized = fallbackName === "*" ? "*" : safeNormalize(kebabCase(authoredName ?? fallbackName));
 			if (authoredName === undefined) {
 				this.warnings.push(
 					`possible-stages: child definition name for ctx.workflow at ${path} was not statically visible; using "${normalized}" as the boundary segment`,
@@ -861,9 +864,20 @@ class PossibleStagesScanner {
 		const childDepth = depth + 1;
 		if (childDepth >= this.maxDepth) return;
 		if (ancestorStack.includes(childPath)) return; // import cycle
-		this.scanSubtree(childPath, joinBoundary(boundaryPrefix, boundaryName), childDepth, [
+		// Bundled wrapper chunk (e.g. `export { x_default as default }`): the
+		// definition itself lives in the module the wrapper re-exports, so the
+		// subtree follows that chain instead of scanning the empty wrapper.
+		let subtreeEntry = childPath;
+		const wrapperUnit = this.unitFor(childPath);
+		if (wrapperUnit !== undefined && wrapperUnit.definitionName === undefined) {
+			const definitionBehindWrapper = relativeImportTargets(wrapperUnit, childPath)
+				.map((target) => ({ target, unit: this.unitFor(target) }))
+				.find((entry) => entry.unit?.definitionName !== undefined);
+			if (definitionBehindWrapper?.target !== undefined) subtreeEntry = definitionBehindWrapper.target;
+		}
+		this.scanSubtree(subtreeEntry, joinBoundary(boundaryPrefix, boundaryName), childDepth, [
 			...ancestorStack,
-			childPath,
+			subtreeEntry,
 		]);
 	}
 
@@ -1125,7 +1139,7 @@ function stepNamesThroughMapCall(tokens: readonly Token[], unit: FileUnit): read
 	return undefined;
 }
 
-function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): readonly string[] {
+function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): readonly string[] | undefined {
 	const params: string[] = [];
 	let cursor = 0;
 	if (inner[0]?.kind === "punct" && inner[0]!.value === "(") {
@@ -1150,30 +1164,32 @@ function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): read
 	if (body === undefined) return [];
 	if (body.kind === "punct" && body.value === "(") {
 		const wrapped = balancedRange(inner, cursor, "(", ")");
-		if (wrapped === undefined) return [];
+		if (wrapped === undefined) return undefined;
 		const object = wrapped.slice(1, -1);
 		if (object[0]?.kind === "punct" && object[0]!.value === "{") {
 			const name = directObjectFieldValue(object, "name");
 			if (name !== undefined) return [patternFromValueToken(name, params, unit)];
 		}
+		// Recognized steps-object without a name field: contributes nothing.
 		return [];
 	}
 	if (body.kind === "punct" && body.value === "{") {
 		const block = balancedRange(inner, cursor, "{", "}");
-		if (block === undefined) return [];
+		if (block === undefined) return undefined;
 		for (let scan = 1; scan < block.length - 1; scan += 1) {
 			const token = block[scan]!;
 			if (token.kind === "ident" && token.value === "return") {
 				const brace = block[scan + 1];
 				if (brace?.kind === "punct" && brace.value === "{") {
 					const object = balancedRange(block, scan + 1, "{", "}");
-					if (object === undefined) return [];
+					if (object === undefined) return undefined;
 					const name = directObjectFieldValue(object, "name");
 					if (name !== undefined) return [patternFromValueToken(name, params, unit)];
 				}
 			}
 		}
-		return [];
+		// Block body without a returned object literal: unrecognized builder.
+		return undefined;
 	}
 	if (body.kind === "ident") {
 		const factory = unit.localStepFactories.get(body.value);
@@ -1181,7 +1197,8 @@ function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): read
 			return [patternFromFactory(factory, splitCallArguments(inner.slice(cursor)), unit)];
 		}
 	}
-	return [];
+	// Unrecognized callback body (e.g. `steps[index]`): signal the caller to warn.
+	return undefined;
 }
 
 function patternFromFactory(

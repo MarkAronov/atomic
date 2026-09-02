@@ -554,6 +554,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			completedCheckpoints: h.completedCheckpoints,
 			pendingPrompts: h.pendingPrompts,
 			pendingStageMessages: h.pendingStageMessages ?? [],
+			...(h.possibleStages !== undefined ? { possibleStages: h.possibleStages } : {}),
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),
