@@ -298,18 +298,25 @@ function skipTemplate(source: string, index: number): number {
 	return cursor;
 }
 
-/** Unquote a tokenized string body, handling the common escapes. */
+/** Unquote a tokenized string body, handling common, unicode, and hex escapes. */
 function unquoteString(body: string): string {
-	return body.replace(/\\(.)/g, (_, char: string) => {
-		switch (char) {
+	return body.replace(/\\(u\{[0-9A-Fa-f]+\}|u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|[\s\S])/g, (_, sequence: string) => {
+		if (sequence.startsWith("u") || sequence.startsWith("x")) {
+			const hex = sequence.replace(/^[ux]\{?|\}$/g, "");
+			const code = Number.parseInt(hex, 16);
+			return Number.isNaN(code) ? "" : String.fromCodePoint(code);
+		}
+		switch (sequence) {
 			case "n":
 				return "\n";
 			case "t":
 				return "\t";
 			case "r":
 				return "\r";
+			case "\n":
+				return "";
 			default:
-				return char;
+				return sequence;
 		}
 	});
 }
@@ -341,6 +348,8 @@ function templateToPattern(raw: string): string {
 		cursor = scan;
 	}
 	pattern = pattern.replace(/\\([$`\\])/g, "$1");
+	// Adjacent holes span one stage name; `**` would read as any-depth (D6).
+	pattern = pattern.replace(/\*{2,}/g, "*");
 	return pattern.trim().length > 0 ? pattern : "*";
 }
 
@@ -371,6 +380,8 @@ interface FileUnit {
 	readonly localValues: ReadonlyMap<string, Token>;
 	/** Authored `name` of the file's default-exported definition, when statically visible. */
 	readonly definitionName: string | undefined;
+	/** True when the file contains a bare workflow-definition call (wrapper chunks do not). */
+	readonly hasWorkflowCall: boolean;
 }
 
 function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
@@ -382,16 +393,45 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 		return undefined;
 	}
 	const tokens = tokenize(source);
+	const localValues = collectLocalValues(tokens);
+	const imports = collectImports(tokens);
+	collectExportFroms(tokens, imports);
 	return {
 		tokens,
-		imports: collectImports(tokens),
+		imports,
 		ctxLike: collectCtxLikeIdentifiers(tokens),
 		localArrays: collectLocalArrays(tokens),
 		localInits: collectLocalInits(tokens),
 		localStepFactories: collectLocalStepFactories(tokens),
-		localValues: collectLocalValues(tokens),
-		definitionName: collectDefinitionName(tokens),
+		localValues,
+		definitionName: collectDefinitionName(tokens, localValues),
+		hasWorkflowCall: tokens.some((_, index) => isBareWorkflowCall(tokens, index)),
 	};
+}
+
+/** Record `export { a, default as b } from "spec"` re-export bindings. */
+function collectExportFroms(tokens: readonly Token[], imports: Map<string, ImportBinding>): void {
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token.kind !== "ident" || token.value !== "export") continue;
+		if (tokens[index + 1]?.kind === "ident" && tokens[index + 1]!.value === "type") continue;
+		const brace = tokens[index + 1];
+		if (brace?.kind !== "punct" || brace.value !== "{") continue;
+		const clause = parseImportClause(tokens, index + 1);
+		if (clause === undefined) continue;
+		let cursor = clause.next;
+		const from = tokens[cursor];
+		if (from?.kind !== "ident" || from.value !== "from") continue;
+		cursor += 1;
+		const specifierToken = tokens[cursor];
+		if (specifierToken?.kind !== "string") continue;
+		for (const entry of clause.specifiers) {
+			imports.set(entry.local, {
+				specifier: specifierToken.value,
+				...(entry.importedName !== undefined ? { importedName: entry.importedName } : {}),
+			});
+		}
+	}
 }
 
 function collectImports(tokens: readonly Token[]): Map<string, ImportBinding> {
@@ -689,20 +729,52 @@ function collectLocalInits(tokens: readonly Token[]): Map<string, readonly Token
  * as default. Bundled chunk wrappers (e.g. `export { x_default as default }`)
  * carry no visible call and yield `undefined`.
  */
-function collectDefinitionName(tokens: readonly Token[]): string | undefined {
+/** A bare (non-member) `workflow(`/`defineWorkflow(` call, type arguments allowed. */
+function isBareWorkflowCall(tokens: readonly Token[], index: number): boolean {
+	const token = tokens[index];
+	if (token === undefined) return false;
+	if (token.kind !== "ident" || (token.value !== "workflow" && token.value !== "defineWorkflow")) return false;
+	const previous = tokens[index - 1];
+	if (previous?.kind === "punct" && (previous.value === "." || previous.value === "?.")) return false;
+	let cursor = index + 1;
+	if (tokens[cursor]?.kind === "punct" && tokens[cursor]!.value === "<") {
+		const close = matchBracket(tokens, cursor, "<", ">");
+		if (close === undefined) return false;
+		cursor = close + 1;
+	}
+	const open = tokens[cursor];
+	return open?.kind === "punct" && open.value === "(";
+}
+
+/**
+ * Authored `name` of the file's workflow definition, recognized from the first
+ * bare `workflow({ name: ... })` call — `export default workflow(...)`, a
+ * named export, or an aliased default all match; bundled chunk wrappers
+ * (pure re-exports) carry no call and yield `undefined`. A literal, static
+ * template, or local-const name resolves; anything else is invisible.
+ */
+function collectDefinitionName(tokens: readonly Token[], localValues: ReadonlyMap<string, Token>): string | undefined {
 	for (let index = 0; index < tokens.length; index += 1) {
-		const token = tokens[index]!;
-		if (token.kind !== "ident" || (token.value !== "workflow" && token.value !== "defineWorkflow")) continue;
-		const previous = tokens[index - 1];
-		if (previous?.kind === "punct" && (previous.value === "." || previous.value === "?.")) continue;
-		const open = tokens[index + 1];
-		if (open?.kind !== "punct" || open.value !== "(") continue;
-		const inner = balancedRange(tokens, index + 1, "(", ")");
+		if (!isBareWorkflowCall(tokens, index)) continue;
+		let cursor = index + 1;
+		if (tokens[cursor]?.kind === "punct" && tokens[cursor]!.value === "<") {
+			const close = matchBracket(tokens, cursor, "<", ">");
+			if (close === undefined) return undefined;
+			cursor = close + 1;
+		}
+		const inner = balancedRange(tokens, cursor, "(", ")");
 		if (inner === undefined || inner.length < 3) return undefined;
 		const nameToken = directObjectFieldValue(inner.slice(1, -1), "name");
 		if (nameToken?.kind === "string") return nameToken.value;
 		if (nameToken?.kind === "template" && !nameToken.value.includes("${")) {
 			return nameToken.value.slice(1, -1);
+		}
+		if (nameToken?.kind === "ident") {
+			const local = localValues.get(nameToken.value);
+			if (local?.kind === "string") return local.value;
+			if (local?.kind === "template" && !local.value.includes("${")) {
+				return local.value.slice(1, -1);
+			}
 		}
 		return undefined;
 	}
@@ -735,13 +807,13 @@ class PossibleStagesScanner {
 	scanSubtree(entryPath: string, boundaryPrefix: string, depth: number, ancestorStack: readonly string[]): void {
 		let rootPath = entryPath;
 		const entryUnit = this.unitFor(entryPath);
-		if (entryUnit !== undefined && entryUnit.definitionName === undefined) {
+		if (entryUnit !== undefined && !entryUnit.hasWorkflowCall) {
 			// Shipped-layout wrapper entry (e.g. `export { x_default as default
 			// }`): the definition lives in the module the wrapper re-exports, so
 			// the subtree roots there instead of scanning an empty wrapper.
 			const behind = relativeImportTargets(entryUnit, entryPath)
 				.map((target) => ({ target, unit: this.unitFor(target) }))
-				.find((entry) => entry.unit?.definitionName !== undefined);
+				.find((entry) => entry.unit?.hasWorkflowCall === true);
 			if (behind?.target !== undefined) rootPath = behind.target;
 		}
 		const queue = [rootPath];
@@ -758,13 +830,13 @@ class PossibleStagesScanner {
 			for (const target of relativeImportTargets(unit, path)) {
 				if (visited.has(target)) continue;
 				visited.add(target);
-				// Modules that default-export a workflow definition are child
+				// Modules containing a workflow-definition call are child
 				// definitions, not helpers: they are scanned only through their
 				// ctx.workflow boundary so their stages nest under it instead of
 				// leaking into the parent's own stage set.
 				const targetUnit = this.unitFor(target);
 				if (targetUnit === undefined) continue;
-				if (targetUnit.definitionName !== undefined) continue;
+				if (targetUnit.hasWorkflowCall) continue;
 				queue.push(target);
 			}
 			for (const alias of unit.ctxLike) {
@@ -854,14 +926,28 @@ class PossibleStagesScanner {
 				? (binding?.importedName ?? childReference[0]!.value)
 				: "*";
 		const childPath = this.resolveChildPath(binding, path);
+		// Bundled wrapper chunk (e.g. `export { x_default as default }`): the
+		// definition itself lives in the module the wrapper re-exports, so the
+		// boundary name and the subtree follow that chain instead of the empty
+		// wrapper.
+		let subtreeEntry = childPath;
+		if (childPath !== undefined) {
+			const childUnit = this.unitFor(childPath);
+			if (childUnit !== undefined && !childUnit.hasWorkflowCall) {
+				const definitionBehindWrapper = relativeImportTargets(childUnit, childPath)
+					.map((target) => ({ target, unit: this.unitFor(target) }))
+					.find((entry) => entry.unit?.hasWorkflowCall === true);
+				if (definitionBehindWrapper?.target !== undefined) subtreeEntry = definitionBehindWrapper.target;
+			}
+		}
 		let boundaryName: string;
 		if (explicitStage !== undefined) {
 			boundaryName = argumentNamePattern(explicitStage, unit);
 		} else {
-			const authoredName = childPath === undefined ? undefined : this.unitFor(childPath)?.definitionName;
+			const authoredName = subtreeEntry === undefined ? undefined : this.unitFor(subtreeEntry)?.definitionName;
 			// The engine normalizes the authored name verbatim; only the binding
 			// fallback kebab-cases (camelCase barrel exports map to their kebab
-			// builtin names).
+			// builtin names). A statically unknown reference maps to a glob (D2).
 			const normalized =
 				authoredName !== undefined
 					? safeNormalize(authoredName)
@@ -884,20 +970,11 @@ class PossibleStagesScanner {
 		}
 		const childDepth = depth + 1;
 		if (childDepth >= this.maxDepth) return;
-		// Bundled wrapper chunk (e.g. `export { x_default as default }`): the
-		// definition itself lives in the module the wrapper re-exports, so the
-		// subtree follows that chain instead of scanning the empty wrapper.
-		let subtreeEntry = childPath;
-		const wrapperUnit = this.unitFor(childPath);
-		if (wrapperUnit !== undefined && wrapperUnit.definitionName === undefined) {
-			const definitionBehindWrapper = relativeImportTargets(wrapperUnit, childPath)
-				.map((target) => ({ target, unit: this.unitFor(target) }))
-				.find((entry) => entry.unit?.definitionName !== undefined);
-			if (definitionBehindWrapper?.target !== undefined) subtreeEntry = definitionBehindWrapper.target;
-		}
 		// Import cycles: both the resolved import and the descended definition
 		// module block re-descent (wrapper-mediated cycles included).
-		if (ancestorStack.includes(childPath) || ancestorStack.includes(subtreeEntry)) return;
+		if (subtreeEntry === undefined || ancestorStack.includes(childPath) || ancestorStack.includes(subtreeEntry)) {
+			return;
+		}
 		this.scanSubtree(subtreeEntry, joinBoundary(boundaryPrefix, boundaryName), childDepth, [
 			...ancestorStack,
 			childPath,

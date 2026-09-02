@@ -595,6 +595,208 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		);
 	});
 
+	test("entries with non-literal names keep their own stages; children still nest", () => {
+		// Regression (review round 3): a wrapper-entry heuristic keyed on
+		// `definitionName === undefined` re-rooted scans at imported children
+		// whenever the entry's authored name was a const or the call carried
+		// type arguments, dropping the parent's stages and leaking the child's.
+		writeFixture(
+			"entry-child.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "entry-child",
+					run: async (ctx) => {
+						await ctx.stage("entry-child-step");
+					},
+				});
+			`,
+		);
+		const constNamed = scanFile(
+			"entry-const-name.ts",
+			`
+				import entryChild from "./entry-child.js";
+				import { workflow } from "@bastani/workflows";
+				const ENTRY_NAME = "entry-const";
+				export default workflow({
+					name: ENTRY_NAME,
+					run: async (ctx) => {
+						await ctx.stage("entry-own-stage");
+						await ctx.workflow(entryChild);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(constNamed.stages, [
+			"entry-own-stage",
+			"workflow:entry-child",
+			"workflow:entry-child/entry-child-step",
+		]);
+		const generic = scanFile(
+			"entry-generic.ts",
+			`
+				import entryChild from "./entry-child.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow<{ task: string }, { done: boolean }>({
+					name: "entry-generic",
+					run: async (ctx) => {
+						await ctx.stage("generic-own-stage");
+						await ctx.workflow(entryChild);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(generic.stages, [
+			"generic-own-stage",
+			"workflow:entry-child",
+			"workflow:entry-child/entry-child-step",
+		]);
+	});
+
+	test("non-literal child names resolve through local constants and never leak flat", () => {
+		writeFixture(
+			"const-child.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				const NAME = "child-const";
+				export default workflow({
+					name: NAME,
+					run: async (ctx) => {
+						await ctx.task("cc-task", {});
+					},
+				});
+			`,
+		);
+		const result = scanFile(
+			"const-child-parent.ts",
+			`
+				import constChild from "./const-child.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "const-child-parent",
+					run: async (ctx) => {
+						await ctx.stage("plan");
+						await ctx.workflow(constChild);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, ["plan", "workflow:child-const", "workflow:child-const/cc-task"]);
+		assert.deepEqual(result.warnings, []);
+	});
+
+	test("wrapper children take the boundary from the authored definition behind the wrapper", () => {
+		writeFixture(
+			"barrel-wrapper.ts",
+			`
+				import { flow } from "./barrel-impl.js";
+				export { flow as default };
+			`,
+		);
+		writeFixture(
+			"barrel-impl.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export const flow = workflow({
+					name: "bar-flow",
+					run: async (ctx) => {
+						await ctx.stage("bar-task");
+					},
+				});
+			`,
+		);
+		const result = scanFile(
+			"barrel-wrapper-parent.ts",
+			`
+				import fooChild from "./barrel-wrapper.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "barrel-wrapper-parent",
+					run: async (ctx) => {
+						await ctx.workflow(fooChild);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, ["workflow:bar-flow", "workflow:bar-flow/bar-task"]);
+		// The authored name is visible behind the wrapper: no fallback warning.
+		assert.deepEqual(
+			result.warnings.filter((warning) => warning.includes("not statically visible")),
+			[],
+			JSON.stringify(result.warnings),
+		);
+	});
+
+	test("re-export barrels (export { default as x } from ...) are followed", () => {
+		writeFixture(
+			"re-child.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "review",
+					run: async (ctx) => {
+						await ctx.stage("critique");
+					},
+				});
+			`,
+		);
+		writeFixture(
+			"re-barrel.ts",
+			`
+				export { default as reviewFlow } from "./re-child.js";
+			`,
+		);
+		const result = scanFile(
+			"re-barrel-parent.ts",
+			`
+				import { reviewFlow } from "./re-barrel.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "re-barrel-parent",
+					run: async (ctx) => {
+						await ctx.stage("plan");
+						await ctx.workflow(reviewFlow);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, ["plan", "workflow:review", "workflow:review/critique"]);
+		assert.deepEqual(result.warnings, []);
+	});
+
+	test("adjacent template holes collapse to one glob star", () => {
+		const result = scanFile(
+			"adjacent-holes.ts",
+			`
+				export default workflow({
+					name: "adjacent-holes",
+					run: async (ctx) => {
+						await ctx.stage(\`\${a}\${b}\`);
+						await ctx.stage(\`review-\${a}-\${b}\`);
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, ["*", "review-*-*"]);
+	});
+
+	test("unicode and hex escapes decode in stage-name literals", () => {
+		const result = scanFile(
+			"escapes.ts",
+			`
+				export default workflow({
+					name: "escapes",
+					run: async (ctx) => {
+						await ctx.stage("caf\u00e9-1");
+						await ctx.stage("caf\\u00e9-literal");
+						await ctx.stage("hex\x41");
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, ["café-1", "café-literal", "hexA"]);
+	});
+
 	test("resolution failures warn and never throw; the partial set survives", () => {
 		const missingChild = scanFile(
 			"missing-child-parent.ts",
