@@ -228,7 +228,10 @@ describe("goal", () => {
 			const prompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
 			assert.ok(prompt.includes("git diff origin/main"), baseBranch);
 			assert.ok(prompt.includes("baseline branch for comparison is `origin/main`"), baseBranch);
-			assert.equal(prompt.includes(baseBranch), false, baseBranch);
+			// The rejected branch must not survive as a diff target or a quoted default;
+			// a bare substring check would false-positive on the guidance text's `...`.
+			assert.equal(prompt.includes(`git diff ${baseBranch}`), false, baseBranch);
+			assert.equal(prompt.includes(`\`${baseBranch}\``), false, baseBranch);
 		}
 
 		for (const baseBranch of ["feature/foo", "v1.0"]) {
