@@ -487,6 +487,123 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		);
 		dispose();
 	});
+	test("routes the advertised flat grandchild target through the root durable owner", async () => {
+		// Regression: review round 1 — announceRoutes and status surfaces advertise
+		// `workflow:<root>/<grandchildRunId>/<stageId>` for depth-2 runs, so a run-id segment
+		// must resolve at any depth under the parsed root, not only as a direct child.
+		const childRunId = "331b6cd2-6f86-4a58-9b8f-0f4b39e0a111";
+		const grandchildRunId = "44c2d7e3-7a97-4b69-ac9a-1a5c4af1b222";
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: RUN_ID,
+			parentStageId: "child-boundary",
+			rootRunId: RUN_ID,
+			stages: [
+				{
+					id: "grandchild-boundary",
+					name: "workflow:grandchild",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:grandchild:1",
+					workflowChildRun: { alias: "grandchild", workflow: "grandchild", runId: grandchildRunId },
+				},
+			],
+			startedAt: 2,
+		});
+		store.recordRunStart({
+			id: grandchildRunId,
+			name: "grandchild",
+			inputs: {},
+			status: "running",
+			parentRunId: childRunId,
+			parentStageId: "grandchild-boundary",
+			rootRunId: RUN_ID,
+			stages: [
+				{
+					id: "grandchild-reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "stage:reviewer:1",
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 3,
+		});
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		const listeners = new Map<string, (payload: unknown) => void>();
+		const dispose = registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit() {},
+					on(event: string, listener: (payload: unknown) => void) {
+						listeners.set(event, listener);
+						return () => listeners.delete(event);
+					},
+				},
+			},
+			store,
+		);
+		const deliver = async (target: string, runId: string, messageId: string, position: number): Promise<void> => {
+			const payload: {
+				handled: boolean;
+				completion?: Promise<{ readonly outcome: "queued"; readonly position: number }>;
+				from: SessionInfo;
+				runId: string;
+				target: string;
+				message: Message;
+			} = {
+				handled: false,
+				from: sender({} as net.Socket).info,
+				runId,
+				target,
+				message: message(messageId, 200),
+			};
+			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
+			assert.equal(payload.handled, true, target);
+			assert.deepEqual(await payload.completion, { outcome: "queued", position }, target);
+		};
+		// The flat form `announceRoutes` and status surfaces advertise for depth-2 runs.
+		await deliver(`workflow:${RUN_ID}/${grandchildRunId}/grandchild-reviewer-id`, grandchildRunId, "gc-flat", 1);
+		// The fully-spelled form through every materialized run segment.
+		await deliver(
+			`workflow:${RUN_ID}/${childRunId}/${grandchildRunId}/grandchild-reviewer-id`,
+			grandchildRunId,
+			"gc-spelled",
+			2,
+		);
+		assert.deepEqual(
+			store.pendingStageMessagesFor(grandchildRunId, "grandchild-reviewer-id").map((entry) => entry.message.id),
+			["gc-flat", "gc-spelled"],
+		);
+		dispose();
+	});
 });
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {

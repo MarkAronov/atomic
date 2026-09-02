@@ -202,9 +202,15 @@ function resolveMaterializedStage(
 	let run: ReturnType<Store["runs"]>[number] = rootRun;
 	for (const segment of parsed.segments.slice(0, -1)) {
 		const currentRun = run;
-		const childById = runs.filter((candidate) => candidate.id === segment && candidate.parentRunId === currentRun.id);
-		if (childById.length === 1) {
-			run = childById[0]!;
+		// A run-id segment may sit at any depth: the flat advertised form for a depth-2 run is
+		// `workflow:<root>/<grandchildRunId>/<stageId>`, so match on the parsed invocation root
+		// rather than requiring a direct child of the previous hop. Run ids win over boundary
+		// stage names of the same spelling.
+		const runById = runs.filter(
+			(candidate) => candidate.id === segment && durableRootRunIdForRun(runs, candidate.id) === parsed.rootRunId,
+		);
+		if (runById.length === 1) {
+			run = runById[0]!;
 			continue;
 		}
 		const boundariesById = currentRun.stages.filter((stage) => stage.id === segment);
