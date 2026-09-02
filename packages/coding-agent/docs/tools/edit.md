@@ -1,8 +1,8 @@
-<!--
+{/*
 Documentation shape adapted from can1357/oh-my-pi docs/tools/edit.md @ 15b5c1397fc.
 The hashline engine is MIT-licensed; see ../../src/core/tools/hashline-engine/LICENSE.upstream
 and ../../src/core/tools/hashline-engine/PROVENANCE.md.
--->
+*/}
 
 # `edit`
 
