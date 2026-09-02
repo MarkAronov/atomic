@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 import { createEditToolDefinition, editToolSystemPromptContribution } from "../src/core/tools/edit.ts";
+import { EMPTY_INSERT, MINUS_ROW_REJECTED } from "../src/core/tools/hashline-engine/index.ts";
 
 const guidance = editToolSystemPromptContribution.guidelines.join("\n");
 
@@ -52,10 +53,24 @@ describe("edit tool hashline prompt contribution", () => {
 		]) {
 			assert.ok(guidance.includes(antiPattern), `missing anti-pattern: ${antiPattern}`);
 		}
+		// These two messages are inline in hashline-engine/parser.ts rather than exported constants.
 		assert.ok(guidance.includes("payload line has no preceding hunk header"));
 		assert.ok(guidance.includes("`delete N..M` has no colon and no body"));
-		assert.ok(guidance.includes("`insert` needs at least one `+TEXT` body row"));
-		assert.ok(guidance.includes("`-` rows are not valid; hashline ranges already name the lines being changed"));
+	});
+
+	test("quotes the exported empty-insert rejection", () => {
+		assert.ok(guidance.includes(EMPTY_INSERT));
+	});
+
+	test("quotes the exported minus-row rejection instead of paraphrasing it", () => {
+		assert.ok(guidance.includes(MINUS_ROW_REJECTED));
+	});
+
+	test("warns truthfully that a bodyless concrete replace silently deletes", () => {
+		assert.match(guidance, /a bodyless concrete `replace` silently deletes the range/i);
+		assert.ok(guidance.includes("if deletion is intended, write `delete 4`"));
+		assert.doesNotMatch(guidance, /`replace` (?:needs|requires) at least one .*body row/i);
+		assert.ok(!guidance.includes("and so does `replace`"));
 	});
 
 	test("ends with the three critical rules", () => {

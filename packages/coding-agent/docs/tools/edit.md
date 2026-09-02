@@ -92,8 +92,10 @@ Atomic's hand parser deliberately accepts these non-canonical shapes:
   nonblank row has a `LINE:`/`*LINE:` read-output prefix, those prefixes are stripped as a pasted snapshot; mixed rows and
   explicit `+` rows are preserved. A body made entirely of quoted or numeric values keeps its numeric keys.
 - Repeated sections for the same authored path are merged in first-occurrence order when their tags do not conflict.
-- Comment lines beginning with `#` between hunks are ignored. Blank layout rows before a body or after its final row are
-  ignored; proven interior blank body rows are preserved.
+- A comment line beginning with `#` is skipped only before the first operation in a section. Once a hunk is open, a `#`
+  line is body content: under `delete` it triggers the delete-takes-no-body rejection; under a body-bearing hunk it is
+  auto-prefixed and written as a literal line. Blank layout rows before a body or after its final row are ignored; proven
+  interior blank body rows are preserved.
 
 The parser does **not** tolerate `delete N..M:` or a body under `delete`/`delete block`, `-` diff rows, apply-patch file
 sentinels inside the patch, unified-diff/`@@` hunk headers, bare numeric hunk headers, malformed/absent section headers,
@@ -263,7 +265,7 @@ angle-bracketed names stand for runtime substitutions. Parser errors that origin
 
 - `Tokenizer is closed; call reset() before reusing.`
 - `line N: line anchor "<digits>" is not a safe integer; line numbers must be positive safe integers no greater than 9007199254740991.`
-- `line N: expected a line number such as "119", "42", "7"; got "<input>". Use [PATH#hash] from your latest read for file-version binding.`
+- `line N: expected a line number such as "119", "112", "7"; got "<input>". Use [PATH#hash] from your latest read for file-version binding.`
 - `Line N does not exist (file has M lines)`
 - `Invalid line reference. Expected a bare line number from read/search output plus the section header content-hash tag (for example [src/foo.ts#1A2B] and line "160"). Received "<input>".`
 - `Line number must be >= 1, got N in "<input>".`
