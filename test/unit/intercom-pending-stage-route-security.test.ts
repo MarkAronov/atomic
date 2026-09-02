@@ -1823,3 +1823,46 @@ test("an invalid possible-stage roster is refused orderly without registering th
 	await owner2.closed;
 	assert.deepEqual(owner2.rejectionLifecycle, ["registration_failed", "end", "close"]);
 });
+
+test("a member of an owned subgroup sees the invocation's future rows; a lateral member does not", async () => {
+	const runId = "d7000007-0000-4000-8000-000000000007";
+	const subgroup = `workflow:${runId}/reviewers`;
+	const owner = new IntercomClient();
+	const subgroupMember = new IntercomClient();
+	const lateral = new IntercomClient();
+	for (const client of [owner, subgroupMember, lateral]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("subgroup-future-owner", `workflow:${runId}`));
+	await subgroupMember.connect(productionRegistration("subgroup-future-member", subgroup));
+	await lateral.connect(
+		productionRegistration("subgroup-future-lateral", "workflow:d7000008-0000-4000-8000-000000000008"),
+	);
+
+	owner.registerPendingStageRoute(
+		runId,
+		`workflow:${runId}`,
+		"subgroup-future-capability",
+		[],
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 1 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+
+	// D7: an owned subgroup (`workflow:<root>/<name>`) membership carries visibility.
+	const subgroupDirectory = await subgroupMember.listDirectory();
+	assert.deepEqual(
+		subgroupDirectory.workflowFutureStages.map(({ target, queuedCount }) => ({ target, queuedCount })),
+		[
+			{ target: `workflow:${runId}/orchestrator-*`, queuedCount: 1 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	// Another invocation's member sees nothing new.
+	assert.deepEqual((await lateral.listDirectory()).workflowFutureStages, []);
+	// Peeking the invocation group from the subgroup keeps the rows visible.
+	assert.equal((await subgroupMember.listDirectory(`workflow:${runId}`)).workflowFutureStages.length, 2);
+});

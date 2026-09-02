@@ -22,6 +22,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
+const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `workflow:${RUN_ID}/reviewer`;
 
@@ -1010,4 +1011,194 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 	);
 	assert.equal(senderVisibleDeliveries, 1);
 	assert.equal(reader.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "delivered");
+});
+
+describe("possible future stage rows in the route announcement (D7)", () => {
+	function rowHarness(
+		options: {
+			readonly possibleStages?: readonly string[];
+			readonly extraStages?: readonly {
+				readonly id: string;
+				readonly name: string;
+				readonly status?: "pending" | "running";
+			}[];
+			readonly childRun?: boolean;
+		} = {},
+	) {
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+				...(options.extraStages ?? []).map((stage) => ({
+					id: stage.id,
+					name: stage.name,
+					status: stage.status ?? ("pending" as const),
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				})),
+				...(options.childRun
+					? [
+							{
+								id: "boundary-id",
+								name: "child-boundary",
+								status: "running" as const,
+								parentIds: [],
+								toolEvents: [],
+								pendingStageDeliveryAvailable: true,
+								replayKey: "workflow:child:1",
+								workflowChildRun: { alias: "child", workflow: "child", runId: CHILD_RUN_ID },
+							},
+						]
+					: []),
+			],
+			startedAt: 1,
+			...(options.possibleStages === undefined ? {} : { possibleStages: options.possibleStages }),
+		});
+		if (options.childRun) {
+			store.recordRunStart({
+				id: CHILD_RUN_ID,
+				name: "child",
+				inputs: {},
+				status: "running",
+				parentRunId: RUN_ID,
+				parentStageId: "boundary-id",
+				rootRunId: RUN_ID,
+				stages: [
+					{
+						id: "child-stage-id",
+						name: "child-stage",
+						status: "pending",
+						parentIds: [],
+						toolEvents: [],
+						pendingStageDeliveryAvailable: true,
+					},
+				],
+				startedAt: 2,
+			});
+		}
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		setDurableBackend(backend);
+		const listeners = new Map<string, (payload: unknown) => void>();
+		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+		const pi = {
+			events: {
+				emit(event: string, payload: Record<string, unknown>) {
+					emitted.push({ event, payload });
+					listeners.get(event)?.(payload);
+				},
+				on(event: string, listener: (payload: unknown) => void) {
+					listeners.set(event, listener);
+					return () => listeners.delete(event);
+				},
+			},
+		};
+		const dispose = registerPendingStageIntercomBridge(pi, store);
+		const queueSticky = async (id: string, target: string) => {
+			const payload: {
+				handled: boolean;
+				completion?: unknown;
+			} & Record<string, unknown> = {
+				handled: false,
+				requestId: `request-${id}`,
+				from: { ...sender({} as net.Socket).info, group: GROUP },
+				runId: RUN_ID,
+				target,
+				message: message(id, 1_725_000_000_000 + Number(id.replace(/\D/g, "") || 0)),
+			};
+			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
+			return payload.completion === undefined ? undefined : await payload.completion;
+		};
+		const routePayload = () => {
+			const routes = emitted.filter(({ event }) => event === "atomic:workflow-pending-stage-route");
+			return routes.at(-1)?.payload;
+		};
+		return { store, emitted, queueSticky, routePayload, dispose };
+	}
+
+	test("announces scan rows with canonical path targets, suppresses materialized literals, and appends the broadcast row", () => {
+		const { routePayload, dispose } = rowHarness({
+			possibleStages: ["setup", "orchestrator-*", "reviewer", "child-boundary/inner-stage"],
+		});
+		// "reviewer" is a glob-free entry whose stage is route-eligible materialized: it is
+		// announced as a materialized roster row and must not be double-listed as future.
+		assert.deepEqual(routePayload()?.possibleStages, [
+			{ target: `workflow:${RUN_ID}/setup`, queuedCount: 0 },
+			{ target: `workflow:${RUN_ID}/orchestrator-*`, queuedCount: 0 },
+			{ target: `workflow:${RUN_ID}/child-boundary/inner-stage`, queuedCount: 0 },
+			{ target: `workflow:${RUN_ID}/**`, queuedCount: 0 },
+		]);
+		dispose();
+	});
+
+	test("pattern entries stay listed while a matching stage is materialized", () => {
+		const { routePayload, dispose } = rowHarness({
+			possibleStages: ["orchestrator-*"],
+			extraStages: [{ id: "orch-1-id", name: "orchestrator-1", status: "running" }],
+		});
+		const rows = (routePayload()?.possibleStages ?? []) as { target: string; queuedCount: number }[];
+		assert.deepEqual(
+			rows.filter((row) => row.target.endsWith("/**")),
+			[{ target: `workflow:${RUN_ID}/**`, queuedCount: 0 }],
+		);
+		assert.equal(
+			rows.some((row) => row.target === `workflow:${RUN_ID}/orchestrator-*`),
+			true,
+		);
+		dispose();
+	});
+
+	test("queued sticky messages raise the matching row counts and the broadcast count", async () => {
+		const { routePayload, queueSticky, dispose } = rowHarness({
+			possibleStages: ["orchestrator-*", "setup"],
+		});
+		assert.deepEqual(await queueSticky("s1", `workflow:${RUN_ID}/orchestrator-*`), {
+			outcome: "queued",
+			position: 1,
+		});
+		assert.deepEqual(await queueSticky("s2", `workflow:${RUN_ID}/orchestrator-3`), {
+			outcome: "queued",
+			position: 1,
+		});
+		assert.deepEqual(await queueSticky("s3", `workflow:${RUN_ID}/**`), {
+			outcome: "queued",
+			position: 1,
+		});
+		assert.deepEqual(routePayload()?.possibleStages, [
+			{ target: `workflow:${RUN_ID}/orchestrator-*`, queuedCount: 2 },
+			{ target: `workflow:${RUN_ID}/setup`, queuedCount: 0 },
+			{ target: `workflow:${RUN_ID}/**`, queuedCount: 1 },
+		]);
+		dispose();
+	});
+
+	test("rows disappear when the owning run reaches a terminal status", async () => {
+		const { store, routePayload, dispose } = rowHarness({ possibleStages: ["setup"] });
+		assert.equal(((routePayload()?.possibleStages ?? []) as unknown[]).length, 2);
+		store.recordRunEnd(RUN_ID, "completed");
+		assert.deepEqual(routePayload()?.possibleStages, []);
+		dispose();
+	});
+
+	test("only the root run's announcement carries the possible-stage rows", () => {
+		const { emitted, dispose } = rowHarness({ possibleStages: ["setup"], childRun: true });
+		const rootRoute = emitted.find(({ payload }) => payload.runId === RUN_ID && payload.possibleStages !== undefined);
+		const childRoute = emitted.find(({ payload }) => payload.runId === CHILD_RUN_ID);
+		assert.ok(rootRoute);
+		assert.ok(childRoute);
+		assert.equal("possibleStages" in childRoute.payload, false);
+		dispose();
+	});
 });
