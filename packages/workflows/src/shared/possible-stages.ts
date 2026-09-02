@@ -13,6 +13,8 @@
  *     definition's own stages under that boundary segment, following the child
  *     through relative imports and the builtin export barrel
  *     (`@bastani/atomic/workflows/builtin` / `@bastani/workflows/builtin`).
+ *   - `<ctx>.tool(name, args, fn)` marks the definition as having tracked work
+ *     without advertising a chat-stage target.
  *
  * `<ctx>` is whatever identifier the run callback binds (`ctx`,
  * `workflowCtx`, …) plus local rebindings seeded from it; calls may be awaited
@@ -49,7 +51,7 @@ const BUILTIN_BARREL_SPECIFIERS: ReadonlySet<string> = new Set([
 /** Prefix of `.../builtin/<name>` subpath specifiers. */
 const BUILTIN_SUBPATH_PREFIXES = ["@bastani/atomic/workflows/builtin/", "@bastani/workflows/builtin/"];
 
-const STAGE_METHODS: ReadonlySet<string> = new Set(["stage", "task", "chain", "parallel", "workflow"]);
+const TRACKED_NODE_METHODS: ReadonlySet<string> = new Set(["stage", "task", "chain", "parallel", "workflow", "tool"]);
 
 export interface PossibleStagesScanOptions {
 	/**
@@ -63,6 +65,8 @@ export interface PossibleStagesScanOptions {
 export interface PossibleStagesScanResult {
 	/** Sorted, de-duplicated possible stage target paths (literals, globs, nested paths). */
 	readonly stages: readonly string[];
+	/** Whether the source contains any call site that can create a tracked graph node. */
+	readonly hasTrackedNodes: boolean;
 	/** Non-fatal scan warnings in deterministic traversal order. */
 	readonly warnings: readonly string[];
 }
@@ -85,6 +89,7 @@ export function scanPossibleStagesFromSource(
 	const scanner = new PossibleStagesScanner(maxDepth);
 	scanner.scanSubtree(resolve(entrySourcePath), "", 0, [resolve(entrySourcePath)]);
 	return {
+		hasTrackedNodes: scanner.hasTrackedNodes,
 		stages: [...scanner.stages].sort(),
 		warnings: scanner.warnings,
 	};
@@ -799,6 +804,7 @@ function collectDefinitionName(
 
 class PossibleStagesScanner {
 	readonly stages = new Set<string>();
+	hasTrackedNodes = false;
 	readonly warnings: string[] = [];
 	private readonly maxDepth: number;
 	private readonly units = new Map<string, FileUnit | undefined>();
@@ -898,6 +904,8 @@ class PossibleStagesScanner {
 		depth: number,
 		ancestorStack: readonly string[],
 	): void {
+		this.hasTrackedNodes = true;
+		if (call.method === "tool") return;
 		if (call.method === "workflow") {
 			this.handleWorkflowCall(call, unit, path, boundaryPrefix, depth, ancestorStack);
 			return;
@@ -1140,7 +1148,7 @@ function joinBoundary(prefix: string, segment: string): string {
 }
 
 interface CtxCall {
-	readonly method: "stage" | "task" | "chain" | "parallel" | "workflow";
+	readonly method: "stage" | "task" | "chain" | "parallel" | "workflow" | "tool";
 	/** Index of the `(` token opening the argument list. */
 	readonly argsOpen: number;
 }
@@ -1152,7 +1160,7 @@ function matchCtxCall(tokens: readonly Token[], index: number, ctxLike: Readonly
 	const dot = tokens[index + 1];
 	if (dot?.kind === "punct" && (dot.value === "." || dot.value === "?.")) {
 		const method = tokens[index + 2];
-		if (method?.kind === "ident" && STAGE_METHODS.has(method.value) && ctxLike.has(head.value)) {
+		if (method?.kind === "ident" && TRACKED_NODE_METHODS.has(method.value) && ctxLike.has(head.value)) {
 			return ctxCallAt(tokens, index + 2, method.value as CtxCall["method"]);
 		}
 	}
@@ -1168,7 +1176,7 @@ function matchCtxCall(tokens: readonly Token[], index: number, ctxLike: Readonly
 			secondDot?.kind === "punct" &&
 			(secondDot.value === "." || secondDot.value === "?.") &&
 			method?.kind === "ident" &&
-			STAGE_METHODS.has(method.value)
+			TRACKED_NODE_METHODS.has(method.value)
 		) {
 			return ctxCallAt(tokens, index + 4, method.value as CtxCall["method"]);
 		}

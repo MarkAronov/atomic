@@ -189,9 +189,9 @@ function validateConfig(config: unknown): string | null {
 }
 
 /**
- * D10 lint: a definition whose static scan yields zero possible stages logs a
- * warning. Scan failures never surface here (the scan reports its own
- * warnings and never blocks).
+ * D10 lint: a definition whose static scan finds neither possible stages nor
+ * another tracked node call logs a warning. Scan failures never surface here
+ * (the scan reports its own warnings and never blocks).
  */
 function zeroStageLintDiagnostic(
 	def: WorkflowDefinition,
@@ -199,17 +199,17 @@ function zeroStageLintDiagnostic(
 ): DiscoveryDiagnostic | undefined {
 	const entryPath = filePath ?? resolveBuiltinDefinitionSource(def.normalizedName);
 	if (entryPath === undefined) return undefined;
-	let stages: readonly string[];
+	let scan: ReturnType<typeof scanPossibleStagesFromSource>;
 	try {
-		stages = scanPossibleStagesFromSource(entryPath).stages;
+		scan = scanPossibleStagesFromSource(entryPath);
 	} catch {
 		return undefined;
 	}
-	if (stages.length > 0) return undefined;
+	if (scan.hasTrackedNodes || scan.stages.length > 0) return undefined;
 	return {
 		level: "warn",
 		code: "ZERO_STAGES",
-		message: `workflow "${def.name}" yielded zero possible stages: no ctx.stage/ctx.task/ctx.chain/ctx.parallel/ctx.workflow call sites were found by the static scan`,
+		message: `workflow "${def.name}" yielded zero possible stages: no ctx.stage/ctx.task/ctx.chain/ctx.parallel/ctx.workflow/ctx.tool call sites were found by the static scan`,
 		source: filePath ?? def.normalizedName,
 	};
 }

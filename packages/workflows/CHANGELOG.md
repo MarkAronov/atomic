@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Heartbeat, workflow-tool, and builtin stage guidance now directs shared scope and acceptance-criteria amendments through one authoritative path broadcast rather than enumerating known stages, and teaches path discovery, globs, sticky delivery, and live-only asks.
 
+### Fixed
+
+- Tool-only workflows no longer emit a `ZERO_STAGES` discovery warning. The static scan now recognizes `ctx.tool()` as tracked graph work without advertising tool nodes as future chat-stage targets.
+
 ## [0.9.18-alpha.3] - 2026-09-01
 
 ### Added

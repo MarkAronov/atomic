@@ -280,6 +280,7 @@ describe("possible-stages discovery lint (D10)", () => {
 	test("a definition yielding zero stages logs a ZERO_STAGES warning", async () => {
 		writeWorkflow("lint-empty.ts", "\t\t\treturn {};");
 		writeWorkflow("lint-busy.ts", '\t\t\tawait ctx.stage("real-stage");\n\t\t\treturn {};');
+		writeWorkflow("lint-tool.ts", '\t\t\tawait ctx.tool("durable-check", {}, async () => "ok");\n\t\t\treturn {};');
 		const result = await discoverWorkflows({
 			cwd: TEST_DIR,
 			homeDir: join(TEST_DIR, "home"),
@@ -291,6 +292,7 @@ describe("possible-stages discovery lint (D10)", () => {
 		assert.match(zeroStages[0]?.message ?? "", /lint-empty/);
 		assert.equal(result.registry.has("lint-empty"), true, "the lint never blocks registration");
 		assert.equal(result.registry.has("lint-busy"), true);
+		assert.equal(result.registry.has("lint-tool"), true, "ctx.tool creates a tracked workflow node");
 	});
 });
 

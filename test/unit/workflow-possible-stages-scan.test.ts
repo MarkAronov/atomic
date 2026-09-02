@@ -178,6 +178,22 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["discovery", "rebound"]);
 	});
 
+	test("ctx.tool marks tracked work without advertising a chat-stage target", () => {
+		const result = scanFile(
+			"tool-only.ts",
+			`
+				export default workflow({
+					name: "tool-only",
+					run: async (ctx) => {
+						await ctx.tool("durable-check", {}, async () => "ok");
+					},
+				});
+			`,
+		);
+		assert.deepEqual(result.stages, []);
+		assert.equal(result.hasTrackedNodes, true);
+	});
+
 	test("calls inside strings and comments are ignored", () => {
 		const result = scanFile(
 			"noise.ts",
