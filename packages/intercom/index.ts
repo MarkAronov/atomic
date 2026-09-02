@@ -5,6 +5,7 @@ import { renderIntercomToolResult } from "./result-renderers.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
+import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -120,8 +121,21 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 	if (renderer) return renderer(...args);
 	return renderIntercomToolResult(name, args);
 }
-function isRecoverableHeavyInitializationDisconnect(error: unknown): boolean {
-	return error instanceof Error && error.message === "Client disconnected";
+/**
+ * Diagnostics for a background Intercom event relay.
+ *
+ * A recoverable broker disconnect is not a relay failure the user can act on:
+ * the lazy heavy attempt has already been discarded, so the next relay or tool
+ * call reconnects on its own. Rendering it would dump an alarming
+ * "Intercom event relay failed ... Client disconnected" into the stage UI for
+ * work nobody requested. Every other failure — protocol, authentication,
+ * configuration, a non-recoverable import, or a terminal relay error — is still
+ * reported. The caller-facing acknowledgement is emitted either way, so a
+ * waiting relay never hangs on this decision.
+ */
+function reportRelayFailure(eventName: string, error: unknown): void {
+	if (isRecoverableIntercomDisconnect(error)) return;
+	console.error(`Intercom event relay failed (${eventName}):`, error);
 }
 
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
@@ -256,7 +270,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			() => undefined,
 			(error: unknown) => {
 				if (heavyAttempt?.promise === promise) heavyAttempt = null;
-				if (!isRecoverableHeavyInitializationDisconnect(error)) {
+				if (!isRecoverableIntercomDisconnect(error)) {
 					const message = error instanceof Error ? error.message : String(error);
 					console.error(`Intercom heavy initialization failed; a later call will retry: ${message}`, error);
 				}
@@ -308,7 +322,17 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     const generation = ++lifecycleGeneration;
     sessionSnapshot = { event, ctx, generation, lease };
     if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.pendingStageDelivery !== undefined) {
-      await loadHeavy(ctx);
+      try {
+        await loadHeavy(ctx);
+      } catch (error) {
+        // Eager stage warm-up is Intercom's own initiative, not the user's. A
+        // recoverable broker disconnect here leaves the failed attempt
+        // discarded, so the next tool call, relay, or lifecycle event
+        // reconnects; letting it escape would make the host runner report a
+        // `session_start` extension error and paint "Client disconnected" over
+        // a stage that is still running. Everything else still escapes.
+        if (!isRecoverableIntercomDisconnect(error)) throw error;
+      }
     } else if (loadedHeavy) {
       await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
     }
@@ -434,7 +458,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 					: false;
 			})
 			.catch((error) => {
-				console.error(`Intercom event relay failed (${PENDING_STAGE_UNDELIVERABLE_EVENT}):`, error);
+				reportRelayFailure(PENDING_STAGE_UNDELIVERABLE_EVENT, error);
 				return false;
 			});
 	});
@@ -458,7 +482,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			}
 			void completion.catch((error) => {
 				rejectLazyResultRelay(pi, eventName, payload, error);
-				console.error(`Intercom event relay failed (${eventName}):`, error);
+				reportRelayFailure(eventName, error);
 			});
 		});
 	}

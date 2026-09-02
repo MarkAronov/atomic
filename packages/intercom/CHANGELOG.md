@@ -17,6 +17,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 - Intercom tool guidance, the bundled skill, and workflow-stage discovery documentation now teach canonical path targets, globs, sticky broadcasts, speculative acceptance, terminal settlement, and live-only asks.
 
+### Fixed
+
+- A recoverable broker disconnect no longer surfaces as a workflow-stage error. Eager stage warm-up during `session_start` and the background event relays used to push `Client disconnected` into the host extension-error channel and log `Intercom event relay failed …` into the stage output while the stage was still running and lazy re-initialization was still recovering. Relay acknowledgements are unchanged, and protocol, authentication, configuration, non-recoverable initialization, terminal relay, and user-initiated failures stay visible.
+
 ## [0.9.18-alpha.5] - 2026-09-01
 
 ### Fixed

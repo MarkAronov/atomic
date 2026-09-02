@@ -19,6 +19,7 @@ import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
+import { IntercomClientDisconnectedError } from "../recoverable-disconnect.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
@@ -215,7 +216,7 @@ export class IntercomClient extends EventEmitter {
     }
 
     if (socket.destroyed || socket.writableEnded || !socket.writable) {
-      throw new Error("Client disconnected");
+      throw new IntercomClientDisconnectedError();
     }
 
     return socket;
@@ -274,7 +275,7 @@ export class IntercomClient extends EventEmitter {
       const onClose = () => {
         const wasConnecting = !settled && !this._sessionId;
         const wasDisconnecting = this.disconnecting;
-        const disconnectError = this.disconnectError ?? new Error("Client disconnected");
+        const disconnectError = this.disconnectError ?? new IntercomClientDisconnectedError();
         this.disconnecting = false;
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -668,7 +669,7 @@ export class IntercomClient extends EventEmitter {
     }
     this.disconnecting = true;
     this.disconnectError = null;
-    this.failPending(new Error("Client disconnected"));
+    this.failPending(new IntercomClientDisconnectedError());
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => {
