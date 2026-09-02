@@ -412,8 +412,13 @@ async function streamWithDeltas(
 			continue;
 		}
 
-		// Fallback boundary markers are replay metadata with nothing to stream.
+		// Fallback boundary markers are replay metadata with nothing to stream, but they still
+		// occupy a slot in `partial.content` so later blocks keep their source `contentIndex`.
+		// This matches the real Anthropic provider, which pushes the wire `fallback` block into
+		// `output.content` and emits no event for it; every `contentIndex` consumer indexes
+		// `partial.content` directly, so skipping the slot would shift every later block by one.
 		if (block.type !== "toolCall") {
+			partial.content = [...partial.content, block];
 			continue;
 		}
 
