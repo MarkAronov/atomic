@@ -196,7 +196,10 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				// Belt-and-braces around the scanner's never-throw discipline:
 				// a discovery failure must never block launch (D1).
 				try {
-					possibleStages = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth }).stages;
+					const scan = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
+					possibleStages = scan.stages;
+					// D1: a partial scan result arrives with its warnings.
+					for (const warning of scan.warnings) console.warn(`atomic-workflows: ${warning}`);
 				} catch {
 					possibleStages = undefined;
 				}

@@ -10,11 +10,14 @@ import {
 	metadataStepName,
 	parseCurrentMetadataRecord,
 } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
+import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { coercePossibleStages } from "../../packages/workflows/src/shared/possible-stages.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { makeDirectorySync, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { makeDirectorySync, makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const SCANNED = ["orchestrator-*", "pull-request", "reviewer-error"] as const;
@@ -280,5 +283,92 @@ describe("possible-stages discovery lint (D10)", () => {
 		assert.match(zeroStages[0]?.message ?? "", /lint-empty/);
 		assert.equal(result.registry.has("lint-empty"), true, "the lint never blocks registration");
 		assert.equal(result.registry.has("lint-busy"), true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// D10 — admission-time wiring: resolvePossibleStageEntry -> dispatch -> snapshot
+// ---------------------------------------------------------------------------
+
+describe("possible-stages admission wiring (D10)", () => {
+	const WIRE_DIR = makeTempDirectory("possible-stages-wiring");
+	afterAll(() => {
+		removeTempDirectory(WIRE_DIR);
+	});
+
+	async function wireWorkflow(): Promise<void> {
+		const workflowsDir = join(WIRE_DIR, ".atomic", "workflows");
+		makeDirectorySync(workflowsDir, { recursive: true });
+		writeTextSync(
+			join(workflowsDir, "wired.ts"),
+			[
+				`import { workflow } from "@bastani/workflows";`,
+				`export default workflow({`,
+				`  name: "wired",`,
+				`  description: "",`,
+				`  inputs: {},`,
+				`  outputs: {},`,
+				`  run: async (ctx) => {`,
+				`    await ctx.stage("alpha");`,
+				`    await ctx.task(\`beta-\${n}\`, { prompt: "p" });`,
+				`    return {};`,
+				`  },`,
+				`});`,
+			].join("\n"),
+			"utf-8",
+		);
+	}
+
+	test("dispatch persists the admission-time scan onto the root snapshot", async () => {
+		await wireWorkflow();
+		setDurableBackend(createInMemoryTestBackend());
+		const discovery = await discoverWorkflows({
+			cwd: WIRE_DIR,
+			homeDir: join(WIRE_DIR, "home"),
+			includeBundled: false,
+		});
+		const source = discovery.sources.find((entry) => entry.id === "wired");
+		assert.ok(source?.filePath !== undefined, "fixture workflow must carry its source path");
+		const store = createStore();
+		await dispatch(
+			{ action: "run", workflow: "wired" },
+			{
+				registry: discovery.registry,
+				store,
+				resolvePossibleStageEntry: (normalizedName) => (normalizedName === "wired" ? source.filePath : undefined),
+			},
+		);
+		let snapshot: RunSnapshot | undefined;
+		for (let attempt = 0; attempt < 100 && snapshot === undefined; attempt += 1) {
+			await sleep(20);
+			snapshot = store.runs().find((candidate) => candidate.id !== undefined && candidate.name === "wired");
+		}
+		assert.ok(snapshot !== undefined, "wired run should be admitted");
+		assert.deepEqual(snapshot.possibleStages, ["alpha", "beta-*"]);
+	});
+
+	test("a missing entry path never blocks launch and hydrates an empty set", async () => {
+		setDurableBackend(createInMemoryTestBackend());
+		const discovery = await discoverWorkflows({
+			cwd: WIRE_DIR,
+			homeDir: join(WIRE_DIR, "home"),
+			includeBundled: false,
+		});
+		const store = createStore();
+		await dispatch(
+			{ action: "run", workflow: "wired" },
+			{
+				registry: discovery.registry,
+				store,
+				resolvePossibleStageEntry: () => join(WIRE_DIR, "does-not-exist.ts"),
+			},
+		);
+		let snapshot: RunSnapshot | undefined;
+		for (let attempt = 0; attempt < 100 && snapshot === undefined; attempt += 1) {
+			await sleep(20);
+			snapshot = store.runs().find((candidate) => candidate.name === "wired");
+		}
+		assert.ok(snapshot !== undefined, "the run must still be admitted");
+		assert.deepEqual(snapshot.possibleStages, []);
 	});
 });

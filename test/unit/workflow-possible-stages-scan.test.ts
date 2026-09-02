@@ -490,6 +490,111 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		);
 	});
 
+	test("shipped-layout wrapper entries scan the definition module behind them", () => {
+		// Regression (review round 2): the closure exclusion skipped definition
+		// modules, so a wrapper entry (bundled `export { x_default as default }`
+		// shape) scanned to an empty set with no warning.
+		writeFixture(
+			"wrapped-impl.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				var wrapped_default = workflow({
+					name: "wrapped",
+					run: async (ctx) => {
+						await ctx.stage("wrapped-step");
+					},
+				});
+				export { wrapped_default as default };
+			`,
+		);
+		writeFixture(
+			"wrapped-entry.ts",
+			`
+				import { wrapped_default } from "./wrapped-impl.js";
+				export { wrapped_default as default };
+			`,
+		);
+		const entry = join(TEST_DIR, "wrapped-entry.ts");
+		const result = scanPossibleStagesFromSource(entry);
+		assert.deepEqual(result.stages, ["wrapped-step"]);
+		assert.deepEqual(result.warnings, []);
+	});
+
+	test("authored camelCase names normalize verbatim like the engine", () => {
+		writeFixture(
+			"camel-authored.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "myCamelChild",
+					run: async (ctx) => {
+						await ctx.stage("s");
+					},
+				});
+			`,
+		);
+		const result = scanFile(
+			"camel-parent.ts",
+			`
+				import camelChild from "./camel-authored.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "camel-parent",
+					run: async (ctx) => {
+						await ctx.workflow(camelChild);
+					},
+				});
+			`,
+		);
+		// The engine normalizes the authored name without inserting hyphens.
+		assert.ok(result.stages.includes("workflow:mycamelchild"), JSON.stringify(result.stages));
+		assert.equal(result.stages.includes("workflow:my-camel-child"), false, JSON.stringify(result.stages));
+		assert.ok(result.stages.includes("workflow:mycamelchild/s"), JSON.stringify(result.stages));
+	});
+
+	test("a member ctx.workflow call above the definition hides nothing", () => {
+		writeFixture(
+			"mixed-def.ts",
+			`
+				import { workflow } from "@bastani/workflows";
+				async function runGrand(ctx) {
+					await ctx.workflow(grand);
+				}
+				export default workflow({
+					name: "mixed",
+					run: async (ctx) => {
+						await ctx.stage("mixed-step");
+					},
+				});
+			`,
+		);
+		const result = scanFile(
+			"mixed-parent.ts",
+			`
+				import mixed from "./mixed-def.js";
+				import { workflow } from "@bastani/workflows";
+				export default workflow({
+					name: "mixed-parent",
+					run: async (ctx) => {
+						await ctx.stage("p");
+						await ctx.workflow(mixed);
+					},
+				});
+			`,
+		);
+		// The child's own stage nests under its boundary; the helper's
+		// ctx.workflow(grand) contributes an unresolved-boundary warning but
+		// nothing leaks flat.
+		assert.ok(result.stages.includes("p"), JSON.stringify(result.stages));
+		assert.ok(result.stages.includes("workflow:mixed"), JSON.stringify(result.stages));
+		assert.ok(result.stages.includes("workflow:mixed/mixed-step"), JSON.stringify(result.stages));
+		assert.equal(
+			result.stages.includes("mixed-step"),
+			false,
+			`child stage leaked flat: ${JSON.stringify(result.stages)}`,
+		);
+	});
+
 	test("resolution failures warn and never throw; the partial set survives", () => {
 		const missingChild = scanFile(
 			"missing-child-parent.ts",

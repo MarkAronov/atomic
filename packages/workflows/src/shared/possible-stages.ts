@@ -693,6 +693,8 @@ function collectDefinitionName(tokens: readonly Token[]): string | undefined {
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index]!;
 		if (token.kind !== "ident" || (token.value !== "workflow" && token.value !== "defineWorkflow")) continue;
+		const previous = tokens[index - 1];
+		if (previous?.kind === "punct" && (previous.value === "." || previous.value === "?.")) continue;
 		const open = tokens[index + 1];
 		if (open?.kind !== "punct" || open.value !== "(") continue;
 		const inner = balancedRange(tokens, index + 1, "(", ")");
@@ -731,8 +733,19 @@ class PossibleStagesScanner {
 	 * their boundary segment, bounded by the workflow nesting depth.
 	 */
 	scanSubtree(entryPath: string, boundaryPrefix: string, depth: number, ancestorStack: readonly string[]): void {
-		const queue = [entryPath];
-		const visited = new Set<string>([entryPath]);
+		let rootPath = entryPath;
+		const entryUnit = this.unitFor(entryPath);
+		if (entryUnit !== undefined && entryUnit.definitionName === undefined) {
+			// Shipped-layout wrapper entry (e.g. `export { x_default as default
+			// }`): the definition lives in the module the wrapper re-exports, so
+			// the subtree roots there instead of scanning an empty wrapper.
+			const behind = relativeImportTargets(entryUnit, entryPath)
+				.map((target) => ({ target, unit: this.unitFor(target) }))
+				.find((entry) => entry.unit?.definitionName !== undefined);
+			if (behind?.target !== undefined) rootPath = behind.target;
+		}
+		const queue = [rootPath];
+		const visited = new Set<string>([entryPath, rootPath]);
 		const ordered: string[] = [];
 		// Phase one loads every file of the local closure so context aliases
 		// from any file (e.g. `const designContext = ctx` in a runner) are
@@ -846,7 +859,15 @@ class PossibleStagesScanner {
 			boundaryName = argumentNamePattern(explicitStage, unit);
 		} else {
 			const authoredName = childPath === undefined ? undefined : this.unitFor(childPath)?.definitionName;
-			const normalized = fallbackName === "*" ? "*" : safeNormalize(kebabCase(authoredName ?? fallbackName));
+			// The engine normalizes the authored name verbatim; only the binding
+			// fallback kebab-cases (camelCase barrel exports map to their kebab
+			// builtin names).
+			const normalized =
+				authoredName !== undefined
+					? safeNormalize(authoredName)
+					: fallbackName === "*"
+						? "*"
+						: safeNormalize(kebabCase(fallbackName));
 			if (authoredName === undefined) {
 				this.warnings.push(
 					`possible-stages: child definition name for ctx.workflow at ${path} was not statically visible; using "${normalized}" as the boundary segment`,
@@ -863,7 +884,6 @@ class PossibleStagesScanner {
 		}
 		const childDepth = depth + 1;
 		if (childDepth >= this.maxDepth) return;
-		if (ancestorStack.includes(childPath)) return; // import cycle
 		// Bundled wrapper chunk (e.g. `export { x_default as default }`): the
 		// definition itself lives in the module the wrapper re-exports, so the
 		// subtree follows that chain instead of scanning the empty wrapper.
@@ -875,8 +895,12 @@ class PossibleStagesScanner {
 				.find((entry) => entry.unit?.definitionName !== undefined);
 			if (definitionBehindWrapper?.target !== undefined) subtreeEntry = definitionBehindWrapper.target;
 		}
+		// Import cycles: both the resolved import and the descended definition
+		// module block re-descent (wrapper-mediated cycles included).
+		if (ancestorStack.includes(childPath) || ancestorStack.includes(subtreeEntry)) return;
 		this.scanSubtree(subtreeEntry, joinBoundary(boundaryPrefix, boundaryName), childDepth, [
 			...ancestorStack,
+			childPath,
 			subtreeEntry,
 		]);
 	}
