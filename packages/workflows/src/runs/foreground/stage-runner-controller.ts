@@ -1418,7 +1418,7 @@ export class StageSessionController {
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
 				// Issue #2812: the resumed candidate's success is durable metadata too.
-				this.notifyModelFallbackMetaChange();
+				this.notifySuccessfulModelFallbackMeta();
 				return true;
 			}
 			throw new WorkflowPromptModelFailure(terminalFailure);
@@ -1433,7 +1433,7 @@ export class StageSessionController {
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
 				// Issue #2812: see above — a corrective success must reach the callback.
-				this.notifyModelFallbackMetaChange();
+				this.notifySuccessfulModelFallbackMeta();
 				return true;
 			}
 			const message = errorMessage(err);
@@ -1527,11 +1527,25 @@ export class StageSessionController {
 		// terminal persistence resumes without the provenance of its own result.
 		// Emitted last, after the pending warnings are cleared, so the payload is
 		// exactly what the terminal snapshot will carry.
-		this.notifyModelFallbackMetaChange();
+		this.notifySuccessfulModelFallbackMeta();
 	}
 
 	private notifyModelFallbackMetaChange(): void {
 		this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta());
+	}
+
+	/**
+	 * Issue #2812: `disposeAll()` neither awaits nor cancels a prompt already
+	 * parked in the adapter. That prompt still resolves, and its success still
+	 * belongs in `modelAttempts`. Publishing it does not: the stage snapshot is
+	 * terminal by then, and the executor writes whatever a callback hands it, so
+	 * a late success would stamp `success: true` onto an ended stage. Scoped to
+	 * the success edges this repair added — the selection and failure edges keep
+	 * the behavior they already had.
+	 */
+	private notifySuccessfulModelFallbackMeta(): void {
+		if (this.disposed) return;
+		this.notifyModelFallbackMetaChange();
 	}
 
 	private applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {

@@ -10,6 +10,7 @@ import {
 	assert,
 	assistantMessageWithUsage,
 	createStageContext,
+	flushMicrotasks,
 	makeMockSession,
 	makeOpts,
 	Type,
@@ -311,5 +312,50 @@ describe("createStageContext — durable model-fallback metadata notification", 
 		// that returned cleanly is only reclassified once its candidate's budget is
 		// spent — so the invariant that matters is the terminal durable record.
 		assert.ok(notified.length > 0);
+	});
+
+	// Issue #2812: `disposeAll()` neither awaits nor cancels a prompt already
+	// parked in the adapter. That prompt still resolves, and its success still
+	// belongs in `modelAttempts` — recording it is pre-existing behavior. But the
+	// stage snapshot is terminal by the time it lands, and the executor writes
+	// whatever a callback hands it, so publishing the success would stamp
+	// `success: true` onto an ended stage. Only the notification is suppressed.
+	test("a success that lands after disposal is recorded but never published", async () => {
+		const notified: StageModelFallbackMeta[] = [];
+		let mockState: { resolvers: Array<() => void> } | undefined;
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				// The default mock prompt parks on a resolver instead of returning.
+				const mock = makeMockSession();
+				mockState = mock.state;
+				return mock.session;
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				onModelFallbackMetaChange: (meta) => {
+					notified.push(meta);
+				},
+			}),
+		) as InternalStageContext;
+
+		const pending = ctx.prompt("go");
+		// Let session creation settle and the prompt park inside the adapter.
+		await flushMicrotasks(40);
+		await ctx.__dispose();
+		const callbacksAtDispose = notified.length;
+		assert.equal(callbacksAtDispose, 0);
+
+		for (const resolve of mockState?.resolvers ?? []) resolve();
+		await pending;
+		await flushMicrotasks(40);
+
+		// The defect: one callback carrying { model: "default", success: true },
+		// published onto a stage snapshot that is already terminal.
+		assert.equal(notified.length - callbacksAtDispose, 0);
+		// The attempt itself is still recorded. Suppressing the record would change
+		// behavior that predates this repair, which is not what the guard does.
+		assert.deepEqual(ctx.__modelFallbackMeta().modelAttempts, [{ model: "default", success: true }]);
 	});
 });
