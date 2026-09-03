@@ -123,9 +123,10 @@ The tool's `details` value is `EditToolDetails`:
 - `firstChangedLine`: optional first changed post-edit line.
 
 Each successful `write` or `edit` records and returns a fresh snapshot tag. Plain `write` output is also compact: a refreshed
-header plus a byte-count summary, not a full file reprint. `write` strips copied hashline headers and `LINE:`/`*LINE:`
+header plus a success confirmation, not a full file reprint. `write` strips copied hashline headers and `LINE:`/`*LINE:`
 display prefixes only when they match a known snapshot in the current store, reports that stripping, and preserves whether
-a complete copied snapshot had a terminal newline. Unknown or literal hashline-looking content is preserved.
+a complete copied snapshot had a terminal newline. A copied write confirmation is recognized only when its complete path
+matches the write target or known snapshot; unknown or literal hashline-looking content is preserved.
 
 Parallel `edit` calls sharing the same `[path#TAG]` are applied as one snapshot-anchored batch, so one sibling does not fail
 only because another sibling minted a new tag first. A later call arriving after that batch committed still attempts

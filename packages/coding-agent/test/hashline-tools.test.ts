@@ -830,6 +830,53 @@ describe("hashline file tool parity", () => {
 		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe("one\ntwo\nthree\n");
 	});
 
+	it("preserves copied snapshot rows followed by a write-confirmation lookalike", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "one\ntwo\nthree\n", "utf8");
+		const snapshot = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-confirm-lookalike",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		const content = `${snapshot}\nSuccessfully wrote to the incident report: preserve this user-authored sentence\nfollowing user content`;
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-confirm-lookalike",
+			{ path: "dest.txt", content },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe(content);
+	});
+
+	it("preserves a write-confirmation lookalike after a copied snapshot header", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "source.txt"), "unrelated snapshot content\n", "utf8");
+		const snapshot = text(
+			await createReadToolDefinition(dir, { hashlineStore }).execute(
+				"read-header-confirm-lookalike",
+				{ path: "source.txt" },
+				undefined,
+				undefined,
+				{} as ExtensionContext,
+			),
+		);
+		const header = snapshot.split("\n")[0];
+		const content = `${header}\nSuccessfully wrote to the incident report: preserve this user-authored sentence`;
+		await createWriteToolDefinition(dir, { hashlineStore }).execute(
+			"write-header-confirm-lookalike",
+			{ path: "dest.txt", content },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		expect(await readFile(join(dir, "dest.txt"), "utf8")).toBe(content);
+	});
+
 	it("strips copied nested search output before write", async () => {
 		const dir = await createTempDir();
 		await mkdir(join(dir, "sub"), { recursive: true });

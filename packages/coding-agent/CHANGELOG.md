@@ -20,6 +20,7 @@
 - Fixed GitHub Copilot Claude Fable models to run through the Anthropic Messages adapter, so a selected thinking level reaches the provider instead of being dropped ([#8961](https://github.com/earendil-works/pi/issues/8961)).
 - Fixed every Fireworks GLM model to use the OpenAI-compatible completions endpoint. Previously only the `glm-5p2` family did, so newer entries such as `glm-5p3` were served over the Anthropic-compatible endpoint ([#8978](https://github.com/earendil-works/pi/issues/8978)).
 - Fixed the `write` tool reporting UTF-16 code-unit counts as byte counts by removing the misleading count. Every write confirmation now reads `Successfully wrote to <path>` ([#8979](https://github.com/earendil-works/pi/issues/8979)).
+- Fixed the `write` tool mistaking user-authored lines beginning with `Successfully wrote to` for copied tool confirmation text and silently discarding them.
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

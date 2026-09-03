@@ -84,8 +84,8 @@ export interface StrippedHashlineContent {
 
 export function stripKnownHashlineCopiedContentWithMeta(
 	content: string,
-	_absolutePath: string,
-	_cwd: string,
+	absolutePath: string,
+	cwd: string,
 	store: HashlineSnapshotStore,
 ): StrippedHashlineContent {
 	const normalized = normalizeHashlineContent(content);
@@ -102,23 +102,40 @@ export function stripKnownHashlineCopiedContentWithMeta(
 	if (!snapshot) return { content, stripped: false };
 	const body = lines.slice(headerIndex + 1);
 	if (body.length === 0) return { content: snapshot.content, stripped: true };
+	const knownConfirmationPaths = new Set<string>();
+	const addKnownPath = (filePath: string): void => {
+		if (!filePath) return;
+		knownConfirmationPaths.add(filePath);
+		knownConfirmationPaths.add(filePath.replaceAll("\\", "/"));
+		knownConfirmationPaths.add(filePath.replaceAll("/", "\\"));
+		const base = filePath.split(/[\\/]/).at(-1);
+		if (base) knownConfirmationPaths.add(base);
+	};
+	addKnownPath(absolutePath);
+	if (absolutePath) addKnownPath(relative(cwd, absolutePath));
+	addKnownPath(snapshot.absolutePath);
+	addKnownPath(snapshot.displayPath);
+	const isKnownWriteConfirmation = (line: string): boolean => {
+		const match = line.match(/^Successfully wrote (?:\d+ bytes )?to (.+)$/);
+		return match !== null && knownConfirmationPaths.has(match[1] ?? "");
+	};
 	const stripped: string[] = [];
 	const snapshotLines = snapshot.content.split("\n");
 	let sawRow = false;
 	let lastCopiedLineNumber: number | undefined;
 	// Trailing tool chrome a model is likely to copy along with the hashline
 	// body: the read/search continuation footers, the write tool's own
-	// `Successfully wrote to <path>` confirmation (and its stripped-note), and
-	// `Resolved …` conflict footers. These never carry a line number, so they
-	// mark the end of the numbered body — they must not abort stripping the way
-	// an arbitrary non-row line would. The optional `N bytes ` group keeps the
-	// pre-e583b290 wording matchable, because a resumed session's transcript can
-	// still carry confirmations written before that message changed.
+	// confirmation (and its stripped-note), and `Resolved …` conflict footers.
+	// A write confirmation is chrome only when its complete path matches the
+	// target or known snapshot; a matching prefix alone may be user content.
+	// The optional byte count keeps pre-e583b290 confirmations matchable.
+	// These footers never carry a line number, so they mark the end of the
+	// numbered body instead of aborting stripping like an arbitrary line.
 	const isToolFooter = (line: string): boolean =>
 		line.trim() === "" ||
 		/^\[\d+ more lines in file\./.test(line) ||
 		/^\[Showing lines /.test(line) ||
-		/^Successfully wrote (?:\d+ bytes )?to /.test(line) ||
+		isKnownWriteConfirmation(line) ||
 		/^Resolved \d+ conflicts?/.test(line) ||
 		/^Resolved conflict \d+/.test(line) ||
 		/^Note: stripped copied hashline/.test(line) ||
