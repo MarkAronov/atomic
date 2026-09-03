@@ -353,7 +353,7 @@ export function createWriteToolDefinition(
 			const sqlite = sqliteSelectorForPath(path, executionCwd);
 			if (!sqlite && parsedSqlite?.table) throw new Error(`SQLite database not found or is not SQLite: ${path}`);
 			if (sqlite) {
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore, path);
 				const message = writeSqliteSelector(sqlite, stripped.content);
 				return {
 					content: [{ type: "text", text: `${message}${strippedHashlineNote(stripped.stripped)}` }],
@@ -361,7 +361,7 @@ export function createWriteToolDefinition(
 				};
 			}
 			if (archive) {
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore, path);
 				const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
 				writeArchiveSelector(resolvedArchive, stripped.content);
 				return {
@@ -375,7 +375,7 @@ export function createWriteToolDefinition(
 				};
 			}
 			if (path.startsWith("conflict://")) {
-				const writeContent = stripKnownHashlineCopiedContent(content, "", executionCwd, hashlineStore);
+				const writeContent = stripKnownHashlineCopiedContent(content, "", executionCwd, hashlineStore, path);
 				const target = decodeURIComponent(path.slice("conflict://".length));
 				if (!target) throw new Error("conflict:// target is required.");
 				if (target.includes("/"))
@@ -423,7 +423,7 @@ export function createWriteToolDefinition(
 						_onUpdate,
 						ctx as never,
 					);
-				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", executionCwd, hashlineStore, path);
 				await writeInternalSelector(path, executionCwd, stripped.content, resourceCtx);
 				return {
 					content: [
@@ -459,6 +459,7 @@ export function createWriteToolDefinition(
 					absolutePath,
 					executionCwd,
 					hashlineStore,
+					path,
 				);
 				const writeContent = stripped.content;
 				await ops.writeFile(absolutePath, writeContent);
