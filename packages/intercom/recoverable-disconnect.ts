@@ -44,7 +44,7 @@ export function isRecoverableIntercomDisconnect(error: unknown): boolean {
 	let current: unknown = error;
 	for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth += 1) {
 		if (!(current instanceof Error)) return false;
-		if ((current as Error & RecoverableDisconnectMarker).intercomRecoverableDisconnect === true) return true;
+		if (current instanceof IntercomClientDisconnectedError) return true;
 		current = current.cause;
 	}
 	return false;

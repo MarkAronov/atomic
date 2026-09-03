@@ -72,3 +72,32 @@ export function writeMessageIfOpen(socket: net.Socket, message: BrokerOutboundFr
 	writeMessage(socket, message);
 	return true;
 }
+
+/**
+ * Write one broker frame and report the socket write callback's outcome.
+ *
+ * Delivery-producing paths use this instead of treating `socket.write()`'s
+ * synchronous return as success. That return only reports backpressure; an
+ * immediate peer reset is reported asynchronously to the callback.
+ */
+export function writeMessageWithOutcome(
+	socket: net.Socket,
+	message: BrokerOutboundFrame,
+	onSettled: (written: boolean) => void,
+): void {
+	if (!isSocketOpenForWrite(socket)) {
+		onSettled(false);
+		return;
+	}
+	let settled = false;
+	const finish = (written: boolean): void => {
+		if (settled) return;
+		settled = true;
+		onSettled(written);
+	};
+	try {
+		writeMessage(socket, message, (error) => finish(error == null));
+	} catch {
+		finish(false);
+	}
+}

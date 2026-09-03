@@ -272,6 +272,12 @@ test("pre-registration failures stay non-recoverable", async () => {
 	});
 });
 
+test("plain errors cannot opt into recoverable classification by copying the marker", () => {
+	const spoofed = Object.assign(new Error("Client disconnected"), { intercomRecoverableDisconnect: true });
+	assert.equal(isRecoverableIntercomDisconnect(spoofed), false);
+	assert.equal(isRecoverableIntercomDisconnect(new Error("wrapper", { cause: spoofed })), false);
+});
+
 test("an explicit disconnect() stays the quiet, unreported path", async () => {
 	onConnection = acceptRegistration();
 	const established = await connectedClient();

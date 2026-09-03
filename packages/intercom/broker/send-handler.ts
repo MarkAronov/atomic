@@ -44,6 +44,11 @@ export interface PendingStageRoute {
 }
 
 export type PendingStageRouter = (route: PendingStageRoute) => boolean;
+export type ConfirmedMessageWriter = (
+	target: net.Socket,
+	message: BrokerMessage,
+	onSettled: (written: boolean) => void,
+) => void;
 
 export type LiveWorkflowStageResolver = (target: string) => BrokerConnectedSession | undefined;
 export type LiveWorkflowStageController = (
@@ -89,6 +94,7 @@ export function handleBrokerSend(
 	resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
 	canControlLiveWorkflowStage?: LiveWorkflowStageController,
 	resolveLegacyWorkflowStageTarget?: LegacyWorkflowStageTargetResolver,
+	writeConfirmed?: ConfirmedMessageWriter,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -230,31 +236,37 @@ export function handleBrokerSend(
 		) {
 			return;
 		}
-    if (
-      !write(
-        target.socket,
-        supervisorSend
-          ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
-          : { type: "message", from: fromSession.info, message },
-      )
-    ) {
-      // The target's socket stopped accepting frames between resolving it and this
-      // write. Nothing was delivered, so the delivered-message cache must not be
-      // recorded (that would burn the message id and refuse the honest retry with
-      // `message_id_conflict`), no reply authorization may be opened, and the ack
-      // must be the ordinary "Session not found" refusal the sender can retry.
+    const outbound = supervisorSend
+      ? ({ type: "message", from: fromSession.info, message, channel: "supervisor" } as const)
+      : ({ type: "message", from: fromSession.info, message } as const);
+    const failDelivery = (): void => {
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+    };
+    const finishDelivery = (): void => {
+      deliveredMessages.record(message.id, signature);
+      if (message.expectsReply === true) {
+        pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+      }
+      if (message.replyTo !== undefined) {
+        pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
+      }
+      if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
+      write(socket, { type: "delivered", messageId: message.id, attemptId });
+    };
+    if (writeConfirmed !== undefined) {
+      writeConfirmed(target.socket, outbound, (written) => {
+        if (written) finishDelivery();
+        else failDelivery();
+      });
       return;
     }
-    deliveredMessages.record(message.id, signature);
-    if (message.expectsReply === true) {
-      pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+    if (!write(target.socket, outbound)) {
+      // Nothing was written, so the message id and reply authorization remain
+      // available for an honest retry.
+      failDelivery();
+      return;
     }
-    if (message.replyTo !== undefined) {
-      pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
-    }
-    if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
-    write(socket, { type: "delivered", messageId: message.id, attemptId });
+    finishDelivery();
     return;
   }
 	if (

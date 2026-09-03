@@ -28,7 +28,11 @@ import { createMessageReader, writeMessage } from "../../packages/intercom/broke
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
-import { isSocketOpenForWrite, writeMessageIfOpen } from "../../packages/intercom/broker/socket-writes.js";
+import {
+	isSocketOpenForWrite,
+	writeMessageIfOpen,
+	writeMessageWithOutcome,
+} from "../../packages/intercom/broker/socket-writes.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 
 interface Pair {
@@ -208,6 +212,11 @@ function runSend(harness: SendHarness, message: Message): void {
 		writeMessageIfOpen,
 		undefined,
 		harness.pendingQuestions,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		writeMessageWithOutcome,
 	);
 }
 
@@ -255,6 +264,28 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 			received.type === "delivery_failed" ? received.reasonCode : "not-a-failure",
 		);
 		assert.deepEqual(reasonCodes, [undefined, undefined, undefined]);
+	});
+
+	test("does not acknowledge an immediate peer reset before the write callback reports EPIPE", async () => {
+		const harness = await sendHarness();
+		const message = question("reset-race-message", "hello");
+		const signature = buildMessageSendSignature("target-id", message, "sender-id");
+
+		assert.equal(isSocketOpenForWrite(harness.target.server), true);
+		harness.target.client.resetAndDestroy();
+		runSend(harness, message);
+		await settle();
+
+		assert.deepEqual(harness.sender.received, [
+			{ type: "delivery_failed", messageId: "reset-race-message", reason: "Session not found" },
+		]);
+		assert.equal(harness.cache.lookup(message.id, signature), "miss");
+		assert.equal(harness.pendingQuestions.matchesReply("target-id", "sender-id", message.id), false);
+		assert.deepEqual(harness.target.received, []);
+		assert.equal(
+			harness.target.serverErrors.some((error) => (error as NodeJS.ErrnoException).code === "EPIPE"),
+			true,
+		);
 	});
 
 	test("control: an open target still delivers, records, and authorizes the reply", async () => {

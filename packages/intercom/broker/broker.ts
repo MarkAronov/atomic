@@ -5,7 +5,7 @@ import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { createMessageReader } from "./framing.js";
-import { writeMessageIfOpen } from "./socket-writes.js";
+import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
 import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
 import type {
 	SessionInfo,
@@ -1318,6 +1318,7 @@ class IntercomBroker {
 				this.resolveLiveWorkflowStage,
 				this.canControlLiveWorkflowStage,
 				this.resolveLegacyWorkflowStageTarget,
+				writeMessageWithOutcome,
 			);
 			break;
 		}
