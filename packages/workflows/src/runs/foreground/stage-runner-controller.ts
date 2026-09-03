@@ -1417,6 +1417,8 @@ export class StageSessionController {
 				});
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
+				// Issue #2812: the resumed candidate's success is durable metadata too.
+				this.notifyModelFallbackMetaChange();
 				return true;
 			}
 			throw new WorkflowPromptModelFailure(terminalFailure);
@@ -1430,6 +1432,8 @@ export class StageSessionController {
 				});
 				this.pendingFallbackWarnings.length = 0;
 				this.resumeCurrentSession = true;
+				// Issue #2812: see above — a corrective success must reach the callback.
+				this.notifyModelFallbackMetaChange();
 				return true;
 			}
 			const message = errorMessage(err);
@@ -1515,6 +1519,15 @@ export class StageSessionController {
 		});
 		this.pendingFallbackWarnings.length = 0;
 		this.resumeCurrentSession = true;
+		// Issue #2812: `onModelFallbackMetaChange` is the only boundary that
+		// refreshes the running stage snapshot the durable checkpoint reads. Every
+		// notification before this one is emitted on a selection or failure edge,
+		// so without this call the last durable record of a stage that fell back
+		// holds only the failed attempts, and a run interrupted between here and
+		// terminal persistence resumes without the provenance of its own result.
+		// Emitted last, after the pending warnings are cleared, so the payload is
+		// exactly what the terminal snapshot will carry.
+		this.notifyModelFallbackMetaChange();
 	}
 
 	private notifyModelFallbackMetaChange(): void {
