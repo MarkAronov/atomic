@@ -88,6 +88,35 @@ async function settle(): Promise<void> {
 	for (let turn = 0; turn < 5; turn += 1) await tick();
 }
 
+/**
+ * Errnos a peer's RST can surface as on the broker's socket.
+ *
+ * The same `resetAndDestroy()` is reported as `EPIPE` on Darwin and
+ * `ECONNRESET` on Linux and Windows — verified on Node v26.8.1 on both
+ * darwin/arm64 and linux/arm64. Pinning one of them is what made this suite
+ * pass locally and fail on every CI runner, so the set is named here and the
+ * platform's choice within it is not the test's business. What the assertion
+ * still refuses is `ERR_STREAM_WRITE_AFTER_END`: that is the guarded path, not
+ * an in-flight reset, and seeing it here would mean the test stopped
+ * exercising the race it exists for.
+ */
+const RESET_ERROR_CODES = ["EPIPE", "ECONNRESET", "ECONNABORTED"];
+
+/**
+ * Resolve once the broker-side socket has surfaced its transport error.
+ *
+ * How many event-loop turns the RST takes to arrive is the platform's
+ * business, so this waits on the event instead of on a fixed turn count.
+ * The `'error'` listener installed by `connectedPair` runs first, so the
+ * array is already populated when this resolves.
+ */
+async function awaitServerErrors(pair: Pair): Promise<Error[]> {
+	if (pair.serverErrors.length === 0) {
+		await new Promise<void>((resolve) => pair.server.once("error", () => resolve()));
+	}
+	return pair.serverErrors;
+}
+
 afterEach(() => {
 	for (const { pair, server } of openPairs.splice(0)) {
 		pair.client.destroy();
@@ -266,13 +295,19 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		assert.deepEqual(reasonCodes, [undefined, undefined, undefined]);
 	});
 
-	test("does not acknowledge an immediate peer reset before the write callback reports EPIPE", async () => {
+	test("does not acknowledge an immediate peer reset before the write callback reports the failure", async () => {
 		const harness = await sendHarness();
 		const message = question("reset-race-message", "hello");
 		const signature = buildMessageSendSignature("target-id", message, "sender-id");
 
 		assert.equal(isSocketOpenForWrite(harness.target.server), true);
 		harness.target.client.resetAndDestroy();
+		// The window this test exists for, and the reason the delivery path needs
+		// `writeMessageWithOutcome` rather than `writeMessageIfOpen`: the RST has
+		// not been observed locally yet, so the pre-write guard still reports the
+		// socket as writable and cannot refuse this send. Only the write callback
+		// can, and it answers asynchronously.
+		assert.equal(isSocketOpenForWrite(harness.target.server), true);
 		runSend(harness, message);
 		await settle();
 
@@ -282,10 +317,17 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		assert.equal(harness.cache.lookup(message.id, signature), "miss");
 		assert.equal(harness.pendingQuestions.matchesReply("target-id", "sender-id", message.id), false);
 		assert.deepEqual(harness.target.received, []);
+
+		// The frame really was handed to the socket and really did fail in flight,
+		// which is what separates this from the write-after-end case above.
+		const observed = await awaitServerErrors(harness.target);
+		const codes = observed.map((error) => (error as NodeJS.ErrnoException).code);
 		assert.equal(
-			harness.target.serverErrors.some((error) => (error as NodeJS.ErrnoException).code === "EPIPE"),
+			codes.every((code) => code !== undefined && RESET_ERROR_CODES.includes(code)),
 			true,
+			`expected only reset errnos on the broker socket, saw ${JSON.stringify(codes)}`,
 		);
+		assert.equal(harness.target.server.destroyed, true);
 	});
 
 	test("control: an open target still delivers, records, and authorizes the reply", async () => {
