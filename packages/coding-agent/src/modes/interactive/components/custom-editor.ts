@@ -12,10 +12,13 @@ import {
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.ts";
+import type { AtomicWorkingLoader } from "./atomic-working-status.ts";
 
 export interface CustomEditorOptions extends EditorOptions {
 	promptPrefix?: string;
 	placeholder?: string | (() => string);
+	/** Render the streaming working status in the editor's top border. */
+	embedWorkingStatus?: boolean;
 }
 
 const ANSI_ESCAPE_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[PX_][\s\S]*?\x1b\\/g;
@@ -39,6 +42,8 @@ export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
 	private promptPrefix: string;
 	private placeholder: string | (() => string) | undefined;
+	private workingStatusIndicator: AtomicWorkingLoader | undefined;
+	readonly embedWorkingStatus: boolean;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
 	// Special handlers that can be dynamically replaced
@@ -53,6 +58,11 @@ export class CustomEditor extends Editor {
 		this.keybindings = keybindings;
 		this.promptPrefix = options?.promptPrefix ?? "❯ ";
 		this.placeholder = options?.placeholder;
+		this.embedWorkingStatus = options?.embedWorkingStatus ?? false;
+	}
+
+	setWorkingStatusIndicator(indicator: AtomicWorkingLoader | undefined): void {
+		this.workingStatusIndicator = indicator;
 	}
 
 	setPlaceholder(placeholder: string | (() => string) | undefined): void {
@@ -79,6 +89,7 @@ export class CustomEditor extends Editor {
 				if (borderCount === 1) {
 					inPromptBox = true;
 					promptShown = false;
+					return this.renderTopBorderWithWorkingStatus(line, width);
 				} else if (borderCount === 2) {
 					inPromptBox = false;
 				}
@@ -103,6 +114,51 @@ export class CustomEditor extends Editor {
 		const placeholderWidth = Math.max(0, editorWidth - 1);
 		const text = truncateToWidth(placeholder, placeholderWidth, "...");
 		return `${cursor}${theme.fg("muted", text)}`;
+	}
+
+	private renderTopBorderWithWorkingStatus(line: string, width: number): string {
+		const indicator = this.workingStatusIndicator;
+		if (!this.embedWorkingStatus || !indicator || width <= 0) return this.extendBorderLine(line, width);
+
+		const plainLine = line.replace(ANSI_ESCAPE_PATTERN, "");
+		const overflowMatch = /↑ (\d+) more/.exec(plainLine);
+		let status = indicator.renderInBorder(Math.max(1, width - 5));
+		let statusWidth = visibleWidth(status);
+		if (statusWidth === 0) return this.extendBorderLine(line, width);
+
+		if (overflowMatch) {
+			const label = overflowMatch[0];
+			const labelStart = overflowMatch.index;
+			const remainingWidth = width - labelStart - visibleWidth(label);
+			if (remainingWidth < statusWidth + 3) {
+				status = indicator.renderSpinnerInBorder(width);
+				statusWidth = visibleWidth(status);
+			}
+			if (remainingWidth >= statusWidth + 3) {
+				const middleWidth = remainingWidth - statusWidth - 3;
+				return (
+					this.borderColor(`${"─".repeat(Math.max(0, labelStart - 1))} ${label} ${"─".repeat(middleWidth)} `) +
+					status +
+					this.borderColor("─")
+				);
+			}
+			// At widths that cannot carry both, preserve pi-tui's overflow label
+			// and its stable left-aligned position instead of shifting it.
+			return this.extendBorderLine(line, width);
+		}
+
+		if (width >= statusWidth + 5) {
+			return this.borderColor("── ") + status + this.borderColor(` ${"─".repeat(width - statusWidth - 4)}`);
+		}
+
+		status = indicator.renderSpinnerInBorder(width);
+		statusWidth = visibleWidth(status);
+		const prefixWidth = Math.min(3, Math.max(0, width - statusWidth));
+		return (
+			this.borderColor("─".repeat(prefixWidth)) +
+			status +
+			this.borderColor("─".repeat(Math.max(0, width - prefixWidth - statusWidth)))
+		);
 	}
 
 	private isEditorBorderLine(line: string): boolean {

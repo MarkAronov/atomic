@@ -102,14 +102,19 @@ InteractiveModeBase.prototype.createWorkingLoader = function (this: InteractiveM
 	);
 };
 
+InteractiveModeBase.prototype.clearWorkingLoader = function (this: InteractiveModeBase): void {
+	this.loadingAnimation?.stop();
+	this.loadingAnimation = undefined;
+	this.workingIndicatorEmbedded = false;
+	this.setEditorWorkingStatusIndicator?.(undefined);
+	this.statusContainer.clear();
+};
+
 InteractiveModeBase.prototype.stopWorkingLoader = function (this: InteractiveModeBase): void {
 	const hadLoader = this.loadingAnimation !== undefined;
-	if (this.loadingAnimation) {
-		this.loadingAnimation.stop();
-		this.loadingAnimation = undefined;
-	}
-	this.statusContainer.clear();
-	if (hadLoader) mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+	const wasEmbedded = this.workingIndicatorEmbedded;
+	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
+	if (hadLoader && !wasEmbedded) mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 };
 
 InteractiveModeBase.prototype.showWorkingLoaderNow = function (this: InteractiveModeBase): void {
@@ -124,8 +129,10 @@ InteractiveModeBase.prototype.showWorkingLoaderNow = function (this: Interactive
 		return;
 	}
 	this.statusContainer.clear();
-	this.loadingAnimation = this.createWorkingLoader();
-	this.statusContainer.addChild(this.loadingAnimation);
+	const loader = this.createWorkingLoader();
+	this.loadingAnimation = loader;
+	this.workingIndicatorEmbedded = this.setEditorWorkingStatusIndicator?.(loader) ?? false;
+	if (!this.workingIndicatorEmbedded) this.statusContainer.addChild(loader);
 	this.ui.requestRender();
 };
 
@@ -138,8 +145,10 @@ InteractiveModeBase.prototype.setWorkingVisible = function (this: InteractiveMod
 	}
 	if (this.session.isStreaming && !this.loadingAnimation) {
 		this.statusContainer.clear();
-		this.loadingAnimation = this.createWorkingLoader();
-		this.statusContainer.addChild(this.loadingAnimation);
+		const loader = this.createWorkingLoader();
+		this.loadingAnimation = loader;
+		this.workingIndicatorEmbedded = this.setEditorWorkingStatusIndicator?.(loader) ?? false;
+		if (!this.workingIndicatorEmbedded) this.statusContainer.addChild(loader);
 	}
 	this.ui.requestRender();
 };

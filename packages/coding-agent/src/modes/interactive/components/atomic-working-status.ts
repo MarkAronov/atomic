@@ -1,4 +1,12 @@
-import { type Component, Loader, type LoaderIndicatorOptions, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Loader,
+	type LoaderIndicatorOptions,
+	stripTerminalSequences,
+	Text,
+	type TUI,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -190,6 +198,35 @@ export class AtomicWorkingLoader implements Component {
 				messageColor: this.messageColor,
 			}).render(width)
 		);
+	}
+
+	private sanitizeBorderLine(line: string): string {
+		// Preserve ANSI escape sequences (including Atomic's animation colors),
+		// while making extension-controlled text safe for a single terminal row.
+		return line.replaceAll("\t", " ").replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f]/g, "");
+	}
+
+	private renderSingleBorderLine(width: number): string {
+		// Border status is a single-line presentation. Keep the stored extension
+		// message/frames verbatim, but collapse rendered rows here so embedded
+		// newlines cannot make an unbounded width-search loop.
+		return this.render(Math.max(16, width + 2))
+			.slice(1)
+			.map((line) => this.sanitizeBorderLine(line).trim())
+			.filter((line) => stripTerminalSequences(line).length > 0)
+			.join(" ");
+	}
+
+	renderInBorder(width: number): string {
+		// Keep the loader's ANSI styling: Atomic's ten frames share the same `∀`
+		// glyph and animate entirely through their color/bold phase.
+		return truncateToWidth(this.renderSingleBorderLine(width).trim(), width, "");
+	}
+
+	renderSpinnerInBorder(width: number): string {
+		// The spinner is always the first rendered cell. Extract it by visible
+		// width rather than reverse-matching an extension-controlled message.
+		return truncateToWidth(this.renderSingleBorderLine(width).trimStart(), Math.min(1, width), "");
 	}
 
 	start(): void {

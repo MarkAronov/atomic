@@ -1,13 +1,17 @@
+import assert from "node:assert/strict";
 import { crc32, deflateSync } from "node:zlib";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
+	Container,
 	getCapabilities,
+	getKeybindings,
 	type Image,
 	isViewportTUI,
 	resetCapabilitiesCache,
 	ScrollView,
 	setCapabilities,
 	setCellDimensions,
+	setKeybindings,
 	Text,
 	type TUI,
 	type TuiAltScreen,
@@ -17,6 +21,9 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { registerContentTools } from "../../web-access/content-tools.ts";
 import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import {
 	createInteractiveTui,
@@ -24,6 +31,7 @@ import {
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -282,9 +290,11 @@ describe("interactive TUI renderer", () => {
 		expect([terminal.startCount, terminal.stopCount]).toEqual([1, 1]);
 		expect(terminal.cursorVisible).toBe(true);
 	});
-	test("keeps the fullscreen dock fixed while the transcript scrolls and resizes", async () => {
+	test("keeps the fullscreen dock fixed and offers a clickable jump to latest while scrolled up", async () => {
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+j" }));
 		const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext({
-			columns: 24,
+			columns: 50,
 			rows: 12,
 		});
 
@@ -296,9 +306,10 @@ describe("interactive TUI renderer", () => {
 			if (!transcript) throw new Error("production transcript did not mount");
 			const getFrame = () => getLayoutFrame(tui);
 			const initial = getFrame();
+			const initialTranscript = initial.root.children[0];
 			const initialDock = initial.root.children[1];
 			const dock = context.fullscreenLayoutRoot?.children[1];
-			if (!dock) throw new Error("fullscreen dock did not render");
+			if (!initialTranscript || !dock) throw new Error("fullscreen layout did not render");
 			expect(initialDock.component).toBe(dock);
 			expect(initialDock.rect.height).toBe(dock.render(terminal.columns).length);
 			expect(initialDock.rect.y).toBe(terminal.rows - initialDock.rect.height);
@@ -313,29 +324,63 @@ describe("interactive TUI renderer", () => {
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(initialScrollTop - 1);
 			const scrolled = getFrame();
+			const scrolledTranscript = scrolled.root.children[0];
 			const scrolledDock = scrolled.root.children[1];
-			if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
-			expect(scrolledDock.rect.height).toBe(initialDock.rect.height + 1);
-			expect(scrolledDock.rect.y).toBe(terminal.rows - scrolledDock.rect.height);
+			if (!scrolledTranscript || !scrolledDock) throw new Error("fullscreen layout disappeared after scrolling");
+			expect(scrolledDock.rect).toEqual(initialDock.rect);
 			const scrolledDockLines = scrolled.lines.slice(
 				scrolledDock.rect.y,
 				scrolledDock.rect.y + scrolledDock.rect.height,
 			);
-			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom"))).toBe(true);
-			expect(scrolledDockLines.some((line) => line.includes("Jump to bottom") && line.includes("\x1b]8;;"))).toBe(
-				true,
+			expect(scrolledDockLines.some((line) => line.includes("Jump to latest message"))).toBe(false);
+			expect(terminal.writes.at(-1)).toContain("↓ Jump to latest message · ctrl+j");
+			expect(terminal.writes.at(-1)).toContain(
+				`\x1b[${scrolledTranscript.rect.y + scrolledTranscript.rect.height};1H`,
 			);
-			expect(scrolledDockLines.at(-1)).toContain("footer");
 
-			context.jumpToTranscriptEnd();
+			const indicator = " ↓ Jump to latest message · ctrl+j ";
+			const indicatorColumn =
+				scrolledTranscript.rect.x + Math.floor((scrolledTranscript.rect.width - indicator.length) / 2);
+			const indicatorRow = scrolledTranscript.rect.y + scrolledTranscript.rect.height - 1;
+			const handleIndicatorInput = Reflect.get(tui, "handleScrollToEndIndicatorMouseInput") as (
+				data: string,
+			) => string | undefined;
+			const motion = `\x1b[<32;${indicatorColumn + 1};${indicatorRow + 1}M`;
+			expect(handleIndicatorInput.call(tui, motion)).toBeUndefined();
+			terminal.input(motion);
+			expect(transcript.isFollowingEnd).toBe(false);
+
+			const outsidePress = `\x1b[<0;1;${indicatorRow + 1}M`;
+			terminal.input(outsidePress);
+			expect(transcript.isFollowingEnd).toBe(false);
+
+			const overlayInput = vi.fn(() => true);
+			const overlay = tui.showOverlay(
+				{ render: () => ["overlay"], invalidate: () => {}, handleInput: overlayInput },
+				{ anchor: "bottom-center", width: "100%" },
+			);
+			tui.renderNow();
+			const overlayPress = `\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`;
+			terminal.input(overlayPress);
+			expect(overlayInput).toHaveBeenCalledWith(overlayPress);
+			expect(transcript.isFollowingEnd).toBe(false);
+			overlay.hide();
+			tui.renderNow();
+
+			const indicatorPress = `\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`;
+			const coalescedWheel = `\x1b[<64;1;${terminal.rows}M`;
+			terminal.input(indicatorPress + coalescedWheel);
+			expect(transcript.isFollowingEnd).toBe(false);
+			tui.renderNow();
+
+			terminal.input(`\x1b[<0;${indicatorColumn + 1};${indicatorRow + 1}M`);
 			tui.renderNow();
 			const jumped = getFrame();
 			const jumpedDock = jumped.root.children[1];
 			if (!jumpedDock) throw new Error("fullscreen dock disappeared after jumping to the transcript end");
 			expect(transcript.isFollowingEnd).toBe(true);
 			expect(jumpedDock.rect).toEqual(initialDock.rect);
-			const jumpedDockLines = jumped.lines.slice(jumpedDock.rect.y, jumpedDock.rect.y + jumpedDock.rect.height);
-			expect(jumpedDockLines.some((line) => line.includes("Jump to bottom"))).toBe(false);
+			expect(terminal.writes.at(-1)).not.toContain("Jump to latest message");
 
 			terminal.resize(30, 8);
 			tui.renderNow();
@@ -353,6 +398,49 @@ describe("interactive TUI renderer", () => {
 			await initPromise;
 			tui.stop();
 			restoreOffline();
+			setKeybindings(previousKeybindings);
+		}
+	});
+	test("does not composite the jump-to-latest label onto an image row", () => {
+		const terminal = new RecordingTerminal();
+		terminal.columns = 50;
+		terminal.rows = 12;
+		const tui = createFullscreenTui({
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		}) as TuiAltScreen;
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ follow: "end", primary: true },
+		);
+		tui.setLayoutRoot(transcript);
+		tui.start();
+		try {
+			tui.renderNow();
+			transcript.scrollTo(0);
+			tui.renderNow();
+			const frame = getLayoutFrame(tui);
+			const row = frame.root.rect.y + frame.root.rect.height - 1;
+			const imageLine = "\x1b_Ga=p,i=1,r=1,c=1\x1b\\";
+			const lines = [...frame.lines];
+			lines[row] = imageLine;
+			const composite = Reflect.get(tui, "compositeScrollToEndIndicator") as (
+				lines: string[],
+				width: number,
+				height: number,
+			) => string[];
+
+			const plainLines = composite.call(tui, [...frame.lines], terminal.columns, terminal.rows);
+			expect(plainLines[row]).toContain("Jump to latest message");
+
+			expect(composite.call(tui, lines, terminal.columns, terminal.rows)[row]).toBe(imageLine);
+
+			const staleLines = [...frame.lines];
+			transcript.updateLayout(40, frame.root.rect.height - 1, () => {});
+			expect(composite.call(tui, staleLines, terminal.columns, terminal.rows)).toEqual(staleLines);
+		} finally {
+			tui.stop();
 		}
 	});
 	test.sequential("clips a real fetch_content Kitty image at the sticky dock and reuses its upload", async () => {
@@ -602,5 +690,157 @@ describe("InteractiveMode /copy confirmation", () => {
 			await copyCommandPrototype.handleCopyCommand.call(context, { preferSelection: true });
 			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
 		}
+	});
+});
+type WorkingLoaderStopContext = {
+	loadingAnimation: { stop(): void } | undefined;
+	workingIndicatorEmbedded: boolean;
+	setEditorWorkingStatusIndicator(indicator: undefined): boolean;
+	statusContainer: Container;
+	settingsManager: { getClearOnShrink(): boolean };
+};
+type WorkingLoaderPrototype = {
+	clearWorkingLoader(this: WorkingLoaderStopContext): void;
+	handleClearCommand(this: Record<string, unknown>): Promise<void>;
+	stopWorkingLoader(this: WorkingLoaderStopContext): void;
+	setCustomEditorComponent(this: Record<string, unknown>, factory: ((...args: never[]) => unknown) | undefined): void;
+	resetExtensionUI(this: Record<string, unknown>): void;
+};
+
+const workingLoaderPrototype = InteractiveMode.prototype as unknown as WorkingLoaderPrototype;
+
+describe("clear-on-shrink working status spacing", () => {
+	test("an embedded working indicator does not reserve standalone status height", () => {
+		const stop = vi.fn();
+		const clearEditorIndicator = vi.fn(() => true);
+		const context: WorkingLoaderStopContext = {
+			loadingAnimation: { stop },
+			workingIndicatorEmbedded: true,
+			setEditorWorkingStatusIndicator: clearEditorIndicator,
+			statusContainer: new Container(),
+			settingsManager: { getClearOnShrink: () => true },
+		};
+
+		workingLoaderPrototype.stopWorkingLoader.call(context);
+
+		expect(stop).toHaveBeenCalledOnce();
+		expect(clearEditorIndicator).toHaveBeenCalledWith(undefined);
+		expect(context.statusContainer.children).toHaveLength(0);
+	});
+
+	test("the new-session teardown clears an embedded indicator from the editor border", async () => {
+		initTheme("dark");
+		const tui = createGuardedTui();
+		const editor = new CustomEditor(tui, getEditorTheme(), new KeybindingsManager(), { embedWorkingStatus: true });
+		const loader = new AtomicWorkingLoader(tui, undefined, String, "Working");
+		editor.setWorkingStatusIndicator(loader);
+		assert.match(editor.render(40)[0] ?? "", /∀/);
+
+		const context = {
+			ensureDeferredStartupComplete: async () => {},
+			loadingAnimation: loader,
+			workingIndicatorEmbedded: true,
+			setEditorWorkingStatusIndicator: (indicator: AtomicWorkingLoader | undefined) => {
+				editor.setWorkingStatusIndicator(indicator);
+				return true;
+			},
+			statusContainer: new Container(),
+			runtimeHost: { newSession: async () => ({ cancelled: true }) },
+		};
+
+		await workingLoaderPrototype.handleClearCommand.call(context as unknown as Record<string, unknown>);
+
+		assert.doesNotMatch(editor.render(40)[0] ?? "", /∀/);
+		assert.equal(context.loadingAnimation, undefined);
+	});
+
+	test("a standalone working indicator reserves clear-on-shrink status height", () => {
+		const context: WorkingLoaderStopContext = {
+			loadingAnimation: { stop: vi.fn() },
+			workingIndicatorEmbedded: false,
+			setEditorWorkingStatusIndicator: vi.fn(() => false),
+			statusContainer: new Container(),
+			settingsManager: { getClearOnShrink: () => true },
+		};
+
+		workingLoaderPrototype.stopWorkingLoader.call(context);
+		expect(context.statusContainer.children).toHaveLength(1);
+	});
+
+	test("switching to a non-opting custom editor remounts an active loader as a standalone row", () => {
+		const loader = Object.create(AtomicWorkingLoader.prototype) as AtomicWorkingLoader;
+		const statusContainer = new Container();
+		const setEditorWorkingStatusIndicator = vi.fn(() => false);
+		const defaultEditor = {
+			onSubmit: undefined,
+			onChange: undefined,
+			borderColor: String,
+			getPaddingX: () => 0,
+			getAutocompleteMaxVisible: () => 10,
+			actionHandlers: new Map<string, () => void>(),
+		};
+		const newEditor = {
+			setText: vi.fn(),
+			render: () => [],
+			invalidate: () => {},
+		};
+		const context = {
+			editorComponentFactory: undefined,
+			editor: { getText: () => "draft" },
+			defaultEditor,
+			disposeActiveSelector: vi.fn(),
+			editorContainer: new Container(),
+			keybindings: {},
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			autocompleteProvider: undefined,
+			loadingAnimation: loader,
+			statusContainer,
+			workingIndicatorEmbedded: true,
+			setEditorWorkingStatusIndicator,
+		};
+
+		workingLoaderPrototype.setCustomEditorComponent.call(
+			context as unknown as Record<string, unknown>,
+			(() => newEditor) as (...args: never[]) => unknown,
+		);
+
+		expect(setEditorWorkingStatusIndicator).toHaveBeenCalledWith(loader);
+		expect(context.workingIndicatorEmbedded).toBe(false);
+		expect(statusContainer.children).toEqual([loader]);
+	});
+
+	test("resetting extension UI uses the default Working interrupt label", () => {
+		setKeybindings(KeybindingsManager.create());
+		const setMessage = vi.fn();
+		const context = {
+			extensionSelector: undefined,
+			extensionInput: undefined,
+			extensionEditor: undefined,
+			ui: { hideOverlay: vi.fn() },
+			clearExtensionTerminalInputListeners: vi.fn(),
+			setExtensionFooter: vi.fn(),
+			setExtensionHeader: vi.fn(),
+			clearExtensionWidgets: vi.fn(),
+			footerDataProvider: { clearExtensionStatuses: vi.fn() },
+			footer: { invalidate: vi.fn() },
+			autocompleteProviderWrappers: ["stale"],
+			setCustomEditorComponent: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			defaultEditor: { onExtensionShortcut: undefined },
+			interactiveEngineShortcutHandler: vi.fn(),
+			updateTerminalTitle: vi.fn(),
+			defaultWorkingMessage: "Working",
+			workingMessage: "custom",
+			workingVisible: false,
+			setWorkingIndicator: vi.fn(),
+			loadingAnimation: { setMessage },
+			setHiddenThinkingLabel: vi.fn(),
+		};
+
+		workingLoaderPrototype.resetExtensionUI.call(context as unknown as Record<string, unknown>);
+
+		assert.equal(context.workingMessage, undefined);
+		assert.equal(context.workingVisible, true);
+		assert.deepEqual(setMessage.mock.calls, [["Working (esc Interrupt)"]]);
 	});
 });

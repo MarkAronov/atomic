@@ -89,8 +89,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			this.stopWorkingLoader();
 			if (this.workingVisible) {
-				this.loadingAnimation = this.createWorkingLoader();
-				this.statusContainer.addChild(this.loadingAnimation);
+				const loader = this.createWorkingLoader();
+				this.loadingAnimation = loader;
+				this.workingIndicatorEmbedded = this.setEditorWorkingStatusIndicator?.(loader) ?? false;
+				if (!this.workingIndicatorEmbedded) this.statusContainer.addChild(loader);
 			}
 			this.ui.requestRender();
 			break;
@@ -312,12 +314,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
-			if (this.loadingAnimation) {
-				this.loadingAnimation.stop();
-				this.loadingAnimation = undefined;
-				this.statusContainer.clear();
-				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
-			}
+			if (this.loadingAnimation) this.stopWorkingLoader();
 			if (this.streamingComponent) {
 				this.chatContainer.removeChild(this.streamingComponent);
 				this.streamingComponent = undefined;
