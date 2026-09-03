@@ -38,9 +38,6 @@ import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
 
-/** A real child broker plus a real TypeScript runner; well above the observed ~100 ms startup. */
-const REAL_BROKER_SUITE_TIMEOUT_MS = 30_000;
-
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-stale-"));
@@ -166,126 +163,115 @@ beforeAll(async () => {
 	});
 	closeSync(logFd);
 	await waitForBroker();
-}, REAL_BROKER_SUITE_TIMEOUT_MS);
+});
 
 afterAll(() => {
 	broker?.kill("SIGTERM");
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-test(
-	"a broker-ended session is retired, and healthy peers keep working without write-after-end",
-	async () => {
-		const observer = new WireClient();
-		const observerId = await register(observer, "stale-observer");
+test("a broker-ended session is retired, and healthy peers keep working without write-after-end", async () => {
+	const observer = new WireClient();
+	const observerId = await register(observer, "stale-observer");
 
-		const zombie = new WireClient(true);
-		const zombieId = await makeBrokerEndedSession(zombie, "stale-zombie");
-		assert.notEqual(zombieId, observerId);
+	const zombie = new WireClient(true);
+	const zombieId = await makeBrokerEndedSession(zombie, "stale-zombie");
+	assert.notEqual(zombieId, observerId);
 
-		// Trigger the broadcast that used to write into the refused peer's ended socket:
-		// registering a new session fans `session_joined` out to every group member.
-		const healthy = new WireClient();
-		const healthyId = await register(healthy, "stale-healthy");
-		await observer.next("session_joined", (frame) => frame.session.id === healthyId);
+	// Trigger the broadcast that used to write into the refused peer's ended socket:
+	// registering a new session fans `session_joined` out to every group member.
+	const healthy = new WireClient();
+	const healthyId = await register(healthy, "stale-healthy");
+	await observer.next("session_joined", (frame) => frame.session.id === healthyId);
 
-		// Retirement, observed from another session rather than from broker internals —
-		// and it must have happened at the refusal, not as a side effect of a later
-		// failed write. The ordering assertion is what separates the two: a departure
-		// caused by a write-after-end destroy can only land after the broadcast that
-		// destroyed it.
-		const departure = await observer.next("session_left", (frame) => frame.sessionId === zombieId);
-		const frameTypes = observer.received;
-		assert.ok(
-			frameTypes.indexOf(departure) <
-				frameTypes.findIndex((frame) => frame.type === "session_joined" && frame.session.id === healthyId),
-			`session_left arrived after the broadcast: ${JSON.stringify(frameTypes.map((frame) => frame.type))}`,
-		);
+	// Retirement, observed from another session rather than from broker internals —
+	// and it must have happened at the refusal, not as a side effect of a later
+	// failed write. The ordering assertion is what separates the two: a departure
+	// caused by a write-after-end destroy can only land after the broadcast that
+	// destroyed it.
+	const departure = await observer.next("session_left", (frame) => frame.sessionId === zombieId);
+	const frameTypes = observer.received;
+	assert.ok(
+		frameTypes.indexOf(departure) <
+			frameTypes.findIndex((frame) => frame.type === "session_joined" && frame.session.id === healthyId),
+		`session_left arrived after the broadcast: ${JSON.stringify(frameTypes.map((frame) => frame.type))}`,
+	);
 
-		observer.send({ type: "list", requestId: "after-refusal" });
-		const listed = (await observer.next("sessions", (frame) => frame.requestId === "after-refusal")).sessions.map(
-			({ id }) => id,
-		);
-		assert.deepEqual(listed.sort(), [healthyId, observerId].sort());
+	observer.send({ type: "list", requestId: "after-refusal" });
+	const listed = (await observer.next("sessions", (frame) => frame.requestId === "after-refusal")).sessions.map(
+		({ id }) => id,
+	);
+	assert.deepEqual(listed.sort(), [healthyId, observerId].sort());
 
-		// The peer that half-closed never produced a 'close', so this is exactly the
-		// state in which the old broker kept broadcasting into an ended socket.
-		assert.equal(zombie.socket.destroyed, false);
+	// The peer that half-closed never produced a 'close', so this is exactly the
+	// state in which the old broker kept broadcasting into an ended socket.
+	assert.equal(zombie.socket.destroyed, false);
 
-		// The healthy peers keep working and stay connected.
-		healthy.send({
-			type: "send",
-			to: observerId,
-			message: { id: "healthy-1", timestamp: 2, content: { text: "hi" } },
-		});
-		await healthy.next("delivered", (frame) => frame.messageId === "healthy-1");
-		await observer.next("message", (frame) => frame.message.id === "healthy-1");
-		assert.equal(observer.socket.destroyed, false);
-		assert.equal(healthy.socket.destroyed, false);
+	// The healthy peers keep working and stay connected.
+	healthy.send({
+		type: "send",
+		to: observerId,
+		message: { id: "healthy-1", timestamp: 2, content: { text: "hi" } },
+	});
+	await healthy.next("delivered", (frame) => frame.messageId === "healthy-1");
+	await observer.next("message", (frame) => frame.message.id === "healthy-1");
+	assert.equal(observer.socket.destroyed, false);
+	assert.equal(healthy.socket.destroyed, false);
 
-		assert.equal(brokerLog().includes("ERR_STREAM_WRITE_AFTER_END"), false, brokerLog());
-		assert.equal(brokerLog().includes("Socket error"), false, brokerLog());
+	assert.equal(brokerLog().includes("ERR_STREAM_WRITE_AFTER_END"), false, brokerLog());
+	assert.equal(brokerLog().includes("Socket error"), false, brokerLog());
 
-		for (const client of [observer, healthy, zombie]) client.socket.end();
-	},
-	REAL_BROKER_SUITE_TIMEOUT_MS,
-);
+	for (const client of [observer, healthy, zombie]) client.socket.end();
+});
 
-test(
-	"a send to a broker-ended session fails truthfully and keeps the message id retryable",
-	async () => {
-		const sender = new WireClient();
-		await register(sender, "truthful-sender");
+test("a send to a broker-ended session fails truthfully and keeps the message id retryable", async () => {
+	const sender = new WireClient();
+	await register(sender, "truthful-sender");
 
-		const zombie = new WireClient(true);
-		const zombieId = await makeBrokerEndedSession(zombie, "truthful-zombie");
-		// Deliberately no wait for `session_left` first: this is the window in which the
-		// broker used to answer `delivered` for a peer that received nothing.
+	const zombie = new WireClient(true);
+	const zombieId = await makeBrokerEndedSession(zombie, "truthful-zombie");
+	// Deliberately no wait for `session_left` first: this is the window in which the
+	// broker used to answer `delivered` for a peer that received nothing.
 
-		const message = { id: "truthful-1", timestamp: 3, content: { text: "first" } };
-		sender.send({ type: "send", to: zombieId, message });
-		const first = await sender.next("delivery_failed", (frame) => frame.messageId === "truthful-1");
-		assert.equal(first.reason, "Session not found");
-		assert.equal(first.reasonCode, undefined);
-		// Nothing was delivered, so the ack must not be `delivered`.
-		assert.equal(
-			sender.received.some((frame) => frame.type === "delivered" && frame.messageId === "truthful-1"),
-			false,
-		);
-		// And the peer really did not get it, which is what makes `delivered` a lie.
-		assert.equal(
-			zombie.received.some((frame) => frame.type === "message"),
-			false,
-		);
+	const message = { id: "truthful-1", timestamp: 3, content: { text: "first" } };
+	sender.send({ type: "send", to: zombieId, message });
+	const first = await sender.next("delivery_failed", (frame) => frame.messageId === "truthful-1");
+	assert.equal(first.reason, "Session not found");
+	assert.equal(first.reasonCode, undefined);
+	// Nothing was delivered, so the ack must not be `delivered`.
+	assert.equal(
+		sender.received.some((frame) => frame.type === "delivered" && frame.messageId === "truthful-1"),
+		false,
+	);
+	// And the peer really did not get it, which is what makes `delivered` a lie.
+	assert.equal(
+		zombie.received.some((frame) => frame.type === "message"),
+		false,
+	);
 
-		// The identical retry is refused the same way rather than answered `delivered`
-		// out of a cache entry the failed send never earned.
-		sender.send({ type: "send", to: zombieId, message });
-		const retry = await sender.next(
-			"delivery_failed",
-			(frame) => frame.messageId === "truthful-1" && frame !== first,
-		);
-		assert.equal(retry.reason, "Session not found");
-		assert.equal(retry.reasonCode, undefined);
+	// The identical retry is refused the same way rather than answered `delivered`
+	// out of a cache entry the failed send never earned.
+	sender.send({ type: "send", to: zombieId, message });
+	const retry = await sender.next("delivery_failed", (frame) => frame.messageId === "truthful-1" && frame !== first);
+	assert.equal(retry.reason, "Session not found");
+	assert.equal(retry.reasonCode, undefined);
 
-		// A retry that changes the payload is not a conflict either: the id was never burned.
-		sender.send({
-			type: "send",
-			to: zombieId,
-			message: { id: "truthful-1", timestamp: 4, content: { text: "second" } },
-		});
-		await sender.next(
-			"delivery_failed",
-			(frame) => frame.messageId === "truthful-1" && frame !== first && frame !== retry,
-		);
-		assert.deepEqual(
-			sender.received.filter((frame) => frame.type === "delivery_failed").map((frame) => frame.reasonCode),
-			[undefined, undefined, undefined],
-		);
+	// A retry that changes the payload is not a conflict either: the id was never burned.
+	sender.send({
+		type: "send",
+		to: zombieId,
+		message: { id: "truthful-1", timestamp: 4, content: { text: "second" } },
+	});
+	await sender.next(
+		"delivery_failed",
+		(frame) => frame.messageId === "truthful-1" && frame !== first && frame !== retry,
+	);
+	assert.deepEqual(
+		sender.received.filter((frame) => frame.type === "delivery_failed").map((frame) => frame.reasonCode),
+		[undefined, undefined, undefined],
+	);
 
-		assert.equal(brokerLog().includes("ERR_STREAM_WRITE_AFTER_END"), false, brokerLog());
+	assert.equal(brokerLog().includes("ERR_STREAM_WRITE_AFTER_END"), false, brokerLog());
 
-		for (const client of [sender, zombie]) client.socket.end();
-	},
-	REAL_BROKER_SUITE_TIMEOUT_MS,
-);
+	for (const client of [sender, zombie]) client.socket.end();
+});
