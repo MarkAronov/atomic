@@ -297,7 +297,21 @@ export class IntercomClient extends EventEmitter {
 
       const onSocketError = (err: Error) => {
         if (connectionEstablished) {
-          this.disconnectError = err;
+          // A transport error on an already-registered socket (ECONNRESET, EPIPE,
+          // ETIMEDOUT, or a write-after-end from our own write) is a *recoverable*
+          // disconnect: the broker connection is gone, and the lightweight wrapper
+          // re-imports and reconnects on the next call. Record it as the typed
+          // recoverable error so `onClose` rejects pending work and emits
+          // `disconnected` with something the classifier recognizes, and keep the
+          // raw transport error as `cause` so the code is still diagnosable.
+          //
+          // `??=`, not `=`: `onReaderError` records a protocol error and then
+          // destroys the socket, and a socket 'error' can still follow. Overwriting
+          // would silently downgrade a non-recoverable protocol failure into a
+          // recoverable one. First error recorded wins.
+          this.disconnectError ??= new IntercomClientDisconnectedError({ cause: err });
+          // The raw error keeps flowing to `error` listeners: that channel exists for
+          // diagnosis, and the transport code is what a debugger wants to see.
           this.emit("error", err);
         }
       };

@@ -76,7 +76,13 @@ export function handleBrokerSend(
 	currentId: string | null,
 	sessions: Map<string, BrokerConnectedSession>,
 	deliveredMessages: DeliveredMessageCache,
-	write: (target: net.Socket, message: BrokerMessage) => void,
+	/**
+	 * Hand one frame to a socket. Returns whether the frame was actually written:
+	 * the broker's `writeMessageIfOpen` answers `false` for a socket whose
+	 * writable side has already ended, and a target delivery may only be recorded
+	 * and acknowledged when the answer is `true`.
+	 */
+	write: (target: net.Socket, message: BrokerMessage) => boolean,
 	supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
 	pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
 	routePendingStage?: PendingStageRouter,
@@ -224,9 +230,22 @@ export function handleBrokerSend(
 		) {
 			return;
 		}
-    write(target.socket, supervisorSend
-      ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
-      : { type: "message", from: fromSession.info, message });
+    if (
+      !write(
+        target.socket,
+        supervisorSend
+          ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
+          : { type: "message", from: fromSession.info, message },
+      )
+    ) {
+      // The target's socket stopped accepting frames between resolving it and this
+      // write. Nothing was delivered, so the delivered-message cache must not be
+      // recorded (that would burn the message id and refuse the honest retry with
+      // `message_id_conflict`), no reply authorization may be opened, and the ack
+      // must be the ordinary "Session not found" refusal the sender can retry.
+      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+      return;
+    }
     deliveredMessages.record(message.id, signature);
     if (message.expectsReply === true) {
       pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
