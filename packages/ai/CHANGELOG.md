@@ -6,7 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Breaking Changes
 
-- `createGatewayBindingFetch` now uses the Workers AI binding's native `fetch()` whenever it is available and forwards requests verbatim. On that path, the `baseUrl` and `gateway` options are inert, and the configured-prefix, method, and body rejection guarantees apply only to the legacy `gateway().run()` fallback. Existing Workers must point each model's `baseUrl` at `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}` instead of the previous `https://gateway.ai.cloudflare.com/v1/{account}/{gateway}` prefix. `AiGatewayBinding.gateway` is now optional because current bindings need only `fetch()`; consumers that call `gateway(id)` directly must narrow or check it first.
+- **Breaking:** `createGatewayBindingFetch` now requires `binding.fetch()` and always forwards requests verbatim. The `gateway(id).run(...)` universal-endpoint fallback is removed. `baseUrl` and `gateway` options are ignored. Bindings without `fetch()` throw at construction. Point each model's `baseUrl` at `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}`.
 
 ### Added
 
