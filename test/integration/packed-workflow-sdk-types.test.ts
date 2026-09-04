@@ -24,7 +24,12 @@ const packageDir = join(repoRoot, "packages", "coding-agent");
 const nativePackageDir = join(repoRoot, "packages", "natives");
 const piAiPackageDir = join(repoRoot, "packages", "ai");
 const tscEntry = join(repoRoot, "node_modules", "typescript", "bin", "tsc");
-const PACKED_ARTIFACT_TYPECHECK_TIMEOUT_MS = 240_000;
+const npmConfigPath = join(repoRoot, ".npmrc");
+// A stalled child must fail early enough to preserve a useful error and the
+// outer test's duration headroom. The total remains structural: it includes a
+// real package archive, a built-package install, and a tsc process.
+const PACKED_ARTIFACT_SUBPROCESS_TIMEOUT_MS = 100_000;
+const PACKED_ARTIFACT_TYPECHECK_TEST_TIMEOUT_MS = 300_000;
 const PACKED_PACKAGE_INPUTS = [
 	"package.json",
 	"dist",
@@ -118,7 +123,7 @@ function run(command: readonly string[], cwd: string): CommandOutput {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
-		timeout: PACKED_ARTIFACT_TYPECHECK_TIMEOUT_MS,
+		timeout: PACKED_ARTIFACT_SUBPROCESS_TIMEOUT_MS,
 	});
 	const stdout = result.stdout.toString();
 	const stderr = result.stderr.toString();
@@ -191,6 +196,7 @@ test(
 		run(
 			npmCommand(
 				"install",
+				`--userconfig=${npmConfigPath}`,
 				"--ignore-scripts",
 				"--no-package-lock",
 				"--omit=optional",
@@ -202,5 +208,5 @@ test(
 		);
 		run([process.execPath, tscEntry, "--project", "tsconfig.json", "--pretty", "false"], consumerDir);
 	},
-	PACKED_ARTIFACT_TYPECHECK_TIMEOUT_MS,
+	PACKED_ARTIFACT_TYPECHECK_TEST_TIMEOUT_MS,
 );

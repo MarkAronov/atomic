@@ -76,6 +76,87 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-flaky-test-suite\.ts/u);
 });
 
+/**
+ * Run 33833721342 reached `npm ci` with an exact-key cache hit, then emitted
+ * nothing for the full six-minute static-checks job cap. npm's former default
+ * allowed one HTTP request to wait 300 seconds before either of its retries,
+ * so the install policy could not recover before the job that owned it died.
+ *
+ * Bound one request conservatively as every attempt consuming fetch-timeout
+ * plus every retry consuming the maximum backoff. Keeping that below one third
+ * of the smallest job cap leaves the rest of the job two thirds of its budget
+ * and makes a future cap reduction move together with the repository policy.
+ */
+test("npm registry retries finish well inside the smallest CI job budget", async () => {
+	const npmConfig = new Map(
+		(await readText(join(root, ".npmrc")))
+			.split("\n")
+			.map((line) => /^(?<key>[a-z][a-z-]*)=(?<value>\S+)$/u.exec(line)?.groups)
+			.filter((entry): entry is { key: string; value: string } => entry !== undefined)
+			.map(({ key, value }) => [key, value]),
+	);
+	const integerConfig = (name: string): number => {
+		const value = npmConfig.get(name);
+		assert.ok(value, `.npmrc must declare ${name}`);
+		assert.match(value, /^\d+$/u, `${name} must be an integer, received ${value}`);
+		return Number(value);
+	};
+	const fetchTimeoutMs = integerConfig("fetch-timeout");
+	const fetchRetries = integerConfig("fetch-retries");
+	const retryMinTimeoutMs = integerConfig("fetch-retry-mintimeout");
+	const retryMaxTimeoutMs = integerConfig("fetch-retry-maxtimeout");
+	assert.ok(fetchRetries >= 1, "a transient registry stall must receive at least one retry");
+	assert.ok(retryMinTimeoutMs > 0, "registry retries need a positive backoff");
+	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
+
+	const workflow = parseYaml(await readText(testPath)) as Workflow;
+	const jobBudgetsMinutes = Object.values(workflow.jobs ?? {}).flatMap((job) => {
+		const directBudget = job["timeout-minutes"];
+		const direct = typeof directBudget === "number" ? [directBudget] : [];
+		const matrix = (job.strategy?.matrix?.include ?? []).flatMap((entry) => {
+			const budget = entry.timeout_minutes;
+			return typeof budget === "number" ? [budget] : [];
+		});
+		return [...direct, ...matrix];
+	});
+	assert.ok(jobBudgetsMinutes.length > 0, "test.yml must declare job timeout budgets");
+	const smallestJobBudgetMs = Math.min(...jobBudgetsMinutes) * 60_000;
+	const stalledRequestBudgetMs = fetchTimeoutMs * (fetchRetries + 1) + retryMaxTimeoutMs * fetchRetries;
+	assert.ok(
+		stalledRequestBudgetMs * 3 <= smallestJobBudgetMs,
+		`one stalled npm request can consume ${stalledRequestBudgetMs}ms, more than one third of the smallest CI job budget (${smallestJobBudgetMs}ms)`,
+	);
+});
+
+/**
+ * Run 33833721342 let the packed-artifact test's npm child consume the same
+ * 240-second budget as the whole test. The child timed out, and the 243795 ms
+ * test duration then exceeded the suite's 70% headroom gate as a second,
+ * guaranteed failure. The fixture lives outside the repository too, so npm
+ * does not discover the committed project .npmrc by walking up from its cwd.
+ */
+test("packed-artifact children cannot consume the whole test budget", async () => {
+	const source = await readText(join(root, "test/integration/packed-workflow-sdk-types.test.ts"));
+	const namedBudget = (name: string): number => {
+		const declaration = new RegExp(`^const ${name} = ([\\d_]+);$`, "mu").exec(source);
+		assert.ok(declaration, `packed-artifact test must declare ${name}`);
+		return Number((declaration[1] as string).replaceAll("_", ""));
+	};
+	const subprocessBudgetMs = namedBudget("PACKED_ARTIFACT_SUBPROCESS_TIMEOUT_MS");
+	const testBudgetMs = namedBudget("PACKED_ARTIFACT_TYPECHECK_TEST_TIMEOUT_MS");
+	assert.ok(
+		subprocessBudgetMs < testBudgetMs,
+		`packed-artifact subprocess budget ${subprocessBudgetMs}ms must be strictly smaller than its ${testBudgetMs}ms test budget`,
+	);
+	assert.match(source, /timeout: PACKED_ARTIFACT_SUBPROCESS_TIMEOUT_MS/u);
+	assert.match(source, /^\tPACKED_ARTIFACT_TYPECHECK_TEST_TIMEOUT_MS,$/mu);
+	assert.match(
+		source,
+		/`--userconfig=\$\{npmConfigPath\}`/u,
+		"the temp-dir install must explicitly use the repo .npmrc",
+	);
+});
+
 test("global setups provide artifacts and native bindings to every project", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
@@ -799,8 +880,14 @@ interface WorkflowMatrix {
 	[key: string]: string[] | MatrixEntry[] | undefined;
 }
 
+interface WorkflowJob {
+	"runs-on"?: string | string[];
+	"timeout-minutes"?: number | string;
+	strategy?: { matrix?: WorkflowMatrix };
+}
+
 interface Workflow {
-	jobs?: Record<string, { "runs-on"?: string | string[]; strategy?: { matrix?: WorkflowMatrix } }>;
+	jobs?: Record<string, WorkflowJob>;
 }
 
 /**
