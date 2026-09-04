@@ -653,7 +653,6 @@ export class InteractiveModeBase {
 		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
-			embedWorkingStatus: true,
 		});
 
 		this.editor = this.defaultEditor;

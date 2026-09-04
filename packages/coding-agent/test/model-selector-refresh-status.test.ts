@@ -89,6 +89,8 @@ describe("model selector catalog refresh status", () => {
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("cached-model");
 		expect(rendered).toContain("Could not refresh configured; showing cached models.");
+		const errorLine = rendered.split("\n").findIndex((line) => line.includes("Could not refresh configured"));
+		expect(rendered.split("\n")[errorLine - 1]).toBe("");
 	});
 
 	it("summarizes multiple provider errors", async () => {

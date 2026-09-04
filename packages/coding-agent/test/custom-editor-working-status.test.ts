@@ -45,7 +45,7 @@ afterEach(() => {
 	for (const loader of activeLoaders.splice(0)) loader.stop();
 });
 
-test("custom editors keep the standalone working row unless they opt in", () => {
+test("the default editor keeps the working indicator out of its border", () => {
 	const tui = new TuiMainScreen(new FakeTerminal());
 	const editor = new CustomEditor(tui, getEditorTheme(), new KeybindingsManager());
 	editor.setWorkingStatusIndicator(createLoader(tui));

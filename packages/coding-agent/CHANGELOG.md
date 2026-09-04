@@ -23,7 +23,7 @@
 
 ### Changed
 
-- Moved Atomic's streaming working indicator into the default editor border while preserving its animated `∀` luminance ramp. The default interactive label is now `Working` (and `Working (esc Interrupt)` while resetting extension UI) rather than `Working...`. Extension-supplied multi-line or control-character text is safely collapsed only for the single-line border presentation, and custom editors retain the standalone indicator unless they opt in to embedding it.
+- Changed the default interactive working copy from `Working...` to `Working` (and `Working (esc Interrupt)` while resetting extension UI) while preserving Atomic's animated `∀` luminance ramp in its standalone status row. Custom editors may opt into placing the indicator in their top border.
 - Replaced the fullscreen transcript's dock-reserved `Jump to bottom` row with the centered `Jump to latest message` overlay, so scrolling up no longer shrinks the transcript viewport by one row.
 - Aligned the shared workflow-stage-chat jump indicator with that overlay: `↓ Jump to latest message · <tui.altScreen.bottom>`, matching upstream pi's shortcut display.
 - `ModelRuntime` now attaches the first-party ChatGPT Codex routing identity itself, so a standalone `stream()`/`complete()`/`streamSimple()`/`completeSimple()` request on a route-bearing fast Codex model sends `originator: codex_cli_rs` and `x-codex-routing-hint: model=<base-upstream-model>;tier=priority` exactly as an agent-session turn does, and installs the WebSocket handshake identity that only CLI entrypoints used to install. It is applied after auth headers are merged, because the routing wrapper mutates a header object that header merging would otherwise copy. A normal model still sends `originator: pi` and no hint even when a caller requests the priority tier, and an extension that supplies its own stream function for a model's API keeps full ownership of its transport.
@@ -56,6 +56,7 @@
 - Fixed a jump-to-latest click discarding other mouse reports delivered in the same terminal input chunk.
 - Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
 - Pinned managed fd downloads on darwin/x64 to 10.3.0, matching upstream pi's known-good archive for that host ([#8708](https://github.com/earendil-works/pi/issues/8708)).
+- Fixed model catalog refresh errors in the `/model` selector rendering without the blank line used by the corresponding success status.
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
