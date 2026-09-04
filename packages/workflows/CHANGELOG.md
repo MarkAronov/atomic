@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Heartbeat, workflow-tool, and builtin stage guidance now directs shared scope and acceptance-criteria amendments through one authoritative path broadcast rather than enumerating known stages, and teaches path discovery, globs, sticky delivery, and live-only asks.
+- The stage-chat jump indicator now uses the same `↓ Jump to latest message · <shortcut>` copy as the fullscreen transcript overlay.
 
 ### Fixed
 

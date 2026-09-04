@@ -28,8 +28,8 @@ describe("TranscriptFollowIndicator", () => {
 	});
 
 	test("renders a centered linked highlight row with the live key label", () => {
-		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "Ctrl+End" });
-		const highlight = " Jump to bottom (Ctrl+End) ↓ ";
+		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "ctrl+end" });
+		const highlight = " ↓ Jump to latest message · ctrl+end ";
 		const highlightWidth = visibleWidth(highlight);
 		for (const width of [80, 41]) {
 			const rows = indicator.render(width);
@@ -42,7 +42,7 @@ describe("TranscriptFollowIndicator", () => {
 		const rows = indicator.render(80);
 		expect(rows[0]).toContain(OSC8_MARKER);
 		expect(rows[0]).toContain(TRANSCRIPT_JUMP_TO_END_URL);
-		expect(rows[0]).toContain("Ctrl+End");
+		expect(rows[0]).toContain("ctrl+end");
 		expect(rows[0]).not.toContain("┌");
 		expect(rows[0]).toContain(BG_MARKER);
 	});
@@ -53,7 +53,7 @@ describe("TranscriptFollowIndicator", () => {
 		expect(rows).toHaveLength(1);
 		expect(visibleWidth(rows[0]!)).toBeLessThanOrEqual(8);
 		expect(stripTerminalSequences(rows[0]!)).toContain("J");
-		expect(rows[0]).not.toContain("()");
+		expect(rows[0]).not.toContain("·");
 
 		for (const width of [0, 1, 2, 3, 4]) {
 			const narrowRows = indicator.render(width);

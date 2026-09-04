@@ -70,13 +70,13 @@ describe("StageChatView", () => {
 			pending.catch(() => {});
 			await flush();
 			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
-			assert.ok(scrolled.includes("Jump to bottom (ctrl+e) ↓"));
+			assert.ok(scrolled.includes("↓ Jump to latest message · ctrl+e"));
 			assert.ok(scrolled.includes("custom question"));
 
 			assert.equal(view.handleInput(String.fromCharCode(5)), true);
 			assert.equal(view._bodyScrollFromBottom, 0);
 			const bottom = stripTerminalSequences(view.render(96).join("\n"));
-			assert.ok(!bottom.includes("Jump to bottom"));
+			assert.ok(!bottom.includes("Jump to latest"));
 			assert.ok(bottom.includes("custom question"));
 		} finally {
 			abortController.abort();
