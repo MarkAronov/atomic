@@ -52,6 +52,7 @@
 - Fixed signal-killed child processes reporting a null exit code that callers could mistake for success; Unix signals now use the shell convention `128 + signal`, with unknown signal names falling back to the non-zero status 128 ([#8994](https://github.com/earendil-works/pi/pull/8994)).
 - Fixed Linux managed-tool downloads to use statically linked musl archives for fd and ripgrep on both x64 and ARM64 ([#9070](https://github.com/earendil-works/pi/pull/9070) by [@charlesisworkinghard](https://github.com/charlesisworkinghard)).
 - Fixed a jump-to-latest click discarding other mouse reports delivered in the same terminal input chunk.
+- Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 

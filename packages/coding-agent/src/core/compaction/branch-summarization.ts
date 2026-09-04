@@ -81,11 +81,11 @@ export interface GenerateBranchSummaryOptions {
 	customInstructions?: string;
 	/** If true, customInstructions replaces the default prompt instead of being appended */
 	replaceInstructions?: boolean;
-	/** Tokens reserved for prompt + LLM response (default 16384) */
+	/** Tokens reserved when selecting branch history (default 16384) */
 	reserveTokens?: number;
 	/**
 	 * Session reasoning level, inherited by the summarization request.
-	 * No output cap is sent, so thinking has no artificial budget to exhaust.
+	 * Output is capped at 4096 tokens, or the model's `maxTokens` if lower.
 	 */
 	thinkingLevel?: ThinkingLevel;
 	/** Optional session stream function. Used to preserve SDK request behavior without mutating agent state. */
@@ -364,17 +364,17 @@ export async function generateBranchSummary(
 	// request behavior stays consistent without mutating agent state.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
 	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
-	// Same budget rule as the compaction planner: no output cap is sent, so
-	// pi-ai's context clamp is the only bound and the inherited reasoning level
-	// has no artificial budget to exhaust. `reserveTokens` keeps its input-side
-	// meaning above, unchanged.
+	// Output is capped at 4096 tokens so reasoning cannot exhaust a 2048-token
+	// cap. `reserveTokens` keeps its input-side meaning above, unchanged.
 	const budget = resolvePlannerRequest(requestModel, thinkingLevel);
+	const maxTokens = Math.min(4096, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
 	const requestOptions: SimpleStreamOptions = {
 		apiKey,
 		headers,
 		signal,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
+		maxTokens,
 		...(budget.reasoning && budget.reasoning !== "off" ? { reasoning: budget.reasoning } : {}),
 	};
 	const response = await (async () => {
