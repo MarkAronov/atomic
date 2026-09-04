@@ -8,6 +8,7 @@ import {
 	AssistantMessageFrameEncoder,
 	type Model,
 	reduceAssistantMessageFrames,
+	type ThinkingContent,
 } from "../src/index.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
 
@@ -35,6 +36,32 @@ function frame(encoder: AssistantMessageFrameEncoder, event: AssistantMessageEve
 	const converted = encoder.encode(event);
 	if (!converted) throw new Error(`Expected ${event.type} event to produce a frame`);
 	return converted;
+}
+
+function deepFreeze<T>(value: T): T {
+	if (value === null || typeof value !== "object") return value;
+	for (const key of Reflect.ownKeys(value)) {
+		deepFreeze((value as Record<PropertyKey, unknown>)[key]);
+	}
+	return Object.freeze(value);
+}
+
+/**
+ * Builds a frame whose `contentIndex` accessor yields a different value on each read. A handler
+ * that reads it more than once validates one slot and then acts on another.
+ */
+function shiftingIndexFrame(base: Record<string, unknown>, values: unknown[]): AssistantMessageFrame {
+	let reads = 0;
+	const frame = { ...base };
+	Object.defineProperty(frame, "contentIndex", {
+		enumerable: true,
+		get() {
+			const value = values[Math.min(reads, values.length - 1)];
+			reads += 1;
+			return value;
+		},
+	});
+	return frame as unknown as AssistantMessageFrame;
 }
 
 describe("assistant message frames", () => {
@@ -602,5 +629,275 @@ describe("assistant message frames", () => {
 		expect(() => encoder.encode({ type: "text_start", contentIndex: 0, partial })).toThrow(
 			"text_start event points to thinking block",
 		);
+	});
+
+	it("drops stale optional fields as own properties when end frames omit them", () => {
+		const reduced = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{
+				type: "text_start",
+				contentIndex: 0,
+				content: { type: "text", text: "", textSignature: "stale-text" },
+			},
+			{ type: "text_end", contentIndex: 0, content: "done" },
+			{
+				type: "thinking_start",
+				contentIndex: 1,
+				content: { type: "thinking", thinking: "", thinkingSignature: "stale-thinking", redacted: true },
+			},
+			{ type: "thinking_end", contentIndex: 1, content: "thought" },
+			{
+				type: "toolcall_start",
+				contentIndex: 2,
+				toolCall: {
+					type: "toolCall",
+					id: "stale-id",
+					name: "stale-name",
+					arguments: { stale: true },
+					thoughtSignature: "stale-tool",
+					namespace: "stale-namespace",
+				},
+			},
+			{ type: "toolcall_end", contentIndex: 2, id: "call", name: "read", arguments: { path: "a" } },
+			{ type: "thinking_start", contentIndex: 3, content: { type: "thinking", thinking: "" } },
+			{ type: "thinking_end", contentIndex: 3, content: "kept", thinkingSignature: "", redacted: false },
+		]);
+
+		// `toEqual` treats an own property explicitly set to `undefined` as absent, so absence is
+		// pinned structurally with `toStrictEqual` and directly with `Object.hasOwn`.
+		expect(reduced?.content).toStrictEqual([
+			{ type: "text", text: "done" },
+			{ type: "thinking", thinking: "thought" },
+			{ type: "toolCall", id: "call", name: "read", arguments: { path: "a" } },
+			{ type: "thinking", thinking: "kept", thinkingSignature: "", redacted: false },
+		]);
+		const [text, thinking, toolCall, falsyThinking] = reduced?.content ?? [];
+		expect(Object.hasOwn(text, "textSignature")).toBe(false);
+		expect(Object.hasOwn(thinking, "thinkingSignature")).toBe(false);
+		expect(Object.hasOwn(thinking, "redacted")).toBe(false);
+		expect(Object.hasOwn(toolCall, "thoughtSignature")).toBe(false);
+		expect(Object.hasOwn(toolCall, "namespace")).toBe(false);
+		// Falsy-but-present end-frame metadata still survives.
+		expect(Object.hasOwn(falsyThinking, "thinkingSignature")).toBe(true);
+		expect(Object.hasOwn(falsyThinking, "redacted")).toBe(true);
+	});
+
+	it("reduces prototype-bearing frames without polluting prototypes or mutating sources", () => {
+		const partial = seed();
+		// A `__proto__:` key in an object literal sets the prototype; `defineProperty` is what
+		// smuggles an own `__proto__` data property through a frame.
+		Object.defineProperty(partial, "__proto__", {
+			value: { polluted: "yes" },
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+		const frames: AssistantMessageFrame[] = [
+			{ type: "start", partial },
+			{
+				type: "text_start",
+				contentIndex: 0,
+				content: { type: "text", text: "", textSignature: "stale-text" },
+			},
+			{ type: "text_end", contentIndex: 0, content: "hi" },
+			{
+				type: "toolcall_start",
+				contentIndex: 1,
+				toolCall: {
+					type: "toolCall",
+					id: "stale",
+					name: "stale",
+					arguments: {},
+					thoughtSignature: "stale-tool",
+					namespace: "stale-namespace",
+				},
+			},
+			{ type: "toolcall_delta", contentIndex: 1, delta: '{"__proto__":{"polluted":"yes"},"a":1}' },
+			{
+				type: "toolcall_end",
+				contentIndex: 1,
+				id: "call",
+				name: "read",
+				arguments: JSON.parse('{"__proto__":{"polluted":"yes"},"constructor":{"polluted":"yes"},"a":1}'),
+			},
+		];
+		const framesBefore = structuredClone(frames);
+		deepFreeze(frames);
+
+		const reduced = reduceAssistantMessageFrames(frames);
+		if (!reduced) throw new Error("Expected the frame sequence to reduce to a message");
+
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect(Object.prototype).not.toHaveProperty("polluted");
+		expect(Object.getPrototypeOf(reduced)).toBe(Object.prototype);
+		// The smuggled key stays own data on the reduced message rather than becoming its prototype.
+		expect(Object.hasOwn(reduced, "__proto__")).toBe(true);
+
+		const [text, toolCall] = reduced.content;
+		expect(text).toStrictEqual({ type: "text", text: "hi" });
+		expect(Object.getPrototypeOf(text)).toBe(Object.prototype);
+		if (toolCall.type !== "toolCall") throw new Error("Expected a tool-call block at index 1");
+		expect(Object.hasOwn(toolCall, "thoughtSignature")).toBe(false);
+		expect(Object.hasOwn(toolCall, "namespace")).toBe(false);
+		expect(Object.getPrototypeOf(toolCall)).toBe(Object.prototype);
+		expect(Object.getPrototypeOf(toolCall.arguments)).toBe(Object.prototype);
+		expect(Object.hasOwn(toolCall.arguments, "__proto__")).toBe(true);
+		expect(Object.hasOwn(toolCall.arguments, "constructor")).toBe(true);
+		expect(toolCall.arguments.a).toBe(1);
+		expect(toolCall.arguments.polluted).toBeUndefined();
+
+		// Deep-frozen sources reduce without a single write escaping into the frames: under ESM
+		// strict mode any write would already have thrown. `toEqual` rather than `toStrictEqual`
+		// because the latter compares `.constructor` identity, which the own `constructor` key
+		// above deliberately subverts on both sides.
+		expect(frames).toEqual(framesBefore);
+		expect(Reflect.ownKeys(frames[0])).toEqual(Reflect.ownKeys(framesBefore[0]));
+	});
+
+	it("rejects a prototype-shaped contentIndex before any content lookup", () => {
+		expect(() =>
+			reduceAssistantMessageFrames([
+				{ type: "start", partial: seed() },
+				{ type: "text_delta", contentIndex: "__proto__", delta: "x" } as unknown as AssistantMessageFrame,
+			]),
+		).toThrow("Invalid assistant message frame contentIndex: __proto__");
+	});
+
+	it("preserves unspecified own fields and key order through end frames", () => {
+		// Excess-property checking only fires on fresh literals in a typed position, so these
+		// blocks are bound to variables first. No cast is involved: carrying a field the block
+		// types do not name is valid public reducer input, and reduction must pass it through.
+		const text = {
+			text: "old",
+			type: "text" as const,
+			providerExtension: { version: 1 },
+			textSignature: "stale",
+		};
+		const thinking = {
+			type: "thinking" as const,
+			redacted: true,
+			vendorTag: "keep",
+			thinking: "old",
+			thinkingSignature: "stale",
+		};
+		const toolCall = {
+			type: "toolCall" as const,
+			namespace: "stale-ns",
+			id: "stale",
+			ext: { v: 2 },
+			name: "stale",
+			arguments: { x: 1 },
+			thoughtSignature: "stale",
+		};
+		const reduced = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{ type: "text_start", contentIndex: 0, content: text },
+			{ type: "text_end", contentIndex: 0, content: "done" },
+			{ type: "thinking_start", contentIndex: 1, content: thinking },
+			{ type: "thinking_end", contentIndex: 1, content: "thought", thinkingSignature: "fresh" },
+			{ type: "toolcall_start", contentIndex: 2, toolCall },
+			{ type: "toolcall_end", contentIndex: 2, id: "call", name: "read", arguments: { p: 1 }, namespace: "ns" },
+		]);
+
+		// Compared as JSON because that is what pins key order: an end frame supersedes the
+		// optionals it controls without reordering or dropping anything else the block carried.
+		expect(JSON.stringify(reduced?.content)).toBe(
+			JSON.stringify([
+				{ text: "done", type: "text", providerExtension: { version: 1 } },
+				{ type: "thinking", vendorTag: "keep", thinking: "thought", thinkingSignature: "fresh" },
+				{ type: "toolCall", id: "call", ext: { v: 2 }, name: "read", arguments: { p: 1 }, namespace: "ns" },
+			]),
+		);
+		expect(Reflect.ownKeys(reduced?.content[2] ?? {})).toEqual([
+			"type",
+			"id",
+			"ext",
+			"name",
+			"arguments",
+			"namespace",
+		]);
+	});
+
+	it("carries block own data across an end frame without letting it reach a prototype", () => {
+		const text = { type: "text" as const, text: "old" };
+		// An own `__proto__` data property on the block itself now flows through the end frame's
+		// object spread, which uses CreateDataProperty rather than Set.
+		Object.defineProperty(text, "__proto__", {
+			value: { polluted: "yes" },
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+		// A start block whose own prototype carries an attacker key, built without `Object.assign`
+		// so the test itself introduces no extend-call sink.
+		const inherited: ThinkingContent = Object.create({ polluted: "yes" });
+		inherited.type = "thinking";
+		inherited.thinking = "old";
+
+		const reduced = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{ type: "text_start", contentIndex: 0, content: text },
+			{ type: "text_end", contentIndex: 0, content: "done" },
+			{ type: "thinking_start", contentIndex: 1, content: inherited },
+			{ type: "thinking_end", contentIndex: 1, content: "thought" },
+		]);
+		if (!reduced) throw new Error("Expected the frame sequence to reduce to a message");
+
+		const [endedText, endedThinking] = reduced.content;
+		expect(Object.hasOwn(endedText, "__proto__")).toBe(true);
+		expect(Object.getPrototypeOf(endedText)).toBe(Object.prototype);
+		expect(Object.getPrototypeOf(endedThinking)).toBe(Object.prototype);
+		// An inherited key is never promoted to own data anywhere in the pipeline.
+		expect(JSON.stringify(endedThinking)).toBe(JSON.stringify({ type: "thinking", thinking: "thought" }));
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect(Object.prototype).not.toHaveProperty("polluted");
+	});
+
+	it("reads a text end frame's contentIndex once", () => {
+		const text = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{ type: "text_start", contentIndex: 0, content: { type: "text", text: "" } },
+			shiftingIndexFrame({ type: "text_end", content: "done" }, [0, "__proto__"]),
+		]);
+		expect(text?.content).toStrictEqual([{ type: "text", text: "done" }]);
+		// A second read of `"__proto__"` would install the rebuilt block as the array's prototype.
+		expect(Object.getPrototypeOf(text?.content ?? [])).toBe(Array.prototype);
+
+		// The same defect is reachable with two ordinary indices, so it needs no exotic key: a
+		// second read of `1` would end block 0 but overwrite block 1.
+		const twoBlocks = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{ type: "text_start", contentIndex: 0, content: { type: "text", text: "a" } },
+			{ type: "text_start", contentIndex: 1, content: { type: "text", text: "b" } },
+			shiftingIndexFrame({ type: "text_end", content: "done" }, [0, 1]),
+		]);
+		expect(twoBlocks?.content).toStrictEqual([
+			{ type: "text", text: "done" },
+			{ type: "text", text: "b" },
+		]);
+	});
+
+	it("reads a thinking end frame's contentIndex once", () => {
+		const thinking = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{ type: "thinking_start", contentIndex: 0, content: { type: "thinking", thinking: "" } },
+			shiftingIndexFrame({ type: "thinking_end", content: "thought" }, [0, "__proto__"]),
+		]);
+		expect(thinking?.content).toStrictEqual([{ type: "thinking", thinking: "thought" }]);
+		expect(Object.getPrototypeOf(thinking?.content ?? [])).toBe(Array.prototype);
+	});
+
+	it("reads a tool-call end frame's contentIndex once", () => {
+		const toolCall = reduceAssistantMessageFrames([
+			{ type: "start", partial: seed() },
+			{
+				type: "toolcall_start",
+				contentIndex: 0,
+				toolCall: { type: "toolCall", id: "a", name: "b", arguments: {} },
+			},
+			shiftingIndexFrame({ type: "toolcall_end", id: "c", name: "d", arguments: { p: 1 } }, [0, "__proto__"]),
+		]);
+		expect(toolCall?.content).toStrictEqual([{ type: "toolCall", id: "c", name: "d", arguments: { p: 1 } }]);
+		expect(Object.getPrototypeOf(toolCall?.content ?? [])).toBe(Array.prototype);
 	});
 });
