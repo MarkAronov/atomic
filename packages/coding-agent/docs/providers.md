@@ -400,11 +400,7 @@ export default {
                   {
                     ...options,
                     fetch: createGatewayBindingFetch({
-                      binding: env.AI,
-                      gateway: env.CLOUDFLARE_GATEWAY_ID,
-                      // Used only by the legacy gateway().run() fallback. The current
-                      // binding.fetch() path forwards the model URL untouched.
-                      baseUrl: bindingPrefix
+                      binding: env.AI
                     })
                   }
                 )
@@ -425,9 +421,7 @@ export default {
 };
 ```
 
-Current Workers AI bindings expose `fetch()`. On that default path, the request is forwarded untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`: `baseUrl` and `gateway` in `createGatewayBindingFetch` are compatibility options and do not filter, rewrite, or reject requests. Methods, headers (including the auth sentinel), query strings, non-JSON bodies, request streams, and response streams retain native fetch semantics; Cloudflare's gateway recognizes and strips the sentinel.
-
-For an older or structural binding that exposes only `gateway(id).run(...)`, the same helper falls back to Atomic's universal-endpoint translator. On that fallback only, `baseUrl` is the required request prefix and `gateway` selects the gateway: URLs outside the prefix, non-POST requests, missing or non-JSON bodies, and paths without both provider and endpoint reject with descriptive errors. The fallback strips the auth sentinel and derived transport headers before calling `run()`. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`), setting the model `baseUrl` to `${bindingPrefix}/openai` (or `${bindingPrefix}/compat`) for those provider routes.
+Current Workers AI bindings expose `fetch()`. `createGatewayBindingFetch` forwards each request untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`. `baseUrl` and `gateway` options are ignored. Methods, headers (including the auth sentinel), query strings, non-JSON bodies, request streams, and response streams retain native fetch semantics; Cloudflare's gateway recognizes and strips the sentinel. Bindings that only expose `gateway(id).run(...)` are not supported. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`), setting the model `baseUrl` to `${bindingPrefix}/openai` (or `${bindingPrefix}/compat`) for those provider routes.
 
 ### Cloudflare Workers AI
 
