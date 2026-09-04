@@ -243,7 +243,7 @@ describe("StageChatView", () => {
 			true,
 		);
 		const scrolledPrompt = view.render(96).map(stripTerminalSequences);
-		assert.doesNotMatch(scrolledPrompt.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(scrolledPrompt.join("\n"), /Jump to latest/);
 
 		const { handle } = makeHandle();
 		const controlView = new StageChatView({
@@ -274,7 +274,7 @@ describe("StageChatView", () => {
 		assert.equal(store.recordStageBlocked("run-1", "stage-a", "upstream-stage"), true);
 
 		const blocked = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.doesNotMatch(blocked, /Jump to bottom/);
+		assert.doesNotMatch(blocked, /Jump to latest/);
 		assert.match(blocked, /BLOCKED/);
 		view.dispose();
 	});
@@ -286,11 +286,11 @@ describe("StageChatView", () => {
 		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
 
 		const paused = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.match(paused, /Jump to bottom \(end\) ↓/);
+		assert.match(paused, /↓ Jump to latest message · end/);
 		assert.match(paused, /PAUSED/);
 		assert.equal(view.handleInput("\x1b[F"), true);
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to latest/);
 		view.dispose();
 	});
 	test("drops the paused indicator before its callout rows in a tight viewport", async () => {
@@ -303,7 +303,7 @@ describe("StageChatView", () => {
 		rows = 9;
 
 		const tight = view.render(96).map(stripTerminalSequences);
-		assert.doesNotMatch(tight.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(tight.join("\n"), /Jump to latest/);
 		assert.match(tight.join("\n"), /PAUSED/);
 		assert.match(tight.join("\n"), /This workflow stage is paused\./);
 		assert.equal(tight.length, 9);
@@ -322,7 +322,7 @@ describe("StageChatView", () => {
 		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
 
 		const paused = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.doesNotMatch(paused, /Jump to bottom/);
+		assert.doesNotMatch(paused, /Jump to latest/);
 		assert.match(paused, /PAUSED/);
 		view.dispose();
 	});
@@ -334,12 +334,12 @@ describe("StageChatView", () => {
 		assert.ok(view._bodyScrollFromBottom > 0);
 
 		const scrolled = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.match(scrolled, /Jump to bottom \(end\) ↓/);
+		assert.match(scrolled, /↓ Jump to latest message · end/);
 		assert.match(scrolled, /READ-ONLY SESSION/);
 
 		assert.equal(view.handleInput("\x1b[F"), true);
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to latest/);
 		view.dispose();
 	});
 
@@ -349,7 +349,7 @@ describe("StageChatView", () => {
 
 		const archive = view.render(96).map(stripTerminalSequences).join("\n");
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(archive, /Jump to bottom/);
+		assert.doesNotMatch(archive, /Jump to latest/);
 		assert.match(archive, /READ-ONLY SESSION/);
 		view.dispose();
 	});
@@ -369,7 +369,7 @@ describe("StageChatView", () => {
 		store.recordStageEnd("run-1", { ...promptedStage, status: "completed", endedAt: Date.now() });
 
 		const archived = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.doesNotMatch(archived, /Jump to bottom/);
+		assert.doesNotMatch(archived, /Jump to latest/);
 		assert.match(archived, /QUESTION ASKED/);
 		assert.match(archived, /Archived prompt question\?/);
 		view.dispose();
@@ -383,7 +383,7 @@ describe("StageChatView", () => {
 		rows = 7;
 
 		const tight = view.render(96).map(stripTerminalSequences);
-		assert.doesNotMatch(tight.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(tight.join("\n"), /Jump to latest/);
 		assert.match(tight.join("\n"), /READ-ONLY SESSION/);
 		assert.match(tight.join("\n"), /This node is no longer attached/);
 		assert.equal(tight.length, 7);
@@ -405,7 +405,7 @@ describe("StageChatView", () => {
 		rows = 200;
 		const grown = view.render(96).map(stripTerminalSequences);
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(grown.join("\n"), /Jump to latest/);
 		assert.equal(grown.length, 200);
 		view.dispose();
 	});
@@ -421,7 +421,7 @@ describe("StageChatView", () => {
 		rows = 200;
 		const grown = view.render(96).map(stripTerminalSequences);
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(grown.join("\n"), /Jump to latest/);
 		assert.equal(grown.length, 200);
 		view.dispose();
 	});
@@ -436,7 +436,7 @@ describe("StageChatView", () => {
 		rows = 200;
 		const grown = view.render(96).map(stripTerminalSequences);
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(grown.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(grown.join("\n"), /Jump to latest/);
 		assert.equal(grown.length, 200);
 		view.dispose();
 	});
@@ -451,11 +451,11 @@ describe("StageChatView", () => {
 			view.render(96);
 			assert.equal(view.handleInput("\x1b[5~"), true);
 			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
-			assert.match(scrolled, /Jump to bottom \(ctrl\+e\) ↓/);
+			assert.match(scrolled, /↓ Jump to latest message · ctrl\+e/);
 
 			assert.equal(view.handleInput("\x05"), true);
 			assert.equal(view._bodyScrollFromBottom, 0);
-			assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom/);
+			assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to latest/);
 		} finally {
 			view?.dispose();
 			setKeybindings(previousKeybindings);
@@ -468,7 +468,7 @@ describe("StageChatView", () => {
 		const visibleLines = bottom.map(stripTerminalSequences);
 
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(visibleLines.join("\n"), /Jump to bottom/);
+		assert.doesNotMatch(visibleLines.join("\n"), /Jump to latest/);
 		assert.match(visibleLines[2] ?? "", /follow-msg-16/);
 		assert.match(visibleLines[6] ?? "", /follow-msg-17/);
 		assert.equal(bottom.length, 12);
@@ -483,7 +483,7 @@ describe("StageChatView", () => {
 		const visible = stripTerminalSequences(scrolled.join("\n"));
 
 		assert.ok(view._bodyScrollFromBottom > 0);
-		assert.match(visible, /Jump to bottom \(end\) ↓/);
+		assert.match(visible, /↓ Jump to latest message · end/);
 		assert.equal(scrolled.length, 12);
 		view.dispose();
 	});
@@ -495,7 +495,7 @@ describe("StageChatView", () => {
 		assert.equal(view.handleInput("\x1b[5~"), true);
 		const scrolled = view.render(96);
 		assert.ok(view._bodyScrollFromBottom > 0);
-		assert.match(stripTerminalSequences(scrolled.join("\n")), /Jump to bottom \(end\) ↓/);
+		assert.match(stripTerminalSequences(scrolled.join("\n")), /↓ Jump to latest message · end/);
 		assert.equal(scrolled.length, 13);
 
 		assert.equal(view.handleInput("\x1b[6~"), true);
@@ -512,7 +512,7 @@ describe("StageChatView", () => {
 
 		assert.equal(view.handleInput(TRANSCRIPT_JUMP_TO_END_URL), true);
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom/);
+		assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to latest/);
 		view.dispose();
 	});
 
@@ -599,13 +599,13 @@ describe("StageChatView", () => {
 		const view = await makeScrollableStageChat();
 		view.render(96);
 		view.handleInput("\x1b[5~");
-		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · end/);
 
 		assert.equal(view.handleInput("\x1b[F"), true);
 		const bottom = view.render(96);
 		const visible = stripTerminalSequences(bottom.join("\n"));
 		assert.equal(view._bodyScrollFromBottom, 0);
-		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.doesNotMatch(visible, /Jump to latest/);
 		assert.equal(bottom.length, 12);
 		view.dispose();
 	});
@@ -615,13 +615,13 @@ describe("StageChatView", () => {
 		const view = await makeScrollableStageChat(() => rows, true);
 		view.render(96);
 		assert.equal(view.handleInput("\x1b[5~"), true);
-		assert.match(stripTerminalSequences(view.render(96).join("\n")), /Jump to bottom \(end\) ↓/);
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · end/);
 
 		rows = 8;
 		const tight = view.render(96);
 		const visible = stripTerminalSequences(tight.join("\n"));
 		assert.ok(view._bodyScrollFromBottom > 0);
-		assert.doesNotMatch(visible, /Jump to bottom/);
+		assert.doesNotMatch(visible, /Jump to latest/);
 		assert.ok(visible.includes("❯"), "composer must survive the tight viewport");
 		assert.match(visible, /ctrl\+x return to graph/);
 		assert.equal(tight.length, 8);
