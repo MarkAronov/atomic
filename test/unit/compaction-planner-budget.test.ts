@@ -2,8 +2,10 @@
  * RFC §8 — Unit: budget.
  *
  * The invented `0.8 × reserveTokens` output cap is gone. `PlannerBudget.maxTokens`
- * is declared `undefined` at the type level, the runtime request owns no
+ * is declared `undefined` at the type level, the planner's runtime request owns no
  * `maxTokens` key at all, and reasoning is inherited without per-attempt variation.
+ * Branch summarization is the one caller that does send an output cap: a fixed 4096
+ * tokens, clamped to the model's own `maxTokens` when that is lower.
  */
 
 import assert from "node:assert/strict";
@@ -74,23 +76,27 @@ test("an `off` inherited level sends no reasoning parameter", async () => {
 	assert.equal("reasoning" in stream.calls[0].options, false);
 });
 
-test("branch summarization omits maxTokens and inherits the session reasoning level", async () => {
-	const stream = scriptedStream({ default: [{ text: "a branch summary" }] });
-	const entries = [
-		{
-			id: "m1",
-			type: "message" as const,
-			parentId: null,
-			timestamp: new Date().toISOString(),
-			message: {
-				role: "user" as const,
-				content: [{ type: "text" as const, text: "hello there" }],
-				timestamp: Date.now(),
-			},
+const branchEntries = [
+	{
+		id: "m1",
+		type: "message" as const,
+		parentId: null,
+		timestamp: new Date().toISOString(),
+		message: {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "hello there" }],
+			timestamp: Date.now(),
 		},
-	];
-	const result = await generateBranchSummary(entries as never, {
-		model: testModel(),
+	},
+];
+
+test("branch summarization caps output at 4096 tokens and inherits the session reasoning level", async () => {
+	const stream = scriptedStream({ default: [{ text: "a branch summary" }] });
+	// The model limit is deliberately *above* the cap. `testModel()`'s own `maxTokens` is
+	// 4096, so the bare fixture would satisfy the assertion below even if the runtime
+	// forwarded `model.maxTokens` verbatim — proving nothing about the cap it names.
+	const result = await generateBranchSummary(branchEntries as never, {
+		model: testModel({ maxTokens: 8192 }),
 		apiKey: "primary-key",
 		signal: new AbortController().signal,
 		streamFn: stream.streamFn,
@@ -98,6 +104,20 @@ test("branch summarization omits maxTokens and inherits the session reasoning le
 	});
 	assert.equal(result.error, undefined);
 	assert.equal(stream.calls.length, 1);
-	assert.equal("maxTokens" in stream.calls[0].options, false);
+	assert.equal(stream.calls[0].options.maxTokens, 4096);
 	assert.equal(stream.calls[0].options.reasoning, "medium");
+});
+
+test("branch summarization clamps its output cap to a smaller model limit", async () => {
+	const stream = scriptedStream({ default: [{ text: "a branch summary" }] });
+	const result = await generateBranchSummary(branchEntries as never, {
+		model: testModel({ maxTokens: 1024 }),
+		apiKey: "primary-key",
+		signal: new AbortController().signal,
+		streamFn: stream.streamFn,
+		thinkingLevel: "medium",
+	});
+	assert.equal(result.error, undefined);
+	assert.equal(stream.calls.length, 1);
+	assert.equal(stream.calls[0].options.maxTokens, 1024);
 });

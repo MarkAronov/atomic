@@ -218,9 +218,13 @@ const proseNames = new Set([
 	"enabledModels",
 	"buildBaseOptions",
 	"supportsMidConvoEffort",
+	// `Model`/`SimpleStreamOptions` request field, never a package export.
+	"maxTokens",
 	"tsgo",
 	"write",
 	"edit",
+	// Terminal UI copy, not a symbol: the interactive working-status label.
+	"Working",
 ]);
 
 function unreleasedBlock(changelogPath: string): string {
