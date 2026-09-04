@@ -388,6 +388,11 @@ test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
 	assert.equal(vercel.maxTokens, 65_536);
 	assert.deepEqual(vercel.input, ["text", "image"]);
 	assert.deepEqual(vercel.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
+	// The gateway publishes no per-model thinking levels for its `anthropic-messages` models, so no
+	// map is generated and its entry keeps offering `off` and `minimal` while the Google-path and
+	// OpenAI-completions mirrors deny both. Pre-existing for every Gemini generation on the gateway,
+	// and the reason the user-facing docs scope the three-level claim to the other mirrors.
+	assert.equal(vercel.thinkingLevelMap, undefined);
 });
 
 test("yields to models.dev once it publishes the GitHub Copilot entry", () => {

@@ -223,6 +223,17 @@ describe("Gemini 3.8 Flash catalog coverage", () => {
 			expect(model.input, `${model.provider}/${model.id}`).toContain("text");
 			expect(model.contextWindow, `${model.provider}/${model.id}`).toBeGreaterThan(0);
 			expect(model.maxTokens, `${model.provider}/${model.id}`).toBeGreaterThan(0);
+			// Every mirror that carries a thinking level map denies `off` and `minimal`, which is the
+			// three-level claim the user-facing docs make. A mirror with no map at all — the Vercel AI
+			// Gateway generates none for any of its `anthropic-messages` models — is the exception the
+			// docs call out, so it is skipped here rather than pinned by provider name.
+			if (model.thinkingLevelMap) {
+				expect(getSupportedThinkingLevels(model), `${model.provider}/${model.id}`).toEqual([
+					"low",
+					"medium",
+					"high",
+				]);
+			}
 		}
 	});
 });
