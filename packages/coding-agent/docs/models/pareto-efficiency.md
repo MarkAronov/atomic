@@ -41,7 +41,7 @@ DeepSWE's August 21, 2026 changelog says these DeepSeek costs use peak rates and
 - **claude-fable-5 [max]**: Sol is more accurate and much cheaper; GLM-5.3 comes within a point for less than one fifth of the task cost. This row is Fable 5 only; `claude-fable-5-1` released after this snapshot and has no measured position on the frontier.
 - **kimi-k3 [max]**: GLM-5.3 matches its rounded score and is $0.66 cheaper; Kimi remains useful for Moonshot-family diversity.
 - **gpt-5.5 [xhigh]** and **grok-4.6 [xhigh]**: Luna matches their rounded 67% for $0.61.
-- **gemini-3.7-flash [high]**: Luna is two points more accurate and costs less than one third as much.
+- **gemini-3.7-flash [high]**: Luna is two points more accurate and costs less than one third as much. This row is Gemini 3.7 Flash only; `gemini-3.8-flash` became generally available September 2, 2026, after this snapshot, and has no measured position on the frontier.
 - **muse-spark-1.2 [xhigh]**: GLM-5.3 Flash is eight points more accurate and costs $3.46 less.
 - **claude-opus-4.8 [max]** and **claude-sonnet-5 [max]**: each is dominated on both cost and accuracy.
 - **qwen3.8-max [xhigh]**, **gemini-3.6-flash [high]**, **gemini-3.5-flash [high]**, and **glm-5.2 [max]**: each has a cheaper, more accurate displayed alternative.

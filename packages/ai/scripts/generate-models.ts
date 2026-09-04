@@ -236,6 +236,32 @@ const COPILOT_STATIC_HEADERS = {
 	"Copilot-Integration-Id": "vscode-chat",
 } as const;
 
+// GitHub shipped Gemini 3.8 Flash in Copilot on 2026-09-03
+// (https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/),
+// but models.dev has no github-copilot entry for it yet. Until it does, synthesize the entry
+// from the Copilot sibling it succeeds: Copilot publishes platform-specific limits and pricing
+// for its Gemini models that differ from Google's own catalog, so mirroring Google here would be
+// wrong. The limits, cost, and modalities of the supplemented entry are therefore INHERITED from
+// github-copilot/gemini-3.7-flash and are not published by GitHub for 3.8 Flash; the API model id
+// follows Copilot's plain-Google-id convention (gemini-3.5-flash, gemini-3.6-flash,
+// gemini-3.7-flash). The supplement is skipped as soon as models.dev lists the model, so it
+// retires itself rather than overriding upstream metadata.
+const GITHUB_COPILOT_SUPPLEMENTAL_MODELS = [
+	{ id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", sourceId: "gemini-3.7-flash" },
+] as const;
+
+/** models.dev's Copilot entries, plus any supplemental entry models.dev has not ingested yet. */
+function getGithubCopilotModelEntries(models: Record<string, ModelsDevModel>): [string, ModelsDevModel][] {
+	const entries = Object.entries(models);
+	for (const supplement of GITHUB_COPILOT_SUPPLEMENTAL_MODELS) {
+		if (models[supplement.id]) continue;
+		const source = models[supplement.sourceId];
+		if (!source) continue;
+		entries.push([supplement.id, { ...source, name: supplement.name }]);
+	}
+	return entries;
+}
+
 const TOGETHER_BASE_URL = "https://api.together.ai/v1";
 const TOGETHER_BASE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
@@ -2247,8 +2273,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 		// Process GitHub Copilot models
 		if (data["github-copilot"]?.models) {
-			for (const [modelId, model] of Object.entries(data["github-copilot"].models)) {
-				const m = model as ModelsDevModel;
+			for (const [modelId, m] of getGithubCopilotModelEntries(data["github-copilot"].models)) {
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
 
