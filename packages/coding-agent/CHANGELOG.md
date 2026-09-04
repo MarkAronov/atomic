@@ -55,6 +55,7 @@
 - Fixed Linux managed-tool downloads to use statically linked musl archives for fd and ripgrep on both x64 and ARM64 ([#9070](https://github.com/earendil-works/pi/pull/9070) by [@charlesisworkinghard](https://github.com/charlesisworkinghard)).
 - Fixed a jump-to-latest click discarding other mouse reports delivered in the same terminal input chunk.
 - Fixed branch summaries failing when reasoning consumes a 2048-token output cap by raising the cap to 4096 tokens, clamped to the model's `maxTokens` ([#8845](https://github.com/earendil-works/pi/issues/8845)).
+- Pinned managed fd downloads on darwin/x64 to 10.3.0, matching upstream pi's known-good archive for that host ([#8708](https://github.com/earendil-works/pi/issues/8708)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
