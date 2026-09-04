@@ -9,14 +9,22 @@ import { afterEach, test } from "vitest";
 /**
  * Deterministic generator regressions for Gemini 3.8 Flash.
  *
- * The fixture below mirrors the models.dev entries published for this model
- * (release date 2026-09-02, GA) so these assertions do not drift with the live catalog:
- * - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash
- * - https://deepmind.google/models/model-cards/gemini-3-8-flash/
+ * Every fixture below mirrors the upstream catalog entry it stands in for, so these assertions
+ * pin generator behavior against a fixed input and do not drift with the live catalogs. That is
+ * the split established by `be05f82112`: exact per-mirror values belong in a fixture test like
+ * this one, while `test/google-gemini-3-8-flash-catalog.test.ts` sweeps the live catalog for
+ * invariants only.
  *
- * models.dev publishes no `github-copilot` entry for the model even though GitHub shipped it
- * on 2026-09-03, so the generator supplements it from the Copilot `gemini-3.7-flash` sibling.
- * The last test pins that the supplement retires itself once models.dev catches up.
+ * Google / Google Vertex (models.dev, GA 2026-09-02):
+ * - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash
+ * - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash
+ *
+ * GitHub Copilot: models.dev publishes no `github-copilot` entry even though GitHub shipped the
+ * model on 2026-09-03, so the generator supplements it from the Copilot `gemini-3.7-flash`
+ * sibling and corrects every field the authenticated Copilot `/models` endpoint publishes
+ * (`max_context_window_tokens 1048576`, `max_output_tokens 65536`,
+ * `supports.reasoning_effort ["low","medium","high"]`, `supported_endpoints ["/chat/completions"]`).
+ * The last two tests pin that the supplement retires itself once models.dev catches up.
  */
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -43,7 +51,11 @@ type GeneratedModel = {
 };
 type GeneratedProviderCatalog = Record<string, Record<string, GeneratedModel>>;
 
-function generateProviderCatalogs(catalog: unknown, providers: readonly string[]): GeneratedProviderCatalog {
+function generateProviderCatalogs(
+	catalog: unknown,
+	providers: readonly string[],
+	liveCatalogs: { openRouterModels?: readonly unknown[]; aiGatewayModels?: readonly unknown[] } = {},
+): GeneratedProviderCatalog {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-gemini-3-8-flash-"));
 	temporaryRoots.push(fixtureRoot);
 	const isolatedPackageRoot = join(fixtureRoot, "package");
@@ -56,9 +68,13 @@ function generateProviderCatalogs(catalog: unknown, providers: readonly string[]
 	writeFileSync(
 		preloadPath,
 		`const catalog = ${JSON.stringify(catalog)};\n` +
+			`const openRouterModels = ${JSON.stringify(liveCatalogs.openRouterModels ?? [])};\n` +
+			`const aiGatewayModels = ${JSON.stringify(liveCatalogs.aiGatewayModels ?? [])};\n` +
 			`globalThis.fetch = async (input) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
+			`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: openRouterModels }), { status: 200 });\n` +
+			`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: aiGatewayModels }), { status: 200 });\n` +
 			`  return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`};\n`,
 	);
@@ -106,7 +122,8 @@ const GEMINI_3_8_FLASH = {
 	cost: { input: 0.75, output: 3.75, cache_read: 0.075, input_audio: 0.75 },
 } as const;
 
-// The Copilot sibling the supplement inherits its platform-specific limits and pricing from.
+// The Copilot sibling the supplement starts from. Its limits (1,000,000 / 64,000) and its lack of
+// reasoning-effort support are exactly what the supplement must override.
 const COPILOT_GEMINI_3_7_FLASH = {
 	name: "Gemini 3.7 Flash",
 	reasoning: true,
@@ -117,35 +134,81 @@ const COPILOT_GEMINI_3_7_FLASH = {
 	cost: { input: 0.75, output: 3.75, cache_read: 0.075 },
 } as const;
 
+// models.dev `opencode.models["gemini-3.8-flash"]`: opencode zen's own rates, Google SDK routing.
+const OPENCODE_GEMINI_3_8_FLASH = {
+	...GEMINI_3_8_FLASH,
+	cost: { input: 1.5, output: 7.5, cache_read: 0.15, input_audio: 1.5 },
+	provider: { npm: "@ai-sdk/google" },
+} as const;
+
+const CLAUDE_OPUS_5 = {
+	name: "Claude Opus 5",
+	tool_call: true,
+	reasoning: true,
+	limit: { context: 200_000, output: 64_000 },
+	cost: { input: 5, output: 25 },
+} as const;
+
 const BASE_CATALOG = {
 	google: { models: { "gemini-3.8-flash": GEMINI_3_8_FLASH } },
 	"google-vertex": {
 		models: {
 			"gemini-3.8-flash": GEMINI_3_8_FLASH,
 			// A non-Gemini Vertex MaaS entry must stay excluded from the Gemini-only Vertex provider.
-			"claude-opus-5": {
-				name: "Claude Opus 5",
-				tool_call: true,
-				reasoning: true,
-				limit: { context: 200_000, output: 64_000 },
-				cost: { input: 5, output: 25 },
-			},
+			"claude-opus-5": CLAUDE_OPUS_5,
 		},
 	},
 	"github-copilot": { models: { "gemini-3.7-flash": COPILOT_GEMINI_3_7_FLASH } },
+	opencode: { models: { "gemini-3.8-flash": OPENCODE_GEMINI_3_8_FLASH } },
 	// A provider with no Gemini entry must never sprout a mirrored one.
-	anthropic: {
-		models: {
-			"claude-opus-5": {
-				name: "Claude Opus 5",
-				tool_call: true,
-				reasoning: true,
-				limit: { context: 200_000, output: 64_000 },
-				cost: { input: 5, output: 25 },
-			},
-		},
-	},
+	anthropic: { models: { "claude-opus-5": CLAUDE_OPUS_5 } },
 } as const;
+
+// Live openrouter.ai/api/v1/models values for the model and its batch variant.
+const OPENROUTER_MODELS = [
+	{
+		id: "google/gemini-3.8-flash",
+		name: "Google: Gemini 3.8 Flash",
+		context_length: 1_048_576,
+		top_provider: { context_length: 1_048_576, max_completion_tokens: 65_536 },
+		architecture: { modality: "text+image->text" },
+		pricing: {
+			prompt: "0.00000075",
+			completion: "0.00000375",
+			input_cache_read: "0.000000075",
+			input_cache_write: "0.0000000416666666666667",
+		},
+		supported_parameters: ["reasoning", "reasoning_effort", "tools"],
+		reasoning: { mandatory: true, supported_efforts: ["low", "medium", "high"] },
+	},
+	{
+		id: "google/gemini-3.8-flash:batch",
+		name: "Google: Gemini 3.8 Flash (batch)",
+		context_length: 1_048_576,
+		top_provider: { context_length: 1_048_576, max_completion_tokens: 65_536 },
+		architecture: { modality: "text+image->text" },
+		pricing: {
+			prompt: "0.000000375",
+			completion: "0.000001875",
+			input_cache_read: "0.0000000375",
+			input_cache_write: "0.0000000416666666666667",
+		},
+		supported_parameters: ["reasoning", "reasoning_effort", "tools"],
+		reasoning: { mandatory: true, supported_efforts: ["low", "medium", "high"] },
+	},
+] as const;
+
+// Live ai-gateway.vercel.sh/v1/models values for the model.
+const AI_GATEWAY_MODELS = [
+	{
+		id: "google/gemini-3.8-flash",
+		name: "Gemini 3.8 Flash",
+		context_window: 1_000_000,
+		max_tokens: 65_536,
+		tags: ["reasoning", "vision", "tool-use", "video-input"],
+		pricing: { input: "0.00000075", output: "0.00000375", input_cache_read: "0.000000075" },
+	},
+] as const;
 
 test("generates the documented Gemini 3.8 Flash entry for the Google Gemini API", () => {
 	const { google } = generateProviderCatalogs(BASE_CATALOG, ["google"]);
@@ -164,9 +227,10 @@ test("generates the documented Gemini 3.8 Flash entry for the Google Gemini API"
 	// the five models.dev input modalities collapse to text+image on the Gemini path.
 	assert.deepEqual(model.input, ["text", "image"]);
 	assert.deepEqual(model.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
-	// Gemini 3.x Flash cannot disable thinking; every other level falls back to
-	// `resolveGoogleThinkingLevel`, exactly as for gemini-3.7-flash.
-	assert.equal(model.thinkingLevelMap?.off, null);
+	// Gemini 3.x Flash cannot disable thinking, and Google states outright that "MINIMAL is
+	// unsupported for this model", so both levels are denied. `low`/`medium`/`high` stay unmapped
+	// and fall through to `resolveGoogleThinkingLevel`, exactly as for gemini-3.7-flash.
+	assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: null });
 });
 
 test("generates the Vertex Gemini 3.8 Flash entry without inventing non-Gemini mirrors", () => {
@@ -186,7 +250,7 @@ test("generates the Vertex Gemini 3.8 Flash entry without inventing non-Gemini m
 	assert.deepEqual(model.input, ["text", "image"]);
 	// Vertex accounts only cachedContentTokenCount, so cacheWrite is always 0 on this path.
 	assert.deepEqual(model.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
-	assert.equal(model.thinkingLevelMap?.off, null);
+	assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: null });
 
 	// Negative controls: the Vertex provider serves only Gemini, and no unrelated provider
 	// gains a Gemini 3.8 Flash entry it does not publish.
@@ -194,7 +258,31 @@ test("generates the Vertex Gemini 3.8 Flash entry without inventing non-Gemini m
 	assert.equal(catalogs.anthropic["gemini-3.8-flash"], undefined);
 });
 
-test("supplements the GitHub Copilot entry with Copilot's own routing, headers, and limits", () => {
+// The `minimal` denial is scoped to 3.8 on purpose: Google's own comparison table publishes
+// MINIMAL for Gemini 3.5 and 3.6 Flash, and only drops it from 3.7 onward. A family-wide rule
+// would misreport those two models.
+test("denies minimal only for 3.8 Flash, leaving the 3.5 and 3.6 Flash entries alone", () => {
+	const catalog = {
+		google: {
+			models: {
+				"gemini-3.8-flash": GEMINI_3_8_FLASH,
+				"gemini-3.6-flash": {
+					...GEMINI_3_8_FLASH,
+					name: "Gemini 3.6 Flash",
+					reasoning_options: [{ type: "effort", values: ["minimal", "low", "medium", "high"] }],
+				},
+			},
+		},
+	};
+
+	const { google } = generateProviderCatalogs(catalog, ["google"]);
+
+	assert.equal(google["gemini-3.8-flash"].thinkingLevelMap?.minimal, null);
+	assert.equal(google["gemini-3.6-flash"].thinkingLevelMap?.minimal, undefined);
+	assert.deepEqual(google["gemini-3.6-flash"].thinkingLevelMap, { off: null });
+});
+
+test("supplements the GitHub Copilot entry with the authenticated Copilot contract", () => {
 	const copilot = generateProviderCatalogs(BASE_CATALOG, ["github-copilot"])["github-copilot"];
 	const model = copilot["gemini-3.8-flash"];
 
@@ -202,15 +290,16 @@ test("supplements the GitHub Copilot entry with Copilot's own routing, headers, 
 	assert.equal(model.id, "gemini-3.8-flash");
 	assert.equal(model.name, "Gemini 3.8 Flash");
 	assert.equal(model.provider, "github-copilot");
-	// Copilot serves Gemini through its OpenAI-compatible endpoint, not Google's API.
+	// Copilot's `supported_endpoints` for this model is `["/chat/completions"]`, so it is served
+	// by Copilot's OpenAI-compatible endpoint rather than Google's API.
 	assert.equal(model.api, "openai-completions");
 	assert.equal(model.baseUrl, "https://api.individual.githubcopilot.com");
 	assert.equal(model.reasoning, true);
 	assert.deepEqual(model.input, ["text", "image"]);
-	// Inherited from Copilot's gemini-3.7-flash entry, not from Google's own catalog: Copilot
-	// publishes platform-specific limits, and its 1M/64K window differs from Google's 1M/65,536.
-	assert.equal(model.contextWindow, 1_000_000);
-	assert.equal(model.maxTokens, 64_000);
+	// From Copilot's authenticated /models response, NOT cloned from the 3.7 sibling's
+	// 1,000,000 / 64,000. Copilot's numbers happen to equal Google's for this model.
+	assert.equal(model.contextWindow, 1_048_576);
+	assert.equal(model.maxTokens, 65_536);
 	assert.deepEqual(model.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
 	assert.deepEqual(model.headers, {
 		"User-Agent": "GitHubCopilotChat/0.35.0",
@@ -218,16 +307,87 @@ test("supplements the GitHub Copilot entry with Copilot's own routing, headers, 
 		"Editor-Plugin-Version": "copilot-chat/0.35.0",
 		"Copilot-Integration-Id": "vscode-chat",
 	});
+	// Copilot publishes `supports.reasoning_effort: ["low","medium","high"]` for this model, so the
+	// field is sent, and the level map must mirror exactly those three efforts — a bare
+	// `supportsReasoningEffort: true` with no map would serialize minimal/xhigh/max into a 400.
 	assert.deepEqual(model.compat, {
 		supportsStore: false,
 		supportsDeveloperRole: false,
-		supportsReasoningEffort: false,
+		supportsReasoningEffort: true,
 	});
-	// Copilot's OpenAI-compatible endpoint does not accept `reasoning_effort`, so models.dev's
-	// effort options must not become a thinking level map here.
-	assert.equal(model.thinkingLevelMap, undefined);
-	// The sibling it is sourced from stays untouched and is not duplicated.
-	assert.equal(copilot["gemini-3.7-flash"]?.maxTokens, 64_000);
+	assert.deepEqual(model.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
+
+	// The correction is scoped to the supplemented model: the sibling it starts from keeps its own
+	// limits and its pre-existing effort behavior.
+	assert.equal(copilot["gemini-3.7-flash"].contextWindow, 1_000_000);
+	assert.equal(copilot["gemini-3.7-flash"].maxTokens, 64_000);
+	assert.equal(copilot["gemini-3.7-flash"].compat?.supportsReasoningEffort, false);
+	assert.equal(copilot["gemini-3.7-flash"].thinkingLevelMap, undefined);
+});
+
+test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
+	const catalogs = generateProviderCatalogs(BASE_CATALOG, ["opencode", "openrouter", "vercel-ai-gateway"], {
+		openRouterModels: OPENROUTER_MODELS,
+		aiGatewayModels: AI_GATEWAY_MODELS,
+	});
+
+	// opencode zen routes Google models through the Gemini API with its own pricing.
+	assert.deepEqual(catalogs.opencode["gemini-3.8-flash"], {
+		id: "gemini-3.8-flash",
+		name: "Gemini 3.8 Flash",
+		api: "google-generative-ai",
+		provider: "opencode",
+		baseUrl: "https://opencode.ai/zen/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite: 0 },
+		contextWindow: 1_048_576,
+		maxTokens: 65_536,
+		// opencode rides the same Google thinking path, so it gets the same two denials.
+		thinkingLevelMap: { off: null, minimal: null },
+	});
+
+	const openrouter = catalogs.openrouter["google/gemini-3.8-flash"];
+	assert.equal(openrouter.api, "openai-completions");
+	assert.equal(openrouter.baseUrl, "https://openrouter.ai/api/v1");
+	assert.equal(openrouter.contextWindow, 1_048_576);
+	assert.equal(openrouter.maxTokens, 65_536);
+	assert.deepEqual(openrouter.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.041667 });
+	assert.deepEqual(openrouter.compat, { supportsDeveloperRole: false, thinkingFormat: "openrouter" });
+	// OpenRouter builds a full map from its own reasoning metadata and already denies `minimal`,
+	// which is the same three efforts the Google-path fix arrives at from Google's docs.
+	assert.deepEqual(openrouter.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
+	const batch = catalogs.openrouter["google/gemini-3.8-flash:batch"];
+	assert.equal(batch.api, "openai-completions");
+	assert.deepEqual(batch.cost, { input: 0.375, output: 1.875, cacheRead: 0.0375, cacheWrite: 0.041667 });
+	assert.deepEqual(batch.thinkingLevelMap, openrouter.thinkingLevelMap);
+
+	const vercel = catalogs["vercel-ai-gateway"]["google/gemini-3.8-flash"];
+	// The gateway routes its whole `google/*` family through anthropic-messages. That is
+	// unconditional in `fetchAiGatewayModels` and pre-existing for every Gemini generation there;
+	// it is pinned here so it reads as deliberate rather than accidental.
+	assert.equal(vercel.api, "anthropic-messages");
+	assert.equal(vercel.baseUrl, "https://ai-gateway.vercel.sh");
+	assert.equal(vercel.contextWindow, 1_000_000);
+	assert.equal(vercel.maxTokens, 65_536);
+	assert.deepEqual(vercel.input, ["text", "image"]);
+	assert.deepEqual(vercel.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
 });
 
 test("yields to models.dev once it publishes the GitHub Copilot entry", () => {
@@ -249,7 +409,8 @@ test("yields to models.dev once it publishes the GitHub Copilot entry", () => {
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
 
 	assert.equal(Object.keys(copilot).filter((id) => id === "gemini-3.8-flash").length, 1);
-	// Every asserted field comes from models.dev, proving the supplement did not override it.
+	// Every asserted field comes from models.dev, proving the supplement's own limit override
+	// retires with it rather than overriding upstream metadata.
 	assert.equal(copilot["gemini-3.8-flash"].name, "Gemini 3.8 Flash (upstream)");
 	assert.equal(copilot["gemini-3.8-flash"].contextWindow, 512_000);
 	assert.equal(copilot["gemini-3.8-flash"].maxTokens, 32_000);
@@ -264,17 +425,7 @@ test("yields to models.dev once it publishes the GitHub Copilot entry", () => {
 test("does not supplement Copilot when the sibling it inherits from is absent", () => {
 	const catalog = {
 		...BASE_CATALOG,
-		"github-copilot": {
-			models: {
-				"claude-opus-5": {
-					name: "Claude Opus 5",
-					tool_call: true,
-					reasoning: true,
-					limit: { context: 200_000, output: 64_000 },
-					cost: { input: 5, output: 25 },
-				},
-			},
-		},
+		"github-copilot": { models: { "claude-opus-5": CLAUDE_OPUS_5 } },
 	};
 
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
