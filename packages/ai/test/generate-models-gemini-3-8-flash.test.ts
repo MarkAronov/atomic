@@ -19,12 +19,9 @@ import { afterEach, test } from "vitest";
  * - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash
  * - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash
  *
- * GitHub Copilot: models.dev publishes no `github-copilot` entry even though GitHub shipped the
- * model on 2026-09-03, so the generator supplements it from the Copilot `gemini-3.7-flash`
- * sibling and corrects every field the authenticated Copilot `/models` endpoint publishes
- * (`max_context_window_tokens 1048576`, `max_output_tokens 65536`,
- * `supports.reasoning_effort ["low","medium","high"]`, `supported_endpoints ["/chat/completions"]`).
- * The last two tests pin that the supplement retires itself once models.dev catches up.
+ * GitHub Copilot: the generator consumes the `github-copilot/gemini-3.8-flash` row from
+ * models.dev without supplementing or correcting it. The Copilot fixtures pin that direct
+ * translation and prove that no entry is invented when models.dev omits the row.
  */
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -122,8 +119,6 @@ const GEMINI_3_8_FLASH = {
 	cost: { input: 0.75, output: 3.75, cache_read: 0.075, input_audio: 0.75 },
 } as const;
 
-// The Copilot sibling the supplement starts from. Its limits (1,000,000 / 64,000) and its lack of
-// reasoning-effort support are exactly what the supplement must override.
 const COPILOT_GEMINI_3_7_FLASH = {
 	name: "Gemini 3.7 Flash",
 	reasoning: true,
@@ -132,6 +127,11 @@ const COPILOT_GEMINI_3_7_FLASH = {
 	modalities: { input: ["text", "image"], output: ["text"] },
 	limit: { context: 1_000_000, input: 936_000, output: 64_000 },
 	cost: { input: 0.75, output: 3.75, cache_read: 0.075 },
+} as const;
+
+const COPILOT_GEMINI_3_8_FLASH = {
+	...COPILOT_GEMINI_3_7_FLASH,
+	name: "Gemini 3.8 Flash",
 } as const;
 
 // models.dev `opencode.models["gemini-3.8-flash"]`: opencode zen's own rates, Google SDK routing.
@@ -158,7 +158,12 @@ const BASE_CATALOG = {
 			"claude-opus-5": CLAUDE_OPUS_5,
 		},
 	},
-	"github-copilot": { models: { "gemini-3.7-flash": COPILOT_GEMINI_3_7_FLASH } },
+	"github-copilot": {
+		models: {
+			"gemini-3.7-flash": COPILOT_GEMINI_3_7_FLASH,
+			"gemini-3.8-flash": COPILOT_GEMINI_3_8_FLASH,
+		},
+	},
 	opencode: { models: { "gemini-3.8-flash": OPENCODE_GEMINI_3_8_FLASH } },
 	// A provider with no Gemini entry must never sprout a mirrored one.
 	anthropic: { models: { "claude-opus-5": CLAUDE_OPUS_5 } },
@@ -282,24 +287,20 @@ test("denies minimal only for 3.8 Flash, leaving the 3.5 and 3.6 Flash entries a
 	assert.deepEqual(google["gemini-3.6-flash"].thinkingLevelMap, { off: null });
 });
 
-test("supplements the GitHub Copilot entry with the authenticated Copilot contract", () => {
+test("generates the GitHub Copilot entry from models.dev metadata", () => {
 	const copilot = generateProviderCatalogs(BASE_CATALOG, ["github-copilot"])["github-copilot"];
 	const model = copilot["gemini-3.8-flash"];
 
-	assert.ok(model, "expected github-copilot/gemini-3.8-flash to be supplemented");
+	assert.ok(model, "expected models.dev's github-copilot/gemini-3.8-flash row to be generated");
 	assert.equal(model.id, "gemini-3.8-flash");
 	assert.equal(model.name, "Gemini 3.8 Flash");
 	assert.equal(model.provider, "github-copilot");
-	// Copilot's `supported_endpoints` for this model is `["/chat/completions"]`, so it is served
-	// by Copilot's OpenAI-compatible endpoint rather than Google's API.
 	assert.equal(model.api, "openai-completions");
 	assert.equal(model.baseUrl, "https://api.individual.githubcopilot.com");
 	assert.equal(model.reasoning, true);
 	assert.deepEqual(model.input, ["text", "image"]);
-	// From Copilot's authenticated /models response, NOT cloned from the 3.7 sibling's
-	// 1,000,000 / 64,000. Copilot's numbers happen to equal Google's for this model.
-	assert.equal(model.contextWindow, 1_048_576);
-	assert.equal(model.maxTokens, 65_536);
+	assert.equal(model.contextWindow, 1_000_000);
+	assert.equal(model.maxTokens, 64_000);
 	assert.deepEqual(model.cost, { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
 	assert.deepEqual(model.headers, {
 		"User-Agent": "GitHubCopilotChat/0.35.0",
@@ -307,9 +308,6 @@ test("supplements the GitHub Copilot entry with the authenticated Copilot contra
 		"Editor-Plugin-Version": "copilot-chat/0.35.0",
 		"Copilot-Integration-Id": "vscode-chat",
 	});
-	// Copilot publishes `supports.reasoning_effort: ["low","medium","high"]` for this model, so the
-	// field is sent, and the level map must mirror exactly those three efforts — a bare
-	// `supportsReasoningEffort: true` with no map would serialize minimal/xhigh/max into a 400.
 	assert.deepEqual(model.compat, {
 		supportsStore: false,
 		supportsDeveloperRole: false,
@@ -324,13 +322,6 @@ test("supplements the GitHub Copilot entry with the authenticated Copilot contra
 		xhigh: null,
 		max: null,
 	});
-
-	// The correction is scoped to the supplemented model: the sibling it starts from keeps its own
-	// limits and its pre-existing effort behavior.
-	assert.equal(copilot["gemini-3.7-flash"].contextWindow, 1_000_000);
-	assert.equal(copilot["gemini-3.7-flash"].maxTokens, 64_000);
-	assert.equal(copilot["gemini-3.7-flash"].compat?.supportsReasoningEffort, false);
-	assert.equal(copilot["gemini-3.7-flash"].thinkingLevelMap, undefined);
 });
 
 test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
@@ -395,14 +386,13 @@ test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
 	assert.equal(vercel.thinkingLevelMap, undefined);
 });
 
-test("preserves upstream Copilot metadata while enforcing its authenticated contract", () => {
+test("preserves the models.dev Copilot row without overriding it", () => {
 	const catalog = {
 		...BASE_CATALOG,
 		"github-copilot": {
 			models: {
-				"gemini-3.7-flash": COPILOT_GEMINI_3_7_FLASH,
 				"gemini-3.8-flash": {
-					...COPILOT_GEMINI_3_7_FLASH,
+					...COPILOT_GEMINI_3_8_FLASH,
 					name: "Gemini 3.8 Flash (upstream)",
 					limit: { context: 512_000, output: 32_000 },
 					cost: { input: 1.5, output: 7.5, cache_read: 0.15 },
@@ -413,12 +403,9 @@ test("preserves upstream Copilot metadata while enforcing its authenticated cont
 
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
 
-	assert.equal(Object.keys(copilot).filter((id) => id === "gemini-3.8-flash").length, 1);
-	// Preserve upstream-owned metadata, but do not let a newly listed row replace the narrower
-	// authenticated Copilot limits and reasoning-effort contract with stale generic values.
 	assert.equal(copilot["gemini-3.8-flash"].name, "Gemini 3.8 Flash (upstream)");
-	assert.equal(copilot["gemini-3.8-flash"].contextWindow, 1_048_576);
-	assert.equal(copilot["gemini-3.8-flash"].maxTokens, 65_536);
+	assert.equal(copilot["gemini-3.8-flash"].contextWindow, 512_000);
+	assert.equal(copilot["gemini-3.8-flash"].maxTokens, 32_000);
 	assert.deepEqual(copilot["gemini-3.8-flash"].cost, {
 		input: 1.5,
 		output: 7.5,
@@ -427,14 +414,14 @@ test("preserves upstream Copilot metadata while enforcing its authenticated cont
 	});
 });
 
-test("does not supplement Copilot when the sibling it inherits from is absent", () => {
+test("does not invent a Copilot entry when models.dev omits it", () => {
 	const catalog = {
 		...BASE_CATALOG,
-		"github-copilot": { models: { "claude-opus-5": CLAUDE_OPUS_5 } },
+		"github-copilot": { models: { "gemini-3.7-flash": COPILOT_GEMINI_3_7_FLASH } },
 	};
 
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
 
 	assert.equal(copilot["gemini-3.8-flash"], undefined);
-	assert.ok(copilot["claude-opus-5"], "expected the unrelated Copilot entry to survive");
+	assert.ok(copilot["gemini-3.7-flash"], "expected the advertised sibling to survive");
 });

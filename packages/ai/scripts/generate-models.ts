@@ -236,46 +236,6 @@ const COPILOT_STATIC_HEADERS = {
 	"Copilot-Integration-Id": "vscode-chat",
 } as const;
 
-// GitHub shipped Gemini 3.8 Flash in Copilot on 2026-09-03
-// (https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/).
-// The authenticated Copilot `/models` endpoint publishes `max_context_window_tokens 1048576`,
-// `max_output_tokens 65536`, `supports.reasoning_effort ["low","medium","high"]`, and
-// `supported_endpoints ["/chat/completions"]`. models.dev originally omitted the row, and may list
-// it later with generic or stale values, so preserve upstream-owned metadata while correcting the
-// authenticated limits and reasoning contract in either case. If the row is absent, synthesize it
-// from the Copilot sibling it succeeds; cost and modalities then remain sibling-inherited.
-const GITHUB_COPILOT_MODEL_CORRECTIONS = [
-	{
-		id: "gemini-3.8-flash",
-		name: "Gemini 3.8 Flash",
-		sourceId: "gemini-3.7-flash",
-		overrides: {
-			limit: { context: 1_048_576, output: 65_536 },
-			reasoning_options: [{ type: "effort", values: ["low", "medium", "high"] }],
-		},
-	},
-] as const satisfies readonly {
-	id: string;
-	name: string;
-	sourceId: string;
-	overrides: Partial<ModelsDevModel>;
-}[];
-
-/** models.dev's Copilot entries, corrected or supplemented by authenticated Copilot metadata. */
-function getGithubCopilotModelEntries(models: Record<string, ModelsDevModel>): [string, ModelsDevModel][] {
-	const entries = new Map(Object.entries(models));
-	for (const correction of GITHUB_COPILOT_MODEL_CORRECTIONS) {
-		const upstream = entries.get(correction.id);
-		if (upstream) {
-			entries.set(correction.id, { ...upstream, ...correction.overrides });
-			continue;
-		}
-		const source = entries.get(correction.sourceId);
-		if (!source) continue;
-		entries.set(correction.id, { ...source, name: correction.name, ...correction.overrides });
-	}
-	return [...entries.entries()];
-}
 
 const TOGETHER_BASE_URL = "https://api.together.ai/v1";
 const TOGETHER_BASE_COMPAT: OpenAICompletionsCompat = {
@@ -567,14 +527,6 @@ const GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES = {
 	"claude-opus-5": { minimal: "low" },
 	"claude-sonnet-4.6": { minimal: "low", max: "max" },
 } satisfies Record<string, NonNullable<Model<Api>["thinkingLevelMap"]>>;
-
-// Copilot's OpenAI-compatible endpoint ignores `reasoning_effort` for most models, so the Copilot
-// catalog sets `supportsReasoningEffort: false` by default. These models publish
-// `capabilities.supports.reasoning_effort` on the authenticated GitHub Copilot /models endpoint
-// (checked 2026-09-03 for gemini-3.8-flash) and do accept the field. Like the map above, this is a
-// narrow correction, not a snapshot of Copilot's catalog: a model listed here must also have
-// models.dev-style `reasoning_options` recorded, or it would offer every level unmapped.
-const GITHUB_COPILOT_REASONING_EFFORT_MODELS = new Set(["gemini-3.8-flash"]);
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
 	model.thinkingLevelMap = { ...model.thinkingLevelMap, ...map };
@@ -2304,7 +2256,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 		// Process GitHub Copilot models
 		if (data["github-copilot"]?.models) {
-			for (const [modelId, m] of getGithubCopilotModelEntries(data["github-copilot"].models)) {
+			for (const [modelId, m] of Object.entries(data["github-copilot"].models)) {
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
 
@@ -2345,7 +2297,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						compat: {
 							supportsStore: false,
 							supportsDeveloperRole: false,
-							supportsReasoningEffort: GITHUB_COPILOT_REASONING_EFFORT_MODELS.has(modelId),
+							supportsReasoningEffort: m.reasoning_options?.some((option) => option.type === "effort") ?? false,
 						},
 					} : {}),
 				};
