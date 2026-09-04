@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -80,7 +80,8 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 	const tempDir = createRepositoryFixtureDir("intercom-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
-		writeFileSync(join(tempDir, "index.ts"), readFileSync(resolve(repoRoot, "packages/intercom/index.ts"), "utf-8"));
+		const indexSource = readFileSync(resolve(repoRoot, "packages/intercom/index.ts"), "utf-8");
+		writeFileSync(join(tempDir, "index.ts"), indexSource);
 		writeFileSync(
 			join(tempDir, "config.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/config.ts"), "utf-8"),
@@ -110,10 +111,23 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			readFileSync(resolve(repoRoot, "packages/intercom/reconnect-backoff.ts"), "utf-8"),
 		);
 		writeFileSync(
+			join(tempDir, "warm-up-exhaustion.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/warm-up-exhaustion.ts"), "utf-8"),
+		);
+		writeFileSync(
 			join(tempDir, "result-renderers.ts"),
 			"export function renderIntercomToolResult() { return undefined; }\n",
 		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
+		// This list is hand-maintained, and a lightweight module added to the wrapper
+		// without a copy here fails as a Bun module-resolution error inside a spawned
+		// subprocess — once already, in `dc34574522`, taking out every Intercom case in
+		// both #1704 files on CI. Fail here instead, naming the missing file.
+		for (const [, specifier] of indexSource.matchAll(/from "\.\/([\w.-]+)\.js"/g)) {
+			if (!existsSync(join(tempDir, `${specifier}.ts`))) {
+				throw new Error(`lazy-tool Intercom fixture is missing packages/intercom/${specifier}.ts`);
+			}
+		}
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `
 ${waitForGateSource}

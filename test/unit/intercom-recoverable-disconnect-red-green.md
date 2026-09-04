@@ -506,3 +506,74 @@ failed; a later call will retry: …` to the console. That is a different failur
 from the one the criteria name ("after five failed retries"), and it also touches the
 separate `loadHeavy` console channel. No doc or changelog sentence claims that branch
 is covered.
+
+## Review round 6 — the fixture module graph, and one doc sentence that promised too much
+
+Two findings, neither in production code.
+
+**The lazy-tool fixture never learned about `warm-up-exhaustion.ts`.**
+`runIntercomFixture` (`packages/coding-agent/test/suite/regressions/lazy-tool-fixtures.ts`)
+materializes a throwaway extension directory from a hand-enumerated module list. Round 4
+added `packages/intercom/warm-up-exhaustion.ts` and the wrapper imports it, but the list
+was not updated, so every Intercom case in both `#1704` regression files died at import.
+
+Red, from `packages/coding-agent`:
+
+```sh
+npx --no-install vitest --run test/suite/regressions/1704-lazy-tool-initialization.test.ts \
+  -t 'replays a failed Intercom lifecycle before a retry executes'
+```
+
+```text
+Error: error: Cannot find module './warm-up-exhaustion.js' from
+  '…/.atomic-test-fixtures/intercom-lazy-hardening-tL5gQU/index.ts'
+ Tests  1 failed | 13 skipped (14)
+```
+
+This is the exact failure mode of `dc34574522`, which did the same for
+`./recoverable-disconnect.js` and `./reconnect-backoff.js` and took down `agent-suite
+(linux-x64)` with 9 failures. So: a CI-blocking class, twice now.
+
+Green — the copy, plus a guard so there is no third time:
+
+```sh
+npx --no-install vitest --run \
+  test/suite/regressions/1704-lazy-tool-initialization.test.ts \
+  test/suite/regressions/1704-lazy-tool-lifecycle-round2.test.ts
+```
+
+```text
+ Test Files  2 passed (2)
+      Tests  26 passed (26)
+```
+
+The guard scans the copied `index.ts` for relative specifiers and asserts each was
+materialized. Verified to fire by deleting only the new copy:
+
+```text
+Error: lazy-tool Intercom fixture is missing packages/intercom/warm-up-exhaustion.ts
+```
+
+A named, self-explaining failure at fixture-build time instead of a Bun resolution error
+surfacing through `parseFixtureResult` out of a spawned subprocess.
+
+**`workflow-stage-discovery.md` promised queue survival it cannot deliver.** The
+round-4 sentence said a failed stage's queued entries "stay queued for a later run".
+`failed` is in `TERMINAL_STATUSES` (`packages/workflows/src/shared/store-internal.ts`),
+and `registerPendingStageIntercomBridge` chains
+`settleUndeliverablePendingStageMessages` on every store invalidation, so once the run
+ends `failed`, `pendingStageUndeliverableReason` returns `Workflow run <id> terminated
+with status failed before stage <key> started` and the entry is marked `undeliverable`
+with the sender notified. A later run has a new run id and could not consume the entry
+anyway — the sentence was wrong twice over. Rewritten to state what actually holds: the
+entries are not recorded as delivered, they stay queued while the run is live, and they
+follow the normal undeliverable settlement once the run terminates.
+
+The four sibling sentences in `packages/coding-agent/docs/intercom.md`,
+`packages/intercom/README.md`, and the two changelogs are scoped to the delivery
+boundary ("not marked delivered to a stage that will not read it") and are accurate as
+written; they were deliberately left alone.
+
+No production file changed this round, so every round-5 assertion still stands
+unmodified. Re-run as a no-regression pass: root unit `27 passed`, root integration
+`12 passed`, `npx tsc --noEmit -p tsconfig.json` exit 0.
