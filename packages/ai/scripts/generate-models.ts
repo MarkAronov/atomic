@@ -236,6 +236,46 @@ const COPILOT_STATIC_HEADERS = {
 	"Copilot-Integration-Id": "vscode-chat",
 } as const;
 
+// GitHub shipped Gemini 3.8 Flash in Copilot on 2026-09-03
+// (https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/),
+// but models.dev has no github-copilot entry for it yet. Until it does, synthesize the entry from
+// the Copilot sibling it succeeds, correcting every field the authenticated Copilot `/models`
+// endpoint publishes for it: `max_context_window_tokens 1048576`, `max_output_tokens 65536`, and
+// `supports.reasoning_effort ["low","medium","high"]`. Copilot's `supported_endpoints` for this
+// model is `["/chat/completions"]`, which is why it keeps the openai-completions route. Only the
+// fields Copilot's response has no `Model` counterpart for — cost (its `token_prices` match the
+// generated 0.75/3.75/0.075/0 exactly) and modalities — remain inherited from the sibling.
+// The supplement is skipped as soon as models.dev lists the model, so it retires itself rather
+// than overriding upstream metadata; these corrections retire with it.
+const GITHUB_COPILOT_SUPPLEMENTAL_MODELS = [
+	{
+		id: "gemini-3.8-flash",
+		name: "Gemini 3.8 Flash",
+		sourceId: "gemini-3.7-flash",
+		overrides: {
+			limit: { context: 1_048_576, output: 65_536 },
+			reasoning_options: [{ type: "effort", values: ["low", "medium", "high"] }],
+		},
+	},
+] as const satisfies readonly {
+	id: string;
+	name: string;
+	sourceId: string;
+	overrides: Partial<ModelsDevModel>;
+}[];
+
+/** models.dev's Copilot entries, plus any supplemental entry models.dev has not ingested yet. */
+function getGithubCopilotModelEntries(models: Record<string, ModelsDevModel>): [string, ModelsDevModel][] {
+	const entries = Object.entries(models);
+	for (const supplement of GITHUB_COPILOT_SUPPLEMENTAL_MODELS) {
+		if (models[supplement.id]) continue;
+		const source = models[supplement.sourceId];
+		if (!source) continue;
+		entries.push([supplement.id, { ...source, name: supplement.name, ...supplement.overrides }]);
+	}
+	return entries;
+}
+
 const TOGETHER_BASE_URL = "https://api.together.ai/v1";
 const TOGETHER_BASE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
@@ -526,6 +566,14 @@ const GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES = {
 	"claude-opus-5": { minimal: "low" },
 	"claude-sonnet-4.6": { minimal: "low", max: "max" },
 } satisfies Record<string, NonNullable<Model<Api>["thinkingLevelMap"]>>;
+
+// Copilot's OpenAI-compatible endpoint ignores `reasoning_effort` for most models, so the Copilot
+// catalog sets `supportsReasoningEffort: false` by default. These models publish
+// `capabilities.supports.reasoning_effort` on the authenticated GitHub Copilot /models endpoint
+// (checked 2026-09-03 for gemini-3.8-flash) and do accept the field. Like the map above, this is a
+// narrow correction, not a snapshot of Copilot's catalog: a model listed here must also have
+// models.dev-style `reasoning_options` recorded, or it would offer every level unmapped.
+const GITHUB_COPILOT_REASONING_EFFORT_MODELS = new Set(["gemini-3.8-flash"]);
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
 	model.thinkingLevelMap = { ...model.thinkingLevelMap, ...map };
@@ -1101,6 +1149,14 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	}
 	if (isGoogleThinkingApi(model) && isGemini3FlashModel(model.id)) {
 		mergeThinkingLevelMap(model, { off: null });
+	}
+	// Google publishes LOW | MEDIUM | HIGH for Gemini 3.8 Flash and states outright that "MINIMAL is
+	// unsupported for this model". `getSupportedThinkingLevels` offers any level the sparse Google
+	// map leaves undefined, so deny it explicitly. Deliberately scoped to 3.8: Gemini 3.5 and 3.6
+	// Flash do publish MINIMAL, so the wider Flash rule above must not gain this.
+	// https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash
+	if (isGoogleThinkingApi(model) && /gemini-3\.8-flash/.test(model.id)) {
+		mergeThinkingLevelMap(model, { minimal: null });
 	}
 	if (isGoogleThinkingApi(model) && isGemma4Model(model.id)) {
 		mergeThinkingLevelMap(model, { off: null, minimal: "MINIMAL", low: null, medium: null, high: "HIGH" });
@@ -2247,8 +2303,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 		// Process GitHub Copilot models
 		if (data["github-copilot"]?.models) {
-			for (const [modelId, model] of Object.entries(data["github-copilot"].models)) {
-				const m = model as ModelsDevModel;
+			for (const [modelId, m] of getGithubCopilotModelEntries(data["github-copilot"].models)) {
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
 
@@ -2289,7 +2344,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						compat: {
 							supportsStore: false,
 							supportsDeveloperRole: false,
-							supportsReasoningEffort: false,
+							supportsReasoningEffort: GITHUB_COPILOT_REASONING_EFFORT_MODELS.has(modelId),
 						},
 					} : {}),
 				};
