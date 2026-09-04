@@ -13,6 +13,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Added Anthropic per-turn effort persistence, deterministic historical effort markers, and signed-thinking mismatch recovery for supported Claude models across Anthropic Messages transports, including OpenRouter.
 - Added `compat.vllmPriority` to the OpenAI Completions compatibility options. When set, it is sent as the top-level `priority` request field; lower values are handled earlier and the vLLM server default is `0`, so it only takes effect when vLLM runs with `--scheduling-policy priority`. Setting it on a background or batch model defers that model's long prefills behind interactive sessions. Off by default and never set on the generated catalog ([#9004](https://github.com/earendil-works/pi/pull/9004)).
 - `Model.fastRoute` and the `ModelFastRoute` type. This optional field marks a model as the fast-inference variant of another model and carries the upstream routing it needs: the base model it pairs with, the model ID to send upstream, and an optional OpenAI-style `serviceTier`. Presence of this field — never a `-fast` name suffix — is what gives a model fast semantics.
+- Added `AssistantMessageFrameEncoder` and `reduceAssistantMessageFrames` so callers can persist compact, replayable stream progress without the full event stream ([upstream `8b5899dc`](https://github.com/earendil-works/pi/commit/8b5899dce26f9f6b8d313ee6a4b4a8dccbb9bfc2)).
 
 ### Changed
 
