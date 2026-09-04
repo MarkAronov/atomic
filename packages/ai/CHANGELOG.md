@@ -35,6 +35,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed the Workers AI binding transport to use the binding's plain `fetch` passthrough for models migrated to the `workers-binding.ai` base URL, preserving request methods, headers, query strings, and streaming bodies instead of translating requests through the universal-endpoint shim. See **Breaking Changes** for the required base-URL and binding-type migration ([#8287](https://github.com/earendil-works/pi/pull/8287)).
 - Fixed OpenAI Codex SSE parsing to process terminal events that are not followed by a blank line ([#9047](https://github.com/earendil-works/pi/issues/9047)).
 - Fixed the Qwen Token Plan Individual catalog to include Qwen3.8 Flash ([#9021](https://github.com/earendil-works/pi/issues/9021)).
+- Fixed assistant-message frames dropping `providerThinkingLevel` from the start snapshot ([upstream `0fdec07b`](https://github.com/earendil-works/pi/commit/0fdec07ba397)).
 
 ## [0.9.18-alpha.5] - 2026-09-01
 
