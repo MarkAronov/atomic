@@ -259,3 +259,126 @@ npx vitest --run --project unit test/unit/intercom-*.test.ts
 ```
 
 Captured red output: `/tmp/red-round3.txt`.
+
+## Review round 4 — the exhausted warm-up: raw console text, and the stage that never unparks
+
+Round 2 gave the warm-up a retry owner and made the terminal case *visible* with a
+`console.error`. The user then hit that terminal case: `Intercom could not reconnect
+for workflow stage "…" after 5 attempts` was rendered into the root session's main
+chat area. Round 2's own disclosed limitation had come true, and it is two defects,
+not one wording problem.
+
+1. **The console channel.** `packages/coding-agent/src/core/output-guard.ts` leaves
+   `console.error` writing raw bytes to the TTY the TUI paints, and a workflow stage
+   runs inside the root session's process — so extension stderr lands in the user's
+   transcript.
+2. **The stage still never unparks.** `stage-runner-controller.ts` awaits
+   `pendingStageDelivery.ready()` with no timeout, and
+   `pending-stage-delivery.ts` only ever resolved that promise from a *successful*
+   drain or rejected it from a *failed* drain. Warm-up exhaustion produced neither,
+   so the report was emitted and the stage stayed `running` forever.
+
+The repair is a typed terminal signal rather than a timeout: the wrapper hands the
+delivery an `IntercomWarmUpExhaustedError` through the new optional `fail(reason)`
+member of `WorkflowPendingStageDelivery`, and the workflows side settles `ready()`
+exactly once with a stage-scoped `WorkflowPendingStageDeliveryFailedError`.
+
+### Red — only the four production files reverted, the tests kept
+
+`packages/intercom/index.ts`, `packages/workflows/src/runs/foreground/pending-stage-delivery.ts`,
+`packages/workflows/src/runs/foreground/stage-runner-controller.ts`, and
+`packages/coding-agent/src/core/extensions/context-types.ts` stashed; the new
+`warm-up-exhaustion.ts` and the three suites left in place.
+
+```sh
+npx vitest --run --project unit \
+  test/unit/intercom-recoverable-disconnect-ui.test.ts \
+  test/unit/workflow-pending-stage-delivery-terminal.test.ts
+```
+
+```text
+ Test Files  2 failed (2)
+      Tests  6 failed | 19 passed (25)
+```
+
+Each failure is the defect itself:
+
+```text
+× hands the stage a terminal signal when the bounded attempts run out, with no console diagnostic
+  Error: timed out waiting for the expected condition        (no fail() is ever called)
+
+× stays silent when the stage delivery offers no terminal signal
+  AssertionError: expected [] to deeply equal
+  [[ 'Intercom could not reconnect for workflow stage "implementation" after 2 attempts; …' ]]
+
+× rejects a ready() that was already awaited when the delivery owner gives up
+  Error: Test timed out in 30000ms.                          (the parked stage, exactly)
+
+× rejects a ready() requested after the failure was already latched
+  Error: Test timed out in 30000ms.
+
+× settles exactly once: the first reason wins and a duplicate fail() is a no-op
+  Error: Test timed out in 30000ms.
+
+× a late deliverPending() after the failure leaves the queued steering untouched
+  AssertionError: a failed-closed stage never consumes the entries it was refused
+```
+
+The three 30 s timeouts are the production bug reproduced literally: `ready()` never
+settles, so the test burns its whole budget the way the stage burned the run. The
+second failure is the raw transcript text, captured verbatim.
+
+At the integration boundary the same revert parks a real executor run:
+
+```sh
+npx vitest --run --project integration \
+  test/integration/workflow-stage-pending-delivery-terminal-failure.test.ts
+```
+
+```text
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+  Error: Test timed out in 30000ms.
+```
+
+### Green — with the typed terminal signal
+
+```sh
+npx vitest --run --project unit \
+  test/unit/intercom-recoverable-disconnect-ui.test.ts \
+  test/unit/workflow-pending-stage-delivery-terminal.test.ts \
+  test/unit/intercom-heavy-init-diagnostics.test.ts
+```
+
+```text
+ Test Files  3 passed (3)
+      Tests  30 passed (30)
+```
+
+```sh
+npx vitest --run --project integration \
+  test/integration/workflow-stage-pending-delivery-terminal-failure.test.ts \
+  test/integration/workflow-pending-stage-delivery.test.ts
+```
+
+```text
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+```
+
+The integration run that timed out at 30 s now completes in ~10 ms with the stage at
+`status: "failed"`, `failureKind: "unknown"`, `failureDisposition: "terminal_failed"`,
+a `stage.error` naming the stage, and the queued entry still `queued`.
+
+Round 2's controls are unchanged and still green: late retry success unparks the
+stage, shutdown cancels the retry silently, and a non-recoverable warm-up failure is
+still reported to the host and not retried.
+
+Also green with the fix (`--project unit`): `stage-runner.test.ts`,
+`stage-runner-errors.test.ts`, `stage-runner-lazy-attach.test.ts`,
+`stage-runner-thrown-retry.test.ts`, `stage-runner-session-shutdown.test.ts`,
+`durable-resume-runtime.test.ts` (171 tests); `workflow-sticky-pending-stage-delivery.test.ts`,
+`workflow-pending-stage-delivery-lifecycle.test.ts`,
+`workflows-pending-stage-delivery-store.test.ts`,
+`durable-nested-pending-stage-delivery.test.ts`; and (`--project integration`)
+`intercom-reconnect-recovery.test.ts` (5 tests).

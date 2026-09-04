@@ -39,6 +39,7 @@ import type {
 } from "../../packages/coding-agent/src/core/extensions/types.js";
 import intercom from "../../packages/intercom/index.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
+import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
 import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -87,27 +88,44 @@ function relayFailureLogs(): ConsoleErrorCall[] {
 /**
  * A `pendingStageDelivery` modeled on the real contract in
  * `packages/workflows/src/runs/foreground/pending-stage-delivery.ts`: `ready()`
- * returns a promise that only a successful `deliverPending()` resolves, and the
- * only production caller of `deliverPending()` is the heavy module's
- * `session_start` replay. A stage that owns queued messages parks on that
- * promise inside `stage-runner-controller`, with no timeout.
+ * returns a promise that a successful `deliverPending()` resolves and a
+ * terminal `fail()` rejects, and the only production caller of
+ * `deliverPending()` is the heavy module's `session_start` replay. A stage that
+ * owns queued messages parks on that promise inside `stage-runner-controller`,
+ * with no timeout, so the terminal signal is the only thing that can unpark it
+ * when recovery runs out.
  */
 function pendingStageDeliveryWithQueuedMessages() {
 	let resolveReady: (() => void) | undefined;
-	let settled = false;
-	const readyPromise = new Promise<void>((resolve) => {
+	let rejectReady: ((error: Error) => void) | undefined;
+	let settled: "pending" | "delivered" | "failed" = "pending";
+	const readyPromise = new Promise<void>((resolve, reject) => {
 		resolveReady = resolve;
+		rejectReady = reject;
 	});
+	// Not every test awaits `ready()`; an unobserved terminal rejection must not
+	// become a process-level unhandled rejection, exactly as production does.
+	readyPromise.catch(() => {});
 	const delivery = {
 		routeCapability: "test-capability",
 		deliverPending: async () => {
 			delivery.deliverPendingCalls += 1;
-			settled = true;
+			settled = "delivered";
 			resolveReady?.();
 		},
 		ready: () => readyPromise,
+		fail: (reason: Error) => {
+			delivery.failReasons.push(reason);
+			if (settled !== "pending") return;
+			settled = "failed";
+			rejectReady?.(reason);
+		},
 		deliverPendingCalls: 0,
+		failReasons: [] as Error[],
 		get readySettled() {
+			return settled !== "pending";
+		},
+		get readyOutcome() {
 			return settled;
 		},
 	};
@@ -480,7 +498,7 @@ describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
 		assert.deepEqual(consoleErrorCalls, []);
 	});
 
-	test("reports once when the bounded attempts run out", async () => {
+	test("hands the stage a terminal signal when the bounded attempts run out, with no console diagnostic", async () => {
 		const delivery = pendingStageDeliveryWithQueuedMessages();
 		const current = fixture(
 			[
@@ -492,17 +510,46 @@ describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
 		);
 
 		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		await waitFor(() => consoleErrorCalls.length > 0);
+		await waitFor(() => delivery.failReasons.length > 0);
 
 		assert.deepEqual(reported, []);
 		assert.equal(current.imports, 3, "one warm-up attempt plus the two scheduled retries");
-		assert.equal(consoleErrorCalls.length, 1, "exactly one terminal diagnostic, not one per attempt");
-		const [message] = consoleErrorCalls[0] ?? [];
-		assert.match(
-			String(message),
-			/Intercom could not reconnect for workflow stage "implementation" after 2 attempts/,
+		assert.deepEqual(consoleErrorCalls, [], "no raw extension text is written into the root transcript");
+		assert.equal(delivery.failReasons.length, 1, "exactly one terminal signal, not one per attempt");
+		const reason = delivery.failReasons[0];
+		assert.ok(reason instanceof IntercomWarmUpExhaustedError, "the terminal reason is typed, not a message string");
+		assert.equal(reason.attempts, 2);
+		assert.match(String(reason?.message), /after 2 warm-up attempts/);
+		assert.equal(
+			(reason?.cause as Error | undefined)?.name,
+			"IntercomClientDisconnectedError",
+			"the last recoverable failure is preserved as the cause",
 		);
-		assert.equal(delivery.readySettled, false);
+		assert.equal(delivery.readyOutcome, "failed", "the parked stage is settled instead of waiting forever");
+		await assert.rejects(delivery.ready(), (error: Error) => error === reason);
+	});
+
+	test("stays silent when the stage delivery offers no terminal signal", async () => {
+		// A host that implements the delivery contract structurally without the
+		// optional `fail` member keeps the previous park-until-delivery behavior;
+		// what it must never get is raw extension output in its transcript.
+		const delivery = pendingStageDeliveryWithQueuedMessages();
+		const withoutFail: Omit<typeof delivery, "fail"> & { fail?: never } = { ...delivery, fail: undefined };
+		const current = fixture(
+			[
+				{ error: new IntercomClientDisconnectedError() },
+				{ error: new IntercomClientDisconnectedError() },
+				{ error: new IntercomClientDisconnectedError() },
+			],
+			[1, 1],
+		);
+
+		const reported = await current.emitSessionStart(workflowStageContext(withoutFail as never));
+		await waitFor(() => current.imports === 3);
+		await sleep(20);
+
+		assert.deepEqual(reported, []);
+		assert.deepEqual(consoleErrorCalls, []);
 	});
 
 	test("cancels the retry on session shutdown without another attempt", async () => {

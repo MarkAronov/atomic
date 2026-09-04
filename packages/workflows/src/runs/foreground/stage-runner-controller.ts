@@ -1278,7 +1278,20 @@ export class StageSessionController {
 		);
 		const attachedSession = session instanceof Promise ? await session : session;
 		const pendingStageDeliveryReady = this.sharedOrchestrationContext?.pendingStageDelivery?.ready();
-		if (pendingStageDeliveryReady !== undefined) await pendingStageDeliveryReady;
+		if (pendingStageDeliveryReady !== undefined) {
+			try {
+				await pendingStageDeliveryReady;
+			} catch (error) {
+				// `attachSession` has already published this session, and
+				// `ensureSession()` returns `this.session` when it is set — so leaving
+				// it attached would let a later caller prompt a stage that skipped the
+				// queued instructions it was refused. Detach and dispose, mirroring the
+				// stale-creation branch above, then let the failure decide the stage.
+				if (this.session === attachedSession) this.session = undefined;
+				await disposeStageSession(attachedSession).catch(() => {});
+				throw error;
+			}
+		}
 		await this.opts.onSessionReady?.();
 		return attachedSession;
 	}

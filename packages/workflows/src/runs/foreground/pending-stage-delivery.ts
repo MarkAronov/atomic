@@ -17,6 +17,35 @@ import { parseWorkflowStageTarget } from "../../shared/workflow-stage-target.js"
 
 const pendingDeliveryClaims = new WeakMap<Store, Set<string>>();
 
+/**
+ * Terminal outcome for a stage whose queued Intercom instructions can no longer
+ * be delivered.
+ *
+ * The stage identity lives here rather than in the delivery owner: only the
+ * workflows side knows the run, stage id, and stage name, and only a
+ * workflow-authored message belongs in a stage snapshot. Wording avoids the
+ * tokens the model-fallback and workflow-failure classifiers read, so this stays
+ * an `unknown`/`terminal_failed` decision rather than being misread as a
+ * cancellation or a retryable provider outage.
+ */
+export class WorkflowPendingStageDeliveryFailedError extends Error {
+	readonly code = "pending_stage_delivery_failed" as const;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly stageName: string;
+
+	constructor(runId: string, stageId: string, stageName: string, reason: Error) {
+		super(
+			`atomic-workflows: stage "${stageName}" (${stageId}) did not start because its queued Intercom instructions could not be delivered: ${reason.message}`,
+			{ cause: reason },
+		);
+		this.name = "WorkflowPendingStageDeliveryFailedError";
+		this.runId = runId;
+		this.stageId = stageId;
+		this.stageName = stageName;
+	}
+}
+
 export function createWorkflowPendingStageDelivery(
 	activeStore: Store,
 	runId: string,
@@ -27,6 +56,7 @@ export function createWorkflowPendingStageDelivery(
 	let rejectReady: ((error: Error) => void) | undefined;
 	let readyPromise: Promise<void> | undefined;
 	let drainError: Error | undefined;
+	let terminalError: WorkflowPendingStageDeliveryFailedError | undefined;
 	let drainPromise: Promise<void> | undefined;
 	const pendingReady = (): Promise<void> => {
 		if (readyPromise === undefined) {
@@ -40,23 +70,27 @@ export function createWorkflowPendingStageDelivery(
 	return {
 		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
 		deliverPending(deliver) {
-			if (drainPromise === undefined) {
-				drainError = undefined;
-				const attempt = deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver);
-				const drain = attempt.then(
-					() => resolveReady?.(),
-					(error: Error) => {
-						drainError = error;
-						rejectReady?.(error);
-						readyPromise = undefined;
-						resolveReady = undefined;
-						rejectReady = undefined;
-						if (drainPromise === drain) drainPromise = undefined;
-						throw error;
-					},
-				);
-				drainPromise = drain;
-			}
+			if (drainPromise !== undefined) return drainPromise;
+			// After a terminal failure the queue is left exactly as it is: consuming
+			// entries for a stage that will not run would mark this stage's steering
+			// delivered to nobody. Resolving rather than rejecting keeps a late
+			// replay silent, which is the whole point of the terminal signal.
+			if (terminalError !== undefined) return Promise.resolve();
+			drainError = undefined;
+			const attempt = deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver);
+			const drain = attempt.then(
+				() => resolveReady?.(),
+				(error: Error) => {
+					drainError = error;
+					rejectReady?.(error);
+					readyPromise = undefined;
+					resolveReady = undefined;
+					rejectReady = undefined;
+					if (drainPromise === drain) drainPromise = undefined;
+					throw error;
+				},
+			);
+			drainPromise = drain;
 			return drainPromise;
 		},
 		ready() {
@@ -65,9 +99,25 @@ export function createWorkflowPendingStageDelivery(
 				(stageId === stageName || activeStore.pendingStageMessagesFor(runId, stageName).length === 0) &&
 				stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName).length === 0
 			) {
+				// Nothing was queued, so a terminal failure costs this stage nothing:
+				// keep the short circuit first and let the stage run.
 				return undefined;
 			}
+			if (terminalError !== undefined) return Promise.reject(terminalError);
 			return drainError === undefined ? pendingReady() : Promise.reject(drainError);
+		},
+		fail(reason) {
+			// First terminal wins and is sticky for the life of this delivery, which
+			// `executor-stage-factory` creates once per stage context — so a resumed
+			// stage builds a fresh delivery and is not poisoned by this attempt.
+			if (terminalError !== undefined) return;
+			terminalError = new WorkflowPendingStageDeliveryFailedError(runId, stageId, stageName, reason);
+			if (readyPromise === undefined) return;
+			// The controller may not have reached its `await` yet; an unobserved
+			// rejection must not become a process-level unhandled rejection. A caller
+			// that does await still sees the rejection.
+			readyPromise.catch(() => {});
+			rejectReady?.(terminalError);
 		},
 	};
 }

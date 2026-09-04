@@ -6,6 +6,7 @@ import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
+import { IntercomWarmUpExhaustedError } from "./warm-up-exhaustion.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
 	createForwardedHandlerMap,
@@ -27,6 +28,10 @@ type SessionSnapshot = LifecycleSnapshot<"session_start"> & { generation: number
 type IntercomHeavyHandle = HeavyHandle<CapturedHeavy>;
 type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle> };
 type ReplayAttempt = { lease: IntercomLease; heavy: CapturedHeavy; promise: Promise<void> };
+/** The stage's durable pre-start delivery, as the host hands it to a workflow-stage session. */
+type WorkflowStagePendingDelivery = NonNullable<
+	NonNullable<ExtensionContext["orchestrationContext"]>["pendingStageDelivery"]
+>;
 type ActiveLifecycleState = {
 	turnStart: LifecycleSnapshot<"turn_start"> | null;
 	agentStart: LifecycleSnapshot<"agent_start"> | null;
@@ -317,13 +322,25 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	 * lease and lifecycle generation are still current, so shutdown, reload, and
 	 * session replacement abort it silently instead of racing a stale context or
 	 * building a second client. A success drains the stage's pending deliveries
-	 * through the normal `session_start` replay; running out of attempts is the
-	 * terminal case the objective requires to stay visible.
+	 * through the normal `session_start` replay.
+	 *
+	 * Running out of attempts is terminal, and it belongs to the stage rather
+	 * than to the console: the extension hands the delivery owner a typed reason
+	 * so the stage fails at its own lifecycle boundary. Writing the diagnostic
+	 * here instead put raw extension text into the root session's transcript and
+	 * still left the stage waiting on `pendingStageDelivery.ready()` forever.
 	 */
-	function scheduleWarmUpRetry(ctx: ExtensionContext, lease: IntercomLease, generation: number, stageName: string): void {
+	function scheduleWarmUpRetry(
+		ctx: ExtensionContext,
+		lease: IntercomLease,
+		generation: number,
+		pendingStageDelivery: WorkflowStagePendingDelivery,
+		initialError: unknown,
+	): void {
 		if (warmUpRetry) return;
 		const state: WarmUpRetry = { lease, generation, timer: null, cancelled: false };
 		warmUpRetry = state;
+		let lastError: unknown = initialError;
 		const clearOwner = (): void => {
 			if (warmUpRetry === state) warmUpRetry = null;
 		};
@@ -333,8 +350,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			const delay = warmUpRetryDelay(attempt);
 			if (delay === undefined) {
 				clearOwner();
-				console.error(
-					`Intercom could not reconnect for workflow stage "${stageName}" after ${attempt} attempts; queued stage messages remain undelivered until an Intercom call succeeds.`,
+				pendingStageDelivery.fail?.(
+					new IntercomWarmUpExhaustedError(attempt, lastError instanceof Error ? { cause: lastError } : undefined),
 				);
 				return;
 			}
@@ -345,6 +362,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 					return;
 				}
 				void loadHeavy(ctx).then(clearOwner, (error: unknown) => {
+					lastError = error;
 					if (stale()) {
 						clearOwner();
 						return;
@@ -408,7 +426,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     sessionSnapshot = { event, ctx, generation, lease };
     cancelWarmUpRetry();
     if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.pendingStageDelivery !== undefined) {
-      const stageName = ctx.orchestrationContext.workflowStageName;
+      const pendingStageDelivery = ctx.orchestrationContext.pendingStageDelivery;
       try {
         await loadHeavy(ctx);
       } catch (error) {
@@ -418,10 +436,11 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
         // disconnected" over a stage that is still running. Recovery is not
         // left to chance either: this branch hands the failure to a bounded
         // retry owner, because a stage carrying queued messages parks on
-        // `pendingStageDelivery.ready()` until a replay delivers them.
+        // `pendingStageDelivery.ready()` until a replay delivers them, and
+        // that owner signals the same delivery when its attempts run out.
         // Everything else still escapes.
         if (!isRecoverableIntercomDisconnect(error)) throw error;
-        scheduleWarmUpRetry(ctx, lease, generation, stageName);
+        scheduleWarmUpRetry(ctx, lease, generation, pendingStageDelivery, error);
       }
     } else if (loadedHeavy) {
       await ensureSessionStartReplayed(loadedHeavy.heavy, lease);

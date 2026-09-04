@@ -91,6 +91,18 @@ export interface WorkflowPendingStageDelivery {
 		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 	): Promise<void>;
 	ready(): Promise<void> | undefined;
+	/**
+	 * Terminal signal from a delivery owner that has run out of recovery: the
+	 * queued messages can no longer be drained, so the stage must fail at its own
+	 * lifecycle boundary rather than run without the instructions it was given.
+	 * Idempotent — the first reason wins, and `ready()` then settles with a
+	 * stage-scoped error instead of waiting for a delivery that will not come.
+	 *
+	 * Optional so an existing structural implementer keeps compiling; a host that
+	 * omits it keeps the previous behavior of waiting for the first successful
+	 * delivery.
+	 */
+	fail?(reason: Error): void;
 }
 
 export interface WorkflowStageOrchestrationContext {
