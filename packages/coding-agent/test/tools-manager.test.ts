@@ -119,6 +119,22 @@ describe("managed tool downloads", () => {
 		expect(fetchMock.mock.calls.some(([input]) => String(input) === archiveUrl)).toBe(true);
 	});
 
+	it("pins fd 10.3.0 on darwin/x64 without looking up the latest release", async () => {
+		mocks.platform.mockReturnValue("darwin");
+		mocks.arch.mockReturnValue("x64");
+		const archiveUrl =
+			"https://github.com/sharkdp/fd/releases/download/v10.3.0/fd-v10.3.0-x86_64-apple-darwin.tar.gz";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			if (String(input) === archiveUrl) return new Response("archive");
+			return new Response("unexpected request", { status: 404 });
+		});
+
+		await expect(ensureTool("fd")).resolves.toBeUndefined();
+
+		expect(fetchMock.mock.calls.some(([input]) => String(input) === archiveUrl)).toBe(true);
+		expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/releases/latest"))).toBe(false);
+	});
+
 	it("resolves the version from the release page redirect", async () => {
 		const fetchMock = vi.fn(
 			async () =>

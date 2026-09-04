@@ -247,7 +247,9 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	const plat = platform();
 	const architecture = arch();
 
-	const version = await getLatestVersion(config.repo);
+	// fd is pinned on darwin/x64; skip the version lookup there.
+	const version =
+		tool === "fd" && plat === "darwin" && architecture === "x64" ? "10.3.0" : await getLatestVersion(config.repo);
 
 	// Get asset name for this platform
 	const assetName = config.getAssetName(version, plat, architecture);
