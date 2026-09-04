@@ -247,9 +247,11 @@ function backtickedIdentifiers(block: string): string[] {
 test("every identifier the coding-agent [Unreleased] changelog names resolves", async () => {
 	const rootExports = await import("../../packages/coding-agent/src/index.ts");
 	const runtimeExports = new Set(Object.keys(rootExports));
-	// `src/index.ts` is an export barrel, so a word match there covers type-only exports, which never
-	// appear in the runtime module namespace.
-	const barrel = readFileSync(join(root, "packages/coding-agent/src/index.ts"), "utf8");
+	// Follow the root barrel through its extension-system re-export so type-only exports, which never
+	// appear in the runtime module namespace, are still covered.
+	const barrel = ["src/index.ts", "src/index-extensions.ts"]
+		.map((path) => readFileSync(join(root, "packages/coding-agent", path), "utf8"))
+		.join("\n");
 	const isExported = (name: string): boolean =>
 		runtimeExports.has(name) || new RegExp(`\\b${name}\\b`, "u").test(barrel);
 	const block = unreleasedBlock("packages/coding-agent/CHANGELOG.md");

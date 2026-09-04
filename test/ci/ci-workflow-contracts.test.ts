@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { delimiter, join } from "node:path";
+import { delimiter, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { parse as parseYaml } from "yaml";
@@ -211,6 +211,14 @@ test("workspace selectors precede the run verb so Bun cannot rewrite them", asyn
 			);
 		}
 	}
+});
+
+test("root build emits the packed Atomic package after its prerequisites", async () => {
+	const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
+	assert.equal(
+		manifest.scripts.build,
+		"npm --workspace=@bastani/pi-ai run build && node scripts/alias-pi-ai.mjs && npm --workspace=@bastani/atomic-natives run build && npm --workspace=@bastani/atomic run build",
+	);
 });
 
 test("typecheck aliases the local pi-ai build before compiling dependents", async () => {
@@ -513,9 +521,14 @@ test("musl smoke forwards a complete staged shell script through stub docker", (
 	const probe = createMuslSmokeProbe();
 	try {
 		const result = spawnSyncCollect(
-			["bash", join(root, "scripts/test-musl-release-archive.sh"), probe.archive, "linux-x64-musl"],
+			[
+				"bash",
+				join(root, "scripts/test-musl-release-archive.sh"),
+				relative(probe.root, probe.archive),
+				"linux-x64-musl",
+			],
 			{
-				cwd: root,
+				cwd: probe.root,
 				env: {
 					...process.env,
 					PATH: `${join(probe.root, "stub")}${delimiter}${process.env.PATH ?? ""}`,

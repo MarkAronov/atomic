@@ -237,17 +237,14 @@ const COPILOT_STATIC_HEADERS = {
 } as const;
 
 // GitHub shipped Gemini 3.8 Flash in Copilot on 2026-09-03
-// (https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/),
-// but models.dev has no github-copilot entry for it yet. Until it does, synthesize the entry from
-// the Copilot sibling it succeeds, correcting every field the authenticated Copilot `/models`
-// endpoint publishes for it: `max_context_window_tokens 1048576`, `max_output_tokens 65536`, and
-// `supports.reasoning_effort ["low","medium","high"]`. Copilot's `supported_endpoints` for this
-// model is `["/chat/completions"]`, which is why it keeps the openai-completions route. Only the
-// fields Copilot's response has no `Model` counterpart for — cost (its `token_prices` match the
-// generated 0.75/3.75/0.075/0 exactly) and modalities — remain inherited from the sibling.
-// The supplement is skipped as soon as models.dev lists the model, so it retires itself rather
-// than overriding upstream metadata; these corrections retire with it.
-const GITHUB_COPILOT_SUPPLEMENTAL_MODELS = [
+// (https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/).
+// The authenticated Copilot `/models` endpoint publishes `max_context_window_tokens 1048576`,
+// `max_output_tokens 65536`, `supports.reasoning_effort ["low","medium","high"]`, and
+// `supported_endpoints ["/chat/completions"]`. models.dev originally omitted the row, and may list
+// it later with generic or stale values, so preserve upstream-owned metadata while correcting the
+// authenticated limits and reasoning contract in either case. If the row is absent, synthesize it
+// from the Copilot sibling it succeeds; cost and modalities then remain sibling-inherited.
+const GITHUB_COPILOT_MODEL_CORRECTIONS = [
 	{
 		id: "gemini-3.8-flash",
 		name: "Gemini 3.8 Flash",
@@ -264,16 +261,20 @@ const GITHUB_COPILOT_SUPPLEMENTAL_MODELS = [
 	overrides: Partial<ModelsDevModel>;
 }[];
 
-/** models.dev's Copilot entries, plus any supplemental entry models.dev has not ingested yet. */
+/** models.dev's Copilot entries, corrected or supplemented by authenticated Copilot metadata. */
 function getGithubCopilotModelEntries(models: Record<string, ModelsDevModel>): [string, ModelsDevModel][] {
-	const entries = Object.entries(models);
-	for (const supplement of GITHUB_COPILOT_SUPPLEMENTAL_MODELS) {
-		if (models[supplement.id]) continue;
-		const source = models[supplement.sourceId];
+	const entries = new Map(Object.entries(models));
+	for (const correction of GITHUB_COPILOT_MODEL_CORRECTIONS) {
+		const upstream = entries.get(correction.id);
+		if (upstream) {
+			entries.set(correction.id, { ...upstream, ...correction.overrides });
+			continue;
+		}
+		const source = entries.get(correction.sourceId);
 		if (!source) continue;
-		entries.push([supplement.id, { ...source, name: supplement.name, ...supplement.overrides }]);
+		entries.set(correction.id, { ...source, name: correction.name, ...correction.overrides });
 	}
-	return entries;
+	return [...entries.entries()];
 }
 
 const TOGETHER_BASE_URL = "https://api.together.ai/v1";

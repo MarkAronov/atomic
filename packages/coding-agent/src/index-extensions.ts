@@ -122,6 +122,7 @@ export type {
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
+	WorkflowPendingStageDelivery,
 	WorkflowStageOrchestrationContext,
 	WorkingIndicatorOptions,
 	WriteToolCallEvent,

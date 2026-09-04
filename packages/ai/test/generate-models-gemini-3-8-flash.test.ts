@@ -395,7 +395,7 @@ test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
 	assert.equal(vercel.thinkingLevelMap, undefined);
 });
 
-test("yields to models.dev once it publishes the GitHub Copilot entry", () => {
+test("preserves upstream Copilot metadata while enforcing its authenticated contract", () => {
 	const catalog = {
 		...BASE_CATALOG,
 		"github-copilot": {
@@ -414,11 +414,11 @@ test("yields to models.dev once it publishes the GitHub Copilot entry", () => {
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
 
 	assert.equal(Object.keys(copilot).filter((id) => id === "gemini-3.8-flash").length, 1);
-	// Every asserted field comes from models.dev, proving the supplement's own limit override
-	// retires with it rather than overriding upstream metadata.
+	// Preserve upstream-owned metadata, but do not let a newly listed row replace the narrower
+	// authenticated Copilot limits and reasoning-effort contract with stale generic values.
 	assert.equal(copilot["gemini-3.8-flash"].name, "Gemini 3.8 Flash (upstream)");
-	assert.equal(copilot["gemini-3.8-flash"].contextWindow, 512_000);
-	assert.equal(copilot["gemini-3.8-flash"].maxTokens, 32_000);
+	assert.equal(copilot["gemini-3.8-flash"].contextWindow, 1_048_576);
+	assert.equal(copilot["gemini-3.8-flash"].maxTokens, 65_536);
 	assert.deepEqual(copilot["gemini-3.8-flash"].cost, {
 		input: 1.5,
 		output: 7.5,

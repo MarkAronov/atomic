@@ -44,7 +44,10 @@ const OMITTABLE_WORKFLOW_DECLARATIONS = [
 	"workflow-heartbeat-contract.d.ts",
 	"authoring-contract-ui.d.ts",
 ] as const;
-const ROOT_IMPORT_SOURCE = 'import type { ExtensionAPI } from "@bastani/atomic";\nexport type Api = ExtensionAPI;';
+const ROOT_IMPORT_SOURCE =
+	'import type { ExtensionAPI, WorkflowPendingStageDelivery } from "@bastani/atomic";\n' +
+	"export type Api = ExtensionAPI;\n" +
+	"export type PendingDelivery = WorkflowPendingStageDelivery;";
 const AUTHORING_PROBE_SOURCE = `import type {
 	WorkflowHeartbeatEvent,
 	WorkflowHeartbeatEventDetails,
