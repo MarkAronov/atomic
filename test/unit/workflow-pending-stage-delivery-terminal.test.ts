@@ -11,20 +11,38 @@
  * failed closed — a delivery asked to drain after the latch is a silent no-op,
  * so the steering stays queued rather than being marked delivered to a stage
  * that will not read it.
+ *
+ * The terminal error must also not read as a *model* failure. Intercom's reason
+ * nests the transport error that lost the broker, so chaining it as `cause` let
+ * the shared classifier's cause walk latch `code: "ECONNRESET"` and call a dead
+ * delivery a retryable `network_timeout`.
  */
 
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
+import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
+import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	createWorkflowPendingStageDelivery,
+	isWorkflowPendingStageDeliveryFailure,
 	WorkflowPendingStageDeliveryFailedError,
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import {
+	isRetryableModelFailure,
+	isRetryableSameModelFailure,
+} from "../../packages/workflows/src/runs/shared/model-fallback-failures.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessageInput } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
+
+/** The exact reason chain `packages/intercom/index.ts` hands to `fail()` in production. */
+function productionWarmUpExhaustedReason(): IntercomWarmUpExhaustedError {
+	const transport = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+	return new IntercomWarmUpExhaustedError(5, { cause: new IntercomClientDisconnectedError({ cause: transport }) });
+}
 
 const RUN_ID = testRunId("terminal-delivery");
 const GROUP = `workflow:${RUN_ID}`;
@@ -73,7 +91,7 @@ describe("workflow pending-stage delivery terminal failure", () => {
 
 		const parked = delivery.ready();
 		assert.ok(parked instanceof Promise, "a stage with queued messages parks on ready()");
-		delivery.fail?.(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
+		delivery.fail(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
 
 		await assert.rejects(parked, (error: unknown) => {
 			assert.ok(error instanceof WorkflowPendingStageDeliveryFailedError);
@@ -84,7 +102,8 @@ describe("workflow pending-stage delivery terminal failure", () => {
 			assert.match(error.message, /stage "reviewer"/);
 			assert.match(error.message, /reviewer-id/);
 			assert.match(error.message, /Intercom could not reach the broker after 5 warm-up attempts\./);
-			assert.equal((error.cause as Error).message, "Intercom could not reach the broker after 5 warm-up attempts.");
+			assert.equal(error.reason.message, "Intercom could not reach the broker after 5 warm-up attempts.");
+			assert.equal(error.cause, undefined, "the reason is deliberately not chained as `cause`");
 			return true;
 		});
 	});
@@ -97,7 +116,7 @@ describe("workflow pending-stage delivery terminal failure", () => {
 		const { store } = await fixtureWithQueuedMessage();
 		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
 
-		delivery.fail?.(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
+		delivery.fail(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
 
 		await assert.rejects(
 			delivery.ready() as Promise<void>,
@@ -110,7 +129,7 @@ describe("workflow pending-stage delivery terminal failure", () => {
 		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
 
 		assert.equal(delivery.ready(), undefined);
-		delivery.fail?.(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
+		delivery.fail(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
 
 		assert.equal(delivery.ready(), undefined, "nothing was queued, so nothing is lost by running the stage");
 	});
@@ -119,8 +138,8 @@ describe("workflow pending-stage delivery terminal failure", () => {
 		const { store } = await fixtureWithQueuedMessage();
 		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
 
-		delivery.fail?.(new Error("first reason"));
-		delivery.fail?.(new Error("second reason"));
+		delivery.fail(new Error("first reason"));
+		delivery.fail(new Error("second reason"));
 
 		const first = await delivery.ready()?.then(
 			() => undefined,
@@ -139,7 +158,7 @@ describe("workflow pending-stage delivery terminal failure", () => {
 		const { store } = await fixtureWithQueuedMessage("late-1");
 		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
 
-		delivery.fail?.(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
+		delivery.fail(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
 		const delivered: string[] = [];
 		await delivery.deliverPending((_from, message) => {
 			delivered.push(message.id);
@@ -179,12 +198,41 @@ describe("workflow pending-stage delivery terminal failure", () => {
 			// The controller may not have reached its `await` yet — production must
 			// not turn that race into a process-level unhandled rejection.
 			void delivery.ready();
-			delivery.fail?.(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
+			delivery.fail(new Error("Intercom could not reach the broker after 5 warm-up attempts."));
 			await sleep(50);
 		} finally {
 			process.off("unhandledRejection", onUnhandledRejection);
 		}
 
 		assert.deepEqual(rejections, []);
+	});
+
+	test("is refused by the shared model-failure classifier even on the production reason chain", async () => {
+		// Regression: `{ cause: reason }` let `structuredSignal`'s cause walk reach
+		// the transport error's `code: "ECONNRESET"` and classify a dead delivery as
+		// `network_timeout` — same-model retryable and fallback-eligible — so every
+		// candidate was spent on a stage that could never receive its instructions.
+		const { store } = await fixtureWithQueuedMessage("classify-1");
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
+		const reason = productionWarmUpExhaustedReason();
+
+		delivery.fail(reason);
+		const terminal = await delivery.ready()?.then(
+			() => undefined,
+			(error: Error) => error,
+		);
+
+		assert.ok(terminal instanceof WorkflowPendingStageDeliveryFailedError);
+		assert.equal(terminal.reason, reason, "the production reason is still reachable for diagnosis");
+		assert.equal(isRetryableSameModelFailure(terminal), false, "no same-model retry is spent");
+		assert.equal(isRetryableModelFailure(terminal), false, "no model-fallback candidate is spent");
+		assert.equal(isWorkflowPendingStageDeliveryFailure(terminal), true);
+	});
+
+	test("recognizes a terminal delivery failure that crossed a realm and lost instanceof", () => {
+		assert.equal(isWorkflowPendingStageDeliveryFailure({ code: "pending_stage_delivery_failed" }), true);
+		assert.equal(isWorkflowPendingStageDeliveryFailure(new Error("unrelated")), false);
+		assert.equal(isWorkflowPendingStageDeliveryFailure(undefined), false);
+		assert.equal(isWorkflowPendingStageDeliveryFailure(null), false);
 	});
 });

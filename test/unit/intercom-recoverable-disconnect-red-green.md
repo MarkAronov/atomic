@@ -382,3 +382,127 @@ Also green with the fix (`--project unit`): `stage-runner.test.ts`,
 `workflows-pending-stage-delivery-store.test.ts`,
 `durable-nested-pending-stage-delivery.test.ts`; and (`--project integration`)
 `intercom-reconnect-recovery.test.ts` (5 tests).
+
+## Review round 5 — the terminal failure was still a retryable *model* failure
+
+Round 4 made the stage fail deterministically at its own lifecycle boundary. Review
+then found that the failure, on the shape production actually builds, was classified
+as a retryable model failure — so the "deterministic non-retryable" claim was true
+only for the bare `Error` the integration test happened to inject.
+
+**The defect.** `WorkflowPendingStageDeliveryFailedError` passed `{ cause: reason }`
+to `super(...)`. Production's reason is
+`IntercomWarmUpExhaustedError` ← `IntercomClientDisconnectedError` ← the raw
+`ECONNRESET` transport error, and `structuredSignal`'s cause walk latches the nested
+`code: "ECONNRESET"`, which `kindFromCode` maps to `network_timeout` — a kind that is
+both same-model retryable and fallback-eligible. The message's careful token
+avoidance never ran, because a structured code outranks message text.
+
+**Two barriers, each independently falsifiable:**
+
+1. `reason` instead of `cause`. The delivery owner's failure is kept on a `reason`
+   property, which the classifier does not inspect; the reason text is still in
+   `message`.
+2. A workflows-local type guard, `isWorkflowPendingStageDeliveryFailure`, consulted at
+   both decision sites — the same-model retry at `createSessionWithThrownErrorRetry`
+   and the fallback walk in `handleCandidateFailure`. This holds regardless of what
+   the classifier concludes, which is the point: it is by type, not by wording.
+
+**The test could not have caught it either.** The round-4 integration test injected a
+bare `Error`, which already classifies `unknown`, and configured no model, no
+fallbacks, and no retry settings — so neither decision site was reachable. It now
+builds the real production chain, declares `model: "anthropic/primary"` with
+`fallbackModels: ["openai/fallback"]`, and gives the mock session real retry settings.
+
+### Red — cause restored, guard removed
+
+```sh
+npx vitest --run --project integration \
+  test/integration/workflow-stage-pending-delivery-terminal-failure.test.ts
+```
+
+```text
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+
+AssertionError: no same-model retry and no fallback candidate is spent
++ actual - expected
++   'anthropic/primary',
++   'anthropic/primary',
++   'openai/fallback',
++   'openai/fallback',
++   'openai/fallback'
+```
+
+Five session creations across two models for a stage that could never receive its
+instructions — the finding reproduced literally, not by proxy.
+
+### Red — cause restored, guard kept
+
+```text
+ Test Files  1 passed (1)
+```
+
+The integration test passes, which is the guard doing its job independently of the
+classifier. The *classifier* barrier is what fails in that state, at its own
+assertion:
+
+```sh
+npx vitest --run --project unit test/unit/workflow-pending-stage-delivery-terminal.test.ts
+```
+
+```text
+ Tests  2 failed | 7 passed (9)
+
+× rejects a ready() that was already awaited when the delivery owner gives up
+  AssertionError: the reason is deliberately not chained as `cause`
+× is refused by the shared model-failure classifier even on the production reason chain
+  AssertionError: no same-model retry is spent
+```
+
+Each barrier therefore has its own red, and neither hides the other.
+
+### Red — the required `fail` contract
+
+`fail` was optional, and one unit case blessed a delivery that omitted it — a
+permanently parked stage the contract explicitly permitted. `fail` is now required on
+`WorkflowPendingStageDelivery`; the three structural test literals gained it, and the
+blessing case was replaced by a hostile-implementer control. Removing the wrapper's
+`try/catch` around the now-unconditional call:
+
+```text
+× contains a delivery whose fail() throws instead of letting it escape the process
+  AssertionError: the contract violation stays inside the extension
+ Tests  1 failed | 17 passed (18)
+```
+
+Worth recording: the first draft of that control watched only `uncaughtException` and
+passed with the `try/catch` removed. The exhaustion branch runs from the retry
+chain's promise rejection handler, so an escaping throw is an *unhandled rejection*.
+The committed control watches both.
+
+### Green — with both barriers and the required contract
+
+```text
+unit  (7 files: the two new suites + heavy-init diagnostics + the four
+       pending-stage-delivery suites)                       95 passed
+unit  (8 files: stage-runner{,-errors,-lazy-attach,-thrown-retry,
+       -session-shutdown,-model-fallback-1,-model-fallback-2},
+       durable-resume-runtime)                             187 passed
+integration (terminal-failure + workflow-pending-stage-delivery
+       + intercom-reconnect-recovery)                       17 passed
+```
+
+`npx tsc --noEmit -p tsconfig.json` and `packages/coding-agent` `tsgo -p
+tsconfig.build.json --noEmit` both exit 0; Biome reports no findings on the eight
+changed files.
+
+### Deferred, recorded rather than silently covered
+
+A *non-recoverable* failure partway through the retry chain
+(`packages/intercom/index.ts`) still exits via `clearOwner(); return;` without calling
+`fail`, and `loadHeavy`'s own handler still writes `Intercom heavy initialization
+failed; a later call will retry: …` to the console. That is a different failure class
+from the one the criteria name ("after five failed retries"), and it also touches the
+separate `loadHeavy` console channel. No doc or changelog sentence claims that branch
+is covered.

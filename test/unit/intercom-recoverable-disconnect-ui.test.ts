@@ -146,6 +146,7 @@ function workflowStageContext(pendingStageDelivery?: PendingStageDelivery): Exte
 				routeCapability: "test-capability",
 				deliverPending: async () => {},
 				ready: () => undefined,
+				fail: () => {},
 			},
 		},
 	} as never;
@@ -529,12 +530,27 @@ describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
 		await assert.rejects(delivery.ready(), (error: Error) => error === reason);
 	});
 
-	test("stays silent when the stage delivery offers no terminal signal", async () => {
-		// A host that implements the delivery contract structurally without the
-		// optional `fail` member keeps the previous park-until-delivery behavior;
-		// what it must never get is raw extension output in its transcript.
+	test("contains a delivery whose fail() throws instead of letting it escape the process", async () => {
+		// `fail` is part of the delivery contract, so a delivery that throws from it
+		// is a host violating that contract. The exhaustion branch runs from a timer
+		// callback and from the retry chain's rejection handler, so an escaping throw
+		// becomes an uncaughtException or an unhandled rejection — neither of which a
+		// misbehaving host may inflict on the session. Nothing may reach the
+		// transcript on this path either.
 		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const withoutFail: Omit<typeof delivery, "fail"> & { fail?: never } = { ...delivery, fail: undefined };
+		const hostile = {
+			...delivery,
+			fail: (reason: Error) => {
+				delivery.fail(reason);
+				throw new Error("hostile delivery implementation");
+			},
+		};
+		const escaped: unknown[] = [];
+		const onEscape = (error: unknown): void => {
+			escaped.push(error);
+		};
+		process.on("uncaughtException", onEscape);
+		process.on("unhandledRejection", onEscape);
 		const current = fixture(
 			[
 				{ error: new IntercomClientDisconnectedError() },
@@ -544,12 +560,19 @@ describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
 			[1, 1],
 		);
 
-		const reported = await current.emitSessionStart(workflowStageContext(withoutFail as never));
-		await waitFor(() => current.imports === 3);
-		await sleep(20);
+		try {
+			const reported = await current.emitSessionStart(workflowStageContext(hostile as never));
+			await waitFor(() => delivery.failReasons.length > 0);
+			await sleep(50);
 
-		assert.deepEqual(reported, []);
-		assert.deepEqual(consoleErrorCalls, []);
+			assert.deepEqual(reported, []);
+			assert.deepEqual(consoleErrorCalls, []);
+			assert.deepEqual(escaped, [], "the contract violation stays inside the extension");
+			assert.equal(delivery.failReasons.length, 1, "the reason is still handed over exactly once");
+		} finally {
+			process.off("uncaughtException", onEscape);
+			process.off("unhandledRejection", onEscape);
+		}
 	});
 
 	test("cancels the retry on session shutdown without another attempt", async () => {

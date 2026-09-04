@@ -23,27 +23,49 @@ const pendingDeliveryClaims = new WeakMap<Store, Set<string>>();
  *
  * The stage identity lives here rather than in the delivery owner: only the
  * workflows side knows the run, stage id, and stage name, and only a
- * workflow-authored message belongs in a stage snapshot. Wording avoids the
- * tokens the model-fallback and workflow-failure classifiers read, so this stays
- * an `unknown`/`terminal_failed` decision rather than being misread as a
- * cancellation or a retryable provider outage.
+ * workflow-authored message belongs in a stage snapshot.
+ *
+ * The delivery owner's reason is kept on `reason` rather than as `cause`
+ * deliberately. `structuredSignal` in the host's shared model-failure
+ * classifier walks the `cause` chain, and Intercom's reason nests the transport
+ * error that lost the broker — so chaining it made a dead delivery classify as
+ * `network_timeout`, which is both same-model retryable and fallback-eligible.
+ * The reason text is still carried in `message`, and `reason` is not a field the
+ * classifier inspects. The lifecycle guard below is the real barrier; this only
+ * stops the shared classifier from misreading the error for any other consumer.
  */
 export class WorkflowPendingStageDeliveryFailedError extends Error {
 	readonly code = "pending_stage_delivery_failed" as const;
 	readonly runId: string;
 	readonly stageId: string;
 	readonly stageName: string;
+	/** The delivery owner's own failure, deliberately not chained as `cause`. */
+	readonly reason: Error;
 
 	constructor(runId: string, stageId: string, stageName: string, reason: Error) {
 		super(
 			`atomic-workflows: stage "${stageName}" (${stageId}) did not start because its queued Intercom instructions could not be delivered: ${reason.message}`,
-			{ cause: reason },
 		);
 		this.name = "WorkflowPendingStageDeliveryFailedError";
 		this.runId = runId;
 		this.stageId = stageId;
 		this.stageName = stageName;
+		this.reason = reason;
 	}
+}
+
+/**
+ * True for a terminal pending-stage delivery failure, by construction.
+ *
+ * The stage lifecycle consults this before spending a same-model retry or a
+ * model-fallback candidate: a stage refused its queued instructions will be
+ * refused them by every candidate, so retrying is pure waste and records
+ * misleading attempt and `[fallback]` metadata. The `code` branch covers an
+ * error that crossed a package or realm boundary and lost `instanceof`.
+ */
+export function isWorkflowPendingStageDeliveryFailure(error: unknown): boolean {
+	if (error instanceof WorkflowPendingStageDeliveryFailedError) return true;
+	return (error as { code?: unknown } | null | undefined)?.code === "pending_stage_delivery_failed";
 }
 
 export function createWorkflowPendingStageDelivery(

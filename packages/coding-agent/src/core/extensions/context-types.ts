@@ -98,11 +98,11 @@ export interface WorkflowPendingStageDelivery {
 	 * Idempotent — the first reason wins, and `ready()` then settles with a
 	 * stage-scoped error instead of waiting for a delivery that will not come.
 	 *
-	 * Optional so an existing structural implementer keeps compiling; a host that
-	 * omits it keeps the previous behavior of waiting for the first successful
-	 * delivery.
+	 * Required, not optional: `ready()` has no timeout, so a delivery that cannot
+	 * be settled leaves its stage parked forever. Every implementer must be able
+	 * to answer that no delivery is coming.
 	 */
-	fail?(reason: Error): void;
+	fail(reason: Error): void;
 }
 
 export interface WorkflowStageOrchestrationContext {

@@ -350,9 +350,18 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			const delay = warmUpRetryDelay(attempt);
 			if (delay === undefined) {
 				clearOwner();
-				pendingStageDelivery.fail?.(
-					new IntercomWarmUpExhaustedError(attempt, lastError instanceof Error ? { cause: lastError } : undefined),
+				const exhausted = new IntercomWarmUpExhaustedError(
+					attempt,
+					lastError instanceof Error ? { cause: lastError } : undefined,
 				);
+				try {
+					pendingStageDelivery.fail(exhausted);
+				} catch {
+					// `fail` is part of the delivery contract, so this is a host that
+					// violates it. Nothing here may write to the transcript, and this runs
+					// inside a timer callback where a throw would become an
+					// uncaughtException; the offending host keeps its own parked stage.
+				}
 				return;
 			}
 			const timer = setTimeout(() => {
