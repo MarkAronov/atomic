@@ -980,6 +980,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 				await pendingStageDelivery.deliverPending(deliver);
 			},
 			ready: () => pendingStageDelivery.ready(),
+			fail: (reason) => pendingStageDelivery.fail(reason),
 		};
 		let forwardedPendingStageDelivery: ReturnType<typeof createWorkflowPendingStageDelivery> | undefined;
 		const stageAdapters = buildRuntimeAdapters(

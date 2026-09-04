@@ -24,6 +24,7 @@ import {
 	workflowModelId,
 } from "../shared/model-fallback.js";
 import { nextRetryDecision, sleepOrAbort } from "../shared/retry.js";
+import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { candidateLabel, effectiveCandidateReasoning, modelAttemptReasoning } from "./stage-runner-candidate.js";
@@ -1179,7 +1180,12 @@ export class StageSessionController {
 			} catch (error) {
 				const errorSettingsManager = retrySettingsManagerFromError(error);
 				if (errorSettingsManager !== undefined) this.sessionSettingsManager = errorSettingsManager;
-				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableSameModelFailure(error));
+				// A stage refused its queued Intercom instructions will be refused them
+				// by every retry, so the terminal delivery failure is never eligible —
+				// independent of what the shared model-failure classifier makes of it.
+				const decision = isWorkflowPendingStageDeliveryFailure(error)
+					? undefined
+					: nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableSameModelFailure(error));
 				if (
 					decision === undefined ||
 					this.disposed ||
@@ -1278,7 +1284,20 @@ export class StageSessionController {
 		);
 		const attachedSession = session instanceof Promise ? await session : session;
 		const pendingStageDeliveryReady = this.sharedOrchestrationContext?.pendingStageDelivery?.ready();
-		if (pendingStageDeliveryReady !== undefined) await pendingStageDeliveryReady;
+		if (pendingStageDeliveryReady !== undefined) {
+			try {
+				await pendingStageDeliveryReady;
+			} catch (error) {
+				// `attachSession` has already published this session, and
+				// `ensureSession()` returns `this.session` when it is set — so leaving
+				// it attached would let a later caller prompt a stage that skipped the
+				// queued instructions it was refused. Detach and dispose, mirroring the
+				// stale-creation branch above, then let the failure decide the stage.
+				if (this.session === attachedSession) this.session = undefined;
+				await disposeStageSession(attachedSession).catch(() => {});
+				throw error;
+			}
+		}
 		await this.opts.onSessionReady?.();
 		return attachedSession;
 	}
@@ -1474,7 +1493,12 @@ export class StageSessionController {
 		index: number,
 	): Promise<"handled" | "retry" | "throw"> {
 		const message = errorMessage(err);
-		if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
+		// A terminal pending-stage delivery failure is not a model failure: every
+		// candidate would be refused the same queued instructions. It records the one
+		// attempt it actually spent and then stops, so no further candidate is walked
+		// and no `[fallback]` warning claims a model was at fault.
+		const terminalStageDelivery = isWorkflowPendingStageDeliveryFailure(err);
+		if (!terminalStageDelivery && this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
 			this.recordSuccessfulAttempt(candidate);
 			return "handled";
 		}
@@ -1486,7 +1510,12 @@ export class StageSessionController {
 			...(usage === undefined ? {} : { usage }),
 			error: message,
 		});
-		if (this.opts.signal?.aborted || !isRetryableModelFailure(err) || index === candidates.length - 1) {
+		if (
+			this.opts.signal?.aborted ||
+			terminalStageDelivery ||
+			!isRetryableModelFailure(err) ||
+			index === candidates.length - 1
+		) {
 			this.modelWarnings.push(...this.pendingFallbackWarnings);
 			this.pendingFallbackWarnings.length = 0;
 			this.notifyModelFallbackMetaChange();
