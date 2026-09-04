@@ -41,6 +41,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 			"zai-org/GLM-5.2",
 			"zai-org/GLM-5.2-Fast",
 			"zai-org/GLM-5.3",
+			"zai-org/GLM-5.3-Fast",
 			"zai-org/GLM-5.3-Flash",
 		],
 		thinkingLevels: ["low", "high", "max"],

@@ -50,7 +50,7 @@ a *toolchain* goal, not a CI-topology goal.
 ### Commands
 
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
-- `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `crates/`, or `packages/natives/`): builds `@bastani/pi-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), aliases `@earendil-works/pi-ai` onto it, and builds the native N-API module. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these
+- `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `packages/coding-agent`, `crates/`, or `packages/natives/`): builds `@bastani/pi-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), aliases `@earendil-works/pi-ai` onto it, builds the native N-API module, and builds `@bastani/atomic` with its bundled package assets. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these
 - `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
 - `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsgo -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`

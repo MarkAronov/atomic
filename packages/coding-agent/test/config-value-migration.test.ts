@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_AGENT_DIR, getEnvNames } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { runMigrations } from "../src/migrations.ts";
 
@@ -114,8 +114,8 @@ describe("config value env var syntax migration", () => {
 		);
 		const previousHome = process.env.HOME;
 		const previousUserProfile = process.env.USERPROFILE;
-		const previousAgentDir = process.env[ENV_AGENT_DIR];
-		delete process.env[ENV_AGENT_DIR];
+		const agentDirEnvironment = new Map(getEnvNames(ENV_AGENT_DIR).map((name) => [name, process.env[name]]));
+		for (const name of agentDirEnvironment.keys()) delete process.env[name];
 		process.env.HOME = homeDir;
 		process.env.USERPROFILE = homeDir;
 		try {
@@ -130,8 +130,10 @@ describe("config value env var syntax migration", () => {
 			else process.env.HOME = previousHome;
 			if (previousUserProfile === undefined) delete process.env.USERPROFILE;
 			else process.env.USERPROFILE = previousUserProfile;
-			if (previousAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
-			else process.env[ENV_AGENT_DIR] = previousAgentDir;
+			for (const [name, value] of agentDirEnvironment) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
 		}
 	});
 

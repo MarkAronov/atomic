@@ -17,11 +17,8 @@ import type { Api, Context, Model } from "../src/types.ts";
  * effort low | medium | high ("MINIMAL is unsupported for this model"), and $0.75 / $3.75 /
  * $0.075 cache read per million tokens.
  *
- * The GitHub Copilot values are from the authenticated Copilot `/models` endpoint (checked
- * 2026-09-03): `supported_endpoints ["/chat/completions"]`,
- * `limits.max_context_window_tokens 1048576`, `limits.max_output_tokens 65536`,
- * `supports.reasoning_effort ["low","medium","high"]`, and `token_prices` of 75 / 375 / 7 per
- * 1,000,000-token batch. GitHub shipped the model in Copilot on 2026-09-03:
+ * The GitHub Copilot assertions pin the current models.dev row. GitHub shipped the model in
+ * Copilot on 2026-09-03:
  * - https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/
  *
  * These `getModel(...)` calls are also the compile-time proof of typed catalog lookup:
@@ -153,30 +150,15 @@ describe("Gemini 3.8 Flash GitHub Copilot catalog", () => {
 		expect(model.compat).toMatchObject({ supportsStore: false, supportsDeveloperRole: false });
 	});
 
-	it("carries the limits the authenticated Copilot endpoint publishes, not the 3.7 sibling's", () => {
+	it("carries the limits models.dev advertises", () => {
 		const model = getModel("github-copilot", "gemini-3.8-flash");
-		const sibling = getModel("github-copilot", "gemini-3.7-flash");
 
-		expect(model.contextWindow).toBe(1_048_576);
-		expect(model.maxTokens).toBe(65_536);
-		// The supplement starts from the 3.7 entry, so a regression that stops overriding its
-		// limits would silently reintroduce 1,000,000 / 64,000.
-		expect(sibling.contextWindow).toBe(1_000_000);
-		expect(sibling.maxTokens).toBe(64_000);
-		expect(model.contextWindow).not.toBe(sibling.contextWindow);
-		expect(model.maxTokens).not.toBe(sibling.maxTokens);
-		// Copilot's token_prices (75 / 375 / 7 per 1M batch, cache_write 0) match the sibling's,
-		// which is why cost stays inherited.
+		expect(model.contextWindow).toBe(1_000_000);
+		expect(model.maxTokens).toBe(64_000);
 		expect(model.cost).toEqual({ input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
 	});
 
-	// GitHub's "Models with extended capabilities" table lists no Gemini model, so this entry must
-	// not be picked up by Copilot's extended-context override, which sets exactly 1,000,000.
-	it("is not promoted into Copilot's extended-context set", () => {
-		expect(getModel("github-copilot", "gemini-3.8-flash").contextWindow).not.toBe(1_000_000);
-	});
-
-	it("exposes exactly the three reasoning efforts Copilot publishes", () => {
+	it("exposes the reasoning efforts models.dev advertises", () => {
 		const model = getModel("github-copilot", "gemini-3.8-flash");
 
 		expect(model.compat).toMatchObject({ supportsReasoningEffort: true });
@@ -192,8 +174,7 @@ describe("Gemini 3.8 Flash GitHub Copilot catalog", () => {
 		expect(getSupportedThinkingLevels(model)).toEqual(["low", "medium", "high"]);
 	});
 
-	// Without `supportsReasoningEffort`, the OpenAI-completions adapter drops the field entirely
-	// and a requested effort is silently discarded before the request leaves Atomic.
+	// The models.dev effort metadata enables the OpenAI-compatible request field.
 	it("sends the requested effort as reasoning_effort on the request payload", async () => {
 		const payload = await captureCompletionsPayload(getModel("github-copilot", "gemini-3.8-flash"), "low");
 

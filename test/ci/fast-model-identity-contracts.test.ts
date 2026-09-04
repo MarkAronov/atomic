@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "@babel/parser";
 import { test } from "vitest";
 import { spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -244,14 +245,106 @@ function backtickedIdentifiers(block: string): string[] {
 	return [...names];
 }
 
+interface SyntaxNode {
+	[key: string]: SyntaxValue | undefined;
+	type?: string;
+	name?: string;
+	value?: string;
+}
+
+type SyntaxValue = string | number | boolean | null | SyntaxNode | SyntaxValue[];
+
+function syntaxNode(value: SyntaxValue | undefined): SyntaxNode | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+function identifierName(value: SyntaxValue | undefined): string | undefined {
+	const node = syntaxNode(value);
+	if (!node) return undefined;
+	return typeof node.name === "string" ? node.name : typeof node.value === "string" ? node.value : undefined;
+}
+
+function addDeclarationNames(names: Set<string>, declaration: SyntaxNode | undefined): void {
+	if (!declaration) return;
+	if (declaration.type === "VariableDeclaration" && Array.isArray(declaration.declarations)) {
+		for (const item of declaration.declarations) {
+			const name = identifierName(syntaxNode(item)?.id);
+			if (name) names.add(name);
+		}
+		return;
+	}
+	const name = identifierName(declaration.id);
+	if (name) names.add(name);
+}
+
+function parseBarrelExports(
+	sourcePath: string,
+	source = readFileSync(sourcePath, "utf8"),
+): { names: Set<string>; exportAllSpecifiers: string[] } {
+	const names = new Set<string>();
+	const exportAllSpecifiers: string[] = [];
+	const ast = parse(source, { sourceType: "module", plugins: ["typescript"] }) as object as SyntaxNode;
+	const body = syntaxNode(ast.program)?.body;
+	if (!Array.isArray(body)) return { names, exportAllSpecifiers };
+	for (const item of body) {
+		const statement = syntaxNode(item);
+		if (!statement) continue;
+		if (statement.type === "ExportNamedDeclaration") {
+			addDeclarationNames(names, syntaxNode(statement.declaration));
+			if (!Array.isArray(statement.specifiers)) continue;
+			for (const item of statement.specifiers) {
+				const name = identifierName(syntaxNode(item)?.exported);
+				if (name) names.add(name);
+			}
+			continue;
+		}
+		if (statement.type !== "ExportAllDeclaration") continue;
+		const exportedName = identifierName(statement.exported);
+		if (exportedName) {
+			names.add(exportedName);
+			continue;
+		}
+		const specifier = syntaxNode(statement.source)?.value;
+		if (typeof specifier === "string") exportAllSpecifiers.push(specifier);
+	}
+	return { names, exportAllSpecifiers };
+}
+
+function resolveLocalExport(sourcePath: string, specifier: string): string | undefined {
+	if (!specifier.startsWith(".")) return undefined;
+	const resolved = resolve(dirname(sourcePath), specifier);
+	const extension = extname(resolved);
+	const stem = extension ? resolved.slice(0, -extension.length) : resolved;
+	const candidates = extension
+		? [`${stem}.ts`, `${stem}.tsx`, resolved]
+		: [`${resolved}.ts`, `${resolved}.tsx`, join(resolved, "index.ts")];
+	return candidates.find((candidate) => existsSync(candidate));
+}
+
+function collectBarrelExports(sourcePath: string, visited = new Set<string>()): Set<string> {
+	if (visited.has(sourcePath)) return new Set();
+	visited.add(sourcePath);
+	const parsed = parseBarrelExports(sourcePath);
+	for (const specifier of parsed.exportAllSpecifiers) {
+		const exportedPath = resolveLocalExport(sourcePath, specifier);
+		if (!exportedPath) continue;
+		for (const name of collectBarrelExports(exportedPath, visited)) parsed.names.add(name);
+	}
+	return parsed.names;
+}
+
+test("barrel export scanning ignores comments and imports", () => {
+	const probe = join(root, "test/ci/fixtures/fast-model-identity-export-probe.ts");
+	const source =
+		'// export type { CommentOnly }\nimport type { ImportedOnly } from "./types.js";\nexport type { RealExport } from "./types.js";';
+	assert.deepEqual([...parseBarrelExports(probe, source).names], ["RealExport"]);
+});
+
 test("every identifier the coding-agent [Unreleased] changelog names resolves", async () => {
 	const rootExports = await import("../../packages/coding-agent/src/index.ts");
 	const runtimeExports = new Set(Object.keys(rootExports));
-	// `src/index.ts` is an export barrel, so a word match there covers type-only exports, which never
-	// appear in the runtime module namespace.
-	const barrel = readFileSync(join(root, "packages/coding-agent/src/index.ts"), "utf8");
-	const isExported = (name: string): boolean =>
-		runtimeExports.has(name) || new RegExp(`\\b${name}\\b`, "u").test(barrel);
+	const barrelExports = collectBarrelExports(join(root, "packages/coding-agent/src/index.ts"));
+	const isExported = (name: string): boolean => runtimeExports.has(name) || barrelExports.has(name);
 	const block = unreleasedBlock("packages/coding-agent/CHANGELOG.md");
 
 	for (const name of backtickedIdentifiers(block)) {
