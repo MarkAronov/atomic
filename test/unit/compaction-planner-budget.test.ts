@@ -92,8 +92,11 @@ const branchEntries = [
 
 test("branch summarization caps output at 4096 tokens and inherits the session reasoning level", async () => {
 	const stream = scriptedStream({ default: [{ text: "a branch summary" }] });
+	// The model limit is deliberately *above* the cap. `testModel()`'s own `maxTokens` is
+	// 4096, so the bare fixture would satisfy the assertion below even if the runtime
+	// forwarded `model.maxTokens` verbatim — proving nothing about the cap it names.
 	const result = await generateBranchSummary(branchEntries as never, {
-		model: testModel(),
+		model: testModel({ maxTokens: 8192 }),
 		apiKey: "primary-key",
 		signal: new AbortController().signal,
 		streamFn: stream.streamFn,
