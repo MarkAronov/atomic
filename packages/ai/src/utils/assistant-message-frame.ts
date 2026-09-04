@@ -401,11 +401,22 @@ export function reduceAssistantMessageFrames(frames: Iterable<AssistantMessageFr
 				break;
 			}
 			case "text_end": {
-				const { block, state } = activeBlock(message, states, frame.contentIndex, "text", frame.type);
+				// Read the index once: `frame` is caller-supplied, so a second read could return a
+				// different value than the one `activeBlock` validated and target a different slot.
+				const contentIndex = frame.contentIndex;
+				const { block, state } = activeBlock(message, states, contentIndex, "text", frame.type);
 				if (block.type !== "text") throw new Error("Unreachable text frame state");
-				block.text = frame.content;
-				delete block.textSignature;
-				if (frame.textSignature !== undefined) block.textSignature = frame.textSignature;
+				// The end frame is authoritative for the optional fields it controls, including the
+				// ones it omits, so those are destructured away. Everything else the block carries is
+				// spread across verbatim, which keeps the result — and its key order — identical to
+				// the in-place mutation this replaced, while the only write targets an object the
+				// reducer owns rather than deleting properties on a value read out of caller frames.
+				const { textSignature: _staleTextSignature, ...rest } = block;
+				message.content[contentIndex] = {
+					...rest,
+					text: frame.content,
+					...(frame.textSignature === undefined ? {} : { textSignature: frame.textSignature }),
+				};
 				state.ended = true;
 				break;
 			}
@@ -425,13 +436,17 @@ export function reduceAssistantMessageFrames(frames: Iterable<AssistantMessageFr
 				break;
 			}
 			case "thinking_end": {
-				const { block, state } = activeBlock(message, states, frame.contentIndex, "thinking", frame.type);
+				const contentIndex = frame.contentIndex;
+				const { block, state } = activeBlock(message, states, contentIndex, "thinking", frame.type);
 				if (block.type !== "thinking") throw new Error("Unreachable thinking frame state");
-				block.thinking = frame.content;
-				delete block.thinkingSignature;
-				delete block.redacted;
-				if (frame.thinkingSignature !== undefined) block.thinkingSignature = frame.thinkingSignature;
-				if (frame.redacted !== undefined) block.redacted = frame.redacted;
+				// See `text_end`: end-frame-controlled optionals off, everything else across verbatim.
+				const { thinkingSignature: _staleThinkingSignature, redacted: _staleRedacted, ...rest } = block;
+				message.content[contentIndex] = {
+					...rest,
+					thinking: frame.content,
+					...(frame.thinkingSignature === undefined ? {} : { thinkingSignature: frame.thinkingSignature }),
+					...(frame.redacted === undefined ? {} : { redacted: frame.redacted }),
+				};
 				state.ended = true;
 				break;
 			}
@@ -463,15 +478,19 @@ export function reduceAssistantMessageFrames(frames: Iterable<AssistantMessageFr
 				break;
 			}
 			case "toolcall_end": {
-				const { block, state } = activeBlock(message, states, frame.contentIndex, "toolCall", frame.type);
+				const contentIndex = frame.contentIndex;
+				const { block, state } = activeBlock(message, states, contentIndex, "toolCall", frame.type);
 				if (block.type !== "toolCall") throw new Error("Unreachable tool-call frame state");
-				block.id = frame.id;
-				block.name = frame.name;
-				block.arguments = structuredClone(frame.arguments);
-				delete block.thoughtSignature;
-				delete block.namespace;
-				if (frame.thoughtSignature !== undefined) block.thoughtSignature = frame.thoughtSignature;
-				if (frame.namespace !== undefined) block.namespace = frame.namespace;
+				// See `text_end`: end-frame-controlled optionals off, everything else across verbatim.
+				const { thoughtSignature: _staleThoughtSignature, namespace: _staleNamespace, ...rest } = block;
+				message.content[contentIndex] = {
+					...rest,
+					id: frame.id,
+					name: frame.name,
+					arguments: structuredClone(frame.arguments),
+					...(frame.thoughtSignature === undefined ? {} : { thoughtSignature: frame.thoughtSignature }),
+					...(frame.namespace === undefined ? {} : { namespace: frame.namespace }),
+				};
 				state.ended = true;
 				break;
 			}
