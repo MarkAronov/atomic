@@ -294,6 +294,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 		// Show error message or "no results" if empty
 		if (this.errorMessage) {
+			this.listContainer.addChild(new Spacer(1));
 			// Show error in red
 			const errorLines = this.errorMessage.split("\n");
 			for (const line of errorLines) {
