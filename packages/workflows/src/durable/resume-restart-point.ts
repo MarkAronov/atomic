@@ -58,9 +58,13 @@ function resolveUniqueResumeStage(
 
 export function resolveResumeStage(
 	source: RunSnapshot,
-	backend: DurableWorkflowBackend,
+	backend: DurableWorkflowBackend | (() => DurableWorkflowBackend),
 	stageId?: string,
 ): ResumeRestartPoint {
+	// The backend is needed only to validate a tool frontier; a stage restart
+	// point is decided from the snapshot alone. A caller that may run before the
+	// backend is ready passes a thunk, so a stage answer never waits on it.
+	const backendOf = () => (typeof backend === "function" ? backend() : backend);
 	const budgetExceededSource =
 		source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 	if (stageId !== undefined) {
@@ -72,11 +76,11 @@ export function resolveResumeStage(
 		return { ok: true, stageId: stage.id };
 	}
 	if (source.failedToolNodeId !== undefined && source.failedStageId === undefined) {
-		return resolveToolResumeFrontier(source, backend);
+		return resolveToolResumeFrontier(source, backendOf());
 	}
 	const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 	if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 	if (budgetExceededSource && source.stages.length === 0) return { ok: true };
-	if ((source.toolNodes?.length ?? 0) > 0) return resolveToolResumeFrontier(source, backend);
+	if ((source.toolNodes?.length ?? 0) > 0) return resolveToolResumeFrontier(source, backendOf());
 	return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 }
