@@ -110,3 +110,10 @@ export const WEBHOOK_RETRY_BACKOFF_MS = [1_000, 3_000] as const;
 export const WEBHOOK_RETRY_AFTER_MAX_MS = 30_000;
 /** Whole delivery window for one notification to one destination, all attempts and waits included. */
 export const WEBHOOK_DELIVERY_WINDOW_MS = 45_000;
+
+/**
+ * How many delivered notification keys the reducer remembers for dedupe. The
+ * transition logic already produces each key once; the set is the guard for a
+ * replayed or repeated event, and it must not grow with a long session.
+ */
+export const MAX_WEBHOOK_DEDUPE_KEYS = 1_000;
