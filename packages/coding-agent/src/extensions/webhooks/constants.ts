@@ -94,3 +94,19 @@ export type WebhookPlaceholder = (typeof WEBHOOK_PLACEHOLDERS)[number];
 
 /** Longest `{{details}}` value, in code points. Slack and Teams both render far more, but a notification is a pointer, not a transcript. */
 export const WEBHOOK_DETAILS_LIMIT = 500;
+
+/**
+ * Delivery bounds. The issue fixes three attempts per destination including the
+ * first ("three attempts total per destination, including the initial",
+ * flora131 on #2345), finite timeouts, bounded backoff, and Retry-After only
+ * inside the overall window. The window is what a user waits at most before a
+ * failure notice; it holds three attempts at the default timeout plus the two
+ * waits between them, or one Retry-After at its cap plus two attempts.
+ */
+export const WEBHOOK_SEND_ATTEMPTS = 3;
+/** Wait before the second and third attempt, in milliseconds, when the server sends no Retry-After. */
+export const WEBHOOK_RETRY_BACKOFF_MS = [1_000, 3_000] as const;
+/** Longest Retry-After the sender honours; anything larger is treated as this. */
+export const WEBHOOK_RETRY_AFTER_MAX_MS = 30_000;
+/** Whole delivery window for one notification to one destination, all attempts and waits included. */
+export const WEBHOOK_DELIVERY_WINDOW_MS = 45_000;
