@@ -8,10 +8,12 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
+import { isResumableRunOutcome } from "../../packages/workflows/src/durable/resume-outcome-eligibility.js";
 import type { RunDetail } from "../../packages/workflows/src/runs/background/status.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
@@ -480,5 +482,67 @@ describe("renderRunDetail — plain", () => {
 		assert.match(out, /╭ RUN refactor-auth/);
 		assert.match(out, /run id\s+scratch01/);
 		assert.match(out, /╰─+╯/);
+	});
+});
+
+// #2565: a resume-eligible failure reads "failed · resumable" in the warning
+// tone; the hint row agrees with the badge; a run with no restart point stays
+// red even though the engine's flag says resumable; the claim is never rewritten.
+describe("resumable failures (#2565)", () => {
+	const theme = deriveGraphTheme({});
+	const failedRun = (over: Partial<RunSnapshot> = {}): RunSnapshot => ({
+		...makeRun({
+			id: "aaaaaaaa-1111-4111-8111-111111111111",
+			status: "failed",
+			startedAt: 1_000,
+			endedAt: 5_000,
+			stages: [makeStage("s1", "review", "failed")],
+		}),
+		resumable: true,
+		failedStageId: "s1",
+		...over,
+	});
+
+	test("badge and hint follow the stored eligibility, not the claim", () => {
+		const eligible = { ...detailFromRun(failedRun()), resumable: true, resumeEligible: true };
+		const out = renderRunDetail(eligible, { theme });
+		const plain = stripAnsi(out);
+		assert.match(plain, /✗ failed · resumable/);
+		assert.ok(out.includes(`${hexToAnsi(theme.warning)}✗ failed · resumable`), "warning tone on the badge");
+		assert.match(plain, /workflow resume\s+id=/);
+		assert.match(plain, /continue workflow/);
+
+		const terminal = { ...detailFromRun(failedRun()), resumable: true, resumeEligible: false };
+		const plainTerminal = stripAnsi(renderRunDetail(terminal, { theme }));
+		assert.match(plainTerminal, /✗ failed(?! ·)/);
+		assert.doesNotMatch(plainTerminal, /resumable/);
+		assert.match(plainTerminal, /workflow status\s+id=/);
+		assert.match(plainTerminal, /inspect retained state/);
+	});
+
+	test("blocked and crashed carry the cue the same way; a paused run keeps its own hint", () => {
+		const blocked = { ...detailFromRun(failedRun({ status: "blocked" })), resumeEligible: true };
+		assert.match(stripAnsi(renderRunDetail(blocked, { theme })), /↑ blocked · resumable/);
+		const crashed = { ...detailFromRun(failedRun()), status: "crashed" as const, resumeEligible: false };
+		assert.match(stripAnsi(renderRunDetail(crashed, { theme })), /✗ crashed(?! ·)/);
+		const paused = { ...detailFromRun(makeRun({ status: "paused", pausedAt: 2_000 })), resumable: undefined };
+		assert.match(stripAnsi(renderRunDetail(paused, { theme })), /workflow resume\s+id=/);
+	});
+
+	test("inspectRun stores the eligibility the shared check computes and leaves the claim as the engine wrote it", () => {
+		const store = createStore();
+		store.recordRunStart(failedRun());
+		store.recordRunStart(
+			failedRun({ id: "bbbbbbbb-2222-4222-8222-222222222222", stages: [], failedStageId: undefined }),
+		);
+		for (const run of store.runs()) {
+			const inspected = inspectRun(run.id, { store });
+			assert.ok(inspected.ok);
+			assert.equal(inspected.detail.resumable, true, "the claim is copied unchanged");
+			assert.equal(inspected.detail.resumeEligible, isResumableRunOutcome(run), run.id);
+		}
+		const [withStage, withoutStage] = store.runs().map((run) => inspectRun(run.id, { store }));
+		assert.equal(withStage?.ok && withStage.detail.resumeEligible, true, "a failed stage is a restart point");
+		assert.equal(withoutStage?.ok && withoutStage.detail.resumeEligible, false, "no stage, no restart point");
 	});
 });
