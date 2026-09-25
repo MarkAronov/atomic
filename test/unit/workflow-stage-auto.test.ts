@@ -47,13 +47,14 @@ function classifierWireResponse(request: ClassifierWireRequest) {
 		answers: Object.fromEntries(
 			Object.entries(request.questions).map(([id, question]) => {
 				const keys = Object.keys(question.criteria);
+				const first = [...keys].sort((a, b) => Number(a.replace(/\D/gu, "")) - Number(b.replace(/\D/gu, "")))[0];
 				return [
 					id,
 					{
 						type: "choice",
-						choice: keys[0],
+						choice: first,
 						confidence: 1,
-						probabilities: Object.fromEntries(keys.map((key, index) => [key, index === 0 ? 1 : 0])),
+						probabilities: Object.fromEntries(keys.map((key) => [key, key === first ? 1 : 0])),
 					},
 				];
 			}),

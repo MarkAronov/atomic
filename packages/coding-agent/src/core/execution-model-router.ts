@@ -16,7 +16,7 @@ import {
 	type ModelRouterOutput,
 	parseModelConstraints,
 } from "./model-routing-constraints.js";
-import { filterModelSelectionEvals } from "./model-routing-evals.js";
+import { candidateReleaseDate, catalogEvidence, parseEvalsCatalog } from "./model-routing-evals.js";
 import {
 	jsonBytes,
 	MODEL_ROUTING_TASK_BYTES,
@@ -25,6 +25,8 @@ import {
 	TRUNCATED_MARKER,
 	truncateToBytes,
 } from "./model-routing-task.js";
+import { packRoutingBatches, seededCandidateOrder } from "./model-routing-tournament.js";
+import type { ModelRoutingSettings } from "./settings-types.ts";
 import { resolveRouterModel, routeModel } from "./structured-output/index.js";
 
 export interface ModelRoutingContext {
@@ -35,6 +37,8 @@ export interface ModelRoutingContext {
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">>;
 	readonly model?: Model<Api>;
 	getRouterModel(): string;
+	/** Provider filters from settings.json `modelRouting`; absent means every provider is a candidate. */
+	getModelRouting?(): ModelRoutingSettings;
 }
 export interface ModelRoute {
 	readonly routerSelection: ModelRouterOutput;
@@ -47,6 +51,17 @@ export interface ModelRoute {
 interface RouterWireDecision {
 	modelId: string;
 	reasoningEffort: string | null;
+}
+
+interface RoutingPair {
+	readonly model: string;
+	readonly effort: string | null;
+}
+
+interface RoutingGroup {
+	readonly model: string;
+	readonly entry: Model<Api>;
+	readonly pairs: readonly RoutingPair[];
 }
 
 /**
@@ -166,10 +181,13 @@ export async function routeExecutionModel(input: {
 	const { ctx, signal } = input;
 	signal?.throwIfAborted();
 	const constraints = structuredClone((input.constraints ?? []).map((c) => parseModelConstraints(c)!));
+	const { allowedProviders = [], excludedProviders = [] } = ctx.getModelRouting?.() ?? {};
+	const providerPermitted = (provider: string) =>
+		(allowedProviders.length === 0 || allowedProviders.includes(provider)) && !excludedProviders.includes(provider);
 	const catalog = () =>
 		ctx.modelRegistry
 			.getAvailable()
-			.filter((model) => isModelType(model, "chat"))
+			.filter((model) => isModelType(model, "chat") && providerPermitted(model.provider))
 			.map((model) => ({
 				model,
 				pairs: (model.reasoning ? getSupportedThinkingLevels(model) : [null])
@@ -181,35 +199,56 @@ export async function routeExecutionModel(input: {
 	const pairs = available.flatMap((entry) => entry.pairs);
 	if (!pairs.length)
 		throw new Error(
-			"Auto routing has no eligible model/effort pairs. Check configured providers and modelConstraints.",
+			allowedProviders.length || excludedProviders.length
+				? "Auto routing has no eligible model/effort pairs. Check configured providers, modelConstraints, and the modelRouting allowedProviders/excludedProviders settings."
+				: "Auto routing has no eligible model/effort pairs. Check configured providers and modelConstraints.",
 		);
 	let selection = input.selection;
 	if (selection === undefined) {
 		const settings = { getRouterModel: () => ctx.getRouterModel() };
 		resolveRouterModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
-		const candidates = available.flatMap(({ model, pairs }) =>
-			pairs.map((pair) => ({
-				...pair,
-				input: model.input,
-				contextWindow: model.contextWindow,
-				cost: { ...model.cost, tiers: (model.cost.tiers ?? []).map((tier) => ({ ...tier })) },
+		const catalogEvals = parseEvalsCatalog(await readModelSelectionEvals(signal));
+		const groups = seededCandidateOrder<RoutingGroup>(
+			available.map(({ model, pairs: modelPairs }) => ({
+				model: `${model.provider}/${model.id}`,
+				entry: model,
+				pairs: modelPairs,
 			})),
+			input.task,
 		);
-		const allCriteria = Object.fromEntries(
-			candidates.map((candidate, index) => [`pair_${index}`, JSON.stringify(candidate)]),
-		);
-		const fullEvals = await readModelSelectionEvals(signal);
+		const allCriteria = new Map<RoutingPair, string>();
+		for (const { entry, pairs: modelPairs } of groups) {
+			const released = candidateReleaseDate(catalogEvals, `${entry.provider}/${entry.id}`);
+			for (const pair of modelPairs)
+				allCriteria.set(
+					pair,
+					JSON.stringify({
+						...pair,
+						...(released ? { released } : {}),
+						input: entry.input,
+						contextWindow: entry.contextWindow,
+						cost: { ...entry.cost, tiers: (entry.cost.tiers ?? []).map((tier) => ({ ...tier })) },
+					}),
+				);
+		}
+		const pairIndex = new Map<RoutingPair, number>(pairs.map((pair, index) => [pair, index]));
+		const criteriaFor = (batch: readonly RoutingGroup[]) =>
+			Object.fromEntries(
+				batch.flatMap((group) =>
+					group.pairs.map((pair) => [`pair_${pairIndex.get(pair)}`, allCriteria.get(pair)!]),
+				),
+			);
 		const state = {
 			task: input.task,
 			agent: { name: input.agent.name, description: input.agent.description },
-			evals: filterModelSelectionEvals(
-				fullEvals,
-				pairs.map((pair) => pair.model),
+			evals: catalogEvidence(
+				catalogEvals,
+				groups.map((group) => group.model),
 			),
 			model_selection_guide: MODEL_SELECTION_GUIDE,
 		};
 		if (!state.task.trim()) throw new Error("Auto routing requires task instructions.");
-		const serialized = JSON.stringify({ state, criteria: allCriteria, constraints });
+		const serialized = JSON.stringify({ state, criteria: criteriaFor(groups), constraints });
 		let configuredCredential: boolean;
 		try {
 			configuredCredential = await ctx.modelRegistry.containsConfiguredCredential(serialized);
@@ -227,6 +266,81 @@ export async function routeExecutionModel(input: {
 		// Screen the full task first, even credentials in text the router will omit.
 		// Truncation only affects the routing request, never the execution prompt,
 		// so it is not surfaced to the user.
+		const taskExcerpt = modelRoutingTask(input.task);
+		const batchState = (batch: readonly RoutingGroup[]): RoutingState => ({
+			...state,
+			evals: catalogEvidence(
+				catalogEvals,
+				batch.map((group) => group.model),
+			),
+		});
+		// A batch fits when the router's own fitting keeps its full task excerpt
+		// and its own evidence; only then is nothing truncated for that batch.
+		const fitsUntruncated = (batch: readonly RoutingGroup[]) => {
+			const full = batchState(batch);
+			const fitted = fitRoutingState(full, criteriaFor(batch));
+			return fitted.task === taskExcerpt && fitted.evals === full.evals;
+		};
+		const choose = async (batch: readonly RoutingGroup[]): Promise<ModelRouterOutput> => {
+			const batchPairs = batch.flatMap((group) => group.pairs);
+			const criteria = criteriaFor(batch);
+			// Strict Responses providers reject object unions, and Anthropic rejects an
+			// enum under a type array. Enumerate scalar values on the wire with one
+			// declared type per enum, then verify the exact model/effort relation.
+			const efforts = [...new Set(batchPairs.map((pair) => pair.effort))];
+			const stringEfforts = efforts.filter((effort) => effort !== null);
+			const stringEffortSchema = { type: "string", enum: stringEfforts };
+			const reasoningEffort = !efforts.includes(null)
+				? stringEffortSchema
+				: stringEfforts.length
+					? { anyOf: [stringEffortSchema, { type: "null" }] }
+					: { type: "null" };
+			const schema = Type.Unsafe<RouterWireDecision>({
+				type: "object",
+				properties: {
+					modelId: Type.String({ enum: batch.map((group) => group.model) }),
+					reasoningEffort,
+				},
+				required: ["modelId", "reasoningEffort"],
+				additionalProperties: false,
+			});
+			const result = await routeModel(
+				{
+					settings,
+					modelRegistry: ctx.modelRegistry,
+					currentModel: ctx.model,
+					state: fitRoutingState(batchState(batch), criteria),
+					instructions,
+					schema,
+					classifier: {
+						questions: {
+							pair: {
+								instructions: PAIR_QUESTION,
+								criteria,
+							},
+						},
+						decode: (choices) => {
+							const pair = pairs[Number(choices.pair?.replace(/^pair_/, ""))];
+							if (!pair || choices.pair !== `pair_${pairs.indexOf(pair)}`)
+								throw new Error("Invalid execution model Choice.");
+							return { modelId: pair.model, reasoningEffort: pair.effort };
+						},
+					},
+					signal,
+				},
+				(value) => batchPairs.some((pair) => pair.model === value.modelId && pair.effort === value.reasoningEffort),
+			);
+			return { model: result.value.modelId, effort: result.value.reasoningEffort };
+		};
+		// Knock-out rounds: each batch picks a winner, and winners meet in a final
+		// round that is itself batched until it fits one request. Choice
+		// probabilities from different batches are never compared.
+		const tournament = async (entrants: readonly RoutingGroup[]): Promise<ModelRouterOutput> => {
+			const batches = packRoutingBatches(entrants, fitsUntruncated);
+			if (batches.length === 1 || batches.every((batch) => batch.length === 1)) return choose(entrants);
+			const winners = await Promise.all(batches.map(choose));
+			return tournament(entrants.filter((group) => winners.some((winner) => winner.model === group.model)));
+		};
 		const ranked: ModelRouterOutput[] = [];
 		// Degrade only to a current chat model that is available and eligible under
 		// the same constraints, restored through the normal selection path (#3206).
@@ -241,69 +355,38 @@ export async function routeExecutionModel(input: {
 			if (pair === undefined) return undefined;
 			return routeExecutionModel({ ...input, selection: { model: pair.model, effort: pair.effort } });
 		};
-		// Rank by repeated bounded choices, excluding all efforts of earlier models.
-		// Probabilities from separate tournament batches are not comparable.
+		// Batches are packed once. A later ranking pass reruns only the batch that
+		// lost its winner; every other batch keeps its earlier winner.
+		const packed = packRoutingBatches(groups, fitsUntruncated);
+		const batchWinners = new Map<number, ModelRouterOutput>();
+		const isRanked = (model: string) => ranked.some((selected) => selected.model === model);
+		const nextWinner = async (): Promise<ModelRouterOutput | undefined> => {
+			const live = packed.map((batch) => batch.filter((group) => !isRanked(group.model)));
+			if (packed.length === 1 || packed.every((batch) => batch.length === 1)) {
+				const remaining = live.flat();
+				return remaining.length ? choose(remaining) : undefined;
+			}
+			const winners = await Promise.all(
+				live.map(async (batch, index) => {
+					if (!batch.length) return undefined;
+					const cached = batchWinners.get(index);
+					if (cached && !isRanked(cached.model)) return cached;
+					const winner = await choose(batch);
+					batchWinners.set(index, winner);
+					return winner;
+				}),
+			);
+			const finalists = groups.filter((group) => winners.some((winner) => winner?.model === group.model));
+			if (finalists.length <= 1) return winners.find((winner) => winner !== undefined);
+			return tournament(finalists);
+		};
 		// Only a failure before the primary is chosen is a total inference failure:
 		// Jev and its chat structured-output fallback both failed (#3206). A failed
 		// optional fallback-ranking pass keeps the models already ranked.
 		while (ranked.length < Math.min(3, available.length)) {
-			const remaining = pairs.filter((pair) => !ranked.some((selected) => selected.model === pair.model));
-			if (!remaining.length) break;
-			const criteria = Object.fromEntries(
-				remaining.map((pair) => {
-					const key = `pair_${pairs.indexOf(pair)}`;
-					return [key, allCriteria[key]];
-				}),
-			);
-			// Strict Responses providers reject object unions, and Anthropic rejects an
-			// enum under a type array. Enumerate scalar values on the wire with one
-			// declared type per enum, then verify the exact model/effort relation.
-			const efforts = [...new Set(remaining.map((pair) => pair.effort))];
-			const stringEfforts = efforts.filter((effort) => effort !== null);
-			const stringEffortSchema = { type: "string", enum: stringEfforts };
-			const reasoningEffort = !efforts.includes(null)
-				? stringEffortSchema
-				: stringEfforts.length
-					? { anyOf: [stringEffortSchema, { type: "null" }] }
-					: { type: "null" };
-			const schema = Type.Unsafe<RouterWireDecision>({
-				type: "object",
-				properties: {
-					modelId: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
-					reasoningEffort,
-				},
-				required: ["modelId", "reasoningEffort"],
-				additionalProperties: false,
-			});
-			let result: Awaited<ReturnType<typeof routeModel<typeof schema>>>;
+			let winner: ModelRouterOutput | undefined;
 			try {
-				result = await routeModel(
-					{
-						settings,
-						modelRegistry: ctx.modelRegistry,
-						currentModel: ctx.model,
-						state: fitRoutingState(state, criteria),
-						instructions,
-						schema,
-						classifier: {
-							questions: {
-								pair: {
-									instructions: PAIR_QUESTION,
-									criteria,
-								},
-							},
-							decode: (choices) => {
-								const pair = pairs[Number(choices.pair?.replace(/^pair_/, ""))];
-								if (!pair || choices.pair !== `pair_${pairs.indexOf(pair)}`)
-									throw new Error("Invalid execution model Choice.");
-								return { modelId: pair.model, reasoningEffort: pair.effort };
-							},
-						},
-						signal,
-					},
-					(value) =>
-						remaining.some((pair) => pair.model === value.modelId && pair.effort === value.reasoningEffort),
-				);
+				winner = await nextWinner();
 			} catch (error) {
 				signal?.throwIfAborted();
 				if (ranked.length > 0) break;
@@ -312,7 +395,8 @@ export async function routeExecutionModel(input: {
 					await currentModelRoute().catch(() => undefined),
 				);
 			}
-			ranked.push({ model: result.value.modelId, effort: result.value.reasoningEffort });
+			if (!winner) break;
+			ranked.push(winner);
 		}
 		selection = { ...ranked[0]!, ...(ranked.length > 1 ? { fallbacks: ranked.slice(1) } : {}) };
 	}

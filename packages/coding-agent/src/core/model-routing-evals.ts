@@ -89,33 +89,86 @@ function candidateForms(tokens: readonly string[]): string[][] {
 	return forms;
 }
 
+interface CatalogRow {
+	readonly line: string;
+	readonly order: number;
+	readonly tokens: readonly string[];
+	readonly releaseDate?: string;
+}
+
+/** `evals.md` parsed once so batch packing can query evidence per candidate cheaply. */
+export interface EvalsCatalog {
+	readonly preamble: readonly string[];
+	readonly rows: readonly CatalogRow[];
+	/** The unparsed document when it has no model table. */
+	readonly raw?: string;
+	readonly matches: Map<string, readonly CatalogRow[]>;
+}
+
+export function parseEvalsCatalog(evals: string): EvalsCatalog {
+	const lines = evals.split("\n");
+	const headerIndex = lines.findIndex((line) => /^\|\s*slug\s*\|/u.test(line));
+	if (headerIndex < 0) return { preamble: [], rows: [], raw: evals, matches: new Map() };
+	const header = lines[headerIndex]!.split("|").map((cell) => cell.trim());
+	const releaseColumn = header.indexOf("Release date");
+	const rows: CatalogRow[] = [];
+	for (const [order, line] of lines.slice(headerIndex + 2).entries()) {
+		if (!line.startsWith("|")) continue;
+		const cells = line.split("|").map((cell) => cell.trim());
+		if (!cells[1]) continue;
+		const release = releaseColumn > 0 ? cells[releaseColumn] : undefined;
+		rows.push({
+			line,
+			order,
+			tokens: modelEvidenceTokens(cells[1]),
+			...(release && /^\d{4}-\d{2}-\d{2}$/u.test(release) ? { releaseDate: release } : {}),
+		});
+	}
+	return { preamble: lines.slice(0, headerIndex + 2), rows, matches: new Map() };
+}
+
+/** Rows describing `candidate`: its own model and variants, or its base model when it has none. */
+export function candidateEvidenceRows(catalog: EvalsCatalog, candidate: string): readonly CatalogRow[] {
+	const cached = catalog.matches.get(candidate);
+	if (cached) return cached;
+	let matches: readonly CatalogRow[] = [];
+	for (const form of candidateForms(modelEvidenceTokens(candidate))) {
+		matches = catalog.rows.filter((row) => slugMatchesCandidate(row.tokens, form));
+		if (matches.length > 0) break;
+	}
+	catalog.matches.set(candidate, matches);
+	return matches;
+}
+
+/** Latest release date among the candidate's evidence rows, when any row has one. */
+export function candidateReleaseDate(catalog: EvalsCatalog, candidate: string): string | undefined {
+	const dates = candidateEvidenceRows(catalog, candidate).flatMap((row) => (row.releaseDate ? [row.releaseDate] : []));
+	return dates.length ? dates.sort().at(-1) : undefined;
+}
+
+/**
+ * The catalog preamble plus the rows for `candidates`. `maxBytes` bounds the
+ * JSON-encoded result; batched routing omits it because its request budget
+ * already decides how many candidates, and so how many rows, one batch holds.
+ */
+export function catalogEvidence(
+	catalog: EvalsCatalog,
+	candidates: readonly string[],
+	maxBytes = Number.POSITIVE_INFINITY,
+): string {
+	if (catalog.raw !== undefined) return truncateToBytes(catalog.raw, maxBytes);
+	const selected = new Set<number>();
+	for (const candidate of new Set(candidates))
+		for (const row of candidateEvidenceRows(catalog, candidate)) selected.add(row.order);
+	const kept = catalog.rows.filter((row) => selected.has(row.order)).map((row) => row.line);
+	const filtered = [...catalog.preamble, ...kept].join("\n");
+	return jsonBytes(filtered) <= maxBytes ? filtered : truncateToBytes(filtered, maxBytes);
+}
+
 /**
  * Keep the catalog preamble and only the table rows that describe an eligible
  * candidate model, bounded to the routing evidence budget.
  */
 export function filterModelSelectionEvals(evals: string, candidates: readonly string[]): string {
-	const lines = evals.split("\n");
-	const headerIndex = lines.findIndex((line) => /^\|\s*slug\s*\|/u.test(line));
-	if (headerIndex < 0) return truncateToBytes(evals, MODEL_SELECTION_EVALS_JSON_BYTES);
-	const rows = lines
-		.slice(headerIndex + 2)
-		.map((line, order) => {
-			const slug = line.startsWith("|") ? line.split("|")[1]?.trim() : undefined;
-			return { line, order, tokens: slug ? modelEvidenceTokens(slug) : undefined };
-		})
-		.filter((row): row is { line: string; order: number; tokens: string[] } => row.tokens !== undefined);
-	const selected = new Set<number>();
-	for (const candidate of new Set(candidates)) {
-		for (const form of candidateForms(modelEvidenceTokens(candidate))) {
-			const matches = rows.filter((row) => slugMatchesCandidate(row.tokens, form));
-			if (matches.length === 0) continue;
-			for (const row of matches) selected.add(row.order);
-			break;
-		}
-	}
-	const kept = rows.filter((row) => selected.has(row.order)).map((row) => row.line);
-	const filtered = [...lines.slice(0, headerIndex + 2), ...kept].join("\n");
-	return jsonBytes(filtered) <= MODEL_SELECTION_EVALS_JSON_BYTES
-		? filtered
-		: truncateToBytes(filtered, MODEL_SELECTION_EVALS_JSON_BYTES);
+	return catalogEvidence(parseEvalsCatalog(evals), candidates, MODEL_SELECTION_EVALS_JSON_BYTES);
 }

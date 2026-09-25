@@ -56,6 +56,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
 | `routerModel` | string | `""` | Inference model for workflow-stage and subagent `model: "auto"` selection only. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change chat or `structured_output` tool inference. |
+| `modelRouting` | object | `{}` | Provider filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays). Does not change `routerModel`. See [modelRouting](#modelrouting). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -92,6 +93,26 @@ If the selected classifier rejects the request for size or context, routing swit
 This setting selects inference for [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection). It does not directly select the child execution model or change the selected chat model, `structured_output` tool, or general structured-output inference. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The selected router provider receives the routing context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
 Remove secrets from routing tasks, inputs, and workflow descriptions/contracts before calling the tool. A routing-context credential error stops before inference or launch. Known configured credentials are screened even when they belong to a provider other than the router. Remove the credential from the supplied context or registered definition, reload a changed definition, then retry explicitly. The guard does not detect every possible secret.
+
+#### modelRouting
+
+```json
+{
+  "modelRouting": {
+    "allowedProviders": ["github-copilot", "openai-codex", "anthropic"],
+    "excludedProviders": ["openrouter"]
+  }
+}
+```
+
+Limits which providers' models workflow stages and subagents with `model: "auto"` can be routed to. It filters the candidates only; the model that makes the decision is still `routerModel`.
+
+- `allowedProviders`: when nonempty, only models from these providers are candidates.
+- `excludedProviders`: models from these providers are never candidates, even if they are also allowed.
+
+Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so this setting cannot separate them.
+
+A project list replaces the global list of the same name; the other list is kept. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
 
 #### thinkingBudgets
 

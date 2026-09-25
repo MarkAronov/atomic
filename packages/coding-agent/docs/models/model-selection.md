@@ -27,6 +27,8 @@ In authored workflows, a classifier can make a structured triage decision withou
 
 Long tasks may be excerpted for routing so the decision fits the decision provider's input budget. Execution still receives the full task. The excerpt keeps the beginning and end of the task plus `<keepContext>...</keepContext>` spans, and marks cuts `[... truncated ...]`. Put the role and objective at the start or end, or in a short protected span, and keep bulky reference text in the middle.
 
+When many models are eligible, the router compares them in several smaller requests. Each request carries the full task excerpt and the Evals rows for its own candidates, and the winners are compared in a final request. The same task always divides its candidates the same way. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
+
 ## Benchmarks are evidence, not policy
 
 Benchmark results are measurements under named harnesses, dates, models, efforts, agents, tools, prompts, prices, and scoring rules. Treat a bracketed effort level as the measurement configuration for that row, not a command to run every task at that effort. Compare only records whose measured setup resembles the decision at hand, and keep unmeasured work under ordinary validation rather than inheriting a score.

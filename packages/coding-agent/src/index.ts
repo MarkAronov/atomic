@@ -330,6 +330,7 @@ export {
 	type CompactionModelOverride,
 	type CompactionSettings,
 	type ImageSettings,
+	type ModelRoutingSettings,
 	type PackageSource,
 	type RetrySettings,
 	SettingsManager,
