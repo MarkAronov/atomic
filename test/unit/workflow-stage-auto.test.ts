@@ -8,7 +8,7 @@ import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
-import { ROUTING_REQUEST_BYTES, TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-task.js";
+import { TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import classifyAndAct from "../../packages/workflows/builtin/classify-and-act.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -184,17 +184,16 @@ test("public stage auto uses actual prompt and shipped evals before admission", 
 	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 30_000);
 });
 
-test("long stage prompts are excerpted only for routing, never for execution", async () => {
+test("long stage prompts reach routing and execution unchanged", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
 	const task = `Review this implementation.\n${"reference ".repeat(20_000)}\n<keepContext>Read-only review.</keepContext>\nReport defects.`;
 	const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 		assert.match(String(url), /\/systemone$/);
 		const body = JSON.parse(String(init?.body)) as ClassifierWireRequest;
-		assert.ok(Buffer.byteLength(String(init?.body)) <= ROUTING_REQUEST_BYTES);
 		assert.equal(body.model, "jev-latest");
-		assert.ok(String(body.state.task).includes(TRUNCATED_MARKER));
-		assert.match(String(body.state.task), /<keepContext>Read-only review.<\/keepContext>/);
+		assert.equal(body.state.task, task);
+		assert.ok(!String(body.state.task).includes(TRUNCATED_MARKER));
 		return Response.json(classifierWireResponse(body));
 	});
 	vi.stubGlobal("fetch", transport);
@@ -279,6 +278,39 @@ test("auto stage total routing failure runs on the current chat model (#3206)", 
 	assert.equal(result.status, "completed");
 	assert.deepEqual(f.admissions, ["decision-test/chat"]);
 	assert.equal(f.infer.mock.calls.length, 1);
+});
+
+test("an auto stage records its routing fallback only when routing debugging is on", async () => {
+	const def = workflow({
+		name: "quiet-degraded-auto",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("task", { model: "auto" }).prompt("Solve task");
+			return {};
+		},
+	});
+	for (const [debug, expected] of [
+		["", 0],
+		["1", 1],
+	] as const) {
+		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", debug);
+		const f = await fixture();
+		f.infer.mockImplementation(() => {
+			throw new Error("mock router outage");
+		});
+		const warnings: string[] = [];
+		const models = f.models && { ...f.models, recordWarning: (warning: string) => warnings.push(warning) };
+		const result = await run(def, {}, { ...f, models });
+		assert.equal(result.status, "completed");
+		assert.equal(
+			warnings.filter((warning) => warning.includes("stage auto routing failed")).length,
+			expected,
+			`ATOMIC_MODEL_ROUTING_DEBUG=${JSON.stringify(debug)}`,
+		);
+	}
+	vi.unstubAllEnvs();
 });
 
 for (const [allowed, status, admissions] of [

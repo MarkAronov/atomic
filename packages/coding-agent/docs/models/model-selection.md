@@ -25,9 +25,9 @@ Only chat language models are eligible for execution `auto`, including models th
 
 In authored workflows, a classifier can make a structured triage decision without executing the stage; an image model can generate an asset inside a durable tool step. See [classifier and image models in `ctx.tool`](/workflows/authoring#classifier-and-image-models-in-ctx-tool).
 
-Long tasks may be excerpted for routing so the decision fits the decision provider's input budget. Execution still receives the full task. The excerpt keeps the beginning and end of the task plus `<keepContext>...</keepContext>` spans, and marks cuts `[... truncated ...]`. Put the role and objective at the start or end, or in a short protected span, and keep bulky reference text in the middle.
+The router receives the complete task; it is never shortened. A very long task can be too large for a classifier router, which then falls back to the current chat model, so keep bulky reference material in files rather than in the task.
 
-When many models are eligible, the router compares them in several smaller requests. Each request carries the full task excerpt and the Evals rows for its own candidates, and the winners are compared in a final request. The same task always divides its candidates the same way. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
+When many models are eligible, the router compares them in several smaller requests. Each request carries the full task and the Evals rows for its own candidates, and the winners are compared in a final request. The same task always divides its candidates the same way. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
 
 ## Benchmarks are evidence, not policy
 

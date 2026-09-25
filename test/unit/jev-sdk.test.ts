@@ -50,6 +50,7 @@ test("explicit registered classifier routes without invoking chat", async () => 
 
 test("classifier runtime failure falls back to current chat once without leaking provider error", async () => {
 	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 	const chat = vi.fn(() => messageStream(decisionMessage()));
 	const result = await routeModel(
 		routedClassifier(async () => {
@@ -95,6 +96,7 @@ test("classifier aborted result prevents chat fallback", async () => {
 
 test("classifier provider refusal falls back to current chat once", async () => {
 	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 	const chat = vi.fn(() => messageStream(decisionMessage()));
 	const result = await routeModel(
 		routedClassifier(
@@ -111,6 +113,7 @@ test("classifier provider refusal falls back to current chat once", async () => 
 
 test("classifier overflow warning names the status and error type but not the body", async () => {
 	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 	await routeModel(
 		routedClassifier(async () => ({
 			...classifierResult(),

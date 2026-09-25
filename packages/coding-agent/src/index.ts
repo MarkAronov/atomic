@@ -211,6 +211,11 @@ export {
 	parseModelConstraints,
 } from "./core/model-routing-constraints.js";
 export {
+	isModelRoutingDebugEnabled,
+	MODEL_ROUTING_DEBUG_ENV,
+	reportModelRoutingDebug,
+} from "./core/model-routing-debug.ts";
+export {
 	type CreateModelRuntimeOptions,
 	CredentialSynchronizationError,
 	type CredentialSynchronizationOperation,

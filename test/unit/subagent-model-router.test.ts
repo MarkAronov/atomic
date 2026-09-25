@@ -20,11 +20,7 @@ import {
 	MODEL_SELECTION_GUIDE,
 	routeExecutionModel,
 } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import {
-	MODEL_ROUTING_TASK_BYTES,
-	ROUTING_REQUEST_BYTES,
-	TRUNCATED_MARKER,
-} from "../../packages/coding-agent/src/core/model-routing-task.js";
+import { ROUTING_REQUEST_BYTES, TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import {
@@ -224,13 +220,14 @@ test("explicit classifier routing receives evals, guide, task, and all eligible 
 	assert.equal(result.routerSelection.model, "decision-test/candidate-1");
 });
 
+const LONG_TASK_BYTES = 9_000;
+
 function taskNearRoutingLimit(): string {
 	const seed = 'Route this exact task; preserve JSON characters {"quoted":"value\\n"} and Unicode Ω界. ';
 	const protectedRequirement =
 		"<keepContext>Keep this exact protected requirement Ω and do not drop it.</keepContext>";
 	let task = `${seed}${"context ".repeat(1000)}${protectedRequirement}`;
-	while (Buffer.byteLength(JSON.stringify(`${task} tail`), "utf8") <= MODEL_ROUTING_TASK_BYTES - 100)
-		task = `${task} tail`;
+	while (Buffer.byteLength(JSON.stringify(`${task} tail`), "utf8") <= LONG_TASK_BYTES - 100) task = `${task} tail`;
 	return task;
 }
 
@@ -256,7 +253,7 @@ test("a catalog too large for one request routes through batches that each keep 
 			: [];
 	};
 
-	const result = await f.route(`<keepContext>${"Protected requirement. ".repeat(2_000)}</keepContext>`);
+	const result = await f.route("Review the change for correctness before merge.");
 
 	assert.deepEqual(result.routerSelection, {
 		model: "decision-test/candidate-1",
@@ -427,6 +424,9 @@ for (const answer of invalidPairs) {
 		const f = await fixture();
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 		f.infer.mockImplementation(() => messageStream(decisionMessage(answer)));
+		assert.equal((await f.route()).modelOverride, "decision-test/chat");
+		assert.equal(warning.mock.calls.length, 0, "the degrade is silent unless routing debugging is on");
+		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 		const route = await f.route();
 		assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
 		assert.equal(route.modelOverride, "decision-test/chat");
@@ -735,6 +735,7 @@ for (const [allowed, degrades] of [
 		const f = await fixture();
 		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 		f.infer.mockImplementation(() => {
 			throw new Error("mock provider failure");
 		});
@@ -947,7 +948,7 @@ test("a classifier receives the intact near-limit task, evals, and two eligible 
 		{ ...decisionModel, id: "small-b", cost: { ...decisionModel.cost, input: 0.25, output: 0.5 } },
 	]);
 	const task = taskNearRoutingLimit();
-	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > MODEL_ROUTING_TASK_BYTES - 200);
+	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > LONG_TASK_BYTES - 200);
 	const classify = mockClassifier(f, (keys, _id, context) => {
 		assert.equal(context.state.task, task);
 		assert.ok(String(context.state.evals).includes("| slug | Model | Release date |"));
@@ -962,16 +963,14 @@ test("a classifier receives the intact near-limit task, evals, and two eligible 
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("long auto-routing tasks preserve protected requirements and both ends for a classifier", async () => {
+test("long auto-routing tasks reach the classifier whole, without an excerpt", async () => {
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const protectedText = "<keepContext>Review only. Never edit files.</keepContext>";
 	const task = `Review this change.\n${"reference data ".repeat(10000)}${protectedText}${"more data ".repeat(10000)}\nReport defects.`;
 	const classify = mockClassifier(f, (keys, _id, context) => {
-		assert.ok(String(context.state.task).includes(protectedText));
-		assert.match(String(context.state.task), /Review this change/);
-		assert.match(String(context.state.task), /Report defects/);
-		assert.ok(String(context.state.task).includes(TRUNCATED_MARKER));
+		assert.equal(context.state.task, task);
+		assert.ok(!String(context.state.task).includes(TRUNCATED_MARKER));
 		return byCatalogOrder(keys)[0]!;
 	});
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
@@ -980,19 +979,21 @@ test("long auto-routing tasks preserve protected requirements and both ends for 
 	assert.deepEqual(notice.mock.calls, []);
 });
 
-test("auto routing screens credentials even in omitted middle text", async () => {
+test("auto routing screens credentials anywhere in a long task", async () => {
 	const f = await fixture();
 	await assert.rejects(f.route(`${"a".repeat(30_000)}mock-chat-secret${"b".repeat(30_000)}`), /credential/);
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("classifier size rejection falls back to chat with the same truncated protected excerpt", async () => {
+test("a classifier that rejects an oversized task falls back to chat with the same full task, quietly unless debugging", async () => {
 	const f = await fixture();
-	vi.spyOn(console, "warn").mockImplementation(() => {});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const classify = mockClassifier(f);
 	classify.mockRejectedValue(new Error("request too large"));
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "");
 	await f.route(task);
+	assert.deepEqual(warn.mock.calls, [], "routing fallbacks stay out of the console by default");
 	f.ctx.getRouterModel = () => "";
 	await f.route(task);
 	assert.equal(classify.mock.calls.length, 1);
@@ -1001,11 +1002,14 @@ test("classifier size rejection falls back to chat with the same truncated prote
 		JSON.parse(f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string).state
 			.task,
 	);
-	assert.equal(classify.mock.calls[0]![1].state.task, routed);
-	assert.match(routed, /<keepContext>required detail/);
-	assert.ok(routed.includes(TRUNCATED_MARKER));
-	assert.ok(routed.endsWith("required detail </keepContext>"));
-	assert.ok(Buffer.byteLength(JSON.stringify(routed), "utf8") <= MODEL_ROUTING_TASK_BYTES);
+	assert.equal(classify.mock.calls[0]![1].state.task, task);
+	assert.equal(routed, task);
+
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
+	await f.route(task);
+	assert.match(String(warn.mock.calls.at(-1)?.[0]), /Classifier routing failed; falling back to current chat model/u);
+	vi.unstubAllEnvs();
 });
 
 test("auto ranks three distinct models, excludes their other efforts, and replays without inference", async () => {

@@ -1,4 +1,4 @@
-import { jsonBytes, truncateToBytes } from "./model-routing-task.js";
+import { jsonBytes, truncateToBytes } from "./model-routing-bytes.js";
 
 /** Bounds the evaluation evidence sent with one routing request. */
 export const MODEL_SELECTION_EVALS_JSON_BYTES = 14_200;

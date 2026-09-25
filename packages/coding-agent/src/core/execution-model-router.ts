@@ -10,6 +10,7 @@ import {
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
+import { jsonBytes, ROUTING_REQUEST_BYTES, TRUNCATED_MARKER, truncateToBytes } from "./model-routing-bytes.js";
 import {
 	eligiblePair,
 	type ModelConstraints,
@@ -17,14 +18,6 @@ import {
 	parseModelConstraints,
 } from "./model-routing-constraints.js";
 import { candidateReleaseDate, catalogEvidence, parseEvalsCatalog } from "./model-routing-evals.js";
-import {
-	jsonBytes,
-	MODEL_ROUTING_TASK_BYTES,
-	modelRoutingTask,
-	ROUTING_REQUEST_BYTES,
-	TRUNCATED_MARKER,
-	truncateToBytes,
-} from "./model-routing-task.js";
 import { packRoutingBatches, seededCandidateOrder } from "./model-routing-tournament.js";
 import type { ModelRoutingSettings } from "./settings-types.ts";
 import { resolveRouterModel, routeModel } from "./structured-output/index.js";
@@ -140,21 +133,20 @@ type RoutingState = {
 	model_selection_guide: string;
 };
 
+function requestBytes(state: RoutingState, criteria: Record<string, string>): number {
+	return (
+		Buffer.byteLength(JSON.stringify({ ...state, instructions, question: PAIR_QUESTION, criteria }), "utf8") +
+		ROUTING_WIRE_OVERHEAD_BYTES
+	);
+}
+
 /**
- * Truncate the routing copy of the task, then evals, so state plus the candidate
- * question fits ROUTING_REQUEST_BYTES. Candidates, agent and guide stay intact.
+ * Cut only the routing copy of the evals so the request fits ROUTING_REQUEST_BYTES.
+ * The task, candidates, agent and guide are always sent in full.
  */
-function fitRoutingState(state: RoutingState, criteria: Record<string, string>): RoutingState {
-	const fixed =
-		Buffer.byteLength(
-			JSON.stringify({ ...state, task: "", evals: "", instructions, question: PAIR_QUESTION, criteria }),
-			"utf8",
-		) + ROUTING_WIRE_OVERHEAD_BYTES;
-	const room = Math.max(0, ROUTING_REQUEST_BYTES - fixed);
-	const evalsMarkerBytes = jsonBytes(TRUNCATED_MARKER);
-	const task = modelRoutingTask(state.task, Math.max(0, Math.min(MODEL_ROUTING_TASK_BYTES, room - evalsMarkerBytes)));
-	const evals = truncateToBytes(state.evals, Math.max(evalsMarkerBytes, room - jsonBytes(task)));
-	return { ...state, task, evals };
+function fitRoutingEvidence(state: RoutingState, criteria: Record<string, string>): RoutingState {
+	const room = Math.max(0, ROUTING_REQUEST_BYTES - requestBytes({ ...state, evals: "" }, criteria));
+	return { ...state, evals: truncateToBytes(state.evals, Math.max(jsonBytes(TRUNCATED_MARKER), room)) };
 }
 
 async function readModelSelectionEvals(signal?: AbortSignal): Promise<string> {
@@ -263,10 +255,7 @@ export async function routeExecutionModel(input: {
 			)
 		)
 			throw new Error("Auto routing context contains credential material. Remove secrets before retrying.");
-		// Screen the full task first, even credentials in text the router will omit.
-		// Truncation only affects the routing request, never the execution prompt,
-		// so it is not surfaced to the user.
-		const taskExcerpt = modelRoutingTask(input.task);
+		// Screen the full task first: the router receives it unchanged.
 		const batchState = (batch: readonly RoutingGroup[]): RoutingState => ({
 			...state,
 			evals: catalogEvidence(
@@ -274,13 +263,17 @@ export async function routeExecutionModel(input: {
 				batch.map((group) => group.model),
 			),
 		});
-		// A batch fits when the router's own fitting keeps its full task excerpt
-		// and its own evidence; only then is nothing truncated for that batch.
-		const fitsUntruncated = (batch: readonly RoutingGroup[]) => {
-			const full = batchState(batch);
-			const fitted = fitRoutingState(full, criteriaFor(batch));
-			return fitted.task === taskExcerpt && fitted.evals === full.evals;
-		};
+		const fitsWith =
+			(task: string) =>
+			(batch: readonly RoutingGroup[]): boolean =>
+				requestBytes({ ...batchState(batch), task }, criteriaFor(batch)) <= ROUTING_REQUEST_BYTES;
+		// A batch fits when the full task, its own evidence and its candidates fit
+		// one request. A task too long to leave room for any candidate is never
+		// shortened: batches are then sized without it, and a classifier that
+		// rejects the oversized request falls back to the current chat model.
+		const fitsUntruncated = groups.some((group) => fitsWith(input.task)([group]))
+			? fitsWith(input.task)
+			: fitsWith("");
 		const choose = async (batch: readonly RoutingGroup[]): Promise<ModelRouterOutput> => {
 			const batchPairs = batch.flatMap((group) => group.pairs);
 			const criteria = criteriaFor(batch);
@@ -309,7 +302,7 @@ export async function routeExecutionModel(input: {
 					settings,
 					modelRegistry: ctx.modelRegistry,
 					currentModel: ctx.model,
-					state: fitRoutingState(batchState(batch), criteria),
+					state: fitRoutingEvidence(batchState(batch), criteria),
 					instructions,
 					schema,
 					classifier: {
