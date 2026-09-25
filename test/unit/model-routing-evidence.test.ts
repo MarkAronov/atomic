@@ -19,7 +19,7 @@ test("the general model-selection guide stays compact and points to factual eval
 test("the shipped routing guide and user docs both prefer recently released comparable models", async () => {
 	const docs = await readText("packages/coding-agent/docs/models/model-selection.md");
 	const rule =
-		/Prefer recency\..*most recently released model over an older one.*Do not let an older model win only because it has no evals row.*Recency does not override the role's cost tier/su;
+		/Prefer recency\..*most recently released model over an older one.*Do not let an older model win only because it has no published results.*Recency does not override the role's cost tier/su;
 	assert.match(docs, rule);
 	assert.match(MODEL_SELECTION_GUIDE, rule);
 	assert.match(await readText("packages/coding-agent/docs/models/evals.md"), /^\| slug \| Model \| Release date \|/mu);

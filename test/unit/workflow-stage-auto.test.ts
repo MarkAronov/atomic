@@ -147,7 +147,7 @@ test("builtin child workflow routes every default stage through the real executo
 	}
 });
 
-test("public stage auto uses actual prompt and shipped evals before admission", async () => {
+test("public stage auto uses the actual prompt and candidate profiles before admission", async () => {
 	const f = await fixture();
 	const def = workflow({
 		name: "auto",
@@ -172,13 +172,11 @@ test("public stage auto uses actual prompt and shipped evals before admission", 
 	).state;
 	assert.equal(state.task, "  Solve this actual task verbatim.  ");
 	assert.deepEqual(state.agent, { name: "not the task", description: "Workflow stage" });
-	assert.deepEqual(Object.keys(state).sort(), ["agent", "evals", "model_selection_guide", "task"]);
+	assert.deepEqual(Object.keys(state).sort(), ["agent", "candidates", "model_selection_guide", "task"]);
 	assert.equal(state.policy, undefined);
 	assert.equal(state.evidence, undefined);
-	assert.match(state.evals, /# Evals/u);
-	assert.match(state.evals, /all \d+ models on the Artificial Analysis leaderboard/u);
-	assert.doesNotMatch(state.evals, /top 26|Fifty does not fit/u);
-	assert.doesNotMatch(state.evals, /\| claude-opus-5-5 \|/u);
+	assert.deepEqual(Object.keys(state.candidates), ["decision-test/chat"]);
+	assert.doesNotMatch(JSON.stringify(state.candidates), /\| slug \||# Evals/u);
 	assert.match(state.model_selection_guide, /^## Benchmarks are evidence, not policy\n/);
 	assert.match(state.model_selection_guide, /## Role-based thinking effort/);
 	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 30_000);

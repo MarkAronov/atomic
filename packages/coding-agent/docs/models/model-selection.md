@@ -27,7 +27,7 @@ In authored workflows, a classifier can make a structured triage decision withou
 
 The router receives the complete task; it is never shortened. A very long task can be too large for a classifier router, which then falls back to the current chat model, so keep bulky reference material in files rather than in the task.
 
-When many models are eligible, the router compares them in several smaller requests. Each request carries the full task and the Evals rows for its own candidates, and the winners are compared in a final request. The same task always divides its candidates the same way. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
+When many models are eligible, the router compares them in several smaller requests. Each request carries the full task and a profile of each of its candidates, distilled from [Evals](/models/evals): price tier, release date, image input, and standing among the eligible models in each capability area, and the winners are compared in a final request. The same task always divides its candidates the same way. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
 
 ## Benchmarks are evidence, not policy
 
@@ -35,7 +35,7 @@ Benchmark results are measurements under named harnesses, dates, models, efforts
 
 Missing evidence is unknown, not zero. A rounded lead is not proof of significance. A result for one provider, model version, effort, agent, fallback setting, or benchmark harness does not transfer to another identity.
 
-Prefer recency. Each row in [Evals](/models/evals) has a release date. When candidates fit the same role tier and price range, choose the most recently released model over an older one from the same provider or family; a newer release usually supersedes it. Do not let an older model win only because it has no evals row: its missing evidence stays unknown, and a recent comparable model with evidence is the safer choice. Recency does not override the role's cost tier or explicit constraints.
+Prefer recency. Each row in [Evals](/models/evals) has a release date. When candidates fit the same role tier and price range, choose the most recently released model over an older one from the same provider or family; a newer release usually supersedes it. Do not let an older model win only because it has no published results: its missing evidence stays unknown, and a recent comparable model with evidence is the safer choice. Recency does not override the role's cost tier or explicit constraints.
 
 ## Role-based thinking effort
 

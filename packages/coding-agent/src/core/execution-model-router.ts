@@ -10,14 +10,15 @@ import {
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
-import { jsonBytes, ROUTING_REQUEST_BYTES, TRUNCATED_MARKER, truncateToBytes } from "./model-routing-bytes.js";
+import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
 import {
 	eligiblePair,
 	type ModelConstraints,
 	type ModelRouterOutput,
 	parseModelConstraints,
 } from "./model-routing-constraints.js";
-import { candidateReleaseDate, catalogEvidence, parseEvalsCatalog } from "./model-routing-evals.js";
+import { parseEvalsCatalog } from "./model-routing-evals.js";
+import { buildCandidateProfiles } from "./model-routing-profiles.js";
 import { packRoutingBatches, seededCandidateOrder } from "./model-routing-tournament.js";
 import type { ModelRoutingSettings } from "./settings-types.ts";
 import { resolveRouterModel, routeModel } from "./structured-output/index.js";
@@ -89,7 +90,7 @@ const CURRENT_MODEL_EFFORT_PREFERENCE: readonly (string | null)[] = [
 	"off",
 ];
 const instructions =
-	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals` as evidence and `model_selection_guide` as policy. Match the agent role to the guide's model cost tier and thinking level first, then consider task fit, measured effort, release recency (prefer newer comparable models), caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly modelId and reasoningEffort; null reasoningEffort means no configurable reasoning.";
+	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using each model's profile in `candidates` as evidence and `model_selection_guide` as policy. Profile standings already compare each model with the other eligible models. Match the agent role to the guide's model cost tier and thinking level first, then consider task fit, measured effort, release recency (prefer newer comparable models), caveats and cost. Profiles cannot add candidates or bypass constraints. Return exactly modelId and reasoningEffort; null reasoningEffort means no configurable reasoning.";
 
 /** Static selection policy sent with every auto-routing request alongside the dated `evals` evidence. */
 export const MODEL_SELECTION_GUIDE = `## Benchmarks are evidence, not policy
@@ -98,7 +99,7 @@ Benchmark results are measurements under named harnesses, dates, models, efforts
 
 Missing evidence is unknown, not zero. A rounded lead is not proof of significance. A result for one provider, model version, effort, agent, fallback setting, or benchmark harness does not transfer to another identity.
 
-Prefer recency. Each evals row has a release date. When candidates fit the same role tier and price range, choose the most recently released model over an older one from the same provider or family; a newer release usually supersedes it. Do not let an older model win only because it has no evals row: its missing evidence stays unknown, and a recent comparable model with evidence is the safer choice. Recency does not override the role's cost tier or explicit constraints.
+Prefer recency. Each candidate profile gives a release date. When candidates fit the same role tier and price range, choose the most recently released model over an older one from the same provider or family; a newer release usually supersedes it. Do not let an older model win only because it has no published results: its missing evidence stays unknown, and a recent comparable model with evidence is the safer choice. Recency does not override the role's cost tier or explicit constraints.
 
 ## Role-based thinking effort
 
@@ -124,12 +125,13 @@ const EVALS_BUDGET_ERROR =
 // Decision policy, key names and JSON framing the classifier transport adds.
 const ROUTING_WIRE_OVERHEAD_BYTES = 1_000;
 const PAIR_QUESTION =
-	"Which eligible model and reasoning effort best suit this task and agent role, considering the model_selection_guide role tiers, evals, and candidate capabilities and prices? Prefer cheaper candidates for exploration and routine implementation and stronger ones for review and verification. Candidate cost is USD per million tokens, not benchmark task cost.";
+	"Which eligible model and reasoning effort best suit this task and agent role, considering the model_selection_guide role tiers and each model's profile in candidates: its standing in the capability areas this task needs, its price tier, and its release date? Prefer cheaper candidates for exploration and routine implementation and stronger ones for review and verification.";
 
 type RoutingState = {
 	task: string;
 	agent: { name: string; description: string };
-	evals: string;
+	/** Plain-language profile per candidate model, keyed by the `provider/id` in the choices. */
+	candidates: Record<string, string>;
 	model_selection_guide: string;
 };
 
@@ -138,15 +140,6 @@ function requestBytes(state: RoutingState, criteria: Record<string, string>): nu
 		Buffer.byteLength(JSON.stringify({ ...state, instructions, question: PAIR_QUESTION, criteria }), "utf8") +
 		ROUTING_WIRE_OVERHEAD_BYTES
 	);
-}
-
-/**
- * Cut only the routing copy of the evals so the request fits ROUTING_REQUEST_BYTES.
- * The task, candidates, agent and guide are always sent in full.
- */
-function fitRoutingEvidence(state: RoutingState, criteria: Record<string, string>): RoutingState {
-	const room = Math.max(0, ROUTING_REQUEST_BYTES - requestBytes({ ...state, evals: "" }, criteria));
-	return { ...state, evals: truncateToBytes(state.evals, Math.max(jsonBytes(TRUNCATED_MARKER), room)) };
 }
 
 async function readModelSelectionEvals(signal?: AbortSignal): Promise<string> {
@@ -208,21 +201,25 @@ export async function routeExecutionModel(input: {
 			})),
 			input.task,
 		);
+		// Evidence lives once per model in `state.candidates`; each choice names only
+		// the model and effort it would run.
+		const profiles = buildCandidateProfiles(
+			catalogEvals,
+			groups.map(({ model, entry, pairs: modelPairs }) => ({
+				model,
+				name: entry.name,
+				cost: entry.cost,
+				input: entry.input,
+				contextWindow: entry.contextWindow,
+				efforts: modelPairs.map((pair) => pair.effort),
+			})),
+		);
 		const allCriteria = new Map<RoutingPair, string>();
-		for (const { entry, pairs: modelPairs } of groups) {
-			const released = candidateReleaseDate(catalogEvals, `${entry.provider}/${entry.id}`);
+		for (const { pairs: modelPairs } of groups)
 			for (const pair of modelPairs)
-				allCriteria.set(
-					pair,
-					JSON.stringify({
-						...pair,
-						...(released ? { released } : {}),
-						input: entry.input,
-						contextWindow: entry.contextWindow,
-						cost: { ...entry.cost, tiers: (entry.cost.tiers ?? []).map((tier) => ({ ...tier })) },
-					}),
-				);
-		}
+				allCriteria.set(pair, JSON.stringify({ model: pair.model, effort: pair.effort }));
+		const profilesFor = (batch: readonly RoutingGroup[]) =>
+			Object.fromEntries(batch.map((group) => [group.model, profiles.get(group.model) ?? group.model]));
 		const pairIndex = new Map<RoutingPair, number>(pairs.map((pair, index) => [pair, index]));
 		const criteriaFor = (batch: readonly RoutingGroup[]) =>
 			Object.fromEntries(
@@ -233,10 +230,7 @@ export async function routeExecutionModel(input: {
 		const state = {
 			task: input.task,
 			agent: { name: input.agent.name, description: input.agent.description },
-			evals: catalogEvidence(
-				catalogEvals,
-				groups.map((group) => group.model),
-			),
+			candidates: profilesFor(groups),
 			model_selection_guide: MODEL_SELECTION_GUIDE,
 		};
 		if (!state.task.trim()) throw new Error("Auto routing requires task instructions.");
@@ -258,10 +252,7 @@ export async function routeExecutionModel(input: {
 		// Screen the full task first: the router receives it unchanged.
 		const batchState = (batch: readonly RoutingGroup[]): RoutingState => ({
 			...state,
-			evals: catalogEvidence(
-				catalogEvals,
-				batch.map((group) => group.model),
-			),
+			candidates: profilesFor(batch),
 		});
 		const fitsWith =
 			(task: string) =>
@@ -302,7 +293,7 @@ export async function routeExecutionModel(input: {
 					settings,
 					modelRegistry: ctx.modelRegistry,
 					currentModel: ctx.model,
-					state: fitRoutingEvidence(batchState(batch), criteria),
+					state: batchState(batch),
 					instructions,
 					schema,
 					classifier: {

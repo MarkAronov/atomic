@@ -187,7 +187,7 @@ test("auto routing admits multimodal-input chat but excludes image and classifie
 	}
 });
 
-test("explicit classifier routing receives evals, guide, task, and all eligible candidates", async () => {
+test("explicit classifier routing receives profiles, guide, task, and all eligible candidates", async () => {
 	const f = await fixture();
 	const candidates = Array.from({ length: 9 }, (_, index) => ({
 		...decisionModel,
@@ -199,17 +199,17 @@ test("explicit classifier routing receives evals, guide, task, and all eligible 
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(candidates);
 	const seen = new Set<string>();
 	const classify = mockClassifier(f, (keys, _id, context) => {
-		const evals = String(context.state.evals);
-		assert.ok(evals.length < 14_200);
-		assert.ok(evals.includes("| slug | Model | Release date |"));
-		assert.ok(!evals.includes("claude-opus-5-5"));
+		const profiles = context.state.candidates as Record<string, string>;
+		assert.equal(context.state.evals, undefined);
 		assert.equal(context.state.model_selection_guide, MODEL_SELECTION_GUIDE);
 		for (const question of Object.values(context.questions)) {
 			assert.equal(question.type, "choice");
 			if (question.type !== "choice") continue;
 			for (const [key, value] of Object.entries(question.criteria)) {
-				seen.add((JSON.parse(value) as { model: string }).model);
+				const { model } = JSON.parse(value) as { model: string };
+				seen.add(model);
 				assert.match(key, /^pair_\d+$/u);
+				assert.match(profiles[model] ?? "", /Verbose candidate \d+ with a catalog description/u);
 			}
 		}
 		return byCatalogOrder(keys)[0]!;
@@ -285,7 +285,7 @@ test("a catalog too large for one request routes through batches that each keep 
 	);
 });
 
-test("each batch carries the evals rows and release date of its own candidates", async () => {
+test("each batch carries a distilled profile for each of its own candidates", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
 		{ ...decisionModel, provider: "anthropic", id: "claude-opus-4-6" },
@@ -299,17 +299,22 @@ test("each batch carries the evals rows and release date of its own candidates",
 	await f.route();
 	const [first] = requests;
 	assert.ok(first);
-	const evals = String(first.state.evals);
-	assert.match(evals, /^\| claude-opus-4-6 \|/mu);
-	assert.match(evals, /^\| claude-opus-4-6-adaptive \|/mu);
-	assert.match(evals, /^\| claude-opus-5-5 \|/mu);
-	assert.doesNotMatch(evals, /^\| claude-opus-4-8 \|/mu);
+	const profiles = first.state.candidates as Record<string, string>;
+	assert.deepEqual(Object.keys(profiles).sort(), ["anthropic/claude-opus-4-6", "github-copilot/claude-opus-5.5"]);
+	assert.match(
+		profiles["anthropic/claude-opus-4-6"]!,
+		/released 2026-02-05, 8 months older than the newest candidate/u,
+	);
+	assert.match(profiles["github-copilot/claude-opus-5.5"]!, /released 2026-09-22, among the newest candidates/u);
+	assert.match(
+		profiles["github-copilot/claude-opus-5.5"]!,
+		/^- General intelligence: .*AA Intelligence Index 57\.6/mu,
+	);
+	assert.doesNotMatch(JSON.stringify(profiles), /\| slug \||claude-opus-4-8/u);
 	const question = first.questions.pair;
 	assert.ok(question?.type === "choice");
-	const released = Object.values(question.criteria).map(
-		(value) => (JSON.parse(value) as { model: string; released?: string }).released,
-	);
-	assert.deepEqual(released.sort(), ["2026-02-05", "2026-09-22"]);
+	for (const value of Object.values(question.criteria))
+		assert.deepEqual(Object.keys(JSON.parse(value)).sort(), ["effort", "model"]);
 });
 
 test("candidate order is seeded by the task: stable for one task, not fixed to catalog order", async () => {
@@ -338,7 +343,7 @@ test("candidate order is seeded by the task: stable for one task, not fixed to c
 		"requests are not simply in catalog order",
 	);
 });
-test("auto routing receives the shipped evals document verbatim", async () => {
+test("auto routing receives distilled candidate profiles instead of the raw evals document", async () => {
 	const f = await fixture();
 	const selected = await f.route();
 	assert.deepEqual(selected.routerSelection, { model: "decision-test/chat", effort: null });
@@ -359,10 +364,9 @@ test("auto routing receives the shipped evals document verbatim", async () => {
 		state.model_selection_guide,
 		/If `xhigh` is unavailable, use `high` rather than automatically promoting to `max`/,
 	);
-	assert.match(state.evals, /# Evals/);
-	assert.match(state.evals, /all \d+ models on the Artificial Analysis leaderboard/u);
-	assert.doesNotMatch(state.evals, /top 26|Fifty does not fit/u);
-	assert.doesNotMatch(state.evals, /\| claude-opus-5-5 \|/u);
+	assert.equal(state.evals, undefined);
+	assert.deepEqual(Object.keys(state.candidates), ["decision-test/chat"]);
+	assert.doesNotMatch(JSON.stringify(state.candidates), /\| slug \||# Evals/u);
 	assert.ok(Buffer.byteLength(JSON.stringify(context)) < 30_000);
 	assert.equal(options?.maxRetries, 0);
 });
@@ -680,7 +684,7 @@ for (const evalsCase of ["missing", "empty"] as const) {
 	});
 }
 
-test("automatic routing accepts an oversized catalog and cuts only the routing copy of its evidence", async () => {
+test("an oversized evals document does not enlarge routing requests", async () => {
 	const f = await fixture();
 	vi.spyOn(fs, "readFile").mockResolvedValueOnce(
 		`${"unmatched model ".repeat(5_000)}\n| slug | Model |\n| --- | --- |\n| unrelated | Example |`,
@@ -688,7 +692,7 @@ test("automatic routing accepts an oversized catalog and cuts only the routing c
 	await f.route();
 	const [, context] = f.infer.mock.calls[0]!;
 	const payload = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
-	assert.ok(String(payload.state.evals).endsWith(TRUNCATED_MARKER));
+	assert.doesNotMatch(JSON.stringify(payload.state), /unmatched model/u);
 	assert.ok(Buffer.byteLength(JSON.stringify(payload), "utf8") <= ROUTING_REQUEST_BYTES);
 });
 
@@ -919,17 +923,16 @@ test("classifier provider failure cannot return a route without a current chat m
 	f.ctx.model = undefined;
 	classify.mockRejectedValue(new Error("HTTP 422 private provider detail"));
 	await assert.rejects(f.route(), /Classifier returned no valid decision/);
-	assert.equal(classify.mock.calls.length, 1);
+	assert.ok(classify.mock.calls.length >= 1, "each batch asks the classifier once and none retries on chat");
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("a registered classifier receives a complete short subagent task and its evals", async () => {
+test("a registered classifier receives a complete short subagent task and its profile", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...decisionModel, id: "gpt-5.6-luna" }]);
 	const classify = mockClassifier(f, (keys, _id, context) => {
 		assert.equal(context.state.task, "Reply with exactly: Hello, world! No tools or file changes.");
-		assert.ok(String(context.state.evals).includes("| slug | Model | Release date |"));
-		assert.ok(!String(context.state.evals).includes("| claude-fable-5 |"));
+		assert.deepEqual(Object.keys(context.state.candidates as Record<string, string>), ["decision-test/gpt-5.6-luna"]);
 		assert.equal(context.state.model_selection_guide, MODEL_SELECTION_GUIDE);
 		assert.equal(context.state.policy, undefined);
 		assert.equal(context.state.evidence, undefined);
@@ -941,7 +944,7 @@ test("a registered classifier receives a complete short subagent task and its ev
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("a classifier receives the intact near-limit task, evals, and two eligible pairs", async () => {
+test("a classifier receives the intact near-limit task, profiles, and two eligible pairs", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
 		{ ...decisionModel, id: "small-a" },
@@ -951,8 +954,9 @@ test("a classifier receives the intact near-limit task, evals, and two eligible 
 	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > LONG_TASK_BYTES - 200);
 	const classify = mockClassifier(f, (keys, _id, context) => {
 		assert.equal(context.state.task, task);
-		assert.ok(String(context.state.evals).includes("| slug | Model | Release date |"));
-		assert.ok(!String(context.state.evals).includes("claude-opus-5-5"));
+		const offered = Object.keys(context.state.candidates as Record<string, string>);
+		assert.ok(offered.length > 0);
+		for (const model of offered) assert.ok(["decision-test/small-a", "decision-test/small-b"].includes(model));
 		assert.match(String(context.state.task), /{"quoted":"value\\n"}/);
 		assert.match(String(context.state.task), /Ω界/);
 		return byCatalogOrder(keys)[1] ?? byCatalogOrder(keys)[0]!;
@@ -1075,7 +1079,7 @@ test.each([
 	assert.deepEqual(effortSchemas[0], nullable ? { anyOf: [strings, { type: "null" }] } : strings);
 });
 
-test("auto routing retains the full benchmark snapshot and distinct provider model IDs", async () => {
+test("auto routing keeps one profile per distinct provider model ID", async () => {
 	const f = await fixture();
 	const models = ["anthropic", "github-copilot"].map((provider) => ({
 		...decisionModel,
@@ -1086,11 +1090,10 @@ test("auto routing retains the full benchmark snapshot and distinct provider mod
 	let rank = 0;
 	f.infer.mockImplementation((_model, context) => {
 		const { state } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
-		assert.match(String(state.evals), /## Artificial Analysis Intelligence Index/);
-		assert.match(String(state.evals), /\| claude-fable-5 \| Claude Fable 5 \(/);
-		assert.match(String(state.evals), /Release date/u);
-		assert.doesNotMatch(String(state.evals), /claude-opus-5-5/u);
-		assert.ok(String(state.evals).length < 14_200);
+		const profiles = state.candidates as Record<string, string>;
+		for (const model of Object.keys(profiles)) assert.match(profiles[model]!, /released 2026-\d\d-\d\d/u);
+		assert.match(JSON.stringify(profiles), /General intelligence/u);
+		assert.doesNotMatch(JSON.stringify(profiles), /claude-opus-5-5/u);
 		assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
 		return messageStream(
 			decisionMessage({ modelId: `${models[rank++]!.provider}/claude-fable-5`, reasoningEffort: null }),
