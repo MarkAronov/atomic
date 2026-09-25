@@ -65,3 +65,17 @@ test("a smaller budget bounds the excerpt; a budget below the marker yields empt
 	assert.equal(cut.isWellFormed(), true);
 	assert.ok(size(cut) <= 101);
 });
+
+test("a short protected objective between oversized protected references stays whole", () => {
+	const reference = (name: string) => `<keepContext>${name}: ${"x".repeat(40_000)}</keepContext>`;
+	const objective = "<keepContext>Objective: audit the payment service for security vulnerabilities.</keepContext>";
+	const task = `${reference("Reference A")}\n${objective}\n${reference("Reference B")}`;
+	const excerpt = modelRoutingTask(task);
+	assert.ok(Buffer.byteLength(JSON.stringify(excerpt), "utf8") <= MODEL_ROUTING_TASK_BYTES);
+	assert.ok(excerpt.includes(objective));
+	assert.ok(
+		excerpt.indexOf("Reference A") < excerpt.indexOf("Objective") &&
+			excerpt.indexOf("Objective") < excerpt.indexOf("Reference B"),
+	);
+	assert.ok(excerpt.includes(TRUNCATED_MARKER));
+});

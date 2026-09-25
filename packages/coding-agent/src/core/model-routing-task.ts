@@ -49,6 +49,55 @@ function truncateMiddleToBytes(text: string, maxBytes: number): string {
 	return cut(low);
 }
 
+/**
+ * Excerpt for protected spans that alone exceed the budget. The candidates are
+ * the spans plus the task's unprotected opening and closing text. The shortest
+ * are kept whole (a role or objective line), what is left is shared among the
+ * largest, each cut from its middle, and unprotected text between spans is
+ * omitted. Source order is kept throughout.
+ */
+function oversizedProtectedExcerpt(task: string, spans: readonly Range[], maxBytes: number): string {
+	const segments: (Range & { candidate: boolean })[] = [];
+	let position = 0;
+	for (const span of spans) {
+		if (span.start > position) segments.push({ start: position, end: span.start, candidate: position === 0 });
+		segments.push({ ...span, candidate: true });
+		position = span.end;
+	}
+	if (position < task.length) segments.push({ start: position, end: task.length, candidate: true });
+	const full = segments.map((segment) => task.slice(segment.start, segment.end));
+	const texts = segments.map(() => "");
+	const assemble = () => {
+		const parts = [notice];
+		for (const index of texts.keys()) {
+			if (texts[index]) parts.push(texts[index]!);
+			else if (parts.at(-1) !== TRUNCATED_MARKER) parts.push(TRUNCATED_MARKER);
+		}
+		return parts.join("");
+	};
+	const bySize = segments
+		.flatMap((segment, index) => (segment.candidate ? [index] : []))
+		.sort((a, b) => full[a]!.length - full[b]!.length);
+	const cut: number[] = [];
+	for (const index of bySize) {
+		if (cut.length === 0) {
+			texts[index] = full[index]!;
+			if (jsonBytes(assemble()) <= maxBytes) continue;
+			texts[index] = "";
+		}
+		cut.push(index);
+	}
+	for (const [done, index] of cut.entries()) {
+		const room = maxBytes - jsonBytes(assemble());
+		const share = Math.floor(room / (cut.length - done)) - (jsonBytes(TRUNCATED_MARKER) - 2);
+		texts[index] = truncateMiddleToBytes(full[index]!, Math.max(0, share) + 2);
+	}
+	const result = assemble();
+	return jsonBytes(result) <= maxBytes
+		? result
+		: `${notice}${truncateMiddleToBytes(task, maxBytes - (jsonBytes(notice) - 2))}`;
+}
+
 /** Bound only the model selector's copy. Execution and hard constraints stay intact. */
 export function modelRoutingTask(task: string, maxBytes = MODEL_ROUTING_TASK_BYTES): string {
 	const fits = (text: string) => jsonBytes(text) <= maxBytes;
@@ -72,10 +121,10 @@ export function modelRoutingTask(task: string, maxBytes = MODEL_ROUTING_TASK_BYT
 		return parts.join("");
 	};
 	let result = excerpt(0);
-	// Protected spans that alone exceed the budget are cut too, from the middle of
-	// the task so its opening and closing objective both reach the router. The
-	// execution task keeps every span.
-	if (!fits(result)) return `${notice}${truncateMiddleToBytes(task, maxBytes - (jsonBytes(notice) - 2))}`;
+	// Protected spans that alone exceed the budget: keep the shortest whole (a role
+	// or objective line), then share what is left among the largest, cutting each
+	// from its middle. The execution task keeps every span.
+	if (!fits(result)) return oversizedProtectedExcerpt(task, protectedSpans, maxBytes);
 	let low = 0;
 	let high = Math.min(Math.floor(task.length / 2), maxBytes);
 	while (low < high) {

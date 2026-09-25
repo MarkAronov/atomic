@@ -50,16 +50,15 @@ test("the shortlist keeps one slot per base model across derived fast routes and
 	const ranked = rankCandidates(
 		catalog,
 		[
-			model("strong", 10),
+			...models,
 			{ ...model("strong-fast", 10), fastRouteOf: "p/strong" },
 			{ ...model("strong", 10), model: "q/strong" },
-			model("middle", 2),
 		],
 		needs("hard", "high"),
 	);
 	const top = distinctTop(ranked, 6);
 	assert.deepEqual(
-		top.map((candidate) => candidate.model),
+		top.map((candidate) => candidate.model).slice(0, 2),
 		["p/strong", "p/middle"],
 		"the standard route wins the slot over its derived fast route",
 	);
@@ -158,4 +157,47 @@ test("quoted results name the effort, harness and reporter they were measured un
 		describe("fable").computer_use,
 		"measured (OSWorld 2.0 77.9% measured with Anthropic grading, Fable values are Mythos, reported by Anthropic)",
 	);
+});
+
+test("provider copies and fast routes of one model count once in standings and the minimum", () => {
+	const three = [model("strong", 10), model("middle", 2), model("cheap", 0.1)];
+	const duplicated = [
+		...three,
+		{ ...model("strong", 10), model: "q/strong" },
+		{ ...model("strong-fast", 10), fastRouteOf: "p/strong" },
+	];
+	const ranked = rankCandidates(catalog, duplicated, needs("hard", "high"));
+	const cheap = JSON.parse(describeOption(ranked.find((c) => c.model === "p/cheap")!, needs("hard", "high"), ranked));
+	assert.match(cheap.coding, /^measured \(/u, "three distinct models are too few for a standing");
+});
+
+test("published results are ranked only against results from the same source", () => {
+	const published = parseEvalsCatalog(
+		[
+			"# Evals",
+			"",
+			"## Published benchmark results",
+			"",
+			"| slug | Model | Benchmark | Score | Setting | Source |",
+			"| --- | --- | --- | --- | --- | --- |",
+			"| a | A | TBSci | 40 | vendor harness | Vendor |",
+			"| b | B | TBSci | 45 | vendor harness | Vendor |",
+			"| c | C | TBSci | 50 | vendor harness | Vendor |",
+			"| d | D | TBSci | 55 | vendor harness | Vendor |",
+			"| a | A | TBSci | 60 | own setup | Lab |",
+		].join("\n"),
+	);
+	const science: ResolvedTaskNeeds = {
+		work: "math_science",
+		difficulty: "hard",
+		mistakeCost: "high",
+		needsImages: false,
+	};
+	const ranked = rankCandidates(
+		published,
+		["a", "b", "c", "d"].map((id) => model(id, 1)),
+		science,
+	);
+	const a = ranked.find((candidate) => candidate.model === "p/a")!;
+	assert.equal(a.workStanding, 0, "A's 60% from another setup does not lift it above the vendor-harness results");
 });

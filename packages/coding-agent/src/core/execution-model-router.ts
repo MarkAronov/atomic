@@ -147,7 +147,6 @@ export async function routeExecutionModel(input: {
 	if (selection === undefined) {
 		const settings = { getRouterModel: () => ctx.getRouterModel() };
 		resolveRouterModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
-		const catalogEvals = parseEvalsCatalog(await readModelSelectionEvals(signal));
 		if (!input.task.trim()) throw new Error("Auto routing requires task instructions.");
 		const stated = statedNeeds;
 		const agent = { name: input.agent.name, description: input.agent.description };
@@ -194,6 +193,17 @@ export async function routeExecutionModel(input: {
 				);
 			}
 		};
+		// Where code cannot pick a model either, the current chat model takes over
+		// the same way.
+		const fallBackToCurrentModel = async (message: string): Promise<never> => {
+			throw new AutoRoutingInferenceError(message, await currentModelRoute().catch(() => undefined));
+		};
+		const catalogEvals = await readModelSelectionEvals(signal)
+			.then(parseEvalsCatalog)
+			.catch((error: unknown) => {
+				signal?.throwIfAborted();
+				return fallBackToCurrentModel(error instanceof Error ? error.message : String(error));
+			});
 
 		// Step 1: ask only for the needs the caller did not state.
 		const questions = missingNeedsQuestions(stated);
@@ -247,12 +257,12 @@ export async function routeExecutionModel(input: {
 		}
 		const needs: ResolvedTaskNeeds = resolveTaskNeeds(stated, answers);
 
-		// Step 2: narrow in code. Models that cannot read images are dropped when
-		// the task needs them, unless that would leave nothing to choose from.
-		const withImages = needs.needsImages
-			? available.filter((entry) => entry.model.input.includes("image"))
-			: available;
-		const usable = withImages.length ? withImages : available;
+		// Step 2: narrow in code. A task that needs images only goes to models that read them.
+		const usable = needs.needsImages ? available.filter((entry) => entry.model.input.includes("image")) : available;
+		if (usable.length === 0)
+			await fallBackToCurrentModel(
+				"Auto routing: this task needs a model that can read images, and no eligible model can. Allow an image-capable model or select a concrete execution model.",
+			);
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
 		const toCandidate = (model: Model<Api>): CandidateModel => ({
 			model: `${model.provider}/${model.id}`,
@@ -271,12 +281,20 @@ export async function routeExecutionModel(input: {
 						(model) =>
 							isModelType(model, "chat") &&
 							providerPermitted(model.provider) &&
-							(!needs.needsImages || withImages.length === 0 || model.input.includes("image")),
+							(!needs.needsImages || model.input.includes("image")),
 					)
 			: usable.map((entry) => entry.model);
 		const standings = rankCandidates(catalogEvals, reference.map(toCandidate), needs);
 		const ranked = standings.filter((candidate) => pairsFor.has(candidate.model));
-		const shortlist = callerListed ? ranked.slice(0, CALLER_SHORTLIST_LIMIT) : distinctTop(ranked, SHORTLIST_SIZE);
+		// A caller's list is offered whole; duplicate routes of one model share a slot
+		// only when the list is too long for one choice, and a longer list fails
+		// rather than silently dropping a contender.
+		const callerChoices = ranked.length > CALLER_SHORTLIST_LIMIT ? distinctTop(ranked, ranked.length) : ranked;
+		if (callerListed && callerChoices.length > CALLER_SHORTLIST_LIMIT)
+			await fallBackToCurrentModel(
+				`Auto routing compares at most ${CALLER_SHORTLIST_LIMIT} different models from modelConstraints.allowedModels; ${callerChoices.length} are eligible. List fewer models.`,
+			);
+		const shortlist = callerListed ? callerChoices : distinctTop(ranked, SHORTLIST_SIZE);
 
 		// Step 3: the router picks one option; each carries its own evidence.
 		let chosen = shortlist[0]!;

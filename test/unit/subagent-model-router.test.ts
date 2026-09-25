@@ -14,7 +14,10 @@ import {
 	type Model,
 } from "@bastani/pi-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
+import {
+	AutoRoutingInferenceError,
+	routeExecutionModel,
+} from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { ROUTING_REQUEST_BYTES, TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
 import { MODEL_ROUTING_TASK_BYTES } from "../../packages/coding-agent/src/core/model-routing-task.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
@@ -469,13 +472,20 @@ test("catalog availability is revalidated after inference and immediately before
 });
 
 for (const evalsCase of ["missing", "empty"] as const) {
-	test(`missing or empty evals fail before inference: ${evalsCase}`, async () => {
+	test(`missing or empty evals fall back to the current chat model before inference: ${evalsCase}`, async () => {
 		const f = await fixture();
-		const read = vi.spyOn(fs, "readFile");
-		if (evalsCase === "missing") read.mockRejectedValueOnce(new Error("missing"));
-		if (evalsCase === "empty") read.mockResolvedValueOnce("");
-		await assert.rejects(f.route(), /Auto routing requires a nonempty evals\.md document/);
-		assert.equal(f.infer.mock.calls.length, 0);
+		const readFile = fs.readFile;
+		const read = vi.spyOn(fs, "readFile").mockImplementation(async (...args: Parameters<typeof readFile>) => {
+			if (!String(args[0]).endsWith("evals.md")) return readFile(...args);
+			if (evalsCase === "missing") throw new Error("missing");
+			return "";
+		});
+		try {
+			assert.equal((await f.route()).modelOverride, `${decisionModel.provider}/${decisionModel.id}`);
+			assert.equal(f.infer.mock.calls.length, 0);
+		} finally {
+			read.mockRestore();
+		}
 	});
 }
 
@@ -614,9 +624,10 @@ test("a stale model catalog fails before a classifier selection can launch a sub
 	const catalog = vi
 		.spyOn(f.ctx.modelRegistry, "getAvailable")
 		.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
-	const classify = mockClassifier(f, (keys) => {
+	const classify = mockClassifier(f, (keys, id) => {
 		catalog.mockReturnValue([]);
-		return byCatalogOrder(keys)[0]!;
+		if (id === "work") return "coding";
+		return id === "needs_images" ? "no" : byCatalogOrder(keys)[0]!;
 	});
 	await assert.rejects(f.route(), /no longer eligible/);
 	assert.ok(classify.mock.calls.length >= 1);
@@ -872,5 +883,33 @@ test("a caller's shortlist is described with standings among every model the use
 			["anthropic/claude-opus-5-5", "openai-codex/gpt-6-luna"].includes(pair.model),
 		),
 		"fallbacks stay within the caller's list",
+	);
+});
+
+test("a task that needs images falls back to the current chat model when no eligible model can read them", async () => {
+	const f = await fixture();
+	const current = { ...decisionModel, input: ["text" as const] };
+	f.ctx.model = current;
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		current,
+		catalogModel("a", "text-2", { input: ["text"] }),
+	]);
+	mockClassifier(f, defaultClassifierChoice);
+	await assert.rejects(routeTask(f, { taskNeeds: { needsImages: true } }), (error: unknown) => {
+		assert.ok(error instanceof AutoRoutingInferenceError);
+		assert.match(error.message, /needs a model that can read images/u);
+		assert.equal(error.currentModelRoute?.routerSelection.model, `${current.provider}/${current.id}`);
+		return true;
+	});
+});
+
+test("a caller list longer than one choice fails instead of dropping models", async () => {
+	const f = await fixture();
+	const ids = Array.from({ length: 16 }, (_, index) => `model-${index}`);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(ids.map((id) => catalogModel("a", id)));
+	mockClassifier(f, defaultClassifierChoice);
+	await assert.rejects(
+		routeTask(f, { constraints: [{ allowedModels: ids.map((id) => `a/${id}`) }] }),
+		/at most 15 different models.*16 are eligible/u,
 	);
 });

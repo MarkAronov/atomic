@@ -167,7 +167,9 @@ function measure(
 			const reporter = column("Source");
 			const setting = ownSetting(column("Setting") ?? "", column("Model") ?? "", modelWords[row.section]!);
 			const condition = [setting, reporter ? `reported by ${reporter}` : undefined].filter(Boolean).join(", ");
-			record(`pub:${column("Benchmark")}`, column("Score"), condition);
+			// Each reporter's results form their own cohort: a vendor harness and an
+			// official leaderboard are not ranked against each other.
+			record(`pub:${column("Benchmark")}@${reporter ?? ""}`, column("Score"), condition);
 		} else {
 			const effort = column("Effort");
 			const condition = effort ? `${effort} effort` : nameCondition(column("Model"));
@@ -179,6 +181,10 @@ function measure(
 	}
 	return { values, conditions, ...(released ? { released } : {}) };
 }
+
+/** Value keys measuring `metric`: the column itself, or one per reporter for published results. */
+const cohortKeys = (values: ReadonlyMap<string, number>, metric: Metric) =>
+	[...values.keys()].filter((key) => key === metric.key || key.startsWith(`${metric.key}@`));
 
 const baseKey = (candidate: CandidateModel) => modelEvidenceTokens(candidate.fastRouteOf ?? candidate.model).join("-");
 
@@ -195,16 +201,26 @@ export function rankCandidates(
 	candidates: readonly CandidateModel[],
 	needs: ResolvedTaskNeeds,
 ): RankedCandidate[] {
-	const measured = candidates.map((candidate) => ({ candidate, ...measure(catalog, candidate.model) }));
+	const measured = candidates.map((candidate) => ({
+		candidate,
+		base: baseKey(candidate),
+		...measure(catalog, candidate.model),
+	}));
+	// One observation per base model: provider copies and fast routes of one model
+	// neither move other models' standings nor count toward the minimum.
 	const rankOf = (key: string, value: number): number | undefined => {
-		const all = measured.flatMap((entry) => (entry.values.has(key) ? [entry.values.get(key)!] : []));
-		if (all.length < MIN_RANKED_MODELS) return undefined;
-		return all.filter((other) => other < value).length / (all.length - 1);
+		const byBase = new Map<string, number>();
+		for (const entry of measured) {
+			const observed = entry.values.get(key);
+			if (observed !== undefined) byBase.set(entry.base, Math.max(byBase.get(entry.base) ?? observed, observed));
+		}
+		if (byBase.size < MIN_RANKED_MODELS) return undefined;
+		return [...byBase.values()].filter((other) => other < value).length / (byBase.size - 1);
 	};
 	const standingOf = (values: ReadonlyMap<string, number>, metrics: readonly Metric[]) => {
 		const ranks = metrics
-			.filter((metric) => values.has(metric.key))
-			.map((metric) => rankOf(metric.key, values.get(metric.key)!))
+			.flatMap((metric) => cohortKeys(values, metric))
+			.map((key) => rankOf(key, values.get(key)!))
 			.filter((rank): rank is number => rank !== undefined);
 		return ranks.length ? ranks.reduce((a, b) => a + b, 0) / ranks.length : undefined;
 	};
@@ -222,7 +238,7 @@ export function rankCandidates(
 	const priceWeight = 0.65 - 0.65 * demand;
 
 	return measured
-		.map(({ candidate, values, conditions, released }) => {
+		.map(({ candidate, base, values, conditions, released }) => {
 			const workStanding = standingOf(values, WORK_METRICS[needs.work]);
 			const overallStanding = standingOf(values, [OVERALL]);
 			const quality = workStanding ?? (overallStanding !== undefined ? 0.8 * overallStanding : 0.2);
@@ -232,7 +248,7 @@ export function rankCandidates(
 			const recency = 1 - Math.min(1, ageDays / 365);
 			return {
 				...candidate,
-				baseKey: baseKey(candidate),
+				baseKey: base,
 				score: qualityWeight * quality + priceWeight * cheapness + 0.1 * recency,
 				values,
 				conditions,
@@ -290,12 +306,19 @@ export function describeOption(
 		.sort()
 		.at(-1);
 	const quote = (metrics: readonly Metric[], standing: number | undefined) => {
-		const present = metrics.filter((metric) => option.values.has(metric.key)).slice(0, 2);
+		const present = metrics
+			.map((metric) => {
+				const keys = cohortKeys(option.values, metric);
+				const best = keys.sort((a, b) => option.values.get(b)! - option.values.get(a)!)[0];
+				return best === undefined ? undefined : { metric, key: best };
+			})
+			.filter((entry) => entry !== undefined)
+			.slice(0, 2);
 		if (present.length === 0) return "no published results";
 		const results = present
-			.map((metric) => {
-				const condition = option.conditions.get(metric.key);
-				return `${metric.label} ${option.values.get(metric.key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
+			.map(({ metric, key }) => {
+				const condition = option.conditions.get(key);
+				return `${metric.label} ${option.values.get(key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
 			})
 			.join("; ");
 		return `${standing === undefined ? "measured" : standingLabel(standing)} (${results})`;
