@@ -79,7 +79,7 @@ A registered classifier receives shared state and choice questions through the g
 
 The structured-decision path never trims supplied state. A general structured-output call skips an incompatible classifier candidate and continues with the next fallback. A provider size rejection advances the same way without repeating the rejected request. Supply concise context or select a chat model with enough capacity when needed.
 
-Automatic subagent and workflow-stage model selection uses a [bounded task excerpt](/subagents/reference#automatic-model-selection) for its routing decision. That excerpt preserves protected spans and does not replace the execution prompt. Direct SDK calls do not apply this task-excerpt policy.
+Automatic subagent and workflow-stage model selection sends the complete task as well; see [automatic model selection](/subagents/reference#automatic-model-selection).
 
 Classifier response bodies are limited by the provider operation. Atomic validates that every question receives a known Choice option. The classify result does not report token usage. Reported model, probabilities, and confidence are advisory and never reject an otherwise valid decision.
 

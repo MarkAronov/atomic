@@ -3,6 +3,7 @@ import {
 	type ModelRoute as ExecutionModelRoute,
 	type ExtensionContext,
 	parseModelConstraints,
+	reportModelRoutingDebug,
 	routeExecutionModel,
 } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
@@ -46,7 +47,7 @@ export async function routeSubagentModel(input: {
 		// eligibility and ineligible-current-model failures still fail the launch.
 		if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
 		route = error.currentModelRoute;
-		console.warn(
+		reportModelRoutingDebug(
 			`Subagent auto routing failed; running "${agent.name}" on the current chat model ${route.modelOverride}.`,
 		);
 	}

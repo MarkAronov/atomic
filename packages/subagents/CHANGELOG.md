@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `model: "auto"` routing no longer cuts the task or benchmark evidence when many models are eligible: candidates are compared in several requests and the winners in a final one. The new `modelRouting` setting's `allowedProviders` and `excludedProviders` lists limit which providers are candidates.
+- `model: "auto"` routing receives the complete task instead of an excerpt, and falling back to the current chat model is silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`.
+
 ## [0.9.20] - 2026-09-24
 
 ### Added

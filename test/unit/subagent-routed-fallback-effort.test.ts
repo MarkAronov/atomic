@@ -44,7 +44,9 @@ async function dispatch(
 		containsConfiguredCredential: async () => false,
 		streamSimple: (_model: Model<Api>, context: Context) => {
 			const { questions } = JSON.parse(context.messages[0]!.content as string);
-			const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
+			const candidates = Object.entries(questions.pair.criteria as Record<string, string>)
+				.sort(([a], [b]) => Number(a.slice("pair_".length)) - Number(b.slice("pair_".length)))
+				.map(([, entry]) => JSON.parse(entry));
 			const selected = candidates.find((pair) => pair.effort === effort) ?? candidates[0];
 			return messageStream(decisionMessage({ modelId: selected.model, reasoningEffort: selected.effort }));
 		},

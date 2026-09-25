@@ -10,6 +10,7 @@ import {
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
+import { reportModelRoutingDebug } from "../model-routing-debug.ts";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
@@ -476,7 +477,7 @@ async function inferDecision<T extends TSchema>(
 						to: `${fallbackChat.provider}/${fallbackChat.id}`,
 						reason: new ClassifierDecisionError().message,
 					};
-					console.warn(
+					reportModelRoutingDebug(
 						`Classifier routing failed${error instanceof ClassifierDecisionError && error.detail ? ` (${error.detail})` : ""}; falling back to current chat model ${fallback.to} for this routing decision.`,
 					);
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };

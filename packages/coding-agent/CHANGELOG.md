@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `modelRouting` setting with `allowedProviders` and `excludedProviders` lists, so you can keep `model: "auto"` from routing workflow stages and subagents to providers you don't want to use, for example to prefer your subscriptions over API-billed providers.
+
 ### Changed
+
+- The model evaluations page and automatic model routing now include [DeepSWE](https://deepswe.datacurve.ai/) and [FrontierCode](https://cognition.com/frontiercode) leaderboards and a table of vendor- and leaderboard-published results for recent frontier models, covering computer use (OSWorld 2.0, ScreenSpot-Pro, Agents' Last Exam), browsing, CAD, science, math, cybersecurity and ARC-AGI. Each routing request carries these rows for its own candidates.
+- Automatic model routing sends the complete task to the router instead of a shortened excerpt of its beginning, end and `<keepContext>` spans. A task too large for a classifier router falls back to the current chat model.
+- Automatic model routing fallbacks (a classifier failing over to the chat model, or a subagent or workflow stage running on the current chat model) are no longer printed or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to show them.
+- Automatic model routing sends each candidate model as a short plain-language profile distilled from the evaluations page, with its price tier, release date, image input, and standing among your eligible models in capability areas such as computer use, agentic coding and security, instead of raw benchmark tables. Routing requests are several times smaller and classifier routers such as Jev compare models more reliably.
+- Automatic model routing now splits large catalogs across several requests and compares the winners in a final request, instead of cutting the task and benchmark evidence to fit one request. Each request carries the benchmark rows and release dates of its own candidates, and candidate order no longer follows catalog order.
 
 - Automatic model routing (`model: "auto"`) now has benchmark evidence for every model on the Artificial Analysis leaderboard instead of the top 27. Each routing request includes only the rows for your eligible models and their effort variants, matched across providers (for example `claude-opus-4.6` on Copilot and `us.anthropic.claude-opus-4-6-v1` on Bedrock).
 - Automatic model routing now prefers the most recently released model among candidates in the same role tier and price range, so an older model no longer wins just because it has no benchmark row.

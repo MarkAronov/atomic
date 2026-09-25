@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
+	candidateReleaseDate,
+	catalogEvidence,
 	filterModelSelectionEvals,
 	MODEL_SELECTION_EVALS_JSON_BYTES,
 	modelEvidenceTokens,
+	parseEvalsCatalog,
 } from "../../packages/coding-agent/src/core/model-routing-evals.js";
 
 const slugs = [
@@ -113,4 +116,44 @@ test("filtered evidence keeps the preamble and stays within the routing budget",
 		Buffer.byteLength(JSON.stringify(filterModelSelectionEvals(oversized, ["claude-opus-4-6"])), "utf8") <=
 			MODEL_SELECTION_EVALS_JSON_BYTES,
 	);
+});
+
+test("each section contributes its own key and only the rows of the requested candidates", () => {
+	const document = [
+		"# Evals",
+		"",
+		"## Artificial Analysis",
+		"",
+		"| slug | Model | Release date |",
+		"| --- | --- | --- |",
+		"| claude-opus-5-5 | Claude Opus 5.5 | 2026-09-22 |",
+		"| gpt-6-astra | GPT-6 Astra | 2026-09-03 |",
+		"",
+		"## DeepSWE v1.1",
+		"",
+		"Key:",
+		"",
+		"- DeepSWE: long-horizon software engineering.",
+		"",
+		"| slug | Model | Pass@1 |",
+		"| --- | --- | ---: |",
+		"| gpt-6-astra | gpt-6-astra | 74 |",
+		"",
+		"## FrontierCode 1.1",
+		"",
+		"| slug | Model | Main |",
+		"| --- | --- | ---: |",
+		"| gemini-3-8-flash | Gemini 3.8 Flash | 41.2 |",
+	].join("\n");
+	const catalog = parseEvalsCatalog(document);
+	const astra = catalogEvidence(catalog, ["openai/gpt-6-astra"]);
+	assert.match(astra, /^\| gpt-6-astra \| GPT-6 Astra \| 2026-09-03 \|$/mu);
+	assert.match(
+		astra,
+		/## DeepSWE v1\.1\n\nKey:\n\n- DeepSWE: long-horizon software engineering\.\n\n\| slug \| Model \| Pass@1 \|/u,
+	);
+	assert.match(astra, /^\| gpt-6-astra \| gpt-6-astra \| 74 \|$/mu);
+	assert.doesNotMatch(astra, /FrontierCode|claude-opus-5-5/u);
+	assert.equal(candidateReleaseDate(catalog, "github-copilot/claude-opus-5.5"), "2026-09-22");
+	assert.equal(candidateReleaseDate(catalog, "google/gemini-3.8-flash"), undefined);
 });
