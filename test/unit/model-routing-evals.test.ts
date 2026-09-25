@@ -157,3 +157,27 @@ test("each section contributes its own key and only the rows of the requested ca
 	assert.equal(candidateReleaseDate(catalog, "github-copilot/claude-opus-5.5"), "2026-09-22");
 	assert.equal(candidateReleaseDate(catalog, "google/gemini-3.8-flash"), undefined);
 });
+
+test("an exact snapshot row in one section does not hide the base model's rows in another", () => {
+	const catalog = parseEvalsCatalog(
+		[
+			"# Evals",
+			"",
+			"## Artificial Analysis",
+			"",
+			"| slug | Model | Release date |",
+			"| --- | --- | --- |",
+			"| deepseek-v4-pro | DeepSeek V4 Pro | 2026-08-13 |",
+			"",
+			"## FrontierCode 1.1",
+			"",
+			"| slug | Model | Main |",
+			"| --- | --- | ---: |",
+			"| deepseek-v4-pro-0813 | DeepSeek V4 Pro 0813 | 40.1 |",
+		].join("\n"),
+	);
+	const evidence = catalogEvidence(catalog, ["deepseek/deepseek-v4-pro-0813"]);
+	assert.match(evidence, /^\| deepseek-v4-pro \| DeepSeek V4 Pro \| 2026-08-13 \|$/mu);
+	assert.match(evidence, /^\| deepseek-v4-pro-0813 \| DeepSeek V4 Pro 0813 \| 40\.1 \|$/mu);
+	assert.equal(candidateReleaseDate(catalog, "deepseek/deepseek-v4-pro-0813"), "2026-08-13");
+});

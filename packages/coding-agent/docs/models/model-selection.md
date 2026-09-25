@@ -11,23 +11,18 @@ For specific benchmark records, read [Evals](/models/evals). That page is the da
 
 ## Automatic subagent and workflow-stage routing
 
-Subagent and workflow-stage `model: "auto"` routes before execution starts. Atomic sends the router:
+Subagent and workflow-stage `model: "auto"` routes before execution starts, in at most two short requests to the router:
 
-- the final task or stage prompt,
-- the agent or stage name and description,
-- the eligible provider/model and effort choices with catalog capabilities and prices,
-- hard `modelConstraints`, and
-- the factual markdown tables in [Evals](/models/evals).
+1. **Questions about the task.** What kind of work it is, how hard it is, how costly a mistake would be, and whether it needs screenshots or images. Anything the caller states in `taskNeeds` is not asked, and when the caller states all four this request is skipped. Computer-use tasks always count as needing images unless the caller says otherwise.
+2. **A choice between a shortlist.** Atomic narrows the eligible models in code: it drops models that cannot read images when the task needs them, then ranks the rest on the [Evals](/models/evals) results for that kind of work, weighing proven quality against price by how demanding the task is and preferring newer releases. The top six different models form the shortlist; a model's fast route and the same model on another provider share one place. When the caller lists models in `modelConstraints.allowedModels`, those eligible models are the shortlist instead. Each option carries its own evidence: release date, price tier, whether it reads images, and its results for this kind of work and overall, ranked against every eligible model. With a single option, this request is skipped.
 
-The router returns one primary `{ model, effort }` pair and up to two ordered fallback pairs. It cannot add candidates, bypass constraints, alter the execution prompt, or change the selected chat model. [`routerModel`](/settings#routermodel) chooses the decision model only: an explicit registered classifier or chat language model. Unset and `auto` use the current chat model, regardless of saved classifier credentials. An image-generation model cannot decide.
+Effort follows the task's difficulty, limited to the levels the chosen model supports. The two fallbacks are the next models in Atomic's ranking. The router cannot add candidates, bypass constraints, alter the execution prompt, or change the selected chat model. [`routerModel`](/settings#routermodel) chooses the decision model only: an explicit registered classifier or chat language model. Unset and `auto` use the current chat model, regardless of saved classifier credentials. An image-generation model cannot decide.
 
 Only chat language models are eligible for execution `auto`, including models that accept image or PDF input. Image-generation and classifier models cannot be execution candidates, even when a classifier makes the routing decision.
 
 In authored workflows, a classifier can make a structured triage decision without executing the stage; an image model can generate an asset inside a durable tool step. See [classifier and image models in `ctx.tool`](/workflows/authoring#classifier-and-image-models-in-ctx-tool).
 
-The router receives the complete task; it is never shortened. A very long task can be too large for a classifier router, which then falls back to the current chat model, so keep bulky reference material in files rather than in the task.
-
-When many models are eligible, the router compares them in several smaller requests. Each request carries the full task and a profile of each of its candidates, distilled from [Evals](/models/evals): price tier, release date, image input, and standing among the eligible models in each capability area, and the winners are compared in a final request. The same task always divides its candidates the same way. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
+The router's copy of a very long task is shortened to about 50 KB, keeping its beginning, its end and every `<keepContext>...</keepContext>` span, with cuts marked `[... truncated ...]`; the subagent or stage still receives the full task. To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
 
 ## Benchmarks are evidence, not policy
 

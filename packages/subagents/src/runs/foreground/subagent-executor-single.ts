@@ -139,6 +139,7 @@ export async function runSinglePath(
 					agent: agentConfig,
 					task: params.task,
 					modelConstraints: params.modelConstraints,
+					taskNeeds: params.taskNeeds,
 					signal,
 				})
 			: undefined;

@@ -153,15 +153,23 @@ export function parseEvalsCatalog(evals: string): EvalsCatalog {
 	return { preamble: lines.slice(0, preambleEnd), sections, rows, matches: new Map() };
 }
 
-/** Rows describing `candidate`: its own model and variants, or its base model when it has none. */
+/**
+ * Rows describing `candidate`: in each section, its own model and variants, or
+ * its base model when that section has none. Sections resolve independently, so
+ * an exact snapshot row in one table does not hide the base model's rows in another.
+ */
 export function candidateEvidenceRows(catalog: EvalsCatalog, candidate: string): readonly CatalogRow[] {
 	const cached = catalog.matches.get(candidate);
 	if (cached) return cached;
-	let matches: readonly CatalogRow[] = [];
-	for (const form of candidateForms(modelEvidenceTokens(candidate))) {
-		matches = catalog.rows.filter((row) => slugMatchesCandidate(row.tokens, form));
-		if (matches.length > 0) break;
-	}
+	const forms = candidateForms(modelEvidenceTokens(candidate));
+	const matches = catalog.sections.flatMap((_, section) => {
+		const sectionRows = catalog.rows.filter((row) => row.section === section);
+		for (const form of forms) {
+			const found = sectionRows.filter((row) => slugMatchesCandidate(row.tokens, form));
+			if (found.length > 0) return found;
+		}
+		return [];
+	});
 	catalog.matches.set(candidate, matches);
 	return matches;
 }

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { MODEL_SELECTION_GUIDE } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { readText } from "../helpers/runtime.js";
 
 test("the general model-selection guide stays compact and points to factual evals", async () => {
@@ -16,12 +15,11 @@ test("the general model-selection guide stays compact and points to factual eval
 	assert.doesNotMatch(guide, /narrow domain tasks should use/i);
 });
 
-test("the shipped routing guide and user docs both prefer recently released comparable models", async () => {
+test("the model selection docs prefer recently released comparable models", async () => {
 	const docs = await readText("packages/coding-agent/docs/models/model-selection.md");
 	const rule =
 		/Prefer recency\..*most recently released model over an older one.*Do not let an older model win only because it has no published results.*Recency does not override the role's cost tier/su;
 	assert.match(docs, rule);
-	assert.match(MODEL_SELECTION_GUIDE, rule);
 	assert.match(await readText("packages/coding-agent/docs/models/evals.md"), /^\| slug \| Model \| Release date \|/mu);
 });
 

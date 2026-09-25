@@ -140,6 +140,7 @@ export async function runParallelPath(
 									agent: agentConfigs[index]!,
 									task: task.task,
 									modelConstraints: task.modelConstraints,
+									taskNeeds: task.taskNeeds,
 									signal: routing.signal,
 								})
 							: undefined,
