@@ -84,3 +84,31 @@ test("areas without evidence are named as unknown rather than implied weak", () 
 	assert.match(unlisted, /release date unknown/u);
 	assert.doesNotMatch(unlisted, /top|median|quarter/u);
 });
+
+test("a fast route names its base model, its price multiple and when to prefer it", () => {
+	const base = candidate("model-a", 4);
+	const fast = { ...candidate("model-a-fast", 8), name: "MODEL-A FAST" };
+	const withBase = buildCandidateProfiles(parseEvalsCatalog(evals), [base, fast, candidate("model-b", 1)]);
+	assert.match(
+		withBase.get("provider/model-a-fast")!,
+		/^- Fast route of MODEL-A \(provider\/model-a\): the same model with the same results, served faster at 2× its price\. Choose it over MODEL-A only when faster responses are worth the extra cost\.$/mu,
+	);
+	assert.doesNotMatch(withBase.get("provider/model-a")!, /Fast route/u);
+	const alone = buildCandidateProfiles(parseEvalsCatalog(evals), [fast]).get("provider/model-a-fast")!;
+	assert.match(
+		alone,
+		/^- Fast route: the same model as its standard route, served faster\. Its results are the standard model's\.$/mu,
+	);
+});
+
+test("a fast route at its base model's listed price is not described as costing more", () => {
+	const note = buildCandidateProfiles(parseEvalsCatalog(evals), [
+		candidate("model-a", 2),
+		{ ...candidate("model-a-fast", 2), name: "MODEL-A FAST" },
+	]).get("provider/model-a-fast")!;
+	assert.match(
+		note,
+		/Fast route of MODEL-A \(provider\/model-a\): the same model with the same results, served faster at the same listed price\.$/mu,
+	);
+	assert.doesNotMatch(note, /extra cost/u);
+});

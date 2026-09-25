@@ -203,6 +203,22 @@ export function buildCandidateProfiles(
 		.sort()
 		.at(-1);
 
+	const byModel = new Map(candidates.map((candidate) => [candidate.model, candidate]));
+	/**
+	 * A `-fast` route serves the same model faster at a higher price and shares
+	 * its base model's evidence, so without this line the two are indistinguishable.
+	 */
+	const fastRouteNote = (candidate: ProfileCandidate): string | undefined => {
+		if (!candidate.model.endsWith("-fast")) return undefined;
+		const base = byModel.get(candidate.model.slice(0, -"-fast".length));
+		if (!base)
+			return "Fast route: the same model as its standard route, served faster. Its results are the standard model's.";
+		const ratio = blended(base) > 0 ? blended(candidate) / blended(base) : undefined;
+		if (ratio === undefined || ratio <= 1.05)
+			return `Fast route of ${base.name} (${base.model}): the same model with the same results, served faster at the same listed price.`;
+		return `Fast route of ${base.name} (${base.model}): the same model with the same results, served faster at ${Number(ratio.toPrecision(2))}× its price. Choose it over ${base.name} only when faster responses are worth the extra cost.`;
+	};
+
 	const profiles = new Map<string, string>();
 	for (const { candidate, values, released } of measured) {
 		const parts: string[] = [];
@@ -246,6 +262,8 @@ export function buildCandidateProfiles(
 			strengths.push(`${area.name}: ${label} (${quoted})`);
 		}
 		const lines = [`${candidate.name} (${candidate.model}): ${parts.join("; ")}.`];
+		const fastRoute = fastRouteNote(candidate);
+		if (fastRoute) lines.push(`- ${fastRoute}`);
 		if (strengths.length) lines.push(...strengths.map((line) => `- ${line}`));
 		if (unmeasured.length) lines.push(`- No published results for: ${unmeasured.join(", ")}.`);
 		profiles.set(candidate.model, lines.join("\n"));
