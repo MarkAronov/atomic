@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { renderCatalog } from "../../scripts/extract-aa-benchmarks.ts";
+import { maintainedSections, renderCatalog } from "../../scripts/extract-aa-benchmarks.ts";
 
 const leaderboard = [
 	'1:{"models":[{"slug":"claude-opus-4-6","name":"Claude Opus 4.6","deprecated":false,"releaseDate":"2026-01-02"},{"slug":"gpt-test","name":"GPT Test","releaseDate":"2026-01-03"}]}',
@@ -54,4 +54,23 @@ test("names columns with no source values instead of implying zero", () => {
 
 test("fails loudly when the leaderboard stream has no models array", () => {
 	assert.throws(() => renderCatalog({ leaderboard: '1:{"host":{}}', accessed: "2026-09-25" }), /models array/u);
+});
+
+test("regenerating the Artificial Analysis table keeps the maintained sections below it", () => {
+	const existing = [
+		"# Evals",
+		"",
+		"## Artificial Analysis Intelligence Index v4.3.2",
+		"",
+		"| slug | Model |",
+		"| --- | --- |",
+		"| old | Old |",
+		"",
+		"## DeepSWE v1.1",
+		"",
+		"| slug | Model | Pass@1 |",
+		"",
+	].join("\n");
+	assert.equal(maintainedSections(existing), "## DeepSWE v1.1\n\n| slug | Model | Pass@1 |\n");
+	assert.equal(maintainedSections("# Evals\n\n## Artificial Analysis Intelligence Index v4.3.2\n| slug |"), "");
 });

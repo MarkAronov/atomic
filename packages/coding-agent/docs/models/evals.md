@@ -723,3 +723,203 @@ Table: all 673 models on the Artificial Analysis leaderboard, including models w
 | apertus-70b-instruct | Apertus 70B Instruct | 2025-09-02 | 5.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.5 | ∅ | 0 | 11.6 | 17.2 | 0 | -61.5 | 27.2 | ∅ | 0 | 25.9 | ∅ | 12.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | apertus-8b-instruct | Apertus 8B Instruct | 2025-09-02 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5 | ∅ | 0 | 9.7 | 3.9 | 0 | -77.2 | 25.6 | ∅ | 0 | 22.4 | ∅ | 11.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | cogito-v2-1-reasoning | Cogito v2.1 (Reasoning) | 2025-11-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 12 | ∅ | 0 | 30.2 | 19.8 | 22.7 | -25.8 | 76.8 | ∅ | 16.7 | 46.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 72.7 | 68.8 | ∅ | ∅ | ∅ | ∅ |
+
+## DeepSWE v1.1
+
+Source: [DeepSWE leaderboard](https://deepswe.datacurve.ai/) by Datacurve, 113 tasks, updated 2026-09-22, accessed 2026-09-25. Every model runs on [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent); each row is the model's best effort level. 25 of the 28 listed models have v1.1 results.
+
+Key:
+
+- DeepSWE: long-horizon software engineering on 113 original tasks written from scratch across 91 repositories and 5 languages, graded by hand-written behavioral verifiers.
+- `Pass@1`: percent of tasks solved in one attempt; `CI` is the published ± interval.
+- `Cost`: average USD per task. `Out tok`: average output tokens per task. `Steps`: average agent steps per task.
+
+| slug | Model | Effort | Pass@1 | CI | Cost | Out tok | Steps |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| gpt-6-astra | gpt-6-astra | xhigh | 74 | ±3 | $4.43 | 30k | 29 |
+| gemini-3-8-flash | gemini-3.8-flash | high | 74 | ±1 | $2.36 | 143k | 166 |
+| claude-opus-5 | claude-opus-5 | max | 74 | ±4 | $11.84 | 118k | 99 |
+| gpt-5-6-sol | gpt-5.6-sol | max | 73 | ±3 | $6.46 | 60k | 61 |
+| claude-fable-5 | claude-fable-5 | xhigh | 70 | ±3 | $13.41 | 80k | 68 |
+| gpt-5-6-terra | gpt-5.6-terra | max | 70 | ±3 | $3.96 | 72k | 76 |
+| glm-5-3 | glm-5.3 | max | 69 | ±3 | $3.99 | 80k | 124 |
+| kimi-k3 | kimi-k3 | max | 69 | ±5 | $4.65 | 81k | 98 |
+| grok-4-6 | grok-4.6 | medium | 67 | ±2 | $3.45 | 50k | 70 |
+| gpt-5-6-luna | gpt-5.6-luna | max | 67 | ±4 | $0.61 | 73k | 102 |
+| gpt-5-5 | gpt-5.5 | xhigh | 67 | ±6 | $7.23 | 46k | 82 |
+| gemini-3-7-flash | gemini-3.7-flash | medium | 65 | ±3 | $2.03 | 94k | 117 |
+| glm-5-3-flash | glm-5.3-flash | max | 63 | ±4 | $0.24 | 73k | 123 |
+| deepseek-v4-pro | deepseek-v4-pro | max | 63 | ±6 | $1.67 | 106k | 155 |
+| claude-opus-4-8 | claude-opus-4.8 | max | 59 | ±2 | $13.22 | 135k | 120 |
+| qwen3-8-max | qwen3.8-max | xhigh | 57 | ±3 | $3.73 | 95k | 111 |
+| muse-spark-1-2 | muse-spark-1.2 | xhigh | 55 | ±2 | $3.70 | 99k | 101 |
+| claude-sonnet-5 | claude-sonnet-5 | max | 54 | ±4 | $26.40 | 214k | 268 |
+| grok-4-5 | grok-4.5 | high | 54 | ±2 | $2.42 | 36k | 61 |
+| deepseek-v4-flash | deepseek-v4-flash | max | 53 | ±4 | $0.46 | 108k | 153 |
+| muse-spark-1-1 | muse-spark-1.1 | xhigh | 53 | ±3 | $2.36 | 74k | 96 |
+| gpt-5-4 | gpt-5.4 | xhigh | 52 | ±2 | $5.65 | 71k | 70 |
+| gemini-3-6-flash | gemini-3.6-flash | high | 47 | ±4 | $2.21 | 96k | 117 |
+| glm-5-2 | glm-5.2 | max | 44 | ±2 | $3.92 | 78k | 129 |
+| gemini-3-5-flash | gemini-3.5-flash | high | 36 | ±4 | $3.45 | 76k | 105 |
+
+## FrontierCode 1.1
+
+Source: [FrontierCode leaderboard](https://cognition.com/frontiercode) by Cognition, current revision, accessed 2026-09-25. Each row is the model's best-scoring reasoning effort, which is the same on both sets.
+
+Key:
+
+- FrontierCode: mergeability of agent-written pull requests on tasks built by open-source maintainers, graded by rubrics, unit tests and other verifiers for correctness, test quality, scope discipline, style and codebase conventions. Runs that consult solution-bearing sources such as the original pull request score zero.
+- `Main`, `Extended`: weighted rubric score in percent on the Main (100 tasks) and Extended (150 tasks) sets; a solution that fails a blocking criterion scores 0.
+- `Main pass`, `Ext pass`: percent of tasks passing every blocking criterion.
+- `Flag`: percent of Main runs flagged for unfair internet use. `Cost`: mean USD per Main rollout.
+
+| slug | Model | Effort | Main | Main pass | Extended | Ext pass | Flag | Cost |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| claude-opus-5-5 | Opus 5.5 | medium | 54.6 | 59.6 | 65.3 | 70.8 | 0.0 | $0.80 |
+| claude-fable-5 | Fable 5 | xhigh | 53.5 | 58.9 | 64.9 | 70.9 | 0.3 | $13.09 |
+| claude-opus-5 | Opus 5 | medium | 53.4 | 58.9 | 63.6 | 69.6 | 0.6 | $4.31 |
+| gpt-6-astra | GPT-6 Astra | max | 53.3 | 58.8 | 64.5 | 70.6 | ∅ | $4.59 |
+| claude-fable-5-1 | Fable 5.1 | medium | 50.9 | 55.5 | 63.6 | 68.8 | 0.0 | $3.28 |
+| swe-2 | SWE-2 | max | 50.0 | 55.5 | 62.5 | 68.4 | ∅ | $1.18 |
+| gpt-6-sol | GPT-6 Sol | max | 49.3 | 54.3 | 60.7 | 66.3 | 0.0 | $2.07 |
+| grok-4-6 | Grok 4.6 | high | 48.0 | 53.1 | 61.3 | 67.0 | 0.7 | $2.88 |
+| grok-4-7 | Grok 4.7 | high | 47.6 | 53.1 | 59.4 | 65.2 | 1.3 | $6.65 |
+| gpt-5-6-sol | GPT-5.6 Sol | max | 47.5 | 52.9 | 60.6 | 66.6 | 0.0 | $5.19 |
+| claude-opus-4-8 | Opus 4.8 | max | 46.5 | 51.6 | 59.6 | 65.5 | 0.6 | $9.62 |
+| kimi-k3 | Kimi K3 | ∅ | 44.2 | 48.9 | 58.2 | 63.6 | 0.2 | $3.82 |
+| gemini-3-7-flash | Gemini 3.7 Flash | medium | 43.6 | 48.9 | 56.3 | 62.3 | 0.0 | $1.82 |
+| gpt-5-5 | GPT-5.5 | xhigh | 43.0 | 48.2 | 56.7 | 62.8 | 0.4 | $4.03 |
+| claude-sonnet-5 | Sonnet 5 | xhigh | 42.7 | 47.6 | 56.2 | 61.7 | 0.5 | $10.07 |
+| grok-4-5 | Grok 4.5 | high | 42.4 | 47.2 | 56.5 | 62.3 | 0.0 | $1.30 |
+| gpt-6-luna | GPT-6 Luna | max | 42.4 | 47.8 | 56.1 | 62.3 | 0.0 | $0.10 |
+| swe-1-7 | SWE-1.7 | ∅ | 42.0 | 47.4 | 54.3 | 60.3 | 1.2 | $1.97 |
+| gpt-5-6-terra | GPT-5.6 Terra | max | 41.3 | 46.3 | 55.8 | 61.8 | 0.1 | $1.87 |
+| gemini-3-8-flash | Gemini 3.8 Flash | medium | 41.2 | 46.7 | 53.4 | 59.6 | 0.0 | $2.60 |
+| glm-5-3 | GLM 5.3 | max | 40.1 | 44.7 | 52.6 | 57.7 | 0.0 | $16.91 |
+| gpt-5-6-luna | GPT-5.6 Luna | max | 39.8 | 44.7 | 55.1 | 60.9 | 0.1 | $0.37 |
+| claude-opus-4-7 | Opus 4.7 | max | 38.5 | 42.8 | 53.9 | 59.1 | 0.1 | $9.09 |
+| gemini-3-6-flash | Gemini 3.6 Flash | medium | 34.4 | 38.9 | 48.0 | 53.3 | 0.0 | $4.04 |
+| glm-5-3-flash | GLM 5.3 Flash | max | 31.8 | 35.7 | 46.2 | 51.1 | 0.0 | $1.15 |
+| kimi-k2-7 | Kimi K2.7 | ∅ | 30.1 | 33.6 | 45.4 | 50.0 | 0.0 | $3.01 |
+| deepseek-v4-pro-0813 | DeepSeek V4 Pro 0813 | high | 28.5 | 31.8 | 44.5 | 48.9 | 10.6 | $1.81 |
+| gpt-5-4-mini | GPT-5.4-mini | xhigh | 27.0 | 30.8 | 43.0 | 47.9 | 0.0 | $1.52 |
+| claude-opus-4-6 | Opus 4.6 | high | 26.6 | 29.7 | 43.7 | 48.0 | 0.1 | $3.98 |
+| composer-2-5 | Composer 2.5 | ∅ | 25.6 | 29.3 | 40.8 | 45.1 | 2.4 | $3.09 |
+| glm-5-2 | GLM 5.2 | ∅ | 24.5 | 27.4 | 40.1 | 44.1 | 0.0 | $2.47 |
+| claude-sonnet-4-6 | Sonnet 4.6 | max | 24.3 | 27.5 | 40.0 | 44.4 | 0.2 | $2.90 |
+| deepseek-v4-flash-0731 | DeepSeek V4 Flash 0731 | high | 18.8 | 21.1 | 31.7 | 35.0 | 25.5 | $1.53 |
+| deepseek-v4-pro | DeepSeek V4 Pro | ∅ | 17.6 | 20.0 | 31.0 | 34.5 | 1.0 | $1.55 |
+| minimax-m3 | MiniMax M3 | ∅ | 14.7 | 16.6 | 28.5 | 31.5 | 1.5 | $0.68 |
+| inkling | Inkling | 0.99 | 14.0 | 15.9 | 24.8 | 27.8 | 7.6 | $3.60 |
+| nvidia-nemotron-3-ultra | Nemotron 3 Ultra | ∅ | 13.6 | 15.4 | 27.2 | 30.3 | 0.2 | $1.47 |
+| qwen3-7-plus | Qwen 3.7 Plus | ∅ | 10.2 | 11.5 | 21.8 | 24.1 | 0.9 | $0.24 |
+| swe-1-6 | SWE-1.6 | ∅ | 9.4 | 10.4 | 20.5 | 22.7 | 0.0 | $0.49 |
+| mistral-medium-3-5 | Mistral 3.5 Medium | ∅ | 8.0 | 9.0 | 18.7 | 20.6 | 0.6 | $1.35 |
+
+## Published benchmark results
+
+Scores published by model vendors and benchmark owners for recent frontier models, accessed 2026-09-25. Values are percent. Each row names its source; the same benchmark can appear once per source because vendors run different harnesses, grading and effort levels. Internal vendor evaluations are excluded.
+
+Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/); Anthropic = [Claude Fable 5.1 announcement](https://www.anthropic.com/claude-fable-and-mythos-5-1); Google = [Gemini 3.8 Flash model card](https://deepmind.google/models/model-cards/gemini-3-8-flash/); ARC Prize = [arcprize.org results](https://arcprize.org/results/google-gemini-3-8-flash); TB-Science leaderboard = [terminal-bench-science.ai](https://www.terminal-bench-science.ai/); Zapier = [AutomationBench leaderboard](https://zapier.com/benchmarks).
+
+Key:
+
+- `ALE`: [Agents' Last Exam](https://agents-last-exam.org/), long-horizon professional tasks in real software, from financial modeling to engineering and media production.
+- `OSW2`, `OSW2s`: [OSWorld 2.0](https://osworld-v2.xlang.ai/), long-horizon computer-use workflows operating desktop applications through the screen; partial credit and strict all-pass scoring.
+- `SSP`: [ScreenSpot-Pro](https://gui-agent.github.io/grounding-leaderboard/), locating GUI elements in high-resolution professional application screenshots.
+- `ABench`: [AutomationBench](https://zapier.com/benchmarks), cross-app business workflows in simulated SaaS tools, graded strictly on the resulting business state; distinct from AutomationBench-AA above.
+- `CAD`: [BenchCAD](https://benchcad.com/), generating CAD code that reproduces a target part, scored by geometric overlap.
+- `BComp`: [BrowseComp](https://openai.com/index/browsecomp/), web browsing to find hard-to-locate facts.
+- `HLEt`, `HLEv`: Humanity's Last Exam with tools, and Google's HLE-Verified; expert-level academic reasoning.
+- `TBSci`: [Terminal-Bench-Science](https://www.terminal-bench-science.ai/), agentic scientific research workflows in a terminal across 70 tasks.
+- `FMT4`: [FrontierMath Tier 4](https://epoch.ai/benchmarks/frontiermath-tier-4-v2), research-level mathematics problems.
+- `XBench`: [ExploitBench](https://exploitbench.ai/), turning known vulnerabilities into exploit primitives and code execution.
+- `XGym`: [ExploitGym](https://www.cybergym.io/exploitgym/), turning real software vulnerabilities into working exploits.
+- `SRE`: [SRE-Bench](https://daplab.cs.columbia.edu/projects/sre-bench/), reverse engineering binaries without source code.
+- `SECPro`: [SEC-Bench Pro](https://sec-bench.github.io/), finding security bugs in critical software.
+- `ARC1`, `ARC2`, `ARC3`: [ARC-AGI](https://arcprize.org/) 1, 2 and 3, abstract reasoning on novel grid puzzles; version 3 is interactive.
+
+| slug | Model | Benchmark | Score | Setting | Source |
+| --- | --- | --- | ---: | --- | --- |
+| gpt-6-astra | GPT-6 Astra | ALE | 59.3 | max effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | OSW2 | 72.6 | offline set v2026.08.08, partial, official settings | OpenAI |
+| gpt-6-astra | GPT-6 Astra | SSP | 92.7 | no tools; Fable 5 value is Mythos 5 | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ABench | 41.4 | v1.0.6, max effort; Fable 5.1 with Opus 5 fallback | Zapier |
+| gpt-6-astra | GPT-6 Astra | CAD | 95.9 | geometric overlap (IoU), no tools | OpenAI |
+| gpt-6-astra | GPT-6 Astra | BComp | 91.5 | max effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | HLEt | 57.2 | with tools | OpenAI |
+| gpt-6-astra | GPT-6 Astra | TBSci | 68.1 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| gpt-6-astra | GPT-6 Astra | TBSci | 64.6 | v0.1, Codex harness | OpenAI |
+| gpt-6-astra | GPT-6 Astra | FMT4 | 97.6 | Tier 4 v2, max effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | XBench | 100.0 | without production safeguards | OpenAI |
+| gpt-6-astra | GPT-6 Astra | XGym | 42.4 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| gpt-6-astra | GPT-6 Astra | SRE | 88.0 | single attempt | OpenAI |
+| gpt-6-astra | GPT-6 Astra | SECPro | 85.4 | ∅ | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC1 | 98.5 | semi-private, best effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC2 | 95.0 | semi-private, best effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC3 | 99.9 | OpenAI responses harness | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC3 | 54.8 | semi-private, high, standard harness | ARC Prize |
+| gpt-5-6-sol | GPT-5.6 Sol | ALE | 53.6 | max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | OSW2 | 65.7 | offline set v2026.08.08, partial, official settings | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | SSP | 76.9 | no tools; Fable 5 value is Mythos 5 | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ABench | 18.1 | max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | CAD | 83.3 | geometric overlap (IoU), no tools | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | BComp | 90.4 | max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | TBSci | 22.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| gpt-5-6-sol | GPT-5.6 Sol | FMT4 | 83.0 | Tier 4 v2, max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | XBench | 78.5 | without production safeguards | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | XGym | 30.3 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | SRE | 55.9 | single attempt | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | SECPro | 79.1 | ∅ | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ARC1 | 97.5 | semi-private, best effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ARC2 | 92.5 | semi-private, best effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ARC3 | 7.8 | OpenAI responses harness | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | OSW2 | 77.9 | offline set v2026.08.08, partial, Anthropic grading | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | OSW2s | 41.7 | offline set v2026.08.08, strict, Anthropic grading | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | ABench | 31.4 | v1.0.6, max effort; Fable 5.1 with Opus 5 fallback | Zapier |
+| claude-fable-5-1 | Claude Fable 5.1 | CAD | 84.3 | geometric overlap (IoU), no tools | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | HLEt | 65.0 | with tools | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | TBSci | 40.0 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| claude-fable-5-1 | Claude Fable 5.1 | TBSci | 52.6 | v0.1, Anthropic setup | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | FMT4 | 87.8 | Tier 4 v2, max effort | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | XGym | 30.4 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | ARC1 | 97.5 | semi-private, best effort | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | ARC2 | 90.0 | semi-private, best effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ALE | 48.7 | max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | OSW2 | 72.9 | offline set v2026.08.08, partial, Anthropic grading | Anthropic |
+| claude-fable-5 | Claude Fable 5 | OSW2s | 36.1 | offline set v2026.08.08, strict, Anthropic grading | Anthropic |
+| claude-fable-5 | Claude Fable 5 | SSP | 87.3 | no tools; Fable 5 value is Mythos 5 | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ABench | 17.4 | max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | CAD | 67.5 | geometric overlap (IoU), no tools | OpenAI |
+| claude-fable-5 | Claude Fable 5 | BComp | 87.4 | max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | HLEt | 63.8 | with tools | Anthropic |
+| claude-fable-5 | Claude Fable 5 | TBSci | 21.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| claude-fable-5 | Claude Fable 5 | TBSci | 24.7 | v0.1, Anthropic setup | Anthropic |
+| claude-fable-5 | Claude Fable 5 | FMT4 | 90.2 | Tier 4 v2, max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | XGym | 28.4 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ARC1 | 98.5 | semi-private, best effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ARC2 | 89.2 | semi-private, best effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ALE | 55.5 | max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | OSW2 | 70.2 | offline set v2026.08.08, partial, official settings | OpenAI |
+| claude-opus-5 | Claude Opus 5 | OSW2 | 75.4 | offline set v2026.08.08, partial, Anthropic grading | Anthropic |
+| claude-opus-5 | Claude Opus 5 | OSW2s | 39.6 | offline set v2026.08.08, strict, Anthropic grading | Anthropic |
+| claude-opus-5 | Claude Opus 5 | ABench | 26.9 | max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | CAD | 82.1 | geometric overlap (IoU), no tools | OpenAI |
+| claude-opus-5 | Claude Opus 5 | BComp | 90.8 | max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | HLEt | 63.6 | with tools | Anthropic |
+| claude-opus-5 | Claude Opus 5 | TBSci | 30.0 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| claude-opus-5 | Claude Opus 5 | TBSci | 29.0 | v0.1, Anthropic setup | Anthropic |
+| claude-opus-5 | Claude Opus 5 | FMT4 | 73.2 | Tier 4 v2, max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | XBench | 70.0 | without production safeguards | OpenAI |
+| claude-opus-5 | Claude Opus 5 | XGym | 22.0 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| claude-opus-5 | Claude Opus 5 | SRE | 12.5 | single attempt | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ARC1 | 97.5 | semi-private, best effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ARC2 | 90.4 | semi-private, best effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ARC3 | 30.2 | OpenAI responses harness | OpenAI |
+| gemini-3-8-flash | Gemini 3.8 Flash | OSW2 | 59.0 | offline set v2026.08.08, partial, batch tool enabled | Google |
+| gemini-3-8-flash | Gemini 3.8 Flash | HLEv | 54.9 | HLE-Verified, tools not stated | Google |
+| gemini-3-8-flash | Gemini 3.8 Flash | TBSci | 12.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC1 | 98.5 | semi-private, high | ARC Prize |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC2 | 89.2 | semi-private, high | ARC Prize |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC3 | 10.4 | semi-private, high, standard harness | ARC Prize |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC3 | 35.0 | semi-private, high, provider adapter harness | ARC Prize |

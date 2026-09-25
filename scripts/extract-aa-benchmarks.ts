@@ -290,6 +290,20 @@ function option(args: readonly string[], name: string): string | undefined {
 	return at >= 0 ? args[at + 1] : undefined;
 }
 
+const AA_SECTION_HEADING = "## Artificial Analysis Intelligence Index";
+
+/**
+ * Hand-maintained sections after the generated Artificial Analysis table, such
+ * as DeepSWE and FrontierCode, which this script does not source. Regenerating
+ * the Artificial Analysis table keeps them verbatim.
+ */
+export function maintainedSections(existing: string): string {
+	const aaHeading = existing.indexOf(`\n${AA_SECTION_HEADING}`);
+	if (aaHeading < 0) return "";
+	const next = existing.indexOf("\n## ", aaHeading + 1);
+	return next < 0 ? "" : existing.slice(next + 1);
+}
+
 async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const leaderboardFile = option(args, "--leaderboard");
@@ -299,10 +313,13 @@ async function main(): Promise<void> {
 		index: indexFile ? await readFile(indexFile, "utf8") : await fetchRsc(INDEX_ROUTE),
 		accessed: option(args, "--date") ?? new Date().toISOString().slice(0, 10),
 	};
-	const output = renderCatalog(sources);
-	await writeFile(DESTINATION, output);
+	const existing = await readFile(DESTINATION, "utf8").catch(() => "");
+	const maintained = maintainedSections(existing);
+	const generated = renderCatalog(sources);
+	await writeFile(DESTINATION, `${generated}${maintained ? `\n${maintained}` : ""}`);
+	const rows = generated.split("\n").filter((line) => line.startsWith("| ")).length - 2;
 	console.log(
-		`Wrote ${output.split("\n").filter((line) => line.startsWith("| ")).length - 2} model rows to ${DESTINATION}`,
+		`Wrote ${rows} Artificial Analysis model rows to ${DESTINATION}; kept the maintained sections below it.`,
 	);
 }
 

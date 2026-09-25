@@ -91,40 +91,66 @@ function candidateForms(tokens: readonly string[]): string[][] {
 
 interface CatalogRow {
 	readonly line: string;
+	readonly section: number;
 	readonly order: number;
 	readonly tokens: readonly string[];
 	readonly releaseDate?: string;
 }
 
+/** One `## ` section of `evals.md` that holds a model table keyed by `slug`. */
+interface CatalogSection {
+	/** The section heading, its notes and key, the table header and separator. */
+	readonly intro: readonly string[];
+}
+
 /** `evals.md` parsed once so batch packing can query evidence per candidate cheaply. */
 export interface EvalsCatalog {
+	/** Text before the first table section: title, access date and the shared key. */
 	readonly preamble: readonly string[];
+	readonly sections: readonly CatalogSection[];
 	readonly rows: readonly CatalogRow[];
 	/** The unparsed document when it has no model table. */
 	readonly raw?: string;
 	readonly matches: Map<string, readonly CatalogRow[]>;
 }
 
+const TABLE_HEADER = /^\|\s*slug\s*\|/u;
+
 export function parseEvalsCatalog(evals: string): EvalsCatalog {
 	const lines = evals.split("\n");
-	const headerIndex = lines.findIndex((line) => /^\|\s*slug\s*\|/u.test(line));
-	if (headerIndex < 0) return { preamble: [], rows: [], raw: evals, matches: new Map() };
-	const header = lines[headerIndex]!.split("|").map((cell) => cell.trim());
-	const releaseColumn = header.indexOf("Release date");
+	const headers = lines.flatMap((line, index) => (TABLE_HEADER.test(line) ? [index] : []));
+	if (headers.length === 0) return { preamble: [], sections: [], rows: [], raw: evals, matches: new Map() };
+	const sections: CatalogSection[] = [];
 	const rows: CatalogRow[] = [];
-	for (const [order, line] of lines.slice(headerIndex + 2).entries()) {
-		if (!line.startsWith("|")) continue;
-		const cells = line.split("|").map((cell) => cell.trim());
-		if (!cells[1]) continue;
-		const release = releaseColumn > 0 ? cells[releaseColumn] : undefined;
-		rows.push({
-			line,
-			order,
-			tokens: modelEvidenceTokens(cells[1]),
-			...(release && /^\d{4}-\d{2}-\d{2}$/u.test(release) ? { releaseDate: release } : {}),
-		});
+	let preambleEnd = 0;
+	let previousTableEnd = 0;
+	for (const [section, headerIndex] of headers.entries()) {
+		let start = headerIndex;
+		for (let index = headerIndex - 1; index >= previousTableEnd; index--)
+			if (lines[index]!.startsWith("## ")) {
+				start = index;
+				break;
+			}
+		if (section === 0) preambleEnd = start;
+		sections.push({ intro: lines.slice(start, headerIndex + 2) });
+		const header = lines[headerIndex]!.split("|").map((cell) => cell.trim());
+		const releaseColumn = header.indexOf("Release date");
+		let index = headerIndex + 2;
+		for (; index < lines.length && lines[index]!.startsWith("|"); index++) {
+			const cells = lines[index]!.split("|").map((cell) => cell.trim());
+			if (!cells[1]) continue;
+			const release = releaseColumn > 0 ? cells[releaseColumn] : undefined;
+			rows.push({
+				line: lines[index]!,
+				section,
+				order: rows.length,
+				tokens: modelEvidenceTokens(cells[1]),
+				...(release && /^\d{4}-\d{2}-\d{2}$/u.test(release) ? { releaseDate: release } : {}),
+			});
+		}
+		previousTableEnd = index;
 	}
-	return { preamble: lines.slice(0, headerIndex + 2), rows, matches: new Map() };
+	return { preamble: lines.slice(0, preambleEnd), sections, rows, matches: new Map() };
 }
 
 /** Rows describing `candidate`: its own model and variants, or its base model when it has none. */
@@ -147,7 +173,9 @@ export function candidateReleaseDate(catalog: EvalsCatalog, candidate: string): 
 }
 
 /**
- * The catalog preamble plus the rows for `candidates`. `maxBytes` bounds the
+ * The catalog preamble plus, for every section with rows for `candidates`, that
+ * section's heading, key and table header followed by only those rows.
+ * Sections without a matching row are left out. `maxBytes` bounds the
  * JSON-encoded result; batched routing omits it because its request budget
  * already decides how many candidates, and so how many rows, one batch holds.
  */
@@ -160,8 +188,15 @@ export function catalogEvidence(
 	const selected = new Set<number>();
 	for (const candidate of new Set(candidates))
 		for (const row of candidateEvidenceRows(catalog, candidate)) selected.add(row.order);
-	const kept = catalog.rows.filter((row) => selected.has(row.order)).map((row) => row.line);
-	const filtered = [...catalog.preamble, ...kept].join("\n");
+	const kept = catalog.rows.filter((row) => selected.has(row.order));
+	const parts = [...catalog.preamble];
+	for (const [index, section] of catalog.sections.entries()) {
+		const sectionRows = kept.filter((row) => row.section === index);
+		if (index > 0 && sectionRows.length === 0) continue;
+		if (index > 0 && parts.at(-1) !== "") parts.push("");
+		parts.push(...section.intro, ...sectionRows.map((row) => row.line));
+	}
+	const filtered = parts.join("\n");
 	return jsonBytes(filtered) <= maxBytes ? filtered : truncateToBytes(filtered, maxBytes);
 }
 

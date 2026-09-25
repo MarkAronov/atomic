@@ -8,6 +8,7 @@
 
 ### Changed
 
+- The model evaluations page and automatic model routing now include [DeepSWE](https://deepswe.datacurve.ai/) and [FrontierCode](https://cognition.com/frontiercode) leaderboards and a table of vendor- and leaderboard-published results for recent frontier models, covering computer use (OSWorld 2.0, ScreenSpot-Pro, Agents' Last Exam), browsing, CAD, science, math, cybersecurity and ARC-AGI. Each routing request carries these rows for its own candidates.
 - Automatic model routing now splits large catalogs across several requests and compares the winners in a final request, instead of cutting the task and benchmark evidence to fit one request. Each request carries the benchmark rows and release dates of its own candidates, and candidate order no longer follows catalog order.
 
 - Automatic model routing (`model: "auto"`) now has benchmark evidence for every model on the Artificial Analysis leaderboard instead of the top 27. Each routing request includes only the rows for your eligible models and their effort variants, matched across providers (for example `claude-opus-4.6` on Copilot and `us.anthropic.claude-opus-4-6-v1` on Bedrock).
