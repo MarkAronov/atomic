@@ -3,6 +3,7 @@ import type { ClassifierResult } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { chatRouter } from "../helpers/model-routing.js";
 import {
 	classifierResult,
 	decisionClassifier,
@@ -142,9 +143,7 @@ for (const succeeds of [true, false]) {
 test("execution auto routing uses selected current chat even with classifier credentials", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	const selection = { model: "decision-test/chat", effort: null };
-	const dispatch = vi.fn(() =>
-		messageStream(decisionMessage({ modelId: selection.model, reasoningEffort: selection.effort })),
-	);
+	const dispatch = vi.fn(chatRouter());
 	const available = [decisionModel];
 	const result = await routeExecutionModel({
 		ctx: {

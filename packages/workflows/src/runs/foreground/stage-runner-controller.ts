@@ -454,6 +454,7 @@ export class StageSessionController {
 						constraints,
 						signal: this.startupWait.signal,
 						selection: options?.routerSelection,
+						...(options?.taskNeeds ? { taskNeeds: options.taskNeeds } : {}),
 					});
 				} catch (error) {
 					this.startupWait.signal.throwIfAborted();

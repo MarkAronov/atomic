@@ -7,7 +7,7 @@ import {
 	routeExecutionModel,
 } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
-import type { ModelConstraints } from "../../shared/model-constraints.js";
+import { type ModelConstraints, parseTaskNeeds, type TaskNeeds } from "../../shared/model-constraints.js";
 import { splitKnownThinkingSuffix, toModelInfo } from "../../shared/model-info.js";
 import { resolveModelCandidate } from "./model-fallback.js";
 
@@ -20,6 +20,8 @@ export async function routeSubagentModel(input: {
 	agent: AgentConfig;
 	task?: string;
 	modelConstraints?: ModelConstraints;
+	/** What the caller already knows about the task; routing asks only for the rest. */
+	taskNeeds?: TaskNeeds;
 	signal?: AbortSignal;
 }): Promise<ModelRoute> {
 	const { ctx, agent } = input;
@@ -28,6 +30,7 @@ export async function routeSubagentModel(input: {
 			(c): c is ModelConstraints => c !== undefined,
 		),
 	);
+	const taskNeeds = parseTaskNeeds(input.taskNeeds);
 	const effortOverride = agent.source === "builtin" && agent.thinking !== "" ? agent.thinking : undefined;
 	let route: ExecutionModelRoute;
 	try {
@@ -38,6 +41,7 @@ export async function routeSubagentModel(input: {
 			constraints:
 				effortOverride === undefined ? constraints : [...constraints, { allowedEfforts: [effortOverride] }],
 			signal: input.signal,
+			...(taskNeeds ? { taskNeeds } : {}),
 		});
 	} catch (error) {
 		input.signal?.throwIfAborted();

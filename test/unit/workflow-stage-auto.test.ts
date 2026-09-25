@@ -20,6 +20,7 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { chatRouter, defaultClassifierChoice } from "../helpers/model-routing.js";
 import {
 	decisionMessage,
 	decisionModel,
@@ -47,14 +48,14 @@ function classifierWireResponse(request: ClassifierWireRequest) {
 		answers: Object.fromEntries(
 			Object.entries(request.questions).map(([id, question]) => {
 				const keys = Object.keys(question.criteria);
-				const first = [...keys].sort((a, b) => Number(a.replace(/\D/gu, "")) - Number(b.replace(/\D/gu, "")))[0];
+				const choice = defaultClassifierChoice(keys, id, request as never);
 				return [
 					id,
 					{
 						type: "choice",
-						choice: first,
+						choice,
 						confidence: 1,
-						probabilities: Object.fromEntries(keys.map((key) => [key, key === first ? 1 : 0])),
+						probabilities: Object.fromEntries(keys.map((key) => [key, key === choice ? 1 : 0])),
 					},
 				];
 			}),
@@ -64,9 +65,7 @@ function classifierWireResponse(request: ClassifierWireRequest) {
 
 async function fixture() {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
-	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
-		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
-	);
+	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry, runtime: decisionRuntime } = await registeredDecisionRuntime(infer);
 	const models = workflowModelCatalogFromContext({
 		model: decisionModel,
@@ -147,7 +146,7 @@ test("builtin child workflow routes every default stage through the real executo
 	}
 });
 
-test("public stage auto uses the actual prompt and candidate profiles before admission", async () => {
+test("public stage auto asks the router about the actual prompt before admission", async () => {
 	const f = await fixture();
 	const def = workflow({
 		name: "auto",
@@ -172,17 +171,15 @@ test("public stage auto uses the actual prompt and candidate profiles before adm
 	).state;
 	assert.equal(state.task, "  Solve this actual task verbatim.  ");
 	assert.deepEqual(state.agent, { name: "not the task", description: "Workflow stage" });
-	assert.deepEqual(Object.keys(state).sort(), ["agent", "candidates", "model_selection_guide", "task"]);
-	assert.equal(state.policy, undefined);
-	assert.equal(state.evidence, undefined);
-	assert.deepEqual(Object.keys(state.candidates), ["decision-test/chat"]);
-	assert.doesNotMatch(JSON.stringify(state.candidates), /\| slug \||# Evals/u);
-	assert.match(state.model_selection_guide, /^## Benchmarks are evidence, not policy\n/);
-	assert.match(state.model_selection_guide, /## Role-based thinking effort/);
-	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 30_000);
+	assert.deepEqual(
+		Object.keys(state).sort(),
+		["agent", "task"],
+		"one eligible model: only the task questions are asked",
+	);
+	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 2_000);
 });
 
-test("long stage prompts reach routing and execution unchanged", async () => {
+test("long stage prompts are excerpted only for routing, never for execution", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
 	const task = `Review this implementation.\n${"reference ".repeat(20_000)}\n<keepContext>Read-only review.</keepContext>\nReport defects.`;
@@ -190,8 +187,9 @@ test("long stage prompts reach routing and execution unchanged", async () => {
 		assert.match(String(url), /\/systemone$/);
 		const body = JSON.parse(String(init?.body)) as ClassifierWireRequest;
 		assert.equal(body.model, "jev-latest");
-		assert.equal(body.state.task, task);
-		assert.ok(!String(body.state.task).includes(TRUNCATED_MARKER));
+		assert.ok(String(body.state.task).includes(TRUNCATED_MARKER));
+		assert.match(String(body.state.task), /<keepContext>Read-only review\.<\/keepContext>/u);
+		assert.match(String(body.state.task), /Report defects\.$/u);
 		return Response.json(classifierWireResponse(body));
 	});
 	vi.stubGlobal("fetch", transport);
@@ -476,9 +474,9 @@ test("stale catalog and explicit unsupported effort fail before admission", asyn
 	for (const stale of [false, true]) {
 		const f = await fixture();
 		if (stale)
-			f.infer.mockImplementation(() => {
+			f.infer.mockImplementation((model, context) => {
 				vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([]);
-				return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
+				return chatRouter()(model, context);
 			});
 		const def = workflow({
 			name: "stale-auto",
@@ -568,12 +566,9 @@ test("stage decisions survive the actual strict Responses schema conversion", as
 	assert.equal(converted.type, "function");
 	if (converted.type !== "function") throw new Error("Expected function");
 	for (const validator of [Compile(tool.parameters), Compile(converted.parameters as typeof tool.parameters)]) {
-		assert.equal(validator.Check({ modelId: "decision-test/chat", reasoningEffort: null }), true);
-		for (const invalid of [
-			{ modelId: "decision-test/chat" },
-			{ modelId: "decision-test/chat", reasoningEffort: "off" },
-			{ modelId: "decision-test/chat", reasoningEffort: null, extra: 1 },
-		])
+		const answers = { work: "coding", difficulty: "moderate", mistake_cost: "low", needs_images: "no" };
+		assert.equal(validator.Check(answers), true);
+		for (const invalid of [{ work: "coding" }, { ...answers, extra: 1 }])
 			assert.equal(validator.Check(invalid), false);
 	}
 	assert.equal(f.infer.mock.calls.length, 1);
@@ -591,16 +586,13 @@ test("reasoning fallback preserves explicit and inherited efforts and immutable 
 		};
 		const fallback = { ...primary, id: "fallback" };
 		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, primary, fallback]);
-		f.infer.mockImplementation((_model, context) => {
-			const { questions } = JSON.parse(
-				context.messages.find((message) => message.role === "user")!.content as string,
-			);
-			const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
-			const model = candidates.some((pair) => pair.model === "decision-test/primary")
-				? "decision-test/primary"
-				: "decision-test/fallback";
-			return messageStream(decisionMessage({ modelId: model, reasoningEffort: "high" }));
-		});
+		f.infer.mockImplementation(
+			chatRouter(
+				(offered) =>
+					offered.includes("decision-test/primary") ? "decision-test/primary" : "decision-test/fallback",
+				{ difficulty: "hard" },
+			),
+		);
 		const efforts: string[] = [];
 		const ctx = createStageContext(
 			makeOpts({
@@ -1084,11 +1076,7 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 		decisionModel,
 		...["a", "b", "c", "d"].map((id) => ({ ...decisionModel, id })),
 	]);
-	const order = ["c", "a", "b"];
-	let rank = 0;
-	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ modelId: `decision-test/${order[rank++]}`, reasoningEffort: null })),
-	);
+	f.infer.mockImplementation(chatRouter(() => "decision-test/c"));
 	const attempts: string[] = [];
 	const ctx = createStageContext(
 		makeOpts({

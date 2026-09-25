@@ -10,7 +10,7 @@ import {
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
-import { reportModelRoutingDebug } from "../model-routing-debug.ts";
+import { reportModelRoutingDebug } from "../model-routing-debug.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";

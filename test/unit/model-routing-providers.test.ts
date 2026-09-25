@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, ClassifierContext, ClassifierModel, Model } from "@bastani/pi-ai";
+import type { Api, ClassifierContext, ClassifierModel, ClassifierResult, Model } from "@bastani/pi-ai";
 import { getBuiltinClassifierModel } from "@bastani/pi-ai/providers/all";
 import { test } from "vitest";
 import {
@@ -10,6 +10,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { deepMergeSettings } from "../../packages/coding-agent/src/core/settings-merge.js";
 import type { ModelRoutingSettings } from "../../packages/coding-agent/src/core/settings-types.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
+import { classifierOptions, defaultClassifierChoice } from "../helpers/model-routing.js";
 
 const jev = getBuiltinClassifierModel("typesafe", "jev-latest") as ClassifierModel<Api>;
 
@@ -31,9 +32,13 @@ function chatModel(provider: string, id: string): Model<Api> {
 
 const models = [
 	chatModel("github-copilot", "claude-opus-5.5"),
-	chatModel("anthropic", "claude-opus-5-5"),
-	chatModel("openrouter", "anthropic/claude-opus-5.5"),
+	chatModel("anthropic", "claude-fable-5-1"),
+	chatModel("openrouter", "openai/gpt-6-astra"),
 ];
+
+/** Every model a route can run: its primary plus ranked fallbacks. */
+const routed = (result: Awaited<ReturnType<typeof routeExecutionModel>>) =>
+	[result.routerSelection.model, ...(result.routerSelection.fallbacks ?? []).map((pair) => pair.model)].sort();
 
 function routingContext(modelRouting?: ModelRoutingSettings) {
 	const offered: string[][] = [];
@@ -50,18 +55,19 @@ function routingContext(modelRouting?: ModelRoutingSettings) {
 			containsConfiguredCredential: async () => false,
 			getClassifierModel: () => jev,
 			classify: async (_model: ClassifierModel<Api>, context: ClassifierContext) => {
-				const question = context.questions.pair;
-				assert.ok(question?.type === "choice");
-				const keys = Object.keys(question.criteria);
-				offered.push(keys.map((key) => (JSON.parse(question.criteria[key]!) as { model: string }).model));
-				return {
-					api: jev.api,
-					provider: jev.provider,
-					model: jev.id,
-					stopReason: "stop",
-					timestamp: 0,
-					answers: { pair: { type: "choice", choice: keys[0]!, probabilities: {}, confidence: 1 } },
-				};
+				const answers: ClassifierResult["answers"] = {};
+				for (const [id, question] of Object.entries(context.questions)) {
+					assert.ok(question.type === "choice");
+					const keys = Object.keys(question.criteria);
+					if (id === "model") offered.push(Object.values(classifierOptions(context)));
+					answers[id] = {
+						type: "choice",
+						choice: defaultClassifierChoice(keys, id, context),
+						probabilities: {},
+						confidence: 1,
+					};
+				}
+				return { api: jev.api, provider: jev.provider, model: jev.id, stopReason: "stop", timestamp: 0, answers };
 			},
 		},
 	};
@@ -101,28 +107,26 @@ test("a project list replaces the global list of the same name and keeps the oth
 
 test("without modelRouting every available provider is a candidate", async () => {
 	const { ctx, offered } = routingContext();
-	await route(ctx);
+	const result = await route(ctx);
 	assert.deepEqual(offered[0]?.sort(), models.map((model) => `${model.provider}/${model.id}`).sort());
+	assert.deepEqual(routed(result), models.map((model) => `${model.provider}/${model.id}`).sort());
 });
 
 test("excluded providers are never offered, even when they are allowed", async () => {
 	const excluded = routingContext({ excludedProviders: ["openrouter", "anthropic"] });
 	const result = await route(excluded.ctx);
-	assert.deepEqual(excluded.offered.flat(), ["github-copilot/claude-opus-5.5"]);
-	assert.equal(result.routerSelection.model, "github-copilot/claude-opus-5.5");
+	assert.deepEqual(routed(result), ["github-copilot/claude-opus-5.5"]);
+	assert.deepEqual(excluded.offered, [], "a single eligible model needs no choice request");
 
 	const both = routingContext({ allowedProviders: ["github-copilot", "anthropic"], excludedProviders: ["anthropic"] });
-	await route(both.ctx);
-	assert.deepEqual([...new Set(both.offered.flat())], ["github-copilot/claude-opus-5.5"]);
+	assert.deepEqual(routed(await route(both.ctx)), ["github-copilot/claude-opus-5.5"]);
 });
 
 test("allowed providers restrict candidates to that list", async () => {
 	const { ctx, offered } = routingContext({ allowedProviders: ["anthropic", "openrouter"] });
-	await route(ctx);
-	assert.deepEqual([...new Set(offered.flat())].sort(), [
-		"anthropic/claude-opus-5-5",
-		"openrouter/anthropic/claude-opus-5.5",
-	]);
+	const result = await route(ctx);
+	assert.deepEqual(offered[0]?.sort(), ["anthropic/claude-fable-5-1", "openrouter/openai/gpt-6-astra"]);
+	assert.deepEqual(routed(result), ["anthropic/claude-fable-5-1", "openrouter/openai/gpt-6-astra"]);
 });
 
 test("filters that leave no candidate name the modelRouting setting", async () => {
@@ -137,20 +141,19 @@ test("a recorded decision from a provider excluded since then is no longer eligi
 			ctx,
 			task: "Review the change",
 			agent: { name: "reviewer", description: "Reviews code" },
-			selection: { model: "anthropic/claude-opus-5-5", effort: null },
+			selection: { model: "anthropic/claude-fable-5-1", effort: null },
 		}),
 		/no longer eligible/u,
 	);
 });
 
 test("workflow stage routing applies the host's modelRouting providers", async () => {
-	const { ctx, offered } = routingContext();
+	const { ctx } = routingContext();
 	const catalog = workflowModelCatalogFromContext({
 		...ctx,
 		getModelRouting: () => ({ allowedProviders: ["github-copilot"] }),
 	} as never);
 	assert.ok(catalog?.routeModel);
 	const result = await catalog.routeModel({ task: "Review the change", stageName: "review" } as never);
-	assert.equal(result.routerSelection.model, "github-copilot/claude-opus-5.5");
-	assert.deepEqual([...new Set(offered.flat())], ["github-copilot/claude-opus-5.5"]);
+	assert.deepEqual(routed(result), ["github-copilot/claude-opus-5.5"]);
 });

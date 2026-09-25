@@ -214,7 +214,19 @@ export {
 	isModelRoutingDebugEnabled,
 	MODEL_ROUTING_DEBUG_ENV,
 	reportModelRoutingDebug,
-} from "./core/model-routing-debug.ts";
+} from "./core/model-routing-debug.js";
+export {
+	DIFFICULTY_LEVELS,
+	type Difficulty,
+	MISTAKE_COST_LEVELS,
+	type MistakeCost,
+	mergeTaskNeeds,
+	parseTaskNeeds,
+	type TaskNeeds,
+	TaskNeedsSchema,
+	WORK_KINDS,
+	type WorkKind,
+} from "./core/model-routing-needs.js";
 export {
 	type CreateModelRuntimeOptions,
 	CredentialSynchronizationError,

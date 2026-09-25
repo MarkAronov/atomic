@@ -6,7 +6,8 @@ export const ModelConstraintsSchema = Type.Object(
 	{
 		allowedModels: Type.Optional(
 			Type.Array(Type.String({ minLength: 1 }), {
-				description: "Exact provider/model IDs; omitted uses the full available catalog.",
+				description:
+					"Exact provider/model IDs; omitted uses the full available catalog. With model 'auto', these are the candidates the router chooses between (at most 15 different models), so list the models that suit the task. Prefer the user's subscription models (for example ChatGPT/Codex, GitHub Copilot, a Claude subscription, or a coding or token plan) over pay-per-token API models, unless the user asked for API models or has no subscription models.",
 			}),
 		),
 		maxInputCost: Type.Optional(

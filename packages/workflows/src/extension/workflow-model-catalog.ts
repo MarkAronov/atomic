@@ -58,6 +58,7 @@ export function workflowModelCatalogFromContext(
 				constraints: input.constraints,
 				signal: input.signal,
 				selection: input.selection,
+				...(input.taskNeeds ? { taskNeeds: input.taskNeeds } : {}),
 			});
 		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
