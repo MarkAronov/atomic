@@ -117,3 +117,10 @@ export const WEBHOOK_DELIVERY_WINDOW_MS = 45_000;
  * replayed or repeated event, and it must not grow with a long session.
  */
 export const MAX_WEBHOOK_DEDUPE_KEYS = 1_000;
+
+/**
+ * How long `session_shutdown` waits for deliveries already in flight. Short by
+ * design: a webhook is a courtesy, and a user quitting Atomic should not wait on
+ * someone else's HTTP server. No retry starts during the drain.
+ */
+export const WEBHOOK_SHUTDOWN_GRACE_MS = 2_000;
