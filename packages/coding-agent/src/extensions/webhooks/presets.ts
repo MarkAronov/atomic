@@ -100,3 +100,26 @@ export function exampleCustomDestination(): JsonObject {
 		timeoutMs: WEBHOOK_TIMEOUT_MS_DEFAULT,
 	};
 }
+
+/**
+ * A ready-to-edit destination for a preset, for the settings screen to append.
+ *
+ * Two deliberate choices. The URL is a placeholder on a reserved-invalid host
+ * rather than a prompt: a webhook URL is a bearer credential, and the issue is
+ * explicit that Atomic prepares the file and leaves secret placeholders for
+ * direct entry rather than taking them through chat or a dialog. And the entry
+ * arrives disabled, so a template can never be sent to until the user has both
+ * pasted their URL and turned it on.
+ */
+export function presetDestinationTemplate(type: WebhookDestinationType, name: string): JsonObject {
+	return {
+		name,
+		type,
+		enabled: false,
+		events: [...WEBHOOK_EVENT_IDS],
+		url: `https://example.invalid/replace-with-your-${type}-webhook-url`,
+		method: "POST",
+		headers: {},
+		...(type === "slack" || type === "teams" ? {} : { body: customPresetBody() }),
+	};
+}
