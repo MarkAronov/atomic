@@ -341,7 +341,7 @@ export async function routeExecutionModel(input: {
 			...(model.fastRoute ? { fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}` } : {}),
 		});
 		// A caller that lists models (`allowedModels`) chooses the contenders itself,
-		// but standings still compare them with every model the user could route to.
+		// but price and recency still compare them with every model the user could route to.
 		const callerListed = constraints.some((constraint) => (constraint.allowedModels?.length ?? 0) > 0);
 		const reference = callerListed
 			? ctx.modelRegistry
