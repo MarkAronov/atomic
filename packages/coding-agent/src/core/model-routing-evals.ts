@@ -62,12 +62,20 @@ export function modelEvidenceTokens(id: string): string[] {
 	return canonicalClaudeOrder(tokens);
 }
 
+const isVariantSuffix = (token: string) =>
+	VARIANT_TOKENS.has(token) || ROW_EDITION_TOKENS.has(token) || SNAPSHOT_TOKEN.test(token);
+
 /** True when `slug` is the candidate model or one of its effort, edition or snapshot variants. */
 function slugMatchesCandidate(slug: readonly string[], candidate: readonly string[]): boolean {
 	if (slug.length < candidate.length || candidate.some((token, index) => slug[index] !== token)) return false;
-	return slug
-		.slice(candidate.length)
-		.every((token) => VARIANT_TOKENS.has(token) || ROW_EDITION_TOKENS.has(token) || SNAPSHOT_TOKEN.test(token));
+	return slug.slice(candidate.length).every(isVariantSuffix);
+}
+
+/** One catalog model across its effort, edition and snapshot rows: `astra-high` and `astra-0902` are `astra`. */
+export function catalogModelIdentity(slug: readonly string[]): string {
+	let end = slug.length;
+	while (end > 1 && isVariantSuffix(slug[end - 1]!)) end--;
+	return slug.slice(0, end).join("-");
 }
 
 /**

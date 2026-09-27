@@ -79,7 +79,7 @@ test("a model whose own ID ends in -fast is its own model unless its fastRoute m
 	assert.equal(owned.route, undefined);
 });
 
-test("each option describes itself with this kind of work's results, standings among eligible models, price and release", () => {
+test("each option describes itself with this kind of work's results, standings among benchmarked models, price and release", () => {
 	const ranked = rankCandidates(catalog, models, needs("hard", "high"));
 	const strong = JSON.parse(
 		describeOption(ranked.find((c) => c.model === "p/strong")!, needs("hard", "high"), ranked),
@@ -90,17 +90,49 @@ test("each option describes itself with this kind of work's results, standings a
 		released: "2026-09-20, among the newest",
 		price: "high: $10 / $50 per million tokens",
 		reads_images: true,
-		coding: "top 10% (Terminal-Bench 4.0 60%)",
-		overall: "top 10% (AA Intelligence Index 60)",
+		coding: "top 10% of all benchmarked models (Terminal-Bench 4.0 60%)",
+		overall: "top 10% of all benchmarked models (AA Intelligence Index 60)",
 	});
 	const old = JSON.parse(describeOption(ranked.find((c) => c.model === "p/old")!, needs("hard", "high"), ranked));
 	assert.equal(old.released, "2025-09-01, 13 months older than the newest");
-	assert.equal(old.coding, "bottom quarter (Terminal-Bench 4.0 10%)");
+	assert.equal(old.coding, "bottom quarter of all benchmarked models (Terminal-Bench 4.0 10%)");
 });
 
-test("results shared by fewer than four eligible models are quoted without a standing", () => {
-	const three = models.slice(0, 3);
-	const ranked = rankCandidates(catalog, three, needs("hard", "high"));
+test("a model's standing is the same however few other models are eligible", () => {
+	const standings = (eligible: readonly CandidateModel[]) =>
+		rankCandidates(catalog, eligible, needs("hard", "high"))
+			.map((candidate) => [candidate.model, candidate.workStanding, candidate.overallStanding])
+			.sort();
+	const all = standings(models);
+	for (const subset of [models.slice(0, 3), [models[0]!, models[2]!], [models[2]!]])
+		assert.deepEqual(
+			standings(subset),
+			all.filter(([id]) => subset.some((candidate) => candidate.model === id)),
+		);
+});
+
+test("with two eligible models a demanding task still ranks the better-benchmarked model first", () => {
+	const ranked = rankCandidates(catalog, [model("strong", 10), model("cheap", 0.1)], needs("very_hard", "severe"));
+	assert.equal(ranked[0]?.model, "p/strong");
+	const option = JSON.parse(describeOption(ranked[1]!, needs("very_hard", "severe"), ranked));
+	assert.equal(option.coding, "below median of all benchmarked models (Terminal-Bench 4.0 12%)");
+});
+
+test("results shared by fewer than four benchmarked models are quoted without a standing", () => {
+	const sparse = parseEvalsCatalog(
+		[
+			"# Evals",
+			"",
+			"## Artificial Analysis Intelligence Index",
+			"",
+			"| slug | Model | Release date | idx | TB4 |",
+			"| --- | --- | --- | ---: | ---: |",
+			"| strong | Strong | 2026-09-20 | 60 | 60 |",
+			"| middle | Middle | 2026-09-01 | 50 | 40 |",
+			"| cheap | Cheap | 2026-09-20 | 35 | 12 |",
+		].join("\n"),
+	);
+	const ranked = rankCandidates(sparse, models.slice(0, 3), needs("hard", "high"));
 	const option = JSON.parse(describeOption(ranked[0]!, needs("hard", "high"), ranked));
 	assert.match(option.coding, /^measured \(/u);
 });
@@ -168,16 +200,36 @@ test("quoted results name the effort, harness and reporter they were measured un
 	);
 });
 
-test("provider copies and fast routes of one model count once in standings and the minimum", () => {
+test("provider copies, fast routes and effort rows of one model count once in standings and the minimum", () => {
+	const efforts = parseEvalsCatalog(
+		[
+			"# Evals",
+			"",
+			"## Artificial Analysis Intelligence Index",
+			"",
+			"| slug | Model | Release date | idx | TB4 |",
+			"| --- | --- | --- | ---: | ---: |",
+			"| strong-high | Strong (high) | 2026-09-20 | 58 | 55 |",
+			"| strong | Strong (max) | 2026-09-20 | 60 | 60 |",
+			"| middle | Middle | 2026-09-01 | 50 | 40 |",
+			"| cheap | Cheap | 2026-09-20 | 35 | 12 |",
+		].join("\n"),
+	);
 	const three = [model("strong", 10), model("middle", 2), model("cheap", 0.1)];
 	const duplicated = [
 		...three,
 		{ ...model("strong", 10), model: "q/strong" },
 		{ ...model("strong-fast", 10), fastRouteOf: "p/strong" },
 	];
-	const ranked = rankCandidates(catalog, duplicated, needs("hard", "high"));
+	const ranked = rankCandidates(efforts, duplicated, needs("hard", "high"));
 	const cheap = JSON.parse(describeOption(ranked.find((c) => c.model === "p/cheap")!, needs("hard", "high"), ranked));
-	assert.match(cheap.coding, /^measured \(/u, "three distinct models are too few for a standing");
+	assert.match(cheap.coding, /^measured \(/u, "three distinct catalog models are too few for a standing");
+	const withFourth = rankCandidates(catalog, duplicated, needs("hard", "high"));
+	assert.deepEqual(
+		withFourth.filter((c) => c.baseKey === "strong").map((c) => c.workStanding),
+		[1, 1, 1],
+		"every route of one model shares its standing",
+	);
 });
 
 test("published results are ranked only against results from the same source", () => {

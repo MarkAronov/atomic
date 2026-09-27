@@ -1,4 +1,9 @@
-import { candidateEvidenceRows, type EvalsCatalog, modelEvidenceTokens } from "./model-routing-evals.js";
+import {
+	candidateEvidenceRows,
+	catalogModelIdentity,
+	type EvalsCatalog,
+	modelEvidenceTokens,
+} from "./model-routing-evals.js";
 import { type ResolvedTaskNeeds, taskDemand, type WorkKind } from "./model-routing-needs.js";
 
 /** What ranking needs to know about one eligible model. */
@@ -77,7 +82,7 @@ const WORK_METRICS: Record<WorkKind, readonly Metric[]> = {
 /** When speed matters, a fast route edges out its standard route for the model's single slot. */
 const FAST_ROUTE_BONUS = 0.02;
 
-/** A standing is stated only when enough eligible models share the measurement. */
+/** A standing is stated only when enough benchmarked models share the measurement. */
 const MIN_RANKED_MODELS = 4;
 
 export interface RankedCandidate extends CandidateModel {
@@ -131,20 +136,29 @@ function nameCondition(name: string | undefined): string | undefined {
 	return setting && /^(?:minimal|low|medium|high|xhigh|max)$/u.test(setting) ? `${setting} effort` : setting;
 }
 
-/**
- * Best value per metric across every evals row describing the model, with the
- * conditions it was measured under, plus the model's newest release date.
- */
-function measure(
-	catalog: EvalsCatalog,
-	model: string,
-): { values: Map<string, number>; conditions: Map<string, string>; released?: string } {
+interface Reading {
+	readonly key: string;
+	readonly value: number;
+	readonly condition?: string;
+}
+
+interface CatalogReadings {
+	/** Readings of each catalog row, indexed by the row's `order`. */
+	readonly rows: readonly (readonly Reading[])[];
+	/** Per measurement, the best value of each catalog model. */
+	readonly cohorts: ReadonlyMap<string, ReadonlyMap<string, number>>;
+}
+
+const readingsByCatalog = new WeakMap<EvalsCatalog, CatalogReadings>();
+
+/** Every measured value in the catalog, read once per parsed catalog. */
+function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
+	const cached = readingsByCatalog.get(catalog);
+	if (cached) return cached;
 	const kinds = catalog.sections.map((section) => sectionKind(section.intro));
 	const headers = catalog.sections.map((section) =>
 		cells(section.intro.find((line) => line.startsWith("| slug |")) ?? ""),
 	);
-	const values = new Map<string, number>();
-	const conditions = new Map<string, string>();
 	const modelColumn = headers.map((header) => header.indexOf("Model"));
 	const modelWords = catalog.sections.map((_, section) => {
 		const words = new Set<string>();
@@ -153,36 +167,70 @@ function measure(
 				for (const word of nameWords(cells(row.line)[modelColumn[section]!] ?? "")) words.add(word);
 		return words;
 	});
-	let released: string | undefined;
-	const record = (key: string, raw: string | undefined, condition: string | undefined) => {
-		const value = Number.parseFloat(raw ?? "");
-		if (!Number.isFinite(value) || value <= (values.get(key) ?? Number.NEGATIVE_INFINITY)) return;
-		values.set(key, value);
-		if (condition) conditions.set(key, condition);
-		else conditions.delete(key);
-	};
-	for (const row of candidateEvidenceRows(catalog, model)) {
-		const kind = kinds[row.section]!;
+	const rows = catalog.rows.map((row) => {
 		const header = headers[row.section]!;
 		const rowCells = cells(row.line);
 		const column = (name: string) => (header.includes(name) ? rowCells[header.indexOf(name)] : undefined);
-		if (kind === "pub") {
+		const readings: Reading[] = [];
+		const read = (key: string, raw: string | undefined, condition: string | undefined) => {
+			const value = Number.parseFloat(raw ?? "");
+			if (Number.isFinite(value)) readings.push({ key, value, ...(condition ? { condition } : {}) });
+		};
+		if (kinds[row.section] === "pub") {
 			const reporter = column("Source");
 			const setting = ownSetting(column("Setting") ?? "", column("Model") ?? "", modelWords[row.section]!);
 			const condition = [setting, reporter ? `reported by ${reporter}` : undefined].filter(Boolean).join(", ");
 			// Each reporter's results form their own cohort: a vendor harness and an
 			// official leaderboard are not ranked against each other.
-			record(`pub:${column("Benchmark")}@${reporter ?? ""}`, column("Score"), condition);
+			read(`pub:${column("Benchmark")}@${reporter ?? ""}`, column("Score"), condition);
 		} else {
 			const effort = column("Effort");
 			const condition = effort ? `${effort} effort` : nameCondition(column("Model"));
 			for (const [index, name] of header.entries())
 				if (index > 1 && name !== "Effort" && name !== "Release date")
-					record(`${kind}:${name}`, rowCells[index], condition);
+					read(`${kinds[row.section]}:${name}`, rowCells[index], condition);
+		}
+		return readings;
+	});
+	const cohorts = new Map<string, Map<string, number>>();
+	for (const row of catalog.rows) {
+		const identity = catalogModelIdentity(row.tokens);
+		for (const { key, value } of rows[row.order]!) {
+			const cohort = cohorts.get(key) ?? new Map<string, number>();
+			cohort.set(identity, Math.max(cohort.get(identity) ?? value, value));
+			cohorts.set(key, cohort);
+		}
+	}
+	const readings = { rows, cohorts };
+	readingsByCatalog.set(catalog, readings);
+	return readings;
+}
+
+/**
+ * Best value per metric across every evals row describing the model, with the
+ * conditions it was measured under, the catalog models those rows belong to,
+ * and the model's newest release date.
+ */
+function measure(
+	catalog: EvalsCatalog,
+	model: string,
+): { values: Map<string, number>; conditions: Map<string, string>; identities: Set<string>; released?: string } {
+	const readings = catalogReadings(catalog);
+	const values = new Map<string, number>();
+	const conditions = new Map<string, string>();
+	const identities = new Set<string>();
+	let released: string | undefined;
+	for (const row of candidateEvidenceRows(catalog, model)) {
+		identities.add(catalogModelIdentity(row.tokens));
+		for (const { key, value, condition } of readings.rows[row.order]!) {
+			if (value <= (values.get(key) ?? Number.NEGATIVE_INFINITY)) continue;
+			values.set(key, value);
+			if (condition) conditions.set(key, condition);
+			else conditions.delete(key);
 		}
 		if (row.releaseDate && (!released || row.releaseDate > released)) released = row.releaseDate;
 	}
-	return { values, conditions, ...(released ? { released } : {}) };
+	return { values, conditions, identities, ...(released ? { released } : {}) };
 }
 
 /** Value keys measuring `metric`: the column itself, or one per reporter for published results. */
@@ -195,35 +243,32 @@ const blended = (candidate: CandidateModel) => (3 * candidate.cost.input + candi
 
 /**
  * Rank every eligible model for the task in code. Quality is the model's
- * standing on the benchmarks for this kind of work (overall intelligence when it
- * has none), weighed against price by how demanding the task is, with a small
- * preference for newer releases.
+ * standing among every benchmarked model in the catalog on the benchmarks for
+ * this kind of work (overall intelligence when it has none), so it does not
+ * depend on which other models are eligible. It is weighed against price by how
+ * demanding the task is, with a small preference for newer releases.
  */
 export function rankCandidates(
 	catalog: EvalsCatalog,
 	candidates: readonly CandidateModel[],
 	needs: ResolvedTaskNeeds,
 ): RankedCandidate[] {
+	const { cohorts } = catalogReadings(catalog);
 	const measured = candidates.map((candidate) => ({
 		candidate,
 		base: baseKey(candidate),
 		...measure(catalog, candidate.model),
 	}));
-	// One observation per base model: provider copies and fast routes of one model
-	// neither move other models' standings nor count toward the minimum.
-	const rankOf = (key: string, value: number): number | undefined => {
-		const byBase = new Map<string, number>();
-		for (const entry of measured) {
-			const observed = entry.values.get(key);
-			if (observed !== undefined) byBase.set(entry.base, Math.max(byBase.get(entry.base) ?? observed, observed));
-		}
-		if (byBase.size < MIN_RANKED_MODELS) return undefined;
-		return [...byBase.values()].filter((other) => other < value).length / (byBase.size - 1);
+	const rankOf = (key: string, value: number, own: ReadonlySet<string>): number | undefined => {
+		const cohort = cohorts.get(key);
+		if (cohort === undefined || cohort.size < MIN_RANKED_MODELS) return undefined;
+		const others = [...cohort].filter(([identity]) => !own.has(identity)).map(([, other]) => other);
+		return others.length ? others.filter((other) => other < value).length / others.length : undefined;
 	};
-	const standingOf = (values: ReadonlyMap<string, number>, metrics: readonly Metric[]) => {
+	const standingOf = (values: ReadonlyMap<string, number>, own: ReadonlySet<string>, metrics: readonly Metric[]) => {
 		const ranks = metrics
 			.flatMap((metric) => cohortKeys(values, metric))
-			.map((key) => rankOf(key, values.get(key)!))
+			.map((key) => rankOf(key, values.get(key)!, own))
 			.filter((rank): rank is number => rank !== undefined);
 		return ranks.length ? ranks.reduce((a, b) => a + b, 0) / ranks.length : undefined;
 	};
@@ -241,9 +286,9 @@ export function rankCandidates(
 	const priceWeight = 0.65 - 0.65 * demand;
 
 	return measured
-		.map(({ candidate, base, values, conditions, released }) => {
-			const workStanding = standingOf(values, WORK_METRICS[needs.work]);
-			const overallStanding = standingOf(values, [OVERALL]);
+		.map(({ candidate, base, values, conditions, identities, released }) => {
+			const workStanding = standingOf(values, identities, WORK_METRICS[needs.work]);
+			const overallStanding = standingOf(values, identities, [OVERALL]);
 			const quality = workStanding ?? (overallStanding !== undefined ? 0.8 * overallStanding : 0.2);
 			const price = blended(candidate);
 			const cheapness = price > 0 && high > low ? 1 - (Math.log(price) - low) / (high - low) : 1;
@@ -298,7 +343,7 @@ const money = (value: number) => `$${Number(value.toPrecision(3))}`;
 /**
  * One shortlisted option described with its own evidence, so the router compares
  * options directly: release date, price tier, image input, and results for this
- * kind of work and overall, with standings relative to every eligible model.
+ * kind of work and overall, with standings among every benchmarked model.
  */
 export function describeOption(
 	option: RankedCandidate,
@@ -328,7 +373,7 @@ export function describeOption(
 				return `${metric.label} ${option.values.get(key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
 			})
 			.join("; ");
-		return `${standing === undefined ? "measured" : standingLabel(standing)} (${results})`;
+		return `${standing === undefined ? "measured" : `${standingLabel(standing)} of all benchmarked models`} (${results})`;
 	};
 	let released = "unknown";
 	if (option.released) {
