@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Resuming a run that failed in a `ctx.tool` call now works when the call ran in parallel with other tools. Siblings that were cancelled or also threw when the run failed are run again on resume, in any order, instead of failing with `replay topology mismatch` or `unfinished or missing completed tool checkpoint`. A resume rejected by changed code no longer runs the failed tool or makes the run unresumable, including after Atomic restarts ([#3314](https://github.com/bastani-inc/atomic/issues/3314)).
+
 ## [0.9.21] - 2026-09-26
 
 ### Changed
