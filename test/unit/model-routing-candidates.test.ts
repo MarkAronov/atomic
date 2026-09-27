@@ -90,12 +90,12 @@ test("each option describes itself with this kind of work's results, standings a
 		released: "2026-09-20, among the newest",
 		price: "high: $10 / $50 per million tokens",
 		reads_images: true,
-		coding: "top 10% of all benchmarked models (Terminal-Bench 4.0 60%)",
-		overall: "top 10% of all benchmarked models (AA Intelligence Index 60)",
+		coding: "top 10% of models with the same benchmark and source (Terminal-Bench 4.0 60%)",
+		overall: "top 10% of models with the same benchmark and source (AA Intelligence Index 60)",
 	});
 	const old = JSON.parse(describeOption(ranked.find((c) => c.model === "p/old")!, needs("hard", "high"), ranked));
 	assert.equal(old.released, "2025-09-01, 13 months older than the newest");
-	assert.equal(old.coding, "bottom quarter of all benchmarked models (Terminal-Bench 4.0 10%)");
+	assert.equal(old.coding, "bottom quarter of models with the same benchmark and source (Terminal-Bench 4.0 10%)");
 });
 
 test("a model's standing is the same however few other models are eligible", () => {
@@ -115,7 +115,7 @@ test("with two eligible models a demanding task still ranks the better-benchmark
 	const ranked = rankCandidates(catalog, [model("strong", 10), model("cheap", 0.1)], needs("very_hard", "severe"));
 	assert.equal(ranked[0]?.model, "p/strong");
 	const option = JSON.parse(describeOption(ranked[1]!, needs("very_hard", "severe"), ranked));
-	assert.equal(option.coding, "below median of all benchmarked models (Terminal-Bench 4.0 12%)");
+	assert.equal(option.coding, "below median of models with the same benchmark and source (Terminal-Bench 4.0 12%)");
 });
 
 test("results shared by fewer than four benchmarked models are quoted without a standing", () => {
@@ -263,4 +263,6 @@ test("published results are ranked only against results from the same source", (
 	);
 	const a = ranked.find((candidate) => candidate.model === "p/a")!;
 	assert.equal(a.workStanding, 0, "A's 60% from another setup does not lift it above the vendor-harness results");
+	const d = JSON.parse(describeOption(ranked.find((candidate) => candidate.model === "p/d")!, science, ranked));
+	assert.match(d.math_science, /^top 10% of models with the same benchmark and source \(/u);
 });

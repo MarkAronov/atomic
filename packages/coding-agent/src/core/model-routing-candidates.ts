@@ -343,7 +343,7 @@ const money = (value: number) => `$${Number(value.toPrecision(3))}`;
 /**
  * One shortlisted option described with its own evidence, so the router compares
  * options directly: release date, price tier, image input, and results for this
- * kind of work and overall, with standings among every benchmarked model.
+ * kind of work and overall, with standings among catalog models measured on the same benchmark by the same source.
  */
 export function describeOption(
 	option: RankedCandidate,
@@ -373,7 +373,7 @@ export function describeOption(
 				return `${metric.label} ${option.values.get(key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
 			})
 			.join("; ");
-		return `${standing === undefined ? "measured" : `${standingLabel(standing)} of all benchmarked models`} (${results})`;
+		return `${standing === undefined ? "measured" : `${standingLabel(standing)} of models with the same benchmark and source`} (${results})`;
 	};
 	let released = "unknown";
 	if (option.released) {
