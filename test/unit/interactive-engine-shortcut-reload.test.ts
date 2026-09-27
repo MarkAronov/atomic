@@ -35,6 +35,7 @@ interface HarnessReport {
 	shortcutHandled?: boolean;
 	shortcutKeys?: string[];
 	editorText?: string;
+	inputHandlerReady?: boolean;
 	expandKeys?: string[];
 	expandDisplay?: string;
 	toolsExpanded?: boolean;
@@ -224,6 +225,11 @@ async function reloadThroughExtensionContext(
 	sessionStartFile: string,
 	expectedBinding: string,
 ): Promise<void> {
+	await driver.waitFor(
+		(report) => report.type === "heartbeat" && report.inputHandlerReady === true,
+		ENGINE_REPORT_TIMEOUT_MS,
+		"interactive input handler readiness",
+	);
 	const from = driver.reports.length;
 	driver.send({ type: "input", data: "/reload-keybindings-fixture" });
 	await driver.waitForNext(
