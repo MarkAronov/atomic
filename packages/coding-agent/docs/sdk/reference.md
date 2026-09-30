@@ -849,6 +849,22 @@ type EditDiffResult
 SessionManager
 SettingsManager
 
+// Workflow run control (session.workflows)
+type SessionWorkflows
+type WorkflowRunSummary
+type WorkflowRunDetail
+type WorkflowRunControlOutcome
+type WorkflowRunControlFailedRun
+WorkflowRunControlError
+WorkflowRunNotFoundError
+WorkflowRunOwnershipError
+WorkflowRunNotResumableError
+WorkflowStageNotFoundError
+WorkflowStageAmbiguousError
+WorkflowStageResumeUnsupportedError
+WorkflowRunDatabaseError
+WorkflowRunControlUnavailableError
+
 // Tool factories
 createCodingTools
 createReadOnlyTools

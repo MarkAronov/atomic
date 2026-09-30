@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `pause`, `quit` and `resume` results from the `workflow` tool now carry a machine-readable `code` (`run_not_found`, `not_resumable`, `owned_elsewhere`, `database_unavailable`, `stage_not_found`, `stage_ambiguous`, `stage_resume_unsupported` or `control_failed`) when the request could not be carried out, so SDK hosts using `session.workflows` receive typed errors. Resuming a run that is executing in another live Atomic process now reports `owned_elsewhere` instead of `not_resumable`. Pausing or quitting, by full run id, a run owned by another session or executing in another live Atomic process now reports `owned_elsewhere` instead of `Run not found`. Pausing or resuming a stage that does not exist or matches several stages, and resuming a single stage of a durable run, now report `stage_not_found`, `stage_ambiguous` or `stage_resume_unsupported` instead of an uncoded no-op ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+
+### Fixed
+
+- `pause` and `quit` with `all: true` no longer report success when some runs could not be stopped. The result is `partial` only when that call stopped at least one run and others are still active, and a `noop` with `control_failed` when active runs could not be stopped and the call stopped none, even if other runs were already paused. Either result lists each failed run id and reason in the message and in a `failedRuns` list. Runs that are already paused or already ended are not failures, and a batch with nothing left to stop is a benign `noop`. `/workflow pause --all` now names runs that failed to pause instead of reporting them as paused or as "No in-flight runs to pause", and reports an error when it stopped no run. Any failure while inspecting the database to pause or quit an unknown full run id now returns a structured `database_unavailable` result instead of throwing or a generic `control_failed` ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Added
