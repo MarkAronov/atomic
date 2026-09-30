@@ -271,6 +271,7 @@ export interface OAuthConfig {
   clientSecret?: string;
   /** Requested OAuth scopes */
   scope?: string;
+  clientName?: string;
 }
 
 // Server configuration
@@ -287,9 +288,10 @@ export interface ServerEntry {
    * - 'oauth' - Use OAuth 2.1 (auto-discovers endpoints, supports dynamic client registration)
    * - 'bearer' - Use static Bearer token
    * - false - Disable authentication
+   * - { provider } - Send the current `/login` token of a provider (global config and extensions only)
    * If not specified and url is present, OAuth will be auto-detected
    */
-  auth?: "oauth" | "bearer" | false;
+  auth?: "oauth" | "bearer" | false | { provider: string };
   bearerToken?: string;
   bearerTokenEnv?: string;
   /** 
@@ -381,7 +383,7 @@ export interface McpAuthResult {
 export interface McpPanelCallbacks {
   reconnect: (serverName: string) => Promise<boolean>;
   canAuthenticate: (serverName: string) => boolean;
-  authenticate: (serverName: string) => Promise<McpAuthResult>;
+  authenticate: (serverName: string, onAuthorizationUrl?: (url: string) => void) => Promise<McpAuthResult>;
   getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth";
   refreshCacheAfterReconnect: (serverName: string) => import("./metadata-cache.js").ServerCacheEntry | null;
 }
@@ -416,11 +418,17 @@ export function formatToolName(
   prefix: "server" | "none" | "short"
 ): string {
   const p = getServerPrefix(serverName, prefix);
-  return p ? `${p}_${toolName}` : toolName;
+  const name = (p ? `${p}_${toolName}` : toolName).replace(/[^A-Za-z0-9_]/g, "_");
+  return /^\d/.test(name) ? `_${name}` : name;
 }
 
 function normalizeToolName(value: string): string {
   return value.replace(/-/g, "_");
+}
+
+function legacyToolName(toolName: string, serverName: string, prefix: "server" | "none" | "short"): string {
+  const p = getServerPrefix(serverName, prefix);
+  return p ? `${p}_${toolName}` : toolName;
 }
 
 export function isToolExcluded(
@@ -431,12 +439,12 @@ export function isToolExcluded(
 ): boolean {
   if (!Array.isArray(excludeTools) || excludeTools.length === 0) return false;
 
-  const candidates = new Set<string>([
-    normalizeToolName(toolName),
-    normalizeToolName(formatToolName(toolName, serverName, prefix)),
-    normalizeToolName(formatToolName(toolName, serverName, "server")),
-    normalizeToolName(formatToolName(toolName, serverName, "short")),
-  ]);
+  const modes = new Set([prefix, "server", "short"] as const);
+  const candidates = new Set<string>([normalizeToolName(toolName)]);
+  for (const mode of modes) {
+    candidates.add(normalizeToolName(formatToolName(toolName, serverName, mode)));
+    candidates.add(normalizeToolName(legacyToolName(toolName, serverName, mode)));
+  }
 
   for (const excluded of excludeTools) {
     if (typeof excluded !== "string") continue;

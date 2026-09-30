@@ -2,7 +2,8 @@ import { reportOwnedMcpLog } from "./diagnostics.js";
 import type { DirectToolSpec, McpConfig } from "./types.js";
 import type { MetadataCache } from "./metadata-cache.js";
 import { isServerCacheValid } from "./metadata-cache.js";
-import { formatToolName, isToolExcluded } from "./types.js";
+import { isToolExcluded } from "./types.js";
+import { assignToolNames } from "./tool-names.js";
 import { resourceNameToToolName } from "./resource-tools.ts";
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "search", "ls", "mcp"]);
@@ -56,6 +57,10 @@ export function resolveDirectTools(
   for (const [serverName, definition] of Object.entries(config.mcpServers)) {
     const serverCache = cache.servers[serverName];
     if (!serverCache || !isServerCacheValid(serverCache, definition)) continue;
+    const names = assignToolNames([
+      ...(serverCache.tools ?? []).filter((tool) => tool?.name).map((tool) => tool.name),
+      ...(definition.exposeResources !== false ? (serverCache.resources ?? []).filter((resource) => resource?.name && resource?.uri).map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
+    ], serverName, prefix);
 
     let toolFilter: true | string[] | false = false;
 
@@ -76,9 +81,10 @@ export function resolveDirectTools(
     if (!toolFilter) continue;
 
     for (const tool of serverCache.tools ?? []) {
+      if (!tool?.name) continue;
       if (toolFilter !== true && !toolFilter.includes(tool.name)) continue;
       if (isToolExcluded(tool.name, serverName, prefix, definition.excludeTools)) continue;
-      const prefixedName = formatToolName(tool.name, serverName, prefix);
+      const prefixedName = names.get(tool.name)!;
       if (BUILTIN_NAMES.has(prefixedName)) {
         if (!reportOwnedMcpLog("warn")) console.warn(`MCP: skipping direct tool "${prefixedName}" (collides with builtin)`);
         continue;
@@ -101,10 +107,11 @@ export function resolveDirectTools(
 
     if (definition.exposeResources !== false) {
       for (const resource of serverCache.resources ?? []) {
+        if (!resource?.name || !resource?.uri) continue;
         const baseName = `get_${resourceNameToToolName(resource.name)}`;
         if (toolFilter !== true && !toolFilter.includes(baseName)) continue;
         if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) continue;
-        const prefixedName = formatToolName(baseName, serverName, prefix);
+        const prefixedName = names.get(baseName)!;
         if (BUILTIN_NAMES.has(prefixedName)) {
           if (!reportOwnedMcpLog("warn")) console.warn(`MCP: skipping direct resource tool "${prefixedName}" (collides with builtin)`);
           continue;

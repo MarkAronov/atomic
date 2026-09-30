@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Set `oauth.clientName` to choose the client name sent during dynamic OAuth registration. The default is `atomic` ([#10226](https://github.com/earendil-works/pi/issues/10226)).
+- HTTP MCP servers can set `"auth": { "provider": "<provider>" }` to send the current `/login` token of a provider as the bearer token instead of using MCP OAuth. The token is read for every request and is never stored by MCP. It is accepted only from the global `mcp.json` and extension registrations, requires `https` except on `localhost`, `127.0.0.1`, and `[::1]`, and is sent only to the server's origin.
+
+### Fixed
+
+- MCP sign-in now displays a clickable terminal hyperlink and a Cmd/Ctrl+click hint, including when the authorization URL wraps across lines ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+- MCP tool names now use JavaScript-safe identifiers. Tools whose names sanitize to the same identifier all receive deterministic hash suffixes, preventing codemode calls from reaching the wrong tool. Server names that differ only in `-` and `_` conflict ([#10239](https://github.com/earendil-works/pi/issues/10239)).
+- Cached MCP tools now reconnect after `/login <provider>` when a provider-authenticated server needs sign-in, without requiring `/mcp reconnect`.
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Changed

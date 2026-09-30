@@ -7,6 +7,12 @@ description: "Configure MCP servers, discover tools, and authenticate connection
 
 Atomic includes MCP support in both npm and binary installations. No separate extension install is needed. Use `/mcp` to inspect servers or `/mcp setup` to configure them.
 
+## Quick setup
+
+Run `atomic`, then use `/mcp setup` to create configuration or preview imports from another client. For manual setup, add a local server's `command` and `args`, or a remote server's `url`, to one of the configuration files below. Restart Atomic after editing a file manually.
+
+Use `/mcp` to inspect connections and `/mcp tools` to list tools. Servers connect lazily by default; discovery or a tool call can establish the connection. Use `/mcp reconnect my-server` to reconnect a configured server. For a server that requires OAuth, run `/mcp-auth my-server` before unattended work.
+
 ## Configure a server
 
 Put shared project configuration in `.mcp.json` at your project root:
@@ -55,6 +61,17 @@ The Atomic agent directory can be relocated with `ATOMIC_CODING_AGENT_DIR`. Use 
 
 Servers connect lazily by default. Adding a server does not require an immediate connection at startup.
 
+### Configuration rules
+
+- `command` is one executable and `args` contains its arguments, not one shell command string. Use `cwd` for the server's working directory and `env` for its environment.
+- Remote servers use `url` and optional `headers`. Keep credentials out of shared files; use environment variable references or `bearerTokenEnv` for bearer authentication.
+- Put personal servers and credentials in user-level configuration. Use project configuration only for servers the project requires, in trusted projects.
+- Use `timeoutMs` for the per-request inactivity timeout. Progress notifications reset it.
+
+### Import configuration from another client
+
+Clients that use a top-level `mcpServers` object can share the same server entries. Copy compatible entries into `.mcp.json`, or use `/mcp setup` to preview detected imports before saving. Check executable paths, working directories, and required environment variables on the current machine. Restart Atomic after manual changes, then use `/mcp` to diagnose connection errors.
+
 ## Servers from packages and extensions
 
 Installed [packages](/packages/authoring#mcp-servers) and extensions can contribute MCP servers. Contributed servers sit below all four configuration files: a server with the same name in any of them replaces the contributed entry completely. To turn a contributed server off, give its name an entry with only `disabled`:
@@ -86,6 +103,8 @@ mcp({ tool: "my_server_search", args: '{"query":"example"}' })
 
 Use the tool names returned by discovery. `args` is a JSON string, not an object. Search may connect configured servers when their metadata has not yet been cached.
 
+Tool names replace punctuation with `_` and receive a leading `_` if they start with a digit. Names longer than 64 characters and tools whose names collide after this conversion receive a deterministic hash suffix. Both gateway discovery and direct tools use these names; call the returned name rather than constructing one yourself. Server names that differ only in `-` and `_` are rejected within one configuration file. A higher-precedence file replaces a contributed or lower-precedence server with the same normalized name.
+
 To expose a server's tools directly in the agent's tool list, add `"directTools": true` to that server's configuration. To expose only selected tools, set `directTools` to an array of the original MCP tool names. The default is gateway-only access.
 
 In a headless SDK session, cached direct tools are available at startup, but discovery does not connect uncached lazy servers. Call the `mcp` gateway when you need them. Set the server's `lifecycle` to `"eager"` or `"keep-alive"` if it must connect during startup.
@@ -94,7 +113,35 @@ In a headless SDK session, cached direct tools are available at startup, but dis
 
 For an OAuth server, run `/mcp-auth my-server` in an interactive session. You can also select the server in `/mcp` and press Enter or `Ctrl+A`. Run `/mcp logout my-server` to remove stored OAuth credentials and disconnect.
 
+While sign-in waits for browser approval, Atomic displays the authorization URL as a terminal hyperlink with a Cmd/Ctrl+click hint. You can use it if the browser did not open automatically.
+
 Automatic OAuth is opt-in through `settings.autoAuth`. Browser-based authorization requires an interactive session; authenticate before running unattended work.
+
+Atomic registers OAuth clients as `atomic`. If a server requires a known client name, configure it with `oauth.clientName`:
+
+```json
+{ "mcpServers": { "figma": { "url": "https://mcp.figma.com/mcp", "oauth": { "clientName": "Claude Code" } } } }
+```
+
+The name is sent only during dynamic client registration. Run `/mcp logout figma` before signing in again to register under a changed name.
+
+### Authenticate with a provider login
+
+An HTTP server can use the token of a provider you have signed in to instead of MCP OAuth:
+
+```json
+{ "mcpServers": { "radius": { "url": "https://radius.example/mcp", "auth": { "provider": "radius" } } } }
+```
+
+Atomic reads the provider's current token for each request, so refreshes apply. MCP does not copy or store the token. If the server rejects it or the provider has no token, the connection fails with a message to run `/login <provider>`.
+
+After signing in with `/login <provider>`, retry the MCP gateway call. Atomic reconnects with the current token, including for servers with cached tools; you do not need to run `/mcp reconnect`.
+
+Because the token goes to the server's `url`, `auth.provider` has limits:
+
+- It is accepted in the global `mcp.json` files and in servers registered by extensions. It is ignored, with a warning, in project `.mcp.json` and `.atomic/mcp.json`, in project-relative imports such as `.vscode/mcp.json`, and in package manifest servers.
+- The URL must use `https`, or `http` on `localhost`, `127.0.0.1`, or `[::1]`.
+- Atomic sends the token only to the server's origin. It follows `307` and `308` redirects within that origin and refuses every other redirect.
 
 ## Troubleshooting
 

@@ -47,6 +47,8 @@ interface PendingAuthentication {
   readonly reject: (error: Error) => void
   oauthState?: string
   transport?: PendingTransport
+  authorizationUrl?: string
+  readonly authorizationListeners: Set<(url: string) => void>
 }
 
 function createOAuthLifecycle() {
@@ -97,6 +99,7 @@ function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
     clientId: definition.oauth?.clientId,
     clientSecret: definition.oauth?.clientSecret,
     scope: definition.oauth?.scope,
+    clientName: definition.oauth?.clientName,
   }
 }
 
@@ -251,6 +254,8 @@ async function performAuthentication(
 
   const callbackPromise = waitForCallback(started.oauthState)
   try {
+    owner.authorizationUrl = started.authorizationUrl
+    for (const listener of owner.authorizationListeners) listener(started.authorizationUrl)
     if (!reportOwnedMcpLog("info")) console.log(`MCP Auth: Opening browser for ${serverName}`)
     try {
       await open(started.authorizationUrl)
@@ -288,10 +293,17 @@ export function authenticate(
   serverName: string,
   serverUrl: string,
   definition?: ServerEntry,
+  onAuthorizationUrl?: (url: string) => void,
 ): Promise<AuthStatus> {
   const { pendingAuthentications, oauthCleanupBarrier } = oauthLifecycle()
   const inFlight = pendingAuthentications.get(serverName)
-  if (inFlight) return inFlight.result
+  if (inFlight) {
+    if (onAuthorizationUrl) {
+      inFlight.authorizationListeners.add(onAuthorizationUrl)
+      if (inFlight.authorizationUrl) onAuthorizationUrl(inFlight.authorizationUrl)
+    }
+    return inFlight.result
+  }
 
   let resolve!: (status: AuthStatus) => void
   let reject!: (error: Error) => void
@@ -303,7 +315,7 @@ export function authenticate(
   const inheritedCleanup = oauthCleanupBarrier.wait()
   let owner!: PendingAuthentication
   const producer = inheritedCleanup.then(() => performAuthentication(owner, serverUrl, definition))
-  owner = { serverName, controller, result, producer, resolve, reject }
+  owner = { serverName, controller, result, producer, resolve, reject, authorizationListeners: new Set(onAuthorizationUrl ? [onAuthorizationUrl] : []) }
   pendingAuthentications.set(serverName, owner)
   const removeOwner = (): void => {
     if (pendingAuthentications.get(serverName) === owner) pendingAuthentications.delete(serverName)

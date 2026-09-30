@@ -71,7 +71,8 @@ const INTRO = `Run JavaScript that composes tool calls in a fresh QuickJS worker
 Top-level await and return work. Use tools.name(args), or tools["raw-name"](args). Tool names normalize to JavaScript identifiers.
 No Node, filesystem, network, timers, modules or credentials are available directly. Calls go through session validation and permission hooks. They have real side effects and are not undone after script failure.
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw. Scripts have a 256 MB memory limit.
-Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), searchTools(query, {limit?, namespace?}), describeTool(name).
+Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), searchTools(query, {limit?, namespace?}), describeTool(name), describeNamespace(name).
+describeNamespace(name) returns { name, description?, instructions?, tools } for a callable tool namespace, or undefined. Namespace instructions are available on request, not in tool listings.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
 Optional first line: // @options: {"max_output_tokens": 1000, "timeout_ms": 60000}. Output defaults to 10000 tokens; there is no default deadline.`;
 
@@ -81,9 +82,10 @@ export function createCodemodeDescription(
 ): string {
 	const groups = new Map<
 		string,
-		{ namespace?: ToolNamespace; entries: { name: string; section: string; cost: number; deferred: boolean }[] }
+		{ namespace?: ToolNamespace; entries: { name: string; section: string; cost: number }[] }
 	>();
 	for (const tool of getCodemodeCallableTools(tools)) {
+		if (options.deferred?.has(tool.name)) continue;
 		const namespace = options.namespaces?.get(tool.name);
 		const key = namespace?.name ?? "";
 		let group = groups.get(key);
@@ -97,7 +99,6 @@ export function createCodemodeDescription(
 			name: tool.name,
 			section,
 			cost: Math.ceil(section.length / 4),
-			deferred: options.deferred?.has(tool.name) === true,
 		});
 	}
 	const ordered = [...groups.values()].sort((a, b) =>
@@ -106,7 +107,7 @@ export function createCodemodeDescription(
 	const shown = new Set<string>();
 	let remaining = options.inlineBudget ?? Number.POSITIVE_INFINITY;
 	let queues = ordered
-		.map((group) => group.entries.filter((entry) => !entry.deferred).sort((a, b) => a.cost - b.cost))
+		.map((group) => [...group.entries].sort((a, b) => a.cost - b.cost))
 		.filter((queue) => queue.length);
 	while (queues.length)
 		queues = queues.filter((queue) => {
@@ -117,22 +118,28 @@ export function createCodemodeDescription(
 			queue.shift();
 			return queue.length > 0;
 		});
-	const sections = [INTRO];
+	const sections = [
+		INTRO,
+		"Some nested tools may be omitted, including deferred tools. They remain available through tools and ALL_TOOLS. Use await searchTools(query), describeTool(name), or describeNamespace(name) to discover them.",
+	];
 	if (options.models)
 		sections.push(
 			"Model API: models.getModelsOfType(type, provider?), models.getAvailableOfType(type, provider?), models.getModelOfType(type, provider, id), models.classify(model, context). Types are chat, image, classifier. Catalog entries exclude headers; classifier calls resolve credentials on the host.",
 		);
-	const count = getCodemodeCallableTools(tools).length;
-	sections.push(
-		shown.size === count
-			? `Nested tools: COMPLETE list (${count} tools).`
-			: `Nested tools: PARTIAL - ${shown.size} of ${count} shown. Use searchTools(), describeTool(), or ALL_TOOLS for omitted/deferred tools.`,
-	);
+	if (ordered.length === 0) return sections.join("\n\n");
+	sections.push("Nested tools:");
 	for (const group of ordered) {
-		if (group.namespace)
-			sections.push(
-				`## ${group.namespace.name} (${group.entries.length} tools)\n${group.namespace.description ?? ""}`,
-			);
+		if (group.namespace) {
+			const visible = group.entries.filter((entry) => shown.has(entry.name));
+			const listing =
+				visible.length === group.entries.length
+					? ""
+					: visible.length === 0
+						? " (tools not listed)"
+						: " (some tools not listed)";
+			const description = group.namespace.description?.trim();
+			sections.push(`## ${group.namespace.name}${listing}${description ? `\n${description}` : ""}`);
+		}
 		for (const entry of group.entries) if (shown.has(entry.name)) sections.push(entry.section);
 	}
 	return sections.join("\n\n");

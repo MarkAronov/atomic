@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import { authorizationNotice } from "./authorization-notice.js";
+import { providerSignInGuidance } from "./provider-auth.js";
 import type { McpExtensionState } from "./state.js";
 import type { McpAuthResult, McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult, ImportKind } from "./types.js";
 import {
@@ -104,7 +106,7 @@ export async function reconnectServers(
       const connection = await state.manager.connect(name, definition);
       if (connection.status === "needs-auth") {
         if (ctx.hasUI) {
-          ctx.ui.notify(`MCP: ${name} requires OAuth. Run /mcp-auth ${name} first.`, "warning");
+          ctx.ui.notify(providerSignInGuidance(definition, name) ?? `MCP: ${name} requires OAuth. Run /mcp-auth ${name} first.`, "warning");
         }
         continue;
       }
@@ -139,7 +141,8 @@ export async function reconnectServers(
 export async function authenticateServer(
   serverName: string,
   config: McpConfig,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
+  onAuthorizationUrl?: (url: string) => void,
 ): Promise<McpAuthResult> {
   if (!ctx.hasUI) return { ok: false, message: "OAuth authentication requires an interactive session." };
 
@@ -168,7 +171,10 @@ export async function authenticateServer(
 
   try {
     ctx.ui.setStatus("mcp-auth", `Authenticating ${serverName}...`);
-    const status = await authenticate(serverName, definition.url, definition);
+    const status = await authenticate(serverName, definition.url, definition, (url) => {
+      if (onAuthorizationUrl) onAuthorizationUrl(url);
+      else ctx.ui.notify(authorizationNotice(url), "info");
+    });
 
     if (status === "authenticated") {
       const message = `OAuth authentication successful for "${serverName}"! Run /mcp reconnect ${serverName} to connect with the new token.`;
@@ -310,7 +316,7 @@ function buildMcpPanelCallbacks(
       const definition = config.mcpServers[serverName];
       return definition ? supportsOAuth(definition) : false;
     },
-    authenticate: (serverName: string) => authenticateServer(serverName, config, ctx),
+    authenticate: (serverName, onAuthorizationUrl) => authenticateServer(serverName, config, ctx, onAuthorizationUrl),
     getConnectionStatus: (serverName: string) => {
       const definition = config.mcpServers[serverName];
       const connection = state.manager.getConnection(serverName);

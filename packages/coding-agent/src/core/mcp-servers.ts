@@ -5,6 +5,7 @@ export interface McpServerOAuthConfig {
 	clientId?: string;
 	clientSecret?: string;
 	scope?: string;
+	clientName?: string;
 }
 
 /** One MCP server definition; the same schema as an `mcpServers` entry in `mcp.json`. */
@@ -15,7 +16,7 @@ export interface McpServerConfig {
 	cwd?: string;
 	url?: string;
 	headers?: Record<string, string>;
-	auth?: "oauth" | "bearer" | false;
+	auth?: "oauth" | "bearer" | false | { provider: string };
 	bearerToken?: string;
 	bearerTokenEnv?: string;
 	oauth?: McpServerOAuthConfig | false;

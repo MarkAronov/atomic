@@ -570,6 +570,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_cwd: string;
 	_extensionRunnerRef?: { current?: ExtensionRunner };
 	_initialActiveToolNames?: string[];
+	_usesDefaultTools: boolean;
+	_appliedDefaultTools: Set<string>;
 	_allowedToolNames?: Set<string>;
 	_excludedToolNames?: Set<string>;
 	_childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
