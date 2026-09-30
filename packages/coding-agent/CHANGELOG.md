@@ -29,6 +29,7 @@
 - llama.cpp unloaded autoload presets now retain their cached effective context size instead of falling back to the model's training limit.
 - Native extension providers with stored credentials become available immediately after registration without exposing unrelated unauthenticated models.
 - Cancelled tools no longer start queued native or nested sequential calls after cancellation.
+- The interactive footer's context percentage, token, cost and cache-hit (`CH`) segments update after every message again, instead of only when a run ends. A new session no longer shows `0.0%` with no token or cost segments for its whole first run, and steered or long runs keep the footer current. The footer totals now include cache-warming requests, which `/session` already counts, and RPC `get_session_stats` responses report the newest reply's usage as `latestAssistantUsage` ([#3328](https://github.com/bastani-inc/atomic/issues/3328); [#3364](https://github.com/bastani-inc/atomic/pull/3364) by [@dairefagan](https://github.com/dairefagan)).
 
 ## [0.9.24] - 2026-09-29
 
