@@ -1,4 +1,11 @@
-import type { Api, Credential, Model, ModelFastRoute, Provider } from "@bastani/pi-ai";
+import {
+	type Api,
+	type Credential,
+	getServiceTierCost,
+	type Model,
+	type ModelFastRoute,
+	type Provider,
+} from "@bastani/pi-ai";
 import type { ModelsJsonModelOverride } from "./model-config.ts";
 import { applyModelOverride } from "./provider-composer-internal.ts";
 
@@ -8,7 +15,7 @@ export const FAST_MODEL_ID_SUFFIX = "-fast";
 /** Service tier OpenAI-style providers use to route fast traffic. */
 export const FAST_MODEL_SERVICE_TIER = "priority" as const;
 
-/** Codex's selectable Sol 6.1 tier; availability and pricing depend on the account. */
+/** Codex's Ultrafast tier, offered only for models that advertise it; access depends on the account. */
 export const ULTRAFAST_MODEL_ID_SUFFIX = "-ultrafast";
 export const ULTRAFAST_MODEL_SERVICE_TIER = "ultrafast" as const;
 
@@ -156,11 +163,21 @@ export function copilotAdvertisesModelId(credential: Credential | undefined, mod
 	);
 }
 
+/** A model without tier metadata keeps offering Fast; one that lists its tiers must advertise it, as in Codex. */
+function advertisesFastServiceTier(model: Model<Api>): boolean {
+	return model.serviceTiers === undefined || getServiceTierCost(model, FAST_MODEL_SERVICE_TIER) !== undefined;
+}
+
 function fastRouteForBaseModel(
 	model: Model<Api>,
 	entitledCopilotFastModelIds: ReadonlySet<string>,
 ): ModelFastRoute | undefined {
-	if (usesOpenAIFastServiceTier(model) || usesXaiFastServiceTier(model)) {
+	if (usesOpenAIFastServiceTier(model)) {
+		return advertisesFastServiceTier(model)
+			? { baseModelId: model.id, upstreamModelId: model.id, serviceTier: FAST_MODEL_SERVICE_TIER }
+			: undefined;
+	}
+	if (usesXaiFastServiceTier(model)) {
 		return { baseModelId: model.id, upstreamModelId: model.id, serviceTier: FAST_MODEL_SERVICE_TIER };
 	}
 	if (usesAnthropicFastMode(model)) {
@@ -219,9 +236,7 @@ export function deriveFastModelVariants(
 		const fastRoute = fastRouteForBaseModel(model, entitledCopilotFastModelIds);
 		const routes: Array<{ suffix: string; label: string; route: ModelFastRoute }> = [];
 		if (fastRoute) routes.push({ suffix: FAST_MODEL_ID_SUFFIX, label: "fast", route: fastRoute });
-		// Codex carries ultrafast in service_tier without changing the upstream model. This
-		// declares a selectable request, not an account entitlement or a measured price.
-		if (model.provider === "openai-codex" && model.api === "openai-codex-responses" && model.id === "gpt-6.1-sol") {
+		if (usesOpenAIFastServiceTier(model) && getServiceTierCost(model, ULTRAFAST_MODEL_SERVICE_TIER)) {
 			routes.push({
 				suffix: ULTRAFAST_MODEL_ID_SUFFIX,
 				label: "ultrafast",

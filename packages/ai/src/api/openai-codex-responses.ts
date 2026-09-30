@@ -39,12 +39,14 @@ import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
+	applyServiceTierPricing,
 	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
+	codexServiceTierForRequest,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -577,8 +579,7 @@ function buildRequestBody(
 		body.temperature = options.temperature;
 	}
 
-	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
-	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
+	const requestedServiceTier = resolveCodexRequestServiceTier(model, options?.serviceTier);
 	if (requestedServiceTier !== undefined) {
 		body.service_tier = requestedServiceTier;
 	}
@@ -611,43 +612,21 @@ function buildRequestBody(
 	return body;
 }
 
-function getServiceTierCostMultiplier(
-	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
-	serviceTier: ResponsesServiceTier | undefined,
-): number {
-	// Price against the model that was actually billed upstream, so a `-fast` variant of a
-	// per-model rate (gpt-5.5) is not silently charged the generic multiplier.
-	const pricedModelId = model.fastRoute?.baseModelId ?? model.id;
-	switch (serviceTier) {
-		case "flex":
-			return 0.5;
-		case "priority":
-			return pricedModelId === "gpt-5.5" ? 2.5 : 2;
-		default:
-			return 1;
-	}
-}
-
-function applyServiceTierPricing(
-	usage: Usage,
-	serviceTier: ResponsesServiceTier | undefined,
-	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
-) {
-	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
-	if (multiplier === 1) return;
-
-	usage.cost.input *= multiplier;
-	usage.cost.output *= multiplier;
-	usage.cost.cacheRead *= multiplier;
-	usage.cost.cacheWrite *= multiplier;
-	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+function resolveCodexRequestServiceTier(
+	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "serviceTiers">,
+	optionsServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	return codexServiceTierForRequest(model, resolveRequestedServiceTier(model, optionsServiceTier));
 }
 
 function resolveCodexServiceTier(
 	responseServiceTier: ResponsesServiceTier | undefined,
 	requestServiceTier: ResponsesServiceTier | undefined,
 ): ResponsesServiceTier | undefined {
-	if (responseServiceTier === "default" && (requestServiceTier === "flex" || requestServiceTier === "priority")) {
+	if (
+		responseServiceTier === "default" &&
+		(requestServiceTier === "flex" || requestServiceTier === "priority" || requestServiceTier === "ultrafast")
+	) {
 		return requestServiceTier;
 	}
 	return responseServiceTier ?? requestServiceTier;
@@ -693,7 +672,7 @@ async function processStream(
 		stream,
 		model,
 		{
-			serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
+			serviceTier: resolveCodexRequestServiceTier(model, options?.serviceTier),
 			grammarToolInputProperties,
 			resolveServiceTier: resolveCodexServiceTier,
 			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
@@ -1576,7 +1555,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
-				serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
+				serviceTier: resolveCodexRequestServiceTier(model, options?.serviceTier),
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
